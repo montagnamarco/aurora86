@@ -1,0 +1,14 @@
+# Build output
+bin/
+obj/
+*.user
+*.suo
+
+# Immagini disco: sono grandi e spesso protette da copyright
+images/*.img
+images/**/*.img
+images/**/*.iso
+*.vhd
+
+# macOS
+.DS_Store
