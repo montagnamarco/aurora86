@@ -77,6 +77,64 @@ public sealed class CpuState
     public uint LdtLimit;
     public ushort TaskRegister;
 
+    /// <summary>
+    /// Base and limit of the current task's TSS, cached when LTR loads the
+    /// selector, exactly as LdtBase/LdtLimit are cached for the LDT. A stack
+    /// switch on a privilege-raising interrupt has to read ESP0/SS0 out of the
+    /// TSS, and it would be wasteful to walk the GDT again on every such
+    /// interrupt.
+    /// </summary>
+    public uint TssBase;
+    public uint TssLimit;
+
+    /// <summary>
+    /// Current privilege level: the ring the processor is executing in, 0 for
+    /// the kernel and 3 for ordinary applications.
+    ///
+    /// Architecturally the CPL is not a register at all -- it *is* the low two
+    /// bits of the CS selector, and the hardware simply reads them there. We
+    /// keep it explicitly for one reason: virtual-8086 mode. In V86 the CS
+    /// selector is a real-mode paragraph number whose low bits mean nothing,
+    /// yet the processor still behaves as if it were running at ring 3, so
+    /// there has to be somewhere to say so that is not the selector itself.
+    /// <see cref="Cpl"/> keeps the two views reconciled.
+    /// </summary>
+    public byte CplRaw;
+
+    /// <summary>
+    /// The effective current privilege level. Reading the low bits of CS is
+    /// right in protected mode; V86 code is always ring 3 no matter what its
+    /// selectors look like; real mode has no protection at all, so everything
+    /// runs with ring 0's authority.
+    /// </summary>
+    public byte Cpl
+    {
+        get
+        {
+            if (!ProtectedMode) return 0;
+            if (Virtual8086Mode) return 3;
+            return CplRaw;
+        }
+        set => CplRaw = (byte)(value & 3);
+    }
+
+    /// <summary>
+    /// True when the VM flag (bit 17 of EFLAGS) is set and protection is on.
+    ///
+    /// Virtual-8086 mode exists to solve a problem the 286 could not: a
+    /// protected-mode operating system that still has to run the enormous body
+    /// of existing real-mode DOS software. In V86 the segment registers go back
+    /// to behaving like real mode -- base = selector * 16, 64 KB limits -- so an
+    /// unmodified DOS program computes the addresses it expects, but the
+    /// translation happens *inside* protection: paging still applies, so the
+    /// monitor can give each task its own private first megabyte, and every
+    /// privileged instruction still traps, so the monitor can decide what a
+    /// program is really allowed to do. EMM386 uses it to fabricate expanded
+    /// memory out of paging, and Windows 3.1 in enhanced mode uses it to run
+    /// several DOS boxes at once.
+    /// </summary>
+    public bool Virtual8086Mode { get; set; }
+
     /// <summary>Debug registers DR0-DR7.</summary>
     public readonly uint[] Dr = new uint[8];
 
@@ -221,6 +279,10 @@ public sealed class CpuState
         GdtBase = IdtBase = 0;
         GdtLimit = IdtLimit = 0xFFFF;
         Ldtr = TaskRegister = 0;
+        LdtBase = LdtLimit = 0;
+        TssBase = TssLimit = 0;
+        CplRaw = 0;
+        Virtual8086Mode = false;
         Halted = false;
 
         for (int i = 0; i < Segments.Length; i++)

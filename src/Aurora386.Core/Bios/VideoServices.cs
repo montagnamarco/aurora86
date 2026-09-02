@@ -41,15 +41,18 @@ public sealed class VideoServices
             case 0x08: ReadCharacterAtCursor(cpu); return;
             case 0x09: WriteCharacterWithAttribute(cpu, advance: false); return;
             case 0x0A: WriteCharacterOnly(cpu); return;
+            // Pixel access in graphics modes. The register indices are the
+            // usual trap: 0=AL 1=CL 2=DL 3=BL 4=AH 5=CH 6=DH 7=BH, so the
+            // column is CX (a full 16 bits, since 640 does not fit in eight)
+            // and the row is DX.
+            case 0x0C: WritePixel(cpu.State.Cx, cpu.State.Dx, cpu.State.GetReg8(0)); return;
+            case 0x0D: cpu.State.SetReg8(0, ReadPixel(cpu.State.Cx, cpu.State.Dx)); return;
+
             case 0x0E: TeletypeOutput(cpu.State.GetReg8(0), cpu.State.GetReg8(3)); return;
             case 0x0F: GetVideoMode(cpu); return;
             case 0x13: WriteString(cpu); return;
 
-            case 0x11:
-                // Font functions. Subfunction 0x30 returns a pointer to the
-                // character table, which some programs read.
-                if (cpu.State.GetReg8(0) == 0x30) GetFontPointer(cpu);
-                return;
+            case 0x11: CharacterGenerator(cpu); return;
 
             case 0x12:
                 // EGA/VGA configuration functions. Subfunction 0x10 reports how
@@ -74,47 +77,209 @@ public sealed class VideoServices
         }
     }
 
-    private void SetVideoMode(byte mode)
+    /// <summary>
+    /// INT 10h AH=00: set the video mode.
+    ///
+    /// On real hardware this is by far the heaviest BIOS video function: it
+    /// looks the mode up in a ROM table and pushes some seventy register
+    /// values into the CRTC, sequencer, graphics controller and attribute
+    /// controller, then loads the font and the palette and clears memory. We
+    /// do the same thing, just with a much smaller table -- but the registers
+    /// really are programmed, because software is entitled to read them back
+    /// and, more importantly, because the planar write logic in
+    /// <see cref="VgaMemory"/> is driven entirely by them.
+    /// </summary>
+    public void SetVideoMode(byte mode)
     {
         // Bit 7 asks for the screen not to be cleared.
         bool preserveScreen = (mode & 0x80) != 0;
         mode &= 0x7F;
 
+        VgaModeInfo info = VgaModes.Get(mode);
+
         _registers.VideoMode = mode;
+        _registers.TextColumns = info.TextColumns;
+        _registers.TextRows = info.TextRows;
+        _registers.CharacterHeight = info.CharHeight;
 
-        (int columns, int rows) = mode switch
-        {
-            0x00 or 0x01 => (40, 25),
-            0x02 or 0x03 => (80, 25),
-            0x07 => (80, 25),
-            _ => (80, 25),
-        };
-
-        _registers.TextColumns = columns;
-        _registers.TextRows = rows;
+        ProgramRegisters(info);
 
         _bda.VideoMode = mode;
-        _bda.VideoColumns = (ushort)columns;
-        _bda.VideoPageSize = (ushort)(columns * rows * 2);
-        _bda.VideoRowsMinusOne = (byte)(rows - 1);
+        _bda.VideoColumns = (ushort)info.TextColumns;
+        _bda.VideoPageSize = (ushort)(info.TextColumns * info.TextRows * 2);
+        _bda.VideoRowsMinusOne = (byte)(info.TextRows - 1);
         _bda.CursorColumn = 0;
         _bda.CursorRow = 0;
 
-        if (!preserveScreen) ClearScreen();
+        // The BIOS reloads the DAC on every mode set, which is why a program
+        // that changed the palette and then switched modes gets the standard
+        // colours back rather than its own.
+        _registers.ResetPalette(includeMode13Ramp: info.Layout == VgaMemoryLayout.Linear8);
+
+        if (!preserveScreen) ClearScreen(info);
 
         _registers.SetCursorPosition(0, 0);
         _registers.NotifyModeChanged();
     }
 
-    private void ClearScreen()
+    /// <summary>
+    /// Loads the adapter registers that actually change behaviour, rather than
+    /// the full ROM table. Three of them matter to us:
+    ///
+    /// <list type="bullet">
+    /// <item><b>Sequencer Map Mask</b> -- all four planes enabled, which is what
+    /// every mode starts with. Leaving a stale value here from a previous mode
+    /// would silently drop writes to some planes.</item>
+    /// <item><b>Sequencer Memory Mode bit 3 (chain-4)</b> -- set only for mode
+    /// 13h. It is the single bit that turns the four planes from a planar
+    /// arrangement into one linear byte-per-pixel space.</item>
+    /// <item><b>Graphics Bit Mask</b> -- opened to 0xFF. A program that left a
+    /// narrow mask behind would find its first writes in the new mode changing
+    /// only one pixel in eight, which is a memorably baffling symptom.</item>
+    /// </list>
+    /// </summary>
+    private void ProgramRegisters(VgaModeInfo info)
     {
-        int cells = _registers.TextColumns * _registers.TextRows;
+        _registers.SetSequencer(VgaRegisters.SeqMapMask, 0x0F);
+        _registers.SetSequencer(VgaRegisters.SeqMemoryMode,
+            info.Layout == VgaMemoryLayout.Linear8 ? (byte)0x0E : (byte)0x06);
+
+        // Graphics controller back to its post-mode-set state: no set/reset,
+        // write mode 0, read mode 0, bit mask wide open.
+        _registers.SetGraphics(VgaRegisters.GcSetReset, 0x00);
+        _registers.SetGraphics(VgaRegisters.GcEnableSetReset, 0x00);
+        _registers.SetGraphics(VgaRegisters.GcColorCompare, 0x00);
+        _registers.SetGraphics(VgaRegisters.GcDataRotate, 0x00);
+        _registers.SetGraphics(VgaRegisters.GcReadMapSelect, 0x00);
+        _registers.SetGraphics(VgaRegisters.GcMode, info.Layout switch
+        {
+            // Bit 6 selects 256-colour shift mode, bit 5 the CGA-style
+            // interleave. Neither changes anything here, but software reads
+            // these back to detect the mode.
+            VgaMemoryLayout.Linear8 => 0x40,
+            VgaMemoryLayout.Planar4 => 0x00,
+            _ => 0x10,   // odd/even, as text modes use
+        });
+        _registers.SetGraphics(VgaRegisters.GcMiscellaneous,
+            info.IsGraphics ? (byte)0x05 : (byte)0x0E);
+        _registers.SetGraphics(VgaRegisters.GcColorDontCare, 0x0F);
+        _registers.SetGraphics(VgaRegisters.GcBitMask, 0xFF);
+
+        // CRTC 0x13 is the row offset in words. The renderer uses it to step
+        // from one scan line to the next, so it has to match the mode.
+        _registers.SetCrtc(0x13, (byte)(info.BytesPerRow / 2));
+        _registers.SetCrtc(0x09, (byte)((info.CharHeight - 1) & 0x1F));
+    }
+
+    private void ClearScreen(VgaModeInfo info)
+    {
+        if (info.IsGraphics)
+        {
+            // A graphics mode clears to colour 0 across every plane. Doing it
+            // through the planar write path would be correct but pointlessly
+            // slow, and would depend on the registers we have just programmed.
+            _video.ClearAllPlanes();
+            return;
+        }
+
+        int cells = info.TextColumns * info.TextRows;
         for (int i = 0; i < cells; i++)
         {
             uint offset = VgaMemory.TextWindowOffset + (uint)(i * 2);
             _video[offset] = (byte)' ';
             _video[offset + 1] = 0x07;   // light grey on black
         }
+    }
+
+    /// <summary>
+    /// INT 10h AH=0Ch: write one pixel.
+    ///
+    /// The BIOS pixel calls are notoriously slow -- a full interrupt, a mode
+    /// dispatch and several port writes to set one pixel -- which is precisely
+    /// why every real graphics program bypasses them and drives the graphics
+    /// controller itself. They still have to work: setup programs and simple
+    /// utilities use them, and they are the clearest possible demonstration of
+    /// what the planar registers are for.
+    ///
+    /// Bit 7 of AL means XOR the colour with what is already there, which is
+    /// how a program draws a cursor it can erase by drawing it again.
+    /// </summary>
+    private void WritePixel(int x, int y, byte color)
+    {
+        VgaModeInfo info = _registers.ModeInfo;
+        if (!info.IsGraphics) return;
+        if ((uint)x >= (uint)info.PixelWidth || (uint)y >= (uint)info.PixelHeight) return;
+
+        if (info.Layout == VgaMemoryLayout.Linear8)
+        {
+            // 256-colour mode uses the whole byte for the colour index, so
+            // there is no spare bit to carry the XOR flag: colour 200 is
+            // colour 200, not "XOR with 72". The flag only exists in the
+            // 16-colour modes, where four bits are enough for the colour and
+            // bit 7 is free.
+            uint offset = (uint)(y * info.BytesPerRow + x);
+            _video[offset] = color;
+            return;
+        }
+
+        bool exclusiveOr = (color & 0x80) != 0;
+
+        // Planar. The pixel lives at bit (7 - x % 8) of byte x/8 in each of the
+        // four planes, so this is the textbook use of write mode 2 plus a
+        // one-bit mask: the hardware spreads the colour's four bits across the
+        // planes and the mask confines the change to this single pixel.
+        uint byteOffset = (uint)(y * info.BytesPerRow + (x >> 3));
+        byte bitMask = (byte)(0x80 >> (x & 7));
+
+        byte savedMode = _registers.Graphics(VgaRegisters.GcMode);
+        byte savedMask = _registers.Graphics(VgaRegisters.GcBitMask);
+        byte savedRotate = _registers.Graphics(VgaRegisters.GcDataRotate);
+        byte savedEnable = _registers.Graphics(VgaRegisters.GcEnableSetReset);
+
+        _registers.SetGraphics(VgaRegisters.GcMode, 0x02);        // write mode 2
+        _registers.SetGraphics(VgaRegisters.GcBitMask, bitMask);
+        _registers.SetGraphics(VgaRegisters.GcEnableSetReset, 0x00);
+        // XOR is the data rotate register's raster op field, bits 3-4.
+        _registers.SetGraphics(VgaRegisters.GcDataRotate, exclusiveOr ? (byte)0x18 : (byte)0x00);
+
+        // The dummy read is not optional: it loads the four latches, and the
+        // bit mask hands the seven untouched pixels straight back from them.
+        // Skip it and those pixels take whatever the latches last happened to
+        // hold.
+        _video.ReadByte(byteOffset);
+        _video.WriteByte(byteOffset, (byte)(color & 0x0F));
+
+        _registers.SetGraphics(VgaRegisters.GcMode, savedMode);
+        _registers.SetGraphics(VgaRegisters.GcBitMask, savedMask);
+        _registers.SetGraphics(VgaRegisters.GcDataRotate, savedRotate);
+        _registers.SetGraphics(VgaRegisters.GcEnableSetReset, savedEnable);
+    }
+
+    /// <summary>
+    /// INT 10h AH=0Dh: read one pixel back.
+    ///
+    /// In a planar mode this needs four reads, one per plane, because a plane
+    /// only ever hands back its own bit of the colour. That asymmetry -- cheap
+    /// writes, expensive reads -- is the reason planar VGA code is written to
+    /// avoid reading the screen wherever it possibly can.
+    /// </summary>
+    private byte ReadPixel(int x, int y)
+    {
+        VgaModeInfo info = _registers.ModeInfo;
+        if (!info.IsGraphics) return 0;
+        if ((uint)x >= (uint)info.PixelWidth || (uint)y >= (uint)info.PixelHeight) return 0;
+
+        if (info.Layout == VgaMemoryLayout.Linear8)
+            return _video[(uint)(y * info.BytesPerRow + x)];
+
+        uint byteOffset = (uint)(y * info.BytesPerRow + (x >> 3));
+        int shift = 7 - (x & 7);
+
+        int color = 0;
+        for (int plane = 0; plane < 4; plane++)
+            color |= ((_video.ReadPlane(plane, byteOffset) >> shift) & 1) << plane;
+
+        return (byte)color;
     }
 
     private void SetCursorShape(ushort shape)
@@ -149,6 +314,62 @@ public sealed class VideoServices
         cpu.State.SetReg8(7, _bda.ActivePage);                  // BH
     }
 
+    /// <summary>
+    /// INT 10h AH=11h: the character generator functions.
+    ///
+    /// This is how a program gets 43- or 50-row text. It does not ask for a
+    /// row count: it asks the BIOS to load a different font, and the row count
+    /// follows from the arithmetic. The raster is 400 scanlines tall, so the
+    /// 8-line font gives 50 rows and the 14-line font gives 28 -- and on an
+    /// EGA, whose raster is 350 lines, that same 8-line font gives 43, which
+    /// is why "43-line mode" and "50-line mode" are both spoken of as if they
+    /// were modes when they are really just two fonts.
+    ///
+    /// Subfunctions 0x1x are the same as 0x0x except that they follow up with
+    /// a full mode recalculation; we treat them identically because we always
+    /// recalculate.
+    /// </summary>
+    private void CharacterGenerator(CpuNs.Cpu cpu)
+    {
+        byte subfunction = cpu.State.GetReg8(0);   // AL
+
+        switch (subfunction)
+        {
+            case 0x01 or 0x11: LoadFont(14); return;   // 8x14, giving 28 rows
+            case 0x02 or 0x12: LoadFont(8); return;    // 8x8, giving 50 rows
+            case 0x04 or 0x14: LoadFont(16); return;   // 8x16, the default 25 rows
+            case 0x30: GetFontPointer(cpu); return;
+            default: return;
+        }
+    }
+
+    private void LoadFont(int characterHeight)
+    {
+        // Only meaningful in a text mode: in graphics the "font" is whatever
+        // the program draws itself.
+        if (_registers.IsGraphicsMode) return;
+
+        // 400 scanlines divided by the cell height. The columns do not change:
+        // the character cell is eight pixels wide in every one of these fonts.
+        const int rasterLines = 400;
+        int rows = rasterLines / characterHeight;
+
+        _registers.CharacterHeight = characterHeight;
+        _registers.TextRows = rows;
+        _registers.SetCrtc(0x09, (byte)((characterHeight - 1) & 0x1F));
+
+        _bda.VideoRowsMinusOne = (byte)(rows - 1);
+        _bda.VideoPageSize = (ushort)(_registers.TextColumns * rows * 2);
+
+        // The rows that have just appeared hold whatever was in memory behind
+        // the old screen, so they have to be blanked or the new bottom of the
+        // screen fills with garbage.
+        for (int row = 0; row < rows; row++)
+            ClearRow(row, 0x07);
+
+        _registers.NotifyModeChanged();
+    }
+
     private void GetFontPointer(CpuNs.Cpu cpu)
     {
         // The font lives in the emulated ROM; all that is needed here is a
@@ -156,7 +377,7 @@ public sealed class VideoServices
         // actually use.
         cpu.SetSegment(SegReg.Es, 0xF000);
         cpu.State.Bp = 0x2000;
-        cpu.State.Cx = VgaFont.CharHeight;
+        cpu.State.Cx = (ushort)_registers.CharacterHeight;
         cpu.State.SetReg8(2, _bda.VideoRowsMinusOne);   // DL
     }
 

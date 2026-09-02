@@ -1,5 +1,7 @@
 using Aurora386.Core.Bios;
 using Aurora386.Core.Devices;
+using Aurora386.Core.Devices.Network;
+using Aurora386.Core.Devices.Audio;
 using Aurora386.Core.Devices.Video;
 using Aurora386.Core.IO;
 using Aurora386.Core.Memory;
@@ -28,6 +30,14 @@ public sealed class Machine : IDisposable
     public VgaRegisters VideoRegisters { get; }
     public VgaMemory VideoMemory { get; }
     public VgaRenderer Video { get; }
+
+    // Audio: the DMA controller is a system device rather than part of the
+    // sound card, but the card is the only thing here that uses it.
+    public Dma8237 Dma { get; }
+    public SoundBlaster16 SoundBlaster { get; }
+
+    /// <summary>The NE2000 Ethernet card.</summary>
+    public Ne2000 Network { get; }
 
     public BiosDataArea Bda { get; }
     public VideoServices VideoServices { get; }
@@ -76,6 +86,21 @@ public sealed class Machine : IDisposable
         VideoMemory = new VgaMemory(VideoRegisters);
         Memory.MapDevice(VgaMemory.Base, VgaMemory.Size, VideoMemory);
         Video = new VgaRenderer(VideoMemory, VideoRegisters);
+
+        // The 8237 DMA pair and the Sound Blaster 16 that streams through it.
+        // Registering the card also claims the OPL3's own ports at 0x388.
+        Dma = new Dma8237(Memory);
+        Dma.Register(Io);
+
+        SoundBlaster = new SoundBlaster16(Interrupts, Dma);
+        SoundBlaster.Register(Io);
+
+        // The network card starts with a loopback backend: frames it sends
+        // come straight back to it. That is enough for a driver to find the
+        // card and configure it, and it keeps the emulator from touching the
+        // host's network until somebody deliberately asks it to.
+        Network = new Ne2000(Interrupts, new LoopbackBackend());
+        Network.Register(Io);
 
         Cpu = new CpuNs.Cpu(Memory, Io) { Interrupts = Interrupts };
 
@@ -600,6 +625,16 @@ public sealed class Machine : IDisposable
     {
         double pitCycles = (double)instructions * Pit8253.ClockHz / CpuFrequencyHz;
         Timer.Advance(pitCycles);
+
+        // The sound card is driven from the same clock: microseconds of
+        // emulated time, converted from the instructions just executed.
+        SoundBlaster.Advance((double)instructions * 1_000_000.0 / CpuFrequencyHz);
+
+        // Collect anything that arrived on the wire. A real card would act the
+        // instant a frame appeared; polling here is close enough, because the
+        // guest cannot observe the difference -- it only ever learns about a
+        // frame through the interrupt the card raises when it files one.
+        Network.Poll();
     }
 
     /// <summary>Tells the machine a key has been pressed.</summary>
