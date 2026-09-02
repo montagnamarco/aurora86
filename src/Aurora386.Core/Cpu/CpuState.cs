@@ -3,63 +3,65 @@ using System.Runtime.CompilerServices;
 namespace Aurora386.Core.Cpu;
 
 /// <summary>
-/// Parte nascosta di un registro di segmento. Su x86 caricare un selettore
-/// copia dal descrittore base/limite/diritti in registri invisibili al
-/// programma; da quel momento gli accessi usano questi valori, non il
-/// selettore. E' il meccanismo che rende possibile lo "unreal mode" e le
-/// transizioni di modo che Windows 3.1 usa in enhanced mode, quindi va
-/// modellato fin dall'inizio anche se in real mode e' quasi sempre
-/// selettore*16.
+/// The hidden part of a segment register. On x86, loading a selector copies
+/// base, limit and access rights out of the descriptor into registers the
+/// program cannot see; from then on every access uses those cached values, not
+/// the selector. This is the mechanism behind "unreal mode" and behind the mode
+/// switches Windows 3.1 performs in enhanced mode, so it has to be modelled
+/// from the start even though in real mode the base is almost always just
+/// selector * 16.
 /// </summary>
 public struct SegmentCache
 {
     public ushort Selector;
     public uint Base;
-    /// <summary>Ultimo offset valido (non la dimensione): 0xFFFF in real mode.</summary>
+    /// <summary>Last valid offset (not the size): 0xFFFF in real mode.</summary>
     public uint Limit;
-    /// <summary>Operandi/indirizzi a 32 bit di default (bit D del descrittore).</summary>
+    /// <summary>32-bit operands/addresses by default (D bit of the descriptor).</summary>
     public bool Big;
     public bool Writable;
     public bool Readable;
-    /// <summary>Cresce verso il basso (stack segment expand-down).</summary>
+    /// <summary>Grows downwards (expand-down stack segment).</summary>
     public bool ExpandDown;
     /// <summary>Descriptor privilege level.</summary>
     public byte Dpl;
 }
 
 /// <summary>
-/// Stato architetturale del 386: registri, flag, segmenti, tabelle di
-/// descrittori e registri di controllo.
+/// Architectural state of the 386: registers, flags, segments, descriptor
+/// tables and control registers.
 /// </summary>
 public sealed class CpuState
 {
     /// <summary>
-    /// Registri generali a 32 bit. Sono tenuti come un array indicizzato
-    /// dall'encoding dell'opcode, cosi' la decodifica non ha bisogno di uno
-    /// switch. La sovrapposizione EAX/AX/AH/AL e' ottenuta mascherando questo
-    /// stesso valore: non esistono copie separate da mantenere sincronizzate.
+    /// The 32-bit general-purpose registers. They are kept as an array indexed
+    /// by the opcode's own encoding, so the decoder can index straight in
+    /// instead of switching on a register name. The EAX/AX/AH/AL overlap falls
+    /// out of masking this single value: there are no separate copies that
+    /// could drift out of sync.
     /// </summary>
     public readonly uint[] Gpr = new uint[8];
 
     public uint Eip;
 
-    /// <summary>Segmenti nell'ordine ES CS SS DS FS GS.</summary>
+    /// <summary>Segments in hardware order: ES CS SS DS FS GS.</summary>
     public readonly SegmentCache[] Segments = new SegmentCache[6];
 
-    // --- flag ---------------------------------------------------------------
-    // I flag aritmetici sono calcolati pigramente: memorizzare gli operandi e
-    // derivare i flag solo quando servono evita di calcolarne sei per ogni
-    // istruzione, quando la maggior parte non viene mai letta. Vedi FlagsCache.
+    // --- flags ---------------------------------------------------------------
+    // The arithmetic flags are computed lazily: storing the operands and
+    // deriving the flags only when someone reads them avoids computing six
+    // flags per instruction when most of them are never looked at. See
+    // LazyFlags.
     public Flags OtherFlags = Flags.Reserved1;
 
-    // --- registri di controllo ---------------------------------------------
+    // --- control registers ----------------------------------------------------
     public uint Cr0;
-    /// <summary>Indirizzo della page fault (CR2), scritto dall'eccezione 14.</summary>
+    /// <summary>Faulting linear address (CR2), written by exception 14.</summary>
     public uint Cr2;
-    /// <summary>Base della page directory.</summary>
+    /// <summary>Page directory base.</summary>
     public uint Cr3;
 
-    // --- tabelle di descrittori --------------------------------------------
+    // --- descriptor tables ----------------------------------------------------
     public uint GdtBase;
     public ushort GdtLimit;
     public uint IdtBase;
@@ -67,21 +69,21 @@ public sealed class CpuState
     public ushort Ldtr;
 
     /// <summary>
-    /// Base e limite della tabella locale, ricavati dal descrittore quando
-    /// LLDT carica il selettore: tenerli qui evita di rileggere la GDT a ogni
-    /// caricamento di segmento.
+    /// Base and limit of the local descriptor table, taken from the descriptor
+    /// when LLDT loads the selector. Caching them here saves re-reading the GDT
+    /// on every segment load.
     /// </summary>
     public uint LdtBase;
     public uint LdtLimit;
     public ushort TaskRegister;
 
-    /// <summary>Registri di debug DR0-DR7.</summary>
+    /// <summary>Debug registers DR0-DR7.</summary>
     public readonly uint[] Dr = new uint[8];
 
-    /// <summary>Halted da HLT: riprende alla prossima interruzione.</summary>
+    /// <summary>Halted by HLT: resumes on the next interrupt.</summary>
     public bool Halted;
 
-    // --- bit di CR0 ---------------------------------------------------------
+    // --- CR0 bits -------------------------------------------------------------
     public const uint Cr0ProtectionEnable = 1u << 0;
     public const uint Cr0MonitorCoprocessor = 1u << 1;
     public const uint Cr0Emulation = 1u << 2;
@@ -92,7 +94,7 @@ public sealed class CpuState
     public bool ProtectedMode => (Cr0 & Cr0ProtectionEnable) != 0;
     public bool PagingEnabled => (Cr0 & Cr0Paging) != 0;
 
-    // --- accesso ai registri generali ---------------------------------------
+    // --- general-purpose register access --------------------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public uint GetReg32(int index) => Gpr[index];
@@ -104,17 +106,17 @@ public sealed class CpuState
     public ushort GetReg16(int index) => (ushort)Gpr[index];
 
     /// <summary>
-    /// Scrive i 16 bit bassi preservando quelli alti: su x86 scrivere AX non
-    /// tocca la meta' alta di EAX (a differenza di x86-64, dove scrivere EAX
-    /// azzera i 32 bit alti di RAX).
+    /// Writes the low 16 bits while preserving the high ones: on x86 writing AX
+    /// leaves the top half of EAX alone (unlike x86-64, where writing EAX zeroes
+    /// the upper 32 bits of RAX).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SetReg16(int index, ushort value)
         => Gpr[index] = (Gpr[index] & 0xFFFF0000u) | value;
 
     /// <summary>
-    /// Legge un registro a 8 bit. Gli indici 0-3 sono i byte bassi di EAX..EBX,
-    /// 4-7 i byte alti degli stessi quattro registri.
+    /// Reads an 8-bit register. Indices 0-3 are the low bytes of EAX..EBX, 4-7
+    /// the high bytes of those same four registers.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public byte GetReg8(int index)
@@ -129,7 +131,7 @@ public sealed class CpuState
             Gpr[index - 4] = (Gpr[index - 4] & 0xFFFF00FFu) | ((uint)value << 8);
     }
 
-    // --- scorciatoie leggibili per i registri usati spesso -------------------
+    // --- readable shorthands for the registers used most often -----------------
 
     public uint Eax { get => Gpr[0]; set => Gpr[0] = value; }
     public uint Ecx { get => Gpr[1]; set => Gpr[1] = value; }
@@ -157,9 +159,9 @@ public sealed class CpuState
     public ref SegmentCache Gs => ref Segments[(int)SegReg.Gs];
 
     /// <summary>
-    /// Carica un segmento come farebbe il real mode: base = selettore * 16,
-    /// limite 64 KB, tutti i diritti. In protected mode il caricamento passa
-    /// invece per il descrittore nella GDT/LDT.
+    /// Loads a segment the way real mode does: base = selector * 16, and full
+    /// access rights. In protected mode the load goes through the descriptor in
+    /// the GDT/LDT instead.
     /// </summary>
     public void LoadSegmentRealMode(SegReg segment, ushort selector)
     {
@@ -167,13 +169,24 @@ public sealed class CpuState
         cache.Selector = selector;
         cache.Base = (uint)selector << 4;
 
-        // Il limite NON viene riportato a 64 KB: in real mode il processore
-        // ricalcola solo la base, e cio' che resta nella cache del descrittore
-        // sopravvive. E' quello che i gestori di memoria chiamano "unreal
-        // mode": entrano un istante in protected mode per caricare un limite
-        // di 4 GB, tornano indietro, e continuano a indirizzare oltre il
-        // megabyte con istruzioni normali. HIMEM.SYS ci copia la memoria
-        // estesa, e azzerare il limite qui gli fa fallire ogni scrittura.
+        // Note what is NOT reset here: the limit. A real-mode segment load
+        // recomputes only the base -- selector * 16 -- and leaves the rest of
+        // the hidden descriptor cache exactly as it was. Whatever limit was
+        // loaded from a real descriptor survives the trip back to real mode.
+        //
+        // That single omission is the whole of "unreal mode" (also called big
+        // real mode). A memory manager switches into protected mode for a few
+        // instructions, loads a descriptor with a 4 GB limit into DS or ES,
+        // switches back to real mode, and from then on addresses the entire
+        // 4 GB space with ordinary real-mode instructions: the base is small
+        // and recomputed from the selector, but the cached limit no longer
+        // stops at 0xFFFF, so offsets above 64 KB no longer fault.
+        //
+        // HIMEM.SYS copies extended memory this way, and so do most DOS
+        // extenders and games of the era. Resetting the limit to 0xFFFF here
+        // would look harmless and would make every one of those writes fail
+        // with #GP -- which is exactly why LoadSegmentRealModeReset exists as
+        // a separate entry point for RESET.
         cache.Big = false;
         cache.Readable = true;
         cache.Writable = true;
@@ -182,8 +195,8 @@ public sealed class CpuState
     }
 
     /// <summary>
-    /// Come sopra ma riportando anche il limite a 64 KB: serve al RESET e
-    /// ovunque si voglia uno stato di partenza pulito.
+    /// As above, but also forces the limit back to 64 KB: used by RESET and
+    /// anywhere else a genuinely clean starting state is wanted.
     /// </summary>
     public void LoadSegmentRealModeReset(SegReg segment, ushort selector)
     {
@@ -192,9 +205,10 @@ public sealed class CpuState
     }
 
     /// <summary>
-    /// Stato dopo un RESET, come da manuale Intel: CS:IP = F000:FFF0, che con
-    /// la base nascosta di CS a 0xFFFF0000 porta il primo fetch a 0xFFFFFFF0,
-    /// dove il chipset rimappa la ROM del BIOS.
+    /// The post-RESET state, straight out of the Intel manual: CS:IP =
+    /// F000:FFF0, which combined with the hidden CS base of 0xFFFF0000 sends
+    /// the very first fetch to 0xFFFFFFF0 -- the address at which the chipset
+    /// aliases the BIOS ROM.
     /// </summary>
     public void Reset()
     {
@@ -212,13 +226,16 @@ public sealed class CpuState
         for (int i = 0; i < Segments.Length; i++)
             LoadSegmentRealModeReset((SegReg)i, 0);
 
-        // CS ha un valore di reset particolare: selettore F000 ma base alta,
-        // cosi' il BIOS e' raggiungibile prima che venga caricato un descrittore.
+        // CS gets a peculiar reset value: selector F000 but a base up at the
+        // top of the address space, so the BIOS is reachable before any
+        // descriptor has ever been loaded. The first far jump the BIOS makes
+        // reloads CS normally and drops the base back down into the first
+        // megabyte.
         Cs.Selector = 0xF000;
         Cs.Base = 0xFFFF0000;
         Cs.Limit = 0xFFFF;
         Eip = 0xFFF0;
 
-        Edx = 0x00000308;   // signature del 386 DX step D
+        Edx = 0x00000308;   // 386 DX stepping D signature
     }
 }

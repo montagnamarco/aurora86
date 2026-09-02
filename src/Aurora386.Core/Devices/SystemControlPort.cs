@@ -4,20 +4,21 @@ using Aurora386.Core.Memory;
 namespace Aurora386.Core.Devices;
 
 /// <summary>
-/// Porta di controllo di sistema (0x92), introdotta con il PS/2.
+/// System control port (0x92), introduced with the PS/2.
 ///
-/// Controllare A20 attraverso il controller di tastiera richiede di attendere
-/// che il buffer si svuoti e costa migliaia di cicli; questa porta fa la
-/// stessa cosa con una singola scrittura, ed e' la via che DOS 6.22 e Windows
-/// usano davvero. Il bit 1 e' A20, il bit 0 provoca un reset del processore.
+/// Toggling A20 through the keyboard controller means polling until its input
+/// buffer drains and costs thousands of cycles -- an absurd price for
+/// flipping one address line. This port does the same job in a single OUT,
+/// and it is the route DOS 6.22 and Windows actually take. Bit 1 is A20,
+/// bit 0 triggers a fast CPU reset.
 /// </summary>
 public sealed class SystemControlPort : IIoDevice
 {
     private readonly PhysicalMemoryBus _memory;
-    // Il valore riflette lo stato della linea, che all'accensione e' spenta.
+    // Mirrors the last value written; A20 itself starts out disabled at power-on.
     private byte _value;
 
-    /// <summary>Richiesta di reset veloce del processore.</summary>
+    /// <summary>Set when a fast CPU reset has been requested.</summary>
     public bool ResetRequested { get; set; }
 
     public SystemControlPort(PhysicalMemoryBus memory) => _memory = memory;
@@ -26,8 +27,9 @@ public sealed class SystemControlPort : IIoDevice
 
     public byte ReadByte(ushort port)
     {
-        // Il bit 1 riporta lo stato effettivo della linea, che potrebbe essere
-        // stato cambiato dal controller di tastiera.
+        // Bit 1 reports the line's real state rather than what was last
+        // written here, since the keyboard controller may have changed it
+        // behind our back.
         return (byte)((_value & ~0x02) | (_memory.A20Enabled ? 0x02 : 0x00));
     }
 
@@ -37,8 +39,9 @@ public sealed class SystemControlPort : IIoDevice
 
         _memory.A20Enabled = (value & 0x02) != 0;
 
-        // Il bit 0 e' il reset veloce: si attiva scrivendo 1, non 0 come nel
-        // controller di tastiera.
+        // Bit 0 is the fast reset, and note the inverted sense compared to
+        // the keyboard controller's output port: here a 1 triggers it, there
+        // it was a 0.
         if ((value & 0x01) != 0) ResetRequested = true;
     }
 }

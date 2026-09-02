@@ -3,27 +3,29 @@ namespace Aurora386.Core.Cpu;
 public sealed partial class Cpu
 {
     /// <summary>
-    /// Errore di divisione. Come per AAM, il 386 azzera i flag aritmetici
-    /// prima di accorgersi che il risultato non ci sta: il gestore di #DE
-    /// trova quello stato nei flag impilati.
+    /// Divide error. As with AAM, the 386 clears part of the arithmetic flags
+    /// before it discovers that the result will not fit, so the #DE handler
+    /// finds that state in the flags pushed onto its stack frame.
     /// </summary>
     private CpuException ErroreDivisione()
     {
-        // Solo overflow e zero risultano azzerati in modo ripetibile sul
-        // ferro: carry, parita', ausiliario e segno dipendono da quanti passi
-        // la divisione aveva gia' compiuto, e non sono riproducibili.
+        // Only overflow and zero come out cleared repeatably on real silicon.
+        // Carry, parity, auxiliary and sign depend on how many steps of the
+        // internal division had already been performed when the error was
+        // detected, and are not reproducible, so we leave them alone rather
+        // than inventing values.
         Flags.Overflow = false;
         Flags.Zero = false;
         return new CpuException(0);
     }
 
-    // I "gruppi" sono opcode il cui campo reg del ModR/M non seleziona un
-    // registro ma estende l'opcode stesso: un solo byte copre otto istruzioni
-    // diverse. E' il modo in cui x86 ha fatto stare piu' istruzioni di quante
-    // ne entrassero in 256 opcode.
+    // The "groups" are opcodes whose ModR/M reg field does not select a
+    // register but extends the opcode itself: a single byte then covers eight
+    // different instructions. It is how x86 fitted more instructions into the
+    // encoding than 256 opcodes could ever hold.
 
     /// <summary>
-    /// Gruppo 3 a 8 bit (0xF6): TEST, NOT, NEG, MUL, IMUL, DIV, IDIV.
+    /// Group 3 at 8 bits (0xF6): TEST, NOT, NEG, MUL, IMUL, DIV, IDIV.
     /// </summary>
     private void Group3Byte()
     {
@@ -33,11 +35,11 @@ public sealed partial class Cpu
         switch (m.Reg)
         {
             case 0:
-            case 1:   // TEST r/m8, imm8 -- il reg 1 e' un alias non documentato
+            case 1:   // TEST r/m8, imm8 -- reg 1 is an undocumented alias
                 SetLogicFlags8((byte)(value & FetchByte()));
                 return;
 
-            case 2:   // NOT: nessun flag toccato
+            case 2:   // NOT: touches no flags at all
                 WriteRm8(m, (byte)~value);
                 return;
 
@@ -53,37 +55,38 @@ public sealed partial class Cpu
             {
                 ushort result = (ushort)(State.GetReg8(0) * value);
                 State.Ax = result;
-                // CF e OF segnalano che la meta' alta non e' vuota, cioe' che
-                // il risultato non sta in 8 bit.
+                // CF and OF report that the high half is not empty, i.e. that
+                // the result did not fit in 8 bits and AH must be looked at.
                 Flags.Set(FlagOp.Mul, 0, (uint)(result > 0xFF ? 1 : 0), result, 8);
                 return;
             }
 
-            case 5:   // IMUL con segno
+            case 5:   // signed IMUL
             {
                 short result = (short)((sbyte)State.GetReg8(0) * (sbyte)value);
                 State.Ax = (ushort)result;
-                // Per IMUL il criterio e' se il risultato entra nella meta'
-                // bassa una volta esteso di segno.
+                // For IMUL the test is whether the result still fits in the low
+                // half once sign-extended -- the high half being non-zero is
+                // perfectly normal for a negative product.
                 bool overflow = result != (sbyte)result;
                 Flags.Set(FlagOp.Imul, 0, (uint)(overflow ? 1 : 0), (uint)result, 8);
                 return;
             }
 
-            case 6:   // DIV senza segno
+            case 6:   // unsigned DIV
             {
                 if (value == 0) throw ErroreDivisione();
                 ushort dividend = State.Ax;
                 uint quotient = (uint)(dividend / value);
-                // Un quoziente che non entra in 8 bit e' un errore di divisione,
-                // non un risultato troncato: sul ferro reale genera l'eccezione 0.
+                // A quotient that will not fit in 8 bits is a divide error, not
+                // a truncated result: real hardware raises exception 0.
                 if (quotient > 0xFF) throw ErroreDivisione();
-                State.SetReg8(0, (byte)quotient);            // AL = quoziente
-                State.SetReg8(4, (byte)(dividend % value));   // AH = resto
+                State.SetReg8(0, (byte)quotient);            // AL = quotient
+                State.SetReg8(4, (byte)(dividend % value));   // AH = remainder
                 return;
             }
 
-            default:  // IDIV con segno
+            default:  // signed IDIV
             {
                 if (value == 0) throw ErroreDivisione();
                 short dividend = (short)State.Ax;
@@ -98,8 +101,8 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Gruppo 3 alla dimensione corrente (0xF7). Le versioni a 16 e 32 bit
-    /// usano DX:AX e EDX:EAX come coppia per prodotto e dividendo.
+    /// Group 3 at the current operand size (0xF7). The 16- and 32-bit forms use
+    /// DX:AX and EDX:EAX as a register pair for the product and the dividend.
     /// </summary>
     private void Group3Word()
     {
@@ -214,7 +217,7 @@ public sealed partial class Cpu
         }
     }
 
-    /// <summary>Gruppo 4 (0xFE): INC/DEC su un byte.</summary>
+    /// <summary>Group 4 (0xFE): INC/DEC on a byte.</summary>
     private void Group4()
     {
         var m = DecodeModRm();
@@ -242,9 +245,9 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Gruppo 5 (0xFF): INC, DEC, CALL, CALL far, JMP, JMP far, PUSH.
-    /// E' il gruppo che rende possibili le chiamate indirette, quindi tutto il
-    /// codice che passa per puntatori a funzione e tabelle di salto.
+    /// Group 5 (0xFF): INC, DEC, CALL, far CALL, JMP, far JMP, PUSH.
+    /// This is the group that makes indirect calls possible, and therefore all
+    /// the code that goes through function pointers and jump tables.
     /// </summary>
     private void Group5()
     {
@@ -268,14 +271,14 @@ public sealed partial class Cpu
                 WriteRm(m, result);
                 return;
             }
-            case 2:   // CALL indiretta vicina
+            case 2:   // indirect near CALL
             {
                 uint target = ReadRm(m);
                 PushOperand(State.Eip);
                 State.Eip = OperandSize32 ? target : target & 0xFFFF;
                 return;
             }
-            case 3:   // CALL indiretta lontana: l'operando e' offset:segmento
+            case 3:   // indirect far CALL: the operand is offset:segment
             {
                 if (m.IsRegister) throw new CpuException(6);
                 uint offset = ReadMemOperand(m.Segment, m.Offset);
@@ -286,13 +289,13 @@ public sealed partial class Cpu
                 State.Eip = OperandSize32 ? offset : offset & 0xFFFF;
                 return;
             }
-            case 4:   // JMP indiretto vicino
+            case 4:   // indirect near JMP
             {
                 uint target = ReadRm(m);
                 State.Eip = OperandSize32 ? target : target & 0xFFFF;
                 return;
             }
-            case 5:   // JMP indiretto lontano
+            case 5:   // indirect far JMP
             {
                 if (m.IsRegister) throw new CpuException(6);
                 uint offset = ReadMemOperand(m.Segment, m.Offset);

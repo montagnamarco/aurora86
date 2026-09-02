@@ -5,11 +5,11 @@ using Aurora386.Core.Memory;
 namespace Aurora386.Core.Cpu;
 
 /// <summary>
-/// Interprete del 80386.
+/// The 80386 interpreter.
 ///
-/// Questa parte contiene lo stato, il fetch e la traduzione degli indirizzi;
-/// la decodifica ModR/M e l'esecuzione degli opcode stanno nei file parziali
-/// Cpu.ModRm.cs e Cpu.Execute.cs.
+/// This part holds the architectural state, the instruction fetch and address
+/// translation; ModR/M decoding and opcode execution live in the partial files
+/// Cpu.ModRm.cs and Cpu.Execute.cs.
 /// </summary>
 public sealed partial class Cpu
 {
@@ -19,38 +19,39 @@ public sealed partial class Cpu
     private readonly PhysicalMemoryBus _memory;
     private readonly IoBus _io;
 
-    /// <summary>Prefissi dell'istruzione in corso di decodifica.</summary>
+    /// <summary>Prefixes of the instruction currently being decoded.</summary>
     private Prefixes _prefixes;
 
     /// <summary>
-    /// EIP dell'istruzione corrente, salvato prima del fetch. Serve a
-    /// riavviarla da capo quando un'eccezione la interrompe a meta' (una page
-    /// fault deve poter essere gestita e l'istruzione ripetuta).
+    /// EIP of the current instruction, saved before the fetch. It lets us
+    /// restart the instruction from the top when an exception cuts it short
+    /// halfway: a page fault has to be serviceable and the instruction then
+    /// replayed, which only works if we know where it began.
     /// </summary>
     private uint _instructionStart;
 
-    /// <summary>Cicli consumati, usati dai timer per restare in passo.</summary>
+    /// <summary>Cycles consumed, used by the timers to keep in step.</summary>
     public long Cycles { get; private set; }
 
     /// <summary>
-    /// Controller di interruzioni. Se assente la CPU non riceve interruzioni
-    /// hardware, il che va bene per i test ma non per una macchina completa.
+    /// The interrupt controller. Without one the CPU never sees a hardware
+    /// interrupt, which is fine for unit tests but not for a whole machine.
     /// </summary>
     public Devices.InterruptController? Interrupts { get; set; }
 
     /// <summary>
-    /// STI non abilita le interruzioni sull'istante: la finestra si apre dopo
-    /// l'istruzione successiva. E' cio' che rende atomica la sequenza
-    /// "STI; HLT" -- senza questo ritardo un'interruzione potrebbe arrivare
-    /// fra le due e il HLT non verrebbe mai risvegliato.
+    /// STI does not enable interrupts on the spot: the window opens only after
+    /// the following instruction has retired. That one-instruction delay is
+    /// what makes the "STI; HLT" idiom atomic -- without it an interrupt could
+    /// slip in between the two, and the HLT would then never be woken up.
     /// </summary>
     private bool _interruptShadow;
 
     public Cpu(PhysicalMemoryBus memory, IoBus? io = null)
     {
         _memory = memory;
-        // Senza dispositivi collegati ogni porta legge 0xFF, che e' anche il
-        // comportamento di un PC reale con uno slot vuoto.
+        // With no devices attached every port reads back 0xFF, which is also
+        // what a real PC returns for an empty slot.
         _io = io ?? new IoBus();
         Reset();
     }
@@ -64,10 +65,10 @@ public sealed partial class Cpu
         Cycles = 0;
     }
 
-    // --- dimensioni effettive di operandi e indirizzi ------------------------
-    // Il bit D del descrittore di CS fissa il default (16 bit in real mode e nei
-    // segmenti a 16 bit, 32 nei segmenti a 32); i prefissi 0x66/0x67 lo invertono
-    // per la singola istruzione.
+    // --- effective operand and address sizes ---------------------------------
+    // The D bit of the CS descriptor sets the default (16-bit in real mode and
+    // in 16-bit segments, 32-bit in 32-bit ones); the 0x66/0x67 prefixes flip
+    // it for a single instruction.
 
     private bool OperandSize32
     {
@@ -81,11 +82,11 @@ public sealed partial class Cpu
         get => State.Cs.Big ^ _prefixes.AddressSize;
     }
 
-    // --- traduzione degli indirizzi -----------------------------------------
+    // --- address translation --------------------------------------------------
 
     /// <summary>
-    /// Converte un indirizzo logico (segmento:offset) in lineare. Con il paging
-    /// attivo la traduzione da lineare a fisico avviene poi in
+    /// Turns a logical address (segment:offset) into a linear one. When paging
+    /// is on, the linear-to-physical step happens afterwards in
     /// <see cref="TranslateLinear"/>.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -93,9 +94,10 @@ public sealed partial class Cpu
         => State.Segments[(int)segment].Base + offset;
 
     /// <summary>
-    /// Traduce lineare -> fisico. Senza paging e' l'identita'; con il paging
-    /// attivo passa per la page directory. Il TLB verra' aggiunto insieme al
-    /// protected mode: finche' si esegue in real mode questa e' una identita'.
+    /// Linear -> physical. With paging off it is the identity; with paging on
+    /// it walks the page directory. A TLB will arrive together with full
+    /// protected mode support: as long as we run in real mode this is just the
+    /// identity function.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint TranslateLinear(uint linear, bool write)
@@ -104,37 +106,41 @@ public sealed partial class Cpu
         return TranslatePaged(linear, write);
     }
 
-    // --- accessi alla memoria ------------------------------------------------
+    // --- memory accesses ------------------------------------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private byte ReadMem8(SegReg segment, uint offset)
     {
-        // Anche l'accesso a un solo byte deve stare dentro il limite: con
-        // indirizzi a 32 bit un offset negativo diventa un valore enorme e
-        // deve produrre #GP invece di leggere memoria a caso.
+        // Even a single-byte access has to fall inside the segment limit: with
+        // 32-bit addressing a "negative" offset becomes a huge unsigned value,
+        // and that must raise #GP rather than quietly read some unrelated part
+        // of memory.
         CheckLimit(segment, offset, 1);
         return _memory.ReadByte(TranslateLinear(LinearAddress(segment, offset), false));
     }
 
     /// <summary>
-    /// Un accesso multi-byte non puo' oltrepassare il limite del segmento:
-    /// una word a offset FFFF non avvolge a 0000, genera una eccezione di
-    /// protezione. Verificato sui test SingleStepTests generati da un 386
-    /// reale: ogni accesso a cavallo del limite produce #GP, mai un wrap.
+    /// A multi-byte access may not straddle the segment limit: a word at offset
+    /// FFFF does not wrap around to 0000, it raises a protection fault instead.
+    /// Confirmed against the SingleStepTests suite generated on a real 386:
+    /// every access crossing the limit produces #GP, never a wrap.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CheckLimit(SegReg segment, uint offset, uint size)
     {
         ref SegmentCache seg = ref State.Segments[(int)segment];
-        // La somma va fatta a 64 bit: con offset prossimo a FFFFFFFF
-        // traboccherebbe tornando a un valore piccolo, e un accesso ben oltre
-        // il limite passerebbe per valido.
+        // The sum is deliberately computed in 64 bits. Done in 32 bits it
+        // would wrap: an offset near 0xFFFFFFFF plus a size of 4 comes back
+        // around to a small number, which compares below any plausible limit,
+        // so an access far past the end of the segment would sail through as
+        // valid. Widening to ulong is the cheapest way to make the overflow
+        // impossible rather than merely unlikely.
         if ((ulong)offset + size - 1 <= seg.Limit) return;
 
-        // Sforare il limite dello stack e' una condizione a se': il processore
-        // la segnala con #SS invece che con la protezione generale, perche' il
-        // gestore deve poter distinguere uno stack esaurito da un puntatore
-        // sbagliato.
+        // Running off the end of the stack is its own condition: the processor
+        // reports it with #SS rather than a general protection fault, so that
+        // the handler can tell an exhausted stack apart from a stray pointer
+        // and, if it wants to, grow the stack and retry.
         throw new CpuException(segment == SegReg.Ss ? (byte)12 : (byte)13, 0);
     }
 
@@ -148,9 +154,10 @@ public sealed partial class Cpu
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint ReadMem32(SegReg segment, uint offset)
     {
-        // Un accesso a 32 bit che sfora il limite del segmento non avvolge:
-        // il 386 lo rifiuta con #GP esattamente come fa per le word. Lo
-        // confermano i test generati da hardware sugli opcode con prefisso 66.
+        // A 32-bit access that overruns the segment limit does not wrap
+        // either: the 386 rejects it with #GP exactly as it does for words.
+        // The hardware-generated tests for the 0x66-prefixed opcodes confirm
+        // this.
         CheckLimit(segment, offset, 4);
         return _memory.ReadDword(TranslateLinear(LinearAddress(segment, offset), false));
     }
@@ -176,7 +183,7 @@ public sealed partial class Cpu
         _memory.WriteDword(TranslateLinear(LinearAddress(segment, offset), true), value);
     }
 
-    // --- fetch del flusso di istruzioni --------------------------------------
+    // --- instruction stream fetch ---------------------------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private byte FetchByte()
@@ -202,14 +209,15 @@ public sealed partial class Cpu
         return value;
     }
 
-    /// <summary>Immediato della dimensione corrente degli operandi.</summary>
+    /// <summary>Immediate at the current operand size.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint FetchImmediate() => OperandSize32 ? FetchDword() : FetchWord();
 
-    // --- stack ----------------------------------------------------------------
-    // La larghezza dello stack dipende dal bit B di SS, non dalla dimensione
-    // degli operandi: un segmento di stack a 16 bit usa SP anche mentre si
-    // eseguono istruzioni a 32 bit.
+    // --- stack -----------------------------------------------------------------
+    // The width of the stack follows the B bit of SS, not the operand size: a
+    // 16-bit stack segment keeps using SP even while 32-bit instructions are
+    // executing. Mixing the two up is a classic source of "the return address
+    // landed two bytes off" bugs.
 
     private void Push16(ushort value)
     {
@@ -234,8 +242,9 @@ public sealed partial class Cpu
         }
         else
         {
-            // Come per la pop, con stack a 16 bit la scrittura si spezza in
-            // due word che avvolgono ciascuna dentro il segmento.
+            // As with the pop, on a 16-bit stack the write splits into two
+            // word accesses, each of which wraps within the segment rather
+            // than running past its end.
             State.Sp -= 4;
             WriteMem16(SegReg.Ss, State.Sp, (ushort)value);
             WriteMem16(SegReg.Ss, (uint)(ushort)(State.Sp + 2), (ushort)(value >> 16));
@@ -275,11 +284,11 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Pop a 32 bit che avvolge invece di sforare. La usano solo le POP di un
-    /// registro di segmento: di quei quattro byte il processore ne consuma due
-    /// soli, e i due accessi avvolgono ciascuno dentro il segmento invece di
-    /// far fallire l'istruzione. Le pop ordinarie e le istruzioni che leggono
-    /// un blocco intero rifiutano l'accesso, come tutti gli altri operandi.
+    /// A 32-bit pop that wraps instead of overrunning. Only the segment
+    /// register POPs use it: of those four bytes the processor keeps just two,
+    /// and the two word accesses each wrap inside the segment rather than
+    /// faulting the instruction. Ordinary pops, and the instructions that read
+    /// a whole block at once, reject the access like any other operand.
     /// </summary>
     private uint PopSegmentOperand()
     {
@@ -293,43 +302,44 @@ public sealed partial class Cpu
         return low | (high << 16);
     }
 
-    // --- accesso pubblico per gli handler nativi -----------------------------
-    // Le funzioni BIOS realizzate in C# hanno bisogno di leggere e scrivere
-    // memoria come le vedrebbe il programma chiamante, cioe' attraverso i
-    // segmenti e la traduzione degli indirizzi.
+    // --- public access for the native handlers --------------------------------
+    // The BIOS functions written in C# need to read and write memory the way
+    // the calling program sees it, that is through the segments and the same
+    // address translation.
 
     public byte ReadMemoryByte(SegReg segment, uint offset) => ReadMem8(segment, offset);
     public ushort ReadMemoryWord(SegReg segment, uint offset) => ReadMem16(segment, offset);
     public void WriteMemoryByte(SegReg segment, uint offset, byte value) => WriteMem8(segment, offset, value);
     public void WriteMemoryWord(SegReg segment, uint offset, ushort value) => WriteMem16(segment, offset, value);
 
-    /// <summary>Memoria fisica, per gli accessi che non passano per i segmenti.</summary>
+    /// <summary>Physical memory, for accesses that bypass the segments.</summary>
     public PhysicalMemoryBus Memory => _memory;
 
-    /// <summary>Spazio di I/O, per i dispositivi.</summary>
+    /// <summary>The I/O space, for the devices.</summary>
     public IoBus Io => _io;
 
     /// <summary>
-    /// Imposta un segmento come farebbe il codice emulato. In real mode e'
-    /// base = selettore * 16.
+    /// Loads a segment register the way emulated code would. In real mode that
+    /// means base = selector * 16.
     /// </summary>
     public void SetSegment(SegReg segment, ushort selector) => LoadSegment(segment, selector);
 
     /// <summary>
-    /// Ritorna da una interruzione, come farebbe IRET. Gli handler nativi la
-    /// usano per concludere una funzione BIOS.
+    /// Returns from an interrupt, as IRET would. The native handlers call it to
+    /// finish off a BIOS function.
     /// </summary>
     public void ReturnFromInterrupt() => Iret();
 
     /// <summary>
-    /// Imposta il carry nei flag salvati sullo stack da una INT. Le funzioni
-    /// BIOS segnalano gli errori con il carry, ma quello attuale verrebbe
-    /// sovrascritto dall'IRET: va modificato dove e' stato impilato.
+    /// Sets the carry flag in the FLAGS image that an INT pushed on the stack.
+    /// BIOS functions report failure through CF, but writing the live flag
+    /// would achieve nothing: the IRET is about to overwrite EFLAGS from the
+    /// stack, so the copy on the stack is what has to be patched.
     /// </summary>
     public void SetCarryInStackedFlags(bool carry)
     {
-        // Dopo una INT in real mode lo stack contiene IP, CS, FLAGS in
-        // quest'ordine: i flag stanno quattro byte sopra la cima.
+        // After a real-mode INT the stack holds IP, CS, FLAGS in that order,
+        // so the flags sit four bytes above the top of the stack.
         uint stackPointer = State.Ss.Big ? State.Esp : State.Sp;
         ushort flags = ReadMem16(SegReg.Ss, stackPointer + 4);
         flags = carry ? (ushort)(flags | 1) : (ushort)(flags & ~1);

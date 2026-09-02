@@ -1,28 +1,42 @@
 namespace Aurora386.Core.Devices.Video;
 
 /// <summary>
-/// Converte la memoria video in un framebuffer di pixel RGBA pronto per essere
-/// caricato come texture.
+/// Converts video memory into an RGBA framebuffer ready to be uploaded as a
+/// texture.
 ///
-/// Il rendering avviene per righe di caratteri e solo su quelle marcate come
-/// modificate: un prompt DOS cambia poche celle per volta, e riconvertire
-/// 80x25 caratteri a ogni fotogramma sarebbe lavoro quasi tutto sprecato.
+/// Rendering works a character row at a time, and only on rows the VGA memory
+/// has flagged as dirty. This matters more than it might seem: a DOS prompt
+/// changes a handful of cells between frames, so redrawing all 2000 cells at
+/// 60 fps would mean expanding roughly a million glyph pixels per second to
+/// produce a screen that is 99% identical to the last one. Tracking dirty
+/// rows turns the steady-state cost of a mostly-static screen into almost
+/// nothing, and the cursor row is the one exception that must be redrawn
+/// unconditionally because it blinks without memory ever changing.
+///
+/// One caveat about geometry. In 80x25 text this produces a 640x400
+/// framebuffer, because the character cell is 8x16. A real VGA does not emit
+/// 640x400 at the monitor: it doubles each scanline and sends 640x480, giving
+/// pixels that are visibly taller than they are wide. Presenting our
+/// framebuffer 1:1 therefore squashes every character to about 83% of its
+/// correct height, and text that should look like a period PC instead looks
+/// subtly wrong. The frontend is responsible for stretching the output back
+/// to a 4:3 aspect rather than blitting it pixel-for-pixel.
 /// </summary>
 public sealed class VgaRenderer
 {
     private readonly VgaMemory _memory;
     private readonly VgaRegisters _registers;
 
-    /// <summary>Pixel in formato RGBA, quattro byte per pixel.</summary>
+    /// <summary>Pixels in RGBA order, four bytes each.</summary>
     private uint[] _framebuffer;
 
     public int Width { get; private set; }
     public int Height { get; private set; }
 
-    /// <summary>Fotogrammi disegnati, per diagnostica.</summary>
+    /// <summary>Frames actually redrawn, for diagnostics.</summary>
     public long FramesRendered { get; private set; }
 
-    /// <summary>Stato lampeggiante del cursore, alternato dal chiamante.</summary>
+    /// <summary>Cursor blink phase; the caller toggles it on a timer.</summary>
     public bool CursorBlinkOn { get; set; } = true;
 
     public VgaRenderer(VgaMemory memory, VgaRegisters registers)
@@ -52,8 +66,8 @@ public sealed class VgaRenderer
     }
 
     /// <summary>
-    /// Aggiorna il framebuffer. Ritorna true se qualcosa e' cambiato, cosi'
-    /// il chiamante puo' evitare di ricaricare la texture inutilmente.
+    /// Refreshes the framebuffer. Returns true when something actually
+    /// changed, so the caller can skip re-uploading an identical texture.
     /// </summary>
     public bool Render(bool force = false)
     {
@@ -78,8 +92,8 @@ public sealed class VgaRenderer
 
         for (int row = 0; row < rows; row++)
         {
-            // La riga del cursore va ridisegnata comunque: il cursore lampeggia
-            // senza che la memoria cambi.
+            // The cursor's row is always redrawn: it blinks on a timer, and
+            // no write to video memory would ever mark that row dirty.
             bool hasCursor = row == cursorRow && _registers.CursorVisible;
             if (!force && !_memory.IsRowDirty(row) && !hasCursor) continue;
 
@@ -87,13 +101,16 @@ public sealed class VgaRenderer
             {
                 uint offset = baseOffset + (uint)((row * columns + column) * 2);
 
-                // Ogni cella di testo e' due byte: carattere e attributo.
+                // Each text cell is two bytes: the character code and its
+                // attribute byte.
                 byte character = _memory[offset];
                 byte attribute = _memory[offset + 1];
 
-                // L'attributo impacchetta due colori: i quattro bit bassi il
-                // primo piano, i tre successivi lo sfondo. Il bit 7 e' il
-                // lampeggio, che qui viene reso come sfondo intenso.
+                // The attribute byte packs two colours: the low four bits are
+                // the foreground, the next three the background. Bit 7 is the
+                // blink flag on real hardware; we render it as an intense
+                // background instead, which is the same choice the VGA makes
+                // when blinking is disabled in the attribute controller.
                 int foreground = attribute & 0x0F;
                 int background = (attribute >> 4) & 0x07;
 
@@ -120,7 +137,7 @@ public sealed class VgaRenderer
 
             for (int x = 0; x < VgaFont.CharWidth; x++)
             {
-                // Il bit piu' significativo e' il pixel piu' a sinistra.
+                // The most significant bit is the leftmost pixel.
                 bool on = (bits & (0x80 >> x)) != 0;
                 _framebuffer[destination + x] = on ? foregroundColor : backgroundColor;
             }
@@ -128,8 +145,8 @@ public sealed class VgaRenderer
 
         if (!drawCursor) return;
 
-        // Il cursore e' un blocco pieno sulle ultime due righe della cella,
-        // disegnato invertendo i colori.
+        // The cursor is a solid block on the last couple of scanlines of the
+        // cell, drawn in the foreground colour -- the familiar DOS underline.
         for (int y = VgaFont.CharHeight - 3; y < VgaFont.CharHeight - 1; y++)
         {
             int destination = (originY + y) * Width + originX;
@@ -139,17 +156,20 @@ public sealed class VgaRenderer
     }
 
     /// <summary>
-    /// Modalita' grafiche. Per ora e' implementata la 13h (320x200 a 256
-    /// colori), che e' lineare e quindi diretta da convertire; le modalita' a
-    /// piani (EGA e SVGA) richiedono la logica dei quattro piani e arriveranno
-    /// con il resto del supporto SVGA.
+    /// Graphics modes. Only mode 13h (320x200 in 256 colours) is implemented
+    /// so far, because it is the one linear mode: one byte per pixel, laid out
+    /// left to right and top to bottom, so conversion is a straight lookup.
+    /// The planar EGA modes need the four-plane read/write logic of the
+    /// graphics controller and will arrive along with the rest of the SVGA
+    /// support.
     /// </summary>
     private void RenderGraphics()
     {
         if (_registers.VideoMode != 0x13)
         {
-            // Modalita' non ancora supportata: schermo nero invece di
-            // interpretare male la memoria e mostrare rumore.
+            // Unsupported mode: show a black screen rather than
+            // misinterpreting the memory layout and displaying noise, which
+            // would look like a much deeper bug than it is.
             Array.Clear(_framebuffer);
             return;
         }
@@ -164,7 +184,7 @@ public sealed class VgaRenderer
             _framebuffer = new uint[Width * Height];
         }
 
-        // Nel modo 13h ogni byte e' un pixel, indice nella tavolozza.
+        // In mode 13h every byte is one pixel: an index into the palette.
         for (int i = 0; i < graphicsWidth * graphicsHeight; i++)
             _framebuffer[i] = ToRgba(_registers.GetPaletteColor(_memory[(uint)i]));
     }

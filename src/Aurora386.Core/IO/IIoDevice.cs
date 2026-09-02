@@ -1,8 +1,10 @@
 namespace Aurora386.Core.IO;
 
 /// <summary>
-/// Dispositivo collegato allo spazio di I/O, separato da quello di memoria.
-/// Il PC usa le porte per parlare con timer, tastiera, video e schede sonore.
+/// A device attached to the I/O address space, which on x86 is entirely
+/// separate from the memory address space and reached with IN and OUT rather
+/// than ordinary loads and stores. The PC talks to its timer, keyboard, video
+/// adapter and sound cards through these ports.
 /// </summary>
 public interface IIoDevice
 {
@@ -10,9 +12,9 @@ public interface IIoDevice
     void WriteByte(ushort port, byte value);
 
     /// <summary>
-    /// Accessi a 16 bit. Molti dispositivi hanno registri a coppie e vanno
-    /// serviti come due byte; quelli che hanno registri a 16 bit veri
-    /// sovrascrivono questi metodi.
+    /// 16-bit accesses. Most devices expose pairs of 8-bit registers and are
+    /// correctly served as two byte accesses; those with genuinely 16-bit
+    /// registers override these.
     /// </summary>
     ushort ReadWord(ushort port) => (ushort)(ReadByte(port) | (ReadByte((ushort)(port + 1)) << 8));
 
@@ -24,10 +26,10 @@ public interface IIoDevice
 }
 
 /// <summary>
-/// Spazio di I/O: 65536 porte, ciascuna assegnabile a un dispositivo.
-/// Le porte non assegnate leggono 0xFF, come un bus senza nulla collegato --
-/// e' il valore che il software dell'epoca usa per accorgersi che una scheda
-/// non c'e'.
+/// The I/O address space: 65536 ports, each assignable to a device.
+/// Unassigned ports read back 0xFF, which is what an idle bus with nothing
+/// driving it looks like -- and precisely the value period software probes
+/// for when it wants to know whether a card is fitted.
 /// </summary>
 public sealed class IoBus
 {

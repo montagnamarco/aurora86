@@ -3,15 +3,16 @@ namespace Aurora386.Core.Cpu;
 public sealed partial class Cpu
 {
     /// <summary>
-    /// Traduzione lineare -> fisico attraverso la page directory del 386.
+    /// Linear -> physical translation through the 386's page directory.
     ///
-    /// Struttura a due livelli: i 10 bit alti indicizzano la directory, i 10
-    /// successivi la tabella, i 12 bassi sono l'offset nella pagina.
+    /// Two levels: the top 10 bits index the directory, the next 10 index the
+    /// page table, and the low 12 are the offset within the 4 KB page.
     ///
-    /// Non c'e' ancora un TLB: ogni accesso costa due letture di memoria. Va
-    /// bene finche' il paging non e' il percorso caldo (in real mode non viene
-    /// mai chiamata), ma andra' aggiunto insieme al protected mode, perche'
-    /// Windows 3.1 in enhanced mode passa da qui a ogni singolo accesso.
+    /// There is no TLB yet, so every access costs two extra memory reads. That
+    /// is acceptable while paging is off the hot path (in real mode this is
+    /// never called at all), but a TLB will have to arrive alongside full
+    /// protected mode support: Windows 3.1 in enhanced mode comes through here
+    /// on every single memory access.
     /// </summary>
     private uint TranslatePaged(uint linear, bool write)
     {
@@ -27,8 +28,9 @@ public sealed partial class Cpu
         if ((tableEntry & PagePresent) == 0)
             throw new PageFaultException(linear, write, present: false);
 
-        // I bit di accesso e scrittura vanno aggiornati sul ferro reale: i
-        // sistemi operativi li usano per decidere cosa scaricare su disco.
+        // The accessed and dirty bits have to be written back the way real
+        // hardware does: operating systems read them to decide which pages are
+        // worth evicting and which ones must be written out to swap first.
         uint updated = tableEntry | PageAccessed | (write ? PageDirty : 0);
         if (updated != tableEntry)
             _memory.WriteDword((directoryEntry & 0xFFFFF000) + tableIndex * 4, updated);
@@ -44,11 +46,11 @@ public sealed partial class Cpu
 }
 
 /// <summary>
-/// Page fault (eccezione 14). Porta con se' l'indirizzo che l'ha causata, che
-/// il gestore leggera' da CR2.
+/// A page fault (exception 14). It carries the address that caused it, which
+/// the handler will go on to read from CR2.
 /// </summary>
 public sealed class PageFaultException(uint linearAddress, bool write, bool present)
-    : Exception($"Page fault a 0x{linearAddress:X8}")
+    : Exception($"Page fault at 0x{linearAddress:X8}")
 {
     public uint LinearAddress { get; } = linearAddress;
     public bool Write { get; } = write;

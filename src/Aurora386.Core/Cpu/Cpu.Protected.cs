@@ -2,23 +2,25 @@ namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu
 {
-    // Protected mode. Per ora e' implementata la parte che serve a far girare
-    // i gestori di memoria estesa come HIMEM.SYS: passano in protected mode
-    // solo per copiare blocchi sopra il megabyte e tornano subito indietro,
-    // quindi servono i descrittori di segmento ma non i cambi di privilegio,
-    // i task gate o le porte di chiamata.
+    // Protected mode. What is implemented so far is the slice needed to run
+    // extended memory managers such as HIMEM.SYS: they enter protected mode
+    // only to copy blocks above the one-megabyte line and drop straight back
+    // out, so they need segment descriptors but never privilege transitions,
+    // task gates or call gates.
 
     /// <summary>
-    /// Carica un registro di segmento leggendo il descrittore dalla GDT o
-    /// dalla LDT. Il selettore e' diviso in indice (bit 15-3), tabella
-    /// (bit 2) e livello di privilegio richiesto (bit 1-0).
+    /// Loads a segment register by reading its descriptor out of the GDT or the
+    /// LDT. The selector splits into an index (bits 15-3), a table bit (bit 2)
+    /// and the requested privilege level (bits 1-0).
     /// </summary>
     private void LoadSegmentProtected(SegReg segment, ushort selector)
     {
         ref SegmentCache cache = ref State.Segments[(int)segment];
 
-        // Il selettore nullo si puo' caricare nei segmenti dati: rende il
-        // registro inutilizzabile ma non e' un errore. In CS o SS invece si'.
+        // The null selector may legitimately be loaded into a data segment
+        // register: it makes the register unusable, but loading it is not an
+        // error -- operating systems use it to make sure stale descriptors
+        // cannot be dereferenced by accident. Into CS or SS it is an error.
         if ((selector & 0xFFFC) == 0)
         {
             if (segment is SegReg.Cs or SegReg.Ss)
@@ -33,8 +35,10 @@ public sealed partial class Cpu
 
         ulong descrittore = LeggiDescrittore(selector);
 
-        // Il descrittore ha i campi sparsi in modo da restare compatibile con
-        // il 286: la base sta in tre pezzi, il limite in due.
+        // The descriptor's fields are scattered across the eight bytes so that
+        // the layout stays backwards compatible with the 286, which only had
+        // 24-bit bases and 16-bit limits: the base arrives in three pieces and
+        // the limit in two, with the 386's extra bits bolted on at the top.
         uint baseAddress = (uint)(((descrittore >> 16) & 0xFFFFFF)
                                 | ((descrittore >> 32) & 0xFF000000));
         uint limite = (uint)((descrittore & 0xFFFF)
@@ -43,11 +47,15 @@ public sealed partial class Cpu
         byte accesso = (byte)(descrittore >> 40);
         byte granularita = (byte)(descrittore >> 52);
 
-        // Il bit di granularita' moltiplica il limite per 4096: il resto della
-        // pagina finale e' comunque accessibile, quindi si riempie di uno.
+        // The granularity bit scales the limit by 4096. The remainder of the
+        // final page stays accessible, so the low twelve bits are filled with
+        // ones rather than zeroed -- a 4 GB segment is encoded as a limit of
+        // 0xFFFFF pages, which has to expand to 0xFFFFFFFF.
         if ((granularita & 0x08) != 0) limite = (limite << 12) | 0xFFF;
 
-        // Bit 7 dell'accesso: il descrittore e' presente in memoria.
+        // Bit 7 of the access byte: the descriptor is present in memory. A
+        // not-present segment raises #NP (or #SS when it is the stack), which
+        // is the hook a virtual memory system uses to load it on demand.
         if ((accesso & 0x80) == 0)
             throw new CpuException(segment == SegReg.Ss ? (byte)12 : (byte)11, selector);
 
@@ -57,8 +65,10 @@ public sealed partial class Cpu
         cache.Big = (granularita & 0x04) != 0;
         cache.Dpl = (byte)((accesso >> 5) & 3);
 
-        // Bit 3 dell'accesso distingue codice da dati; per il codice il bit 1
-        // dice se e' leggibile, per i dati se e' scrivibile.
+        // Bit 3 of the access byte separates code from data; for code, bit 1
+        // says whether it is readable, for data whether it is writable. Code is
+        // never writable, which is how the architecture keeps a program from
+        // rewriting itself through its own CS.
         bool codice = (accesso & 0x08) != 0;
         cache.Readable = !codice || (accesso & 0x02) != 0;
         cache.Writable = !codice && (accesso & 0x02) != 0;
@@ -66,9 +76,9 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Legge gli otto byte del descrittore indicato dal selettore. L'indice
-    /// deve stare dentro il limite della tabella, altrimenti il selettore non
-    /// e' valido.
+    /// Reads the eight bytes of the descriptor named by the selector. The index
+    /// has to fall inside the table's limit, otherwise the selector simply is
+    /// not valid and the load raises #GP with the selector as error code.
     /// </summary>
     private ulong LeggiDescrittore(ushort selector)
     {
@@ -88,9 +98,9 @@ public sealed partial class Cpu
 
     private void EnterInterruptProtected(byte vector, uint errorCode)
         => throw new NotImplementedException(
-            $"Interruzione {vector} in protected mode non ancora implementata.");
+            $"Interrupt {vector} in protected mode is not implemented yet.");
 
     private void IretProtected()
         => throw new NotImplementedException(
-            "IRET in protected mode non ancora implementato.");
+            "IRET in protected mode is not implemented yet.");
 }

@@ -3,13 +3,13 @@ namespace Aurora386.Core.Cpu;
 public sealed partial class Cpu
 {
     /// <summary>
-    /// Decodifica il byte ModR/M e, se l'operando e' in memoria, ne calcola
-    /// l'offset effettivo consumando SIB e spiazzamento dal flusso.
+    /// Decodes the ModR/M byte and, when the operand lives in memory, works out
+    /// its effective offset, consuming the SIB byte and the displacement from
+    /// the instruction stream.
     ///
-    /// Il byte e' diviso in mod(7-6) reg(5-3) rm(2-0). Con mod == 3 l'operando
-    /// r/m e' un registro; altrimenti e' memoria, e la forma dell'indirizzo
-    /// dipende dalla dimensione degli indirizzi in vigore, non da quella degli
-    /// operandi.
+    /// The byte splits into mod(7-6) reg(5-3) rm(2-0). With mod == 3 the r/m
+    /// operand is a register; otherwise it is memory, and the shape of the
+    /// address depends on the address size in effect, not on the operand size.
     /// </summary>
     private ModRm DecodeModRm()
     {
@@ -34,7 +34,8 @@ public sealed partial class Cpu
         else
             DecodeAddress16(mod, rm, ref result);
 
-        // Un prefisso esplicito ha sempre la precedenza sul segmento di default.
+        // An explicit prefix always wins over the addressing mode's default
+        // segment.
         if (_prefixes.Segment.HasValue)
             result.Segment = _prefixes.Segment.Value;
 
@@ -42,9 +43,10 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Indirizzamento a 16 bit: sette combinazioni fisse di BX/BP + SI/DI, piu'
-    /// l'indirizzo diretto. Le forme che usano BP hanno SS come segmento di
-    /// default, perche' BP serve a puntare nel frame di stack.
+    /// 16-bit addressing: seven fixed combinations of BX/BP with SI/DI, plus a
+    /// direct address. The forms built on BP default to SS, because BP exists
+    /// to point into the stack frame and the 8086 designers wired that
+    /// assumption into the addressing modes themselves.
     /// </summary>
     private void DecodeAddress16(byte mod, byte rm, ref ModRm result)
     {
@@ -60,9 +62,10 @@ public sealed partial class Cpu
             case 4: address = State.Si; break;
             case 5: address = State.Di; break;
             case 6:
-                // mod == 0 con rm == 6 non e' [BP]: e' l'indirizzo diretto a 16
-                // bit. [BP] senza spiazzamento non e' codificabile, si usa
-                // mod == 1 con spiazzamento zero.
+                // mod == 0 with rm == 6 does not mean [BP]: it is the 16-bit
+                // direct address. Plain [BP] with no displacement simply is not
+                // encodable, and assemblers emit mod == 1 with a zero
+                // displacement instead.
                 if (mod == 0)
                 {
                     address = FetchWord();
@@ -76,7 +79,7 @@ public sealed partial class Cpu
             default: address = State.Bx; break;
         }
 
-        // Lo spiazzamento a 8 bit e' con segno: 0xFF significa -1, non +255.
+        // The 8-bit displacement is signed: 0xFF means -1, not +255.
         if (mod == 1) address += (ushort)(sbyte)FetchByte();
         else if (mod == 2) address += FetchWord();
 
@@ -85,8 +88,8 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Indirizzamento a 32 bit: qualsiasi registro puo' fare da base, con
-    /// l'aggiunta del byte SIB per indice e scala.
+    /// 32-bit addressing: any register can serve as the base, and the optional
+    /// SIB byte adds an index with a scale factor.
     /// </summary>
     private void DecodeAddress32(byte mod, byte rm, ref ModRm result)
     {
@@ -95,18 +98,21 @@ public sealed partial class Cpu
 
         if (rm == 4)
         {
-            // rm == 4 non e' ESP: segnala la presenza del byte SIB.
+            // rm == 4 does not mean ESP here: it signals that a SIB byte
+            // follows. ESP as a base is still reachable, just only through
+            // that SIB byte.
             address = DecodeSib(mod, ref segment, ref result);
         }
         else if (rm == 5 && mod == 0)
         {
-            // Come nel caso a 16 bit, questa combinazione e' l'indirizzo diretto.
+            // As in the 16-bit case, this combination encodes the direct
+            // address rather than [EBP].
             address = FetchDword();
         }
         else
         {
             address = State.Gpr[rm];
-            if (rm == 5) segment = SegReg.Ss;   // EBP come base implica lo stack
+            if (rm == 5) segment = SegReg.Ss;   // EBP as a base implies the stack
         }
 
         if (mod == 1) address += (uint)(sbyte)FetchByte();
@@ -117,8 +123,8 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Byte SIB: scala(7-6) indice(5-3) base(2-0). L'indirizzo risultante e'
-    /// base + indice * 2^scala.
+    /// The SIB byte: scale(7-6) index(5-3) base(2-0). The address it describes
+    /// is base + index * 2^scale.
     /// </summary>
     private uint DecodeSib(byte mod, ref SegReg segment, ref ModRm result)
     {
@@ -129,32 +135,44 @@ public sealed partial class Cpu
 
         uint address = 0;
 
-        // index == 4 significa "nessun indice": ESP non puo' fare da indice.
-        // Sul 386, pero', la scala non resta inutilizzata: viene applicata
-        // alla base. E' una stranezza del solo 386 -- dal 486 in poi la scala
-        // senza indice non ha effetto -- e i test generati da hardware la
-        // confermano su tutte le forme con SIB.
+        // index == 4 encodes "no index register": ESP cannot be used as an
+        // index, so its slot in the index field was repurposed to mean absent.
+        //
+        // On the 386 -- and only on the 386 -- the scale field does not go
+        // unused when that happens. The address unit still applies the shift,
+        // but to the *base* register instead, so a SIB byte encoding
+        // "[EBX], no index, scale 4" actually computes EBX * 4. From the 486
+        // onwards Intel cleaned this up: a scale with no index has no effect
+        // whatsoever, and the base is added unscaled, which is what every
+        // modern reference documents.
+        //
+        // Assemblers never emit such an encoding, so the quirk only shows up
+        // in hand-written or generated code -- but it does show up, and the
+        // SingleStepTests suite captured from real 386 silicon reproduces it
+        // consistently across every SIB form. Getting it wrong silently
+        // corrupts effective addresses in exactly the programs that were
+        // clever enough to depend on it.
         bool scalaSullaBase = index == 4 && scale != 0;
         if (index != 4)
             address += State.Gpr[index] << scale;
 
         if (baseReg == 5 && mod == 0)
         {
-            // Base assente: spiazzamento a 32 bit al suo posto.
+            // No base register: a 32-bit displacement takes its place.
             address += FetchDword();
         }
         else
         {
             address += scalaSullaBase ? State.Gpr[baseReg] << scale
                                       : State.Gpr[baseReg];
-            if (baseReg == 4 || baseReg == 5) segment = SegReg.Ss;  // ESP o EBP
+            if (baseReg == 4 || baseReg == 5) segment = SegReg.Ss;  // ESP or EBP
             if (baseReg == 4) result.UsesStackPointer = true;
         }
 
         return address;
     }
 
-    // --- lettura e scrittura dell'operando r/m -------------------------------
+    // --- reading and writing the r/m operand ----------------------------------
 
     private byte ReadRm8(in ModRm modrm)
         => modrm.IsRegister ? State.GetReg8(modrm.Register)
@@ -186,7 +204,7 @@ public sealed partial class Cpu
         else WriteMem32(modrm.Segment, modrm.Offset, value);
     }
 
-    /// <summary>Legge r/m alla dimensione corrente degli operandi.</summary>
+    /// <summary>Reads r/m at the current operand size.</summary>
     private uint ReadRm(in ModRm modrm)
         => OperandSize32 ? ReadRm32(modrm) : ReadRm16(modrm);
 
@@ -196,7 +214,7 @@ public sealed partial class Cpu
         else WriteRm16(modrm, (ushort)value);
     }
 
-    /// <summary>Legge il registro indicato dal campo reg, alla dimensione corrente.</summary>
+    /// <summary>Reads the register named by the reg field, at the current operand size.</summary>
     private uint ReadRegOperand(in ModRm modrm)
         => OperandSize32 ? State.GetReg32(modrm.Reg) : State.GetReg16(modrm.Reg);
 

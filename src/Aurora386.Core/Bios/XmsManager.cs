@@ -4,36 +4,37 @@ using CpuNs = Aurora386.Core.Cpu;
 namespace Aurora386.Core.Bios;
 
 /// <summary>
-/// Gestore della memoria estesa secondo la specifica XMS, cioe' il servizio
-/// che su un PC reale fornisce HIMEM.SYS.
+/// Extended memory manager following the XMS specification -- the service that
+/// HIMEM.SYS provides on a real PC.
 ///
-/// Serve a due cose che DOS 6.22 usa entrambe:
-///  - la HMA, i 64 KB appena sopra il megabyte, dove DOS si sposta con
-///    DOS=HIGH liberando una quarantina di KB di memoria convenzionale;
-///  - i blocchi di memoria estesa (EMB), che i programmi allocano per i dati.
+/// It covers two things DOS 6.22 makes use of:
+///  - the HMA, the 64 KB just above the one megabyte mark, where DOS relocates
+///    itself when CONFIG.SYS says DOS=HIGH, freeing some forty KB of
+///    conventional memory;
+///  - extended memory blocks (EMBs), which programs allocate for their data.
 ///
-/// I programmi non chiamano queste funzioni con una INT: chiedono a INT 2Fh
-/// l'indirizzo di un punto di ingresso e poi lo chiamano direttamente. Qui
-/// quel punto di ingresso e' un aggancio nativo nella ROM.
+/// Programs do not reach these functions through an INT: they ask INT 2Fh for
+/// the address of an entry point and then far-call it directly. Here that entry
+/// point is a native hook placed in the ROM.
 /// </summary>
 public sealed class XmsManager
 {
     private readonly PhysicalMemoryBus _memory;
 
-    /// <summary>Primo indirizzo della HMA: i 64 KB appena sopra il megabyte.</summary>
+    /// <summary>First address of the HMA: the 64 KB just above one megabyte.</summary>
     private const uint HmaBase = 0x100000;
 
     /// <summary>
-    /// Dimensione utile della HMA. Non sono 64 KB pieni: con un segmento a
-    /// 0xFFFF l'offset massimo raggiungibile e' 0xFFFF, quindi l'ultimo
-    /// indirizzo utile e' 0x10FFEF -- sedici byte in meno.
+    /// Usable size of the HMA. It is not a full 64 KB: with a segment of
+    /// 0xFFFF the largest reachable offset is 0xFFFF, so the last usable
+    /// address is 0x10FFEF -- sixteen bytes short.
     /// </summary>
     private const uint HmaSize = 0xFFF0;
 
-    /// <summary>Primo indirizzo della memoria gestita come estesa.</summary>
-    private const uint ExtendedMemoryBase = 0x110000;   // subito sopra la HMA
+    /// <summary>First address of the memory handed out as extended memory.</summary>
+    private const uint ExtendedMemoryBase = 0x110000;   // immediately above the HMA
 
-    /// <summary>Un blocco di memoria estesa allocato da un programma.</summary>
+    /// <summary>An extended memory block allocated by a program.</summary>
     private sealed class Block
     {
         public uint Base;
@@ -45,25 +46,25 @@ public sealed class XmsManager
     private readonly Dictionary<ushort, Block> _blocks = [];
     private ushort _nextHandle = 1;
 
-    /// <summary>Prossimo indirizzo libero nella memoria estesa.</summary>
+    /// <summary>Next free address in extended memory.</summary>
     private uint _allocationPointer = ExtendedMemoryBase;
 
-    /// <summary>true se la HMA e' stata assegnata a un programma.</summary>
+    /// <summary>true once the HMA has been handed to a program.</summary>
     public bool HmaAllocated { get; private set; }
 
     public XmsManager(PhysicalMemoryBus memory) => _memory = memory;
 
-    /// <summary>Memoria estesa totale gestibile, in KB.</summary>
+    /// <summary>Total manageable extended memory, in KB.</summary>
     private uint TotalExtendedKb =>
         _memory.RamSize > ExtendedMemoryBase ? (_memory.RamSize - ExtendedMemoryBase) / 1024 : 0;
 
-    /// <summary>Memoria estesa ancora libera, in KB.</summary>
+    /// <summary>Extended memory still free, in KB.</summary>
     private uint FreeExtendedKb =>
         _memory.RamSize > _allocationPointer ? (_memory.RamSize - _allocationPointer) / 1024 : 0;
 
     /// <summary>
-    /// Punto di ingresso XMS. La funzione richiesta sta in AH; l'esito e' in
-    /// AX (1 riuscito, 0 fallito) con il codice di errore in BL.
+    /// XMS entry point. The requested function is in AH; the outcome comes back
+    /// in AX (1 success, 0 failure) with an error code in BL.
     /// </summary>
     public void Handle(CpuNs.Cpu cpu)
     {
@@ -88,36 +89,36 @@ public sealed class XmsManager
             case 0x0E: GetHandleInformation(cpu); return;
 
             default:
-                Fail(cpu, 0x80);   // funzione non implementata
+                Fail(cpu, 0x80);   // function not implemented
                 return;
         }
     }
 
     private void GetVersion(CpuNs.Cpu cpu)
     {
-        cpu.State.Ax = 0x0300;    // XMS 3.0, in cifre BCD
-        cpu.State.Bx = 0x0001;    // versione interna del gestore
-        cpu.State.Dx = 0x0001;    // la HMA esiste
+        cpu.State.Ax = 0x0300;    // XMS 3.0, in BCD digits
+        cpu.State.Bx = 0x0001;    // internal revision of this manager
+        cpu.State.Dx = 0x0001;    // the HMA exists
     }
 
     /// <summary>
-    /// Funzione 0x01: assegna la HMA a chi la chiede. DOS la richiede all'avvio
-    /// quando CONFIG.SYS contiene DOS=HIGH, e ci sposta il proprio nucleo.
+    /// Function 0x01: hands the HMA to whoever asks for it. DOS requests it at
+    /// startup when CONFIG.SYS contains DOS=HIGH, and moves its kernel there.
     /// </summary>
     private void RequestHma(CpuNs.Cpu cpu)
     {
-        if (HmaAllocated) { Fail(cpu, 0x91); return; }   // gia' assegnata
+        if (HmaAllocated) { Fail(cpu, 0x91); return; }   // already allocated
 
-        // DX dice quanto spazio serve. La HMA e' lunga 0xFFF0 byte, ma il
-        // valore 0xFFFF ha un significato speciale: e' quello che usa un
-        // sistema operativo per dire "la prendo tutta", ed e' esattamente
-        // cio' che fa DOS con DOS=HIGH. Rifiutarlo impedirebbe a DOS di
-        // spostarsi in memoria alta.
+        // DX says how much space is needed. The HMA is 0xFFF0 bytes long, but
+        // the value 0xFFFF carries a special meaning: it is what an operating
+        // system passes to say "I am taking all of it", and it is exactly what
+        // DOS does with DOS=HIGH. Rejecting it would stop DOS from relocating
+        // into high memory.
         ushort requestedBytes = cpu.State.Dx;
         if (requestedBytes != 0xFFFF && requestedBytes > HmaSize) { Fail(cpu, 0xA1); return; }
 
         HmaAllocated = true;
-        // Chi ottiene la HMA ha bisogno che A20 resti accesa per usarla.
+        // Whoever owns the HMA needs A20 to stay on in order to use it.
         _memory.A20Enabled = true;
         Succeed(cpu);
     }
@@ -129,9 +130,9 @@ public sealed class XmsManager
         Succeed(cpu);
     }
 
-    // Le versioni "globali" e "locali" del controllo A20 differiscono solo per
-    // il conteggio dei riferimenti, che qui non serve: un solo gestore, nessun
-    // conflitto fra chiamanti.
+    // The "global" and "local" flavors of the A20 control functions differ only
+    // in reference counting, which is pointless here: there is a single manager
+    // and no contention between callers.
 
     private void GlobalEnableA20(CpuNs.Cpu cpu)
     {
@@ -141,8 +142,8 @@ public sealed class XmsManager
 
     private void GlobalDisableA20(CpuNs.Cpu cpu)
     {
-        // Disabilitare A20 mentre la HMA e' in uso renderebbe irraggiungibile
-        // il codice che sta girando: la richiesta va rifiutata.
+        // Turning A20 off while the HMA is in use would make the code currently
+        // executing unreachable, so the request has to be refused.
         if (HmaAllocated) { Fail(cpu, 0x94); return; }
         _memory.A20Enabled = false;
         Succeed(cpu);
@@ -164,24 +165,24 @@ public sealed class XmsManager
     private void QueryA20(CpuNs.Cpu cpu)
     {
         cpu.State.Ax = (ushort)(_memory.A20Enabled ? 1 : 0);
-        cpu.State.SetReg8(3, 0);   // BL: nessun errore
+        cpu.State.SetReg8(3, 0);   // BL: no error
     }
 
     private void QueryFreeMemory(CpuNs.Cpu cpu)
     {
         uint free = FreeExtendedKb;
-        // I registri sono a 16 bit: oltre 64 MB il valore viene saturato,
-        // che con 16 MB di RAM non e' un problema.
-        cpu.State.Ax = (ushort)Math.Min(free, 0xFFFF);      // blocco piu' grande
+        // The registers are 16 bit wide, so anything past 64 MB saturates --
+        // not a concern with 16 MB of RAM.
+        cpu.State.Ax = (ushort)Math.Min(free, 0xFFFF);      // largest free block
         cpu.State.Dx = (ushort)Math.Min(TotalExtendedKb, 0xFFFF);
         cpu.State.SetReg8(3, 0);
     }
 
     /// <summary>
-    /// Funzione 0x09: alloca un blocco di memoria estesa. L'allocatore e'
-    /// lineare e non riusa lo spazio liberato: e' sufficiente per il modo in
-    /// cui DOS e i programmi dell'epoca usano XMS, che allocano poco e
-    /// all'avvio.
+    /// Function 0x09: allocates an extended memory block. The allocator is
+    /// purely linear and never reuses freed space, which is good enough for the
+    /// way DOS and period software use XMS: a handful of allocations, made at
+    /// startup.
     /// </summary>
     private void AllocateBlock(CpuNs.Cpu cpu)
     {
@@ -211,10 +212,10 @@ public sealed class XmsManager
         ushort handle = cpu.State.Dx;
         if (!_blocks.TryGetValue(handle, out Block? block) || !block.InUse)
         {
-            Fail(cpu, 0xA2);   // handle non valido
+            Fail(cpu, 0xA2);   // invalid handle
             return;
         }
-        if (block.LockCount > 0) { Fail(cpu, 0xAB); return; }   // ancora bloccato
+        if (block.LockCount > 0) { Fail(cpu, 0xAB); return; }   // still locked
 
         block.InUse = false;
         _blocks.Remove(handle);
@@ -222,12 +223,12 @@ public sealed class XmsManager
     }
 
     /// <summary>
-    /// Funzione 0x0B: copia un blocco di memoria. E' il modo in cui i
-    /// programmi spostano dati fra memoria convenzionale ed estesa, dato che
-    /// in real mode non possono indirizzare quest'ultima direttamente.
+    /// Function 0x0B: copies a block of memory. This is how programs shuttle
+    /// data between conventional and extended memory, since in real mode they
+    /// cannot address the latter directly.
     ///
-    /// I parametri stanno in una struttura puntata da DS:SI: lunghezza,
-    /// handle e offset di origine, handle e offset di destinazione.
+    /// The parameters live in a structure pointed at by DS:SI: length, source
+    /// handle and offset, destination handle and offset.
     /// </summary>
     private void MoveBlock(CpuNs.Cpu cpu)
     {
@@ -239,7 +240,7 @@ public sealed class XmsManager
         ushort destHandle = cpu.ReadMemoryWord(CpuNs.SegReg.Ds, parameters + 10);
         uint destOffset = ReadDwordFromDs(cpu, parameters + 12);
 
-        // Una lunghezza dispari non e' ammessa dalla specifica.
+        // The specification does not allow an odd length.
         if ((length & 1) != 0) { Fail(cpu, 0xA7); return; }
         if (length == 0) { Succeed(cpu); return; }
 
@@ -254,14 +255,15 @@ public sealed class XmsManager
             return;
         }
 
-        // La copia avviene sul bus per rispettare mappature e sola lettura;
-        // l'A20 va forzata accesa perche' gli indirizzi sopra il megabyte
-        // altrimenti avvolgerebbero.
+        // The copy goes through the bus so that mappings and read-only regions
+        // are honored; A20 has to be forced on, because otherwise addresses
+        // above one megabyte would wrap around.
         bool previousA20 = _memory.A20Enabled;
         _memory.A20Enabled = true;
 
-        // Copia all'indietro quando le aree si sovrappongono e la destinazione
-        // sta piu' avanti, altrimenti si sovrascriverebbe la sorgente.
+        // Copy backwards when the regions overlap and the destination lies
+        // ahead of the source, otherwise the copy would clobber the source
+        // before reading it.
         if (destAddress > sourceAddress && destAddress < sourceAddress + length)
         {
             for (uint i = length; i > 0; i--)
@@ -278,15 +280,15 @@ public sealed class XmsManager
     }
 
     /// <summary>
-    /// Converte handle e offset in indirizzo fisico. L'handle zero significa
-    /// "memoria convenzionale", e in quel caso l'offset e' un puntatore
-    /// segmento:offset impacchettato in 32 bit.
+    /// Turns a handle and offset into a physical address. Handle zero means
+    /// "conventional memory", and in that case the offset is a segment:offset
+    /// pointer packed into 32 bits.
     /// </summary>
     private bool TryResolve(ushort handle, uint offset, uint length, out uint address)
     {
         if (handle == 0)
         {
-            // Puntatore reale: segmento nella meta' alta, offset in quella bassa.
+            // Real-mode pointer: segment in the high half, offset in the low half.
             ushort segment = (ushort)(offset >> 16);
             ushort within = (ushort)offset;
             address = (uint)segment * 16 + within;
@@ -320,7 +322,7 @@ public sealed class XmsManager
 
         block.LockCount++;
         cpu.State.Ax = 1;
-        // L'indirizzo fisico del blocco va restituito in DX:BX.
+        // The physical address of the block is returned in DX:BX.
         cpu.State.Dx = (ushort)(block.Base >> 16);
         cpu.State.Bx = (ushort)block.Base;
     }
@@ -349,8 +351,8 @@ public sealed class XmsManager
         }
 
         cpu.State.Ax = 1;
-        cpu.State.SetReg8(4, (byte)block.LockCount);            // BH: blocchi attivi
-        cpu.State.SetReg8(3, (byte)(0xFF - _blocks.Count));     // BL: handle liberi
+        cpu.State.SetReg8(4, (byte)block.LockCount);            // BH: active locks
+        cpu.State.SetReg8(3, (byte)(0xFF - _blocks.Count));     // BL: free handles
         cpu.State.Dx = (ushort)block.SizeKb;
     }
 
@@ -361,7 +363,7 @@ public sealed class XmsManager
     private static void Succeed(CpuNs.Cpu cpu)
     {
         cpu.State.Ax = 1;
-        cpu.State.SetReg8(3, 0);   // BL: nessun errore
+        cpu.State.SetReg8(3, 0);   // BL: no error
     }
 
     private static void Fail(CpuNs.Cpu cpu, byte errorCode)

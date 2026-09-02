@@ -3,16 +3,18 @@ using Aurora386.Core.IO;
 namespace Aurora386.Core.Devices;
 
 /// <summary>
-/// Timer programmabile 8253/8254.
+/// 8253/8254 programmable interval timer.
 ///
-/// Ha tre contatori indipendenti alimentati da un clock di 1.193.182 Hz --
-/// un terzo della frequenza del cristallo NTSC da cui derivava il clock del
-/// PC originale. Con il divisore di default (65536) il canale 0 produce
-/// 18,2 interruzioni al secondo, ed e' la base con cui DOS misura il tempo.
+/// Three independent counters fed from a single 1,193,182 Hz clock -- one
+/// third of the 3.579545 MHz NTSC colourburst crystal the original PC used,
+/// chosen because that crystal was cheap and already on the board for the
+/// composite video output. With the default divisor of 65536, channel 0 fires
+/// 18.2 times a second, and that awkward number is the entire basis on which
+/// DOS measures time.
 ///
-/// Canale 0: IRQ 0, il tick di sistema.
-/// Canale 1: rinfresco della DRAM, non serve emularlo davvero.
-/// Canale 2: altoparlante interno.
+/// Channel 0: drives IRQ 0, the system tick.
+/// Channel 1: DRAM refresh request; no real need to emulate its effect.
+/// Channel 2: the PC speaker.
 /// </summary>
 public sealed class Pit8253 : IIoDevice
 {
@@ -22,7 +24,7 @@ public sealed class Pit8253 : IIoDevice
     {
         public ushort ReloadValue = 0xFFFF;
         public ushort Counter;
-        public byte AccessMode = 3;    // 3 = byte basso poi alto
+        public byte AccessMode = 3;    // 3 = low byte then high byte
         public byte OperatingMode;
         public bool WaitingHighByte;
         public bool ReadingHighByte;
@@ -30,14 +32,14 @@ public sealed class Pit8253 : IIoDevice
         public ushort LatchedValue;
         public bool Latched;
 
-        /// <summary>Frazione di ciclo accumulata, per non perdere tempo nei resti.</summary>
+        /// <summary>Fractional cycles carried over, so rounding never loses time.</summary>
         public double Accumulator;
     }
 
     private readonly Channel[] _channels = [new(), new(), new()];
     private readonly InterruptController _interrupts;
 
-    /// <summary>Numero di tick del canale 0 dall'avvio, per il conteggio BIOS.</summary>
+    /// <summary>Channel 0 ticks since power-on, feeding the BIOS tick count.</summary>
     public long Channel0Ticks { get; private set; }
 
     public Pit8253(InterruptController interrupts) => _interrupts = interrupts;
@@ -45,9 +47,10 @@ public sealed class Pit8253 : IIoDevice
     public void Register(IoBus io) => io.Register(0x40, 4, this);
 
     /// <summary>
-    /// Fa avanzare i contatori del tempo trascorso. Riceve cicli di CPU
-    /// emulata e li converte nel clock del timer: e' cio' che tiene il tempo
-    /// del PC emulato agganciato alla velocita' a cui gira l'emulatore.
+    /// Advances the counters by the time that has elapsed. The caller hands
+    /// us already-converted timer cycles, which is what keeps the emulated
+    /// machine's sense of time tied to how fast the emulator is actually
+    /// running rather than to the host wall clock.
     /// </summary>
     public void Advance(double pitCycles)
     {
@@ -62,9 +65,12 @@ public sealed class Pit8253 : IIoDevice
 
         int reload = channel0.ReloadValue == 0 ? 65536 : channel0.ReloadValue;
 
-        // Un solo tick per chiamata anche se il tempo trascorso ne coprirebbe
-        // piu' d'uno: accumulare interruzioni arretrate farebbe correre
-        // l'orologio del sistema ospite invece di rallentarlo.
+        // Note that we raise the IRQ once per expiry but the controller
+        // collapses repeats: if the emulator stalls and a large span of time
+        // arrives at once, we must not deliver a burst of backlogged ticks.
+        // Doing so would make the guest's clock sprint to catch up instead of
+        // simply running slow, which is far more disruptive to software that
+        // times things by counting ticks.
         while (whole > 0)
         {
             int step = Math.Min(whole, channel0.Counter == 0 ? reload : channel0.Counter);
@@ -83,17 +89,19 @@ public sealed class Pit8253 : IIoDevice
     public byte ReadByte(ushort port)
     {
         int index = port & 3;
-        if (index == 3) return 0;      // la porta di comando non si legge
+        if (index == 3) return 0;      // the control port is write-only
 
         Channel channel = _channels[index];
         ushort value = channel.Latched ? channel.LatchedValue : channel.Counter;
 
         switch (channel.AccessMode)
         {
-            case 1: return (byte)value;             // solo byte basso
-            case 2: return (byte)(value >> 8);      // solo byte alto
+            case 1: return (byte)value;             // low byte only
+            case 2: return (byte)(value >> 8);      // high byte only
             default:
-                // Modo a due byte: prima il basso, poi l'alto.
+                // Two-byte access: low byte first, then high. The channel
+                // remembers which half is next, so an interleaved read from
+                // another channel would not disturb it.
                 if (!channel.ReadingHighByte)
                 {
                     channel.ReadingHighByte = true;
@@ -152,15 +160,16 @@ public sealed class Pit8253 : IIoDevice
     private void WriteControlWord(byte value)
     {
         int index = (value >> 6) & 3;
-        if (index == 3) return;        // comando di lettura multipla, non emulato
+        if (index == 3) return;        // read-back command, not emulated
 
         Channel channel = _channels[index];
         byte access = (byte)((value >> 4) & 3);
 
         if (access == 0)
         {
-            // Comando di cattura: congela il contatore per una lettura
-            // coerente, senza fermare il conteggio.
+            // Counter latch command: freezes a snapshot of the count so both
+            // halves can be read consistently, while the counter itself keeps
+            // running underneath.
             channel.LatchedValue = channel.Counter;
             channel.Latched = true;
             return;
@@ -174,9 +183,9 @@ public sealed class Pit8253 : IIoDevice
     }
 
     /// <summary>
-    /// Uscita del canale 2, letta dal bit 5 della porta 0x61. E' il segnale
-    /// che pilota l'altoparlante, e i programmi lo campionano per misurare
-    /// intervalli piu' brevi di un tick di sistema.
+    /// Channel 2's output, visible as bit 5 of port 0x61. It is the signal
+    /// that drives the PC speaker, and software samples it to time intervals
+    /// far shorter than one 18.2 Hz system tick.
     /// </summary>
     public bool Channel2Output
     {
@@ -184,15 +193,16 @@ public sealed class Pit8253 : IIoDevice
         {
             Channel channel = _channels[2];
             int reload = channel.ReloadValue == 0 ? 65536 : channel.ReloadValue;
-            // Onda quadra: alta nella prima meta' del conteggio.
+            // Square wave mode: the output is high for the first half of the
+            // count and low for the second.
             return channel.Counter > reload / 2;
         }
     }
 
     /// <summary>
-    /// Fa avanzare anche il canale 2, che a differenza del canale 0 non genera
-    /// interruzioni ma deve comunque contare perche' la sua uscita e'
-    /// osservabile dalla porta 0x61.
+    /// Advances channel 2 as well. Unlike channel 0 it raises no interrupt,
+    /// but it still has to count, because its output is directly observable
+    /// through port 0x61 and delay loops depend on seeing it change.
     /// </summary>
     private void AdvanceChannel2(double pitCycles)
     {
@@ -208,7 +218,7 @@ public sealed class Pit8253 : IIoDevice
         channel.Counter = (ushort)(position < 0 ? position + reload : position);
     }
 
-    /// <summary>Frequenza attuale del canale 0, per diagnostica.</summary>
+    /// <summary>Channel 0's current output frequency, for diagnostics.</summary>
     public double Channel0Frequency
     {
         get

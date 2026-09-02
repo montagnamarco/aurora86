@@ -1,10 +1,10 @@
 namespace Aurora386.Core.Cpu;
 
 /// <summary>
-/// Indici dei registri generali, nell'ordine in cui li codifica il campo
-/// reg/rm delle istruzioni x86. L'ordine non e' alfabetico ne' arbitrario:
-/// e' quello dell'hardware, e va rispettato perche' la decodifica indicizza
-/// direttamente con i bit dell'opcode.
+/// General-purpose register indices, in the order the reg/rm fields of an x86
+/// instruction encode them. The order is neither alphabetical nor arbitrary:
+/// it is the hardware's own, and it has to be respected because the decoder
+/// indexes straight into the register file with bits taken from the opcode.
 /// </summary>
 public enum Reg
 {
@@ -13,8 +13,8 @@ public enum Reg
 }
 
 /// <summary>
-/// Registri a 8 bit. I primi quattro sono i byte bassi di EAX..EBX, gli altri
-/// quattro i byte alti: AL CL DL BL AH CH DH BH.
+/// The 8-bit registers. The first four are the low bytes of EAX..EBX, the
+/// other four the high bytes of those same registers: AL CL DL BL AH CH DH BH.
 /// </summary>
 public enum Reg8
 {
@@ -23,7 +23,7 @@ public enum Reg8
 }
 
 /// <summary>
-/// Registri di segmento, nell'ordine codificato dall'hardware.
+/// Segment registers, in the order the hardware encodes them.
 /// </summary>
 public enum SegReg
 {
@@ -31,27 +31,27 @@ public enum SegReg
 }
 
 /// <summary>
-/// Bit del registro EFLAGS del 386.
+/// Bits of the 386 EFLAGS register.
 /// </summary>
 [Flags]
 public enum Flags : uint
 {
     None = 0,
     Carry = 1u << 0,
-    /// <summary>Sempre 1 sui processori reali.</summary>
+    /// <summary>Reads back as 1 on real silicon, always.</summary>
     Reserved1 = 1u << 1,
     Parity = 1u << 2,
-    Adjust = 1u << 4,        // carry ausiliario, per l'aritmetica BCD
+    Adjust = 1u << 4,        // auxiliary carry, used by the BCD adjust instructions
     Zero = 1u << 6,
     Sign = 1u << 7,
     Trap = 1u << 8,
     Interrupt = 1u << 9,
     Direction = 1u << 10,
     Overflow = 1u << 11,
-    /// <summary>I/O privilege level: due bit, 12-13.</summary>
+    /// <summary>I/O privilege level: two bits, 12-13.</summary>
     Iopl = 3u << 12,
     NestedTask = 1u << 14,
     Resume = 1u << 16,
-    /// <summary>Virtual 8086 mode: serve a Windows 3.1 in enhanced mode.</summary>
+    /// <summary>Virtual 8086 mode: needed by Windows 3.1 in enhanced mode.</summary>
     Virtual8086 = 1u << 17,
 }

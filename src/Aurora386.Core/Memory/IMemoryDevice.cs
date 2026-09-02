@@ -1,9 +1,10 @@
 namespace Aurora386.Core.Memory;
 
 /// <summary>
-/// Dispositivo mappato in memoria (framebuffer video, ROM, ...).
-/// Gli indirizzi passati sono <b>relativi all'inizio del dispositivo</b>,
-/// non fisici: e' il bus a sottrarre la base.
+/// A memory-mapped device: the video framebuffer, a ROM, and so on.
+/// Addresses handed to these methods are <b>relative to the start of the
+/// device</b>, not physical: the bus has already subtracted the base, so a
+/// device never needs to know where it happens to be mapped.
 /// </summary>
 public interface IMemoryDevice
 {
@@ -11,10 +12,10 @@ public interface IMemoryDevice
     void WriteByte(uint offset, byte value);
 
     /// <summary>
-    /// Letture a 16/32 bit. Default: composizione little-endian di byte.
-    /// I dispositivi che possono servirle piu' efficientemente (o che hanno
-    /// semantica di larghezza particolare, come il VGA in certe modalita')
-    /// sovrascrivono questi metodi.
+    /// 16- and 32-bit accesses. By default they are composed from byte
+    /// accesses in little-endian order. Devices that can serve them more
+    /// efficiently, or whose registers behave differently depending on the
+    /// access width -- as the VGA does in some modes -- override these.
     /// </summary>
     ushort ReadWord(uint offset) => (ushort)(ReadByte(offset) | (ReadByte(offset + 1) << 8));
 

@@ -1,33 +1,33 @@
 namespace Aurora386.Core.Bios;
 
 /// <summary>
-/// Costruisce la ROM del BIOS.
+/// Builds the BIOS ROM image.
 ///
-/// La ROM contiene pochissimo codice x86 vero: per ogni interruzione un punto
-/// di ingresso di tre byte che invoca l'handler nativo e ritorna. Tutto il
-/// lavoro -- disegnare caratteri, leggere settori, gestire la tastiera -- e'
-/// scritto in C#.
+/// The ROM holds almost no real x86 code: for each interrupt there is a
+/// three-byte entry point that invokes the native handler and returns. All the
+/// actual work -- drawing characters, reading sectors, servicing the keyboard
+/// -- is written in C#.
 ///
-/// La scelta e' deliberata. Un BIOS reale non e' ridistribuibile e va
-/// procurato dall'utente; ma soprattutto farebbe un POST completo sondando
-/// chipset che non emuliamo. Realizzare le funzioni in C# le rende piu'
-/// veloci di un'emulazione istruzione per istruzione e molto piu' facili da
-/// correggere: un errore si vede in un debugger normale invece che in una
-/// traccia di codice macchina.
+/// That is deliberate. A real BIOS image is not redistributable and would have
+/// to be supplied by the user; more importantly it would run a full POST,
+/// probing chipset registers we do not emulate. Implementing the services in
+/// C# makes them far faster than instruction-by-instruction emulation and much
+/// easier to fix: a bug shows up in an ordinary debugger instead of in a trace
+/// of machine code.
 /// </summary>
 public static class BiosRom
 {
-    /// <summary>Indirizzo fisico dove la ROM viene mappata (ultimi 64 KB del primo MB).</summary>
+    /// <summary>Physical address the ROM is mapped at (the top 64 KB of the first megabyte).</summary>
     public const uint Base = 0xF0000;
     public const int Size = 0x10000;
 
-    /// <summary>Opcode di aggancio agli handler nativi.</summary>
+    /// <summary>Opcode prefix that traps into the native handlers.</summary>
     private const byte HookByte1 = 0x0F;
     private const byte HookByte2 = 0xFF;
 
     /// <summary>
-    /// Offset dei punti di ingresso dentro la ROM. Sono scelti arbitrariamente
-    /// ma devono restare stabili: la tabella dei vettori vi punta.
+    /// Offsets of the entry points inside the ROM. The values are arbitrary,
+    /// but they must stay put: the interrupt vector table points at them.
     /// </summary>
     public static class Entry
     {
@@ -43,15 +43,16 @@ public static class BiosRom
         public const ushort TimeOfDay = 0x1090;      // INT 1Ah
         public const ushort TimerTick = 0x10A0;      // INT 08h, IRQ 0
         public const ushort KeyboardIrq = 0x10B0;    // INT 09h, IRQ 1
-        public const ushort DummyIrq = 0x10C0;       // IRQ non gestite
+        public const ushort DummyIrq = 0x10C0;       // unhandled IRQs
         public const ushort Multiplex = 0x10D0;      // INT 2Fh
-        public const ushort XmsEntry = 0x10E0;       // punto di ingresso XMS
-        public const ushort Reset = 0xFFF0;          // punto di partenza
-        public const ushort PostEntry = 0x1100;      // inizializzazione
+        public const ushort XmsEntry = 0x10E0;       // XMS entry point
+        public const ushort Reset = 0xFFF0;          // power-on entry point
+        public const ushort PostEntry = 0x1100;      // initialization
     }
 
     /// <summary>
-    /// Identificativi passati all'handler nativo dopo l'opcode di aggancio.
+    /// Identifiers passed to the native handler in the byte following the hook
+    /// opcode.
     /// </summary>
     public enum Handler : byte
     {
@@ -77,12 +78,12 @@ public static class BiosRom
     {
         var rom = new byte[Size];
 
-        // Riempimento con un opcode non valido: se l'esecuzione finisce dove
-        // non dovrebbe, si ferma subito invece di vagare per la ROM.
+        // Fill with a breakpoint opcode: if execution ever wanders somewhere it
+        // should not, it stops immediately instead of drifting through the ROM.
         Array.Fill(rom, (byte)0xCC);
 
-        // Punti di ingresso delle interruzioni: chiamano l'handler nativo e
-        // ritornano con IRET, che ripristina anche i flag.
+        // Interrupt entry points: call the native handler, then return with
+        // IRET, which also restores the flags.
         WriteInterruptEntry(rom, Entry.Video, Handler.Video);
         WriteInterruptEntry(rom, Entry.EquipmentList, Handler.EquipmentList);
         WriteInterruptEntry(rom, Entry.MemorySize, Handler.MemorySize);
@@ -98,9 +99,8 @@ public static class BiosRom
         WriteInterruptEntry(rom, Entry.DummyIrq, Handler.DummyIrq);
         WriteInterruptEntry(rom, Entry.Multiplex, Handler.Multiplex);
 
-        // Il punto di ingresso XMS non e' un gestore di interruzione: i
-        // programmi lo raggiungono con una CALL lontana, quindi deve tornare
-        // con RETF e non con IRET.
+        // The XMS entry point is not an interrupt handler: programs reach it
+        // through a far CALL, so it has to return with RETF rather than IRET.
         {
             int xms = Entry.XmsEntry;
             rom[xms + 0] = HookByte1;
@@ -109,30 +109,30 @@ public static class BiosRom
             rom[xms + 3] = 0xCB;      // RETF
         }
 
-        // Sequenza di inizializzazione: chiama l'handler di POST e poi salta
-        // al caricamento del sistema operativo.
+        // Startup sequence: run the POST handler, then jump to the operating
+        // system loader.
         int offset = Entry.PostEntry;
         rom[offset++] = HookByte1;
         rom[offset++] = HookByte2;
         rom[offset++] = (byte)Handler.Post;
-        rom[offset++] = 0xCD;          // INT 19h: carica il settore di avvio
+        rom[offset++] = 0xCD;          // INT 19h: load the boot sector
         rom[offset++] = 0x19;
-        rom[offset++] = 0xF4;          // HLT, se INT 19h ritorna non c'e' altro da fare
+        rom[offset++] = 0xF4;          // HLT, since if INT 19h returns there is nothing left to do
 
-        // Vettore di reset a F000:FFF0. Il processore parte da qui, e il salto
-        // porta alla sequenza di inizializzazione.
+        // Reset vector at F000:FFF0. The processor starts fetching here, and
+        // the jump lands in the startup sequence.
         offset = Entry.Reset;
         rom[offset++] = 0xEA;                                     // JMP far
-        rom[offset++] = unchecked((byte)Entry.PostEntry);          // offset basso
-        rom[offset++] = unchecked((byte)(Entry.PostEntry >> 8));   // offset alto
-        rom[offset++] = 0x00;                          // segmento F000
+        rom[offset++] = unchecked((byte)Entry.PostEntry);          // offset, low byte
+        rom[offset++] = unchecked((byte)(Entry.PostEntry >> 8));   // offset, high byte
+        rom[offset++] = 0x00;                          // segment F000
         rom[offset++] = 0xF0;
 
-        // Data di rilascio a F000:FFF5, nel formato che alcuni programmi
-        // leggono per identificare il BIOS.
+        // Release date at F000:FFF5, in the format some programs read to
+        // identify the BIOS.
         "01/01/93"u8.CopyTo(rom.AsSpan(0xFFF5));
 
-        // Byte di identificazione del modello: 0xFC = AT e compatibili.
+        // Model identification byte: 0xFC = AT and compatibles.
         rom[0xFFFE] = 0xFC;
 
         return rom;

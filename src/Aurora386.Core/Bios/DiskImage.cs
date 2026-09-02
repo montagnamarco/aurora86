@@ -1,11 +1,11 @@
 namespace Aurora386.Core.Bios;
 
 /// <summary>
-/// Immagine di un disco, floppy o fisso.
+/// A disk image, either floppy or fixed.
 ///
-/// Il BIOS indirizza i settori in geometria CHS (cilindro, testina, settore),
-/// eredita' del funzionamento meccanico dei dischi: la numerazione dei settori
-/// parte da 1, non da 0, mentre testine e cilindri partono da 0.
+/// The BIOS addresses sectors in CHS geometry (cylinder, head, sector), a
+/// leftover from how the mechanics of a real drive work: sector numbering
+/// starts at 1, not 0, while heads and cylinders start at 0.
 /// </summary>
 public sealed class DiskImage : IDisposable
 {
@@ -20,8 +20,16 @@ public sealed class DiskImage : IDisposable
     public bool IsHardDisk { get; }
     public bool ReadOnly { get; }
 
-    /// <summary>Numero di unita' BIOS: 0x00 primo floppy, 0x80 primo disco fisso.</summary>
+    /// <summary>BIOS drive number: 0x00 is the first floppy, 0x80 the first hard disk.</summary>
     public byte DriveNumber { get; }
+
+    /// <summary>
+    /// Path of the file backing this image, when there is one. Purely
+    /// informational: the user interface shows it so you can tell which
+    /// floppy is currently in the drive. In-memory images used by tests
+    /// leave it null.
+    /// </summary>
+    public string? SourcePath { get; set; }
 
     public long TotalSectors => (long)Cylinders * Heads * SectorsPerTrack;
 
@@ -39,9 +47,8 @@ public sealed class DiskImage : IDisposable
     }
 
     /// <summary>
-    /// Apre un'immagine deducendone la geometria dalla dimensione. I formati
-    /// dei floppy sono standardizzati, quindi la dimensione li identifica
-    /// senza ambiguita'.
+    /// Opens an image, inferring its geometry from the file size. Floppy
+    /// formats are standardized, so the size identifies them unambiguously.
     /// </summary>
     public static DiskImage OpenFloppy(string path, byte driveNumber = 0x00, bool readOnly = false)
     {
@@ -54,17 +61,18 @@ public sealed class DiskImage : IDisposable
             1_474_560 => (80, 2, 18),   // 1.44 MB
             2_949_120 => (80, 2, 36),   // 2.88 MB
             _ => throw new InvalidDataException(
-                $"Dimensione {info.Length} non corrisponde a un formato floppy noto."),
+                $"Size {info.Length} does not match any known floppy format."),
         };
 
         FileStream stream = OpenShared(path, readOnly);
-        return new DiskImage(stream, driveNumber, cylinders, heads, sectors, readOnly);
+        return new DiskImage(stream, driveNumber, cylinders, heads, sectors, readOnly)
+               { SourcePath = path };
     }
 
     /// <summary>
-    /// Apre un disco fisso. La geometria non e' deducibile dalla dimensione,
-    /// quindi si usa la convenzione piu' diffusa (63 settori, 16 testine) e si
-    /// ricavano i cilindri.
+    /// Opens a hard disk image. Geometry cannot be inferred from the size
+    /// alone, so we use the most common convention of the era (63 sectors per
+    /// track, 16 heads) and derive the cylinder count from it.
     /// </summary>
     public static DiskImage OpenHardDisk(string path, byte driveNumber = 0x80, bool readOnly = false)
     {
@@ -72,16 +80,16 @@ public sealed class DiskImage : IDisposable
         HardDiskImage.Geometry geometry = HardDiskImage.Geometry.ForSize(info.Length);
 
         if (geometry.Cylinders == 0)
-            throw new InvalidDataException("L'immagine e' troppo piccola per essere un disco fisso.");
+            throw new InvalidDataException("The image is too small to be a hard disk.");
 
         FileStream stream = OpenShared(path, readOnly);
         return new DiskImage(stream, driveNumber, geometry.Cylinders, geometry.Heads,
-                             geometry.SectorsPerTrack, readOnly);
+                             geometry.SectorsPerTrack, readOnly) { SourcePath = path };
     }
 
     /// <summary>
-    /// Crea un'immagine di disco fisso partizionata e formattata, poi la apre.
-    /// E' cio' che serve per installarci sopra un sistema operativo.
+    /// Creates a partitioned and formatted hard disk image, then opens it.
+    /// This is what you need in order to install an operating system onto it.
     /// </summary>
     public static DiskImage CreateHardDisk(string path, long sizeBytes, byte driveNumber = 0x80)
     {
@@ -90,13 +98,12 @@ public sealed class DiskImage : IDisposable
     }
 
     /// <summary>
-    /// Apre un'immagine condividendola con gli altri processi.
+    /// Opens an image while sharing it with other processes.
     ///
-    /// Un'immagine aperta in sola lettura non deve impedire a nessun altro di
-    /// usarla: capita spesso di ispezionare lo stesso file con piu' strumenti
-    /// contemporaneamente. Anche in lettura e scrittura si consente la
-    /// lettura altrui, cosi' un errore si manifesta solo quando due processi
-    /// vogliono davvero scrivere.
+    /// An image opened read-only should not lock anyone else out: inspecting
+    /// the same file with several tools at once is a common thing to do. Even
+    /// in read-write mode we still allow other readers, so a sharing violation
+    /// surfaces only when two processes genuinely want to write.
     /// </summary>
     private static FileStream OpenShared(string path, bool readOnly)
     {
@@ -109,16 +116,16 @@ public sealed class DiskImage : IDisposable
         }
         catch (IOException ex)
         {
-            // L'eccezione originale dice solo "file in uso": aggiungiamo
-            // l'informazione che serve davvero per risolvere.
+            // The original exception only says "file in use"; add the piece of
+            // information that actually helps resolve it.
             throw new IOException(
-                $"Impossibile aprire {Path.GetFileName(path)}: il file e' in uso da un altro " +
-                $"programma (un emulatore rimasto aperto, per esempio). " +
-                $"Chiudilo e riprova.", ex);
+                $"Cannot open {Path.GetFileName(path)}: the file is in use by another " +
+                $"program (a leftover emulator instance, for example). " +
+                $"Close it and try again.", ex);
         }
     }
 
-    /// <summary>Crea un'immagine in memoria, per i test.</summary>
+    /// <summary>Creates an in-memory image, for tests.</summary>
     public static DiskImage CreateInMemory(byte driveNumber, int cylinders, int heads, int sectorsPerTrack)
     {
         long size = (long)cylinders * heads * sectorsPerTrack * SectorSize;
@@ -127,8 +134,9 @@ public sealed class DiskImage : IDisposable
     }
 
     /// <summary>
-    /// Converte CHS in numero di settore lineare. I settori partono da 1:
-    /// il settore 0 non esiste, ed e' una fonte classica di errori.
+    /// Converts CHS into a linear sector number. Sectors are numbered from 1:
+    /// there is no sector 0, and forgetting that is a classic source of
+    /// off-by-one bugs.
     /// </summary>
     public long ToLinearSector(int cylinder, int head, int sector)
         => ((long)cylinder * Heads + head) * SectorsPerTrack + (sector - 1);

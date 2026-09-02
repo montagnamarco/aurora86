@@ -3,23 +3,24 @@ namespace Aurora386.Core.Cpu;
 public sealed partial class Cpu
 {
     /// <summary>
-    /// Istruzioni su stringhe: MOVS, STOS, LODS, SCAS, CMPS.
+    /// The string instructions: MOVS, STOS, LODS, SCAS, CMPS.
     ///
-    /// Sorgente e destinazione sono impliciti: DS:SI e ES:DI. Il segmento
-    /// sorgente accetta un override, quello di destinazione no -- ES:DI e'
-    /// fissato dall'architettura.
+    /// Source and destination are implicit: DS:SI and ES:DI. The source segment
+    /// accepts an override prefix, the destination does not -- ES:DI is fixed
+    /// by the architecture, which is why string code so often has to reload ES.
     ///
-    /// Con un prefisso REP l'istruzione si ripete fino a CX = 0. Qui viene
-    /// eseguita <b>una iterazione per chiamata</b>, riportando EIP all'inizio
-    /// dell'istruzione finche' il conteggio non si esaurisce: cosi' un
-    /// REP MOVSW da 64 KB resta interrompibile, come sul ferro reale, invece
-    /// di bloccare la macchina emulata in un ciclo chiuso.
+    /// With a REP prefix the instruction repeats until CX reaches zero. Here we
+    /// execute <b>one iteration per call</b>, rewinding EIP to the start of the
+    /// instruction until the count runs out. That keeps a 64 KB REP MOVSW
+    /// interruptible, exactly as it is on real hardware, instead of locking the
+    /// emulated machine inside a closed loop where no timer tick or keystroke
+    /// could ever be serviced.
     /// </summary>
     private void ExecuteString(byte opcode)
     {
         bool byteOperand = (opcode & 1) == 0;
         int size = byteOperand ? 1 : (OperandSize32 ? 4 : 2);
-        int delta = Flags.Direction ? -size : size;   // DF decide la direzione
+        int delta = Flags.Direction ? -size : size;   // DF picks the direction
 
         bool repeat = _prefixes.Rep || _prefixes.RepNe;
         if (repeat)
@@ -27,7 +28,8 @@ public sealed partial class Cpu
             uint count = AddressSize32 ? State.Ecx : State.Cx;
             if (count == 0)
             {
-                // Conteggio gia' esaurito: l'istruzione non fa nulla.
+                // The count was already exhausted: REP with CX = 0 does
+                // nothing at all, not even one iteration.
                 return;
             }
         }
@@ -48,8 +50,9 @@ public sealed partial class Cpu
                 AdvanceIndex(ref DestinationIndexRef, delta);
                 break;
 
-            // INS: legge dalla porta in DX e scrive in ES:DI. La destinazione
-            // non accetta override di segmento, come per le altre stringhe.
+            // INS: reads from the port in DX and stores at ES:DI. As with the
+            // other string instructions the destination takes no segment
+            // override.
             case 0x6C:   // INSB
             case 0x6D:   // INSW/INSD
                 if (byteOperand) WriteMem8(SegReg.Es, DestinationIndex, _io.ReadByte(State.Dx));
@@ -58,8 +61,8 @@ public sealed partial class Cpu
                 AdvanceIndex(ref DestinationIndexRef, delta);
                 break;
 
-            // OUTS: il verso opposto, da DS:SI alla porta. Qui il segmento
-            // sorgente accetta l'override.
+            // OUTS: the other direction, from DS:SI out to the port. Here the
+            // source segment does accept an override.
             case 0x6E:   // OUTSB
             case 0x6F:   // OUTSW/OUTSD
                 if (byteOperand) _io.WriteByte(State.Dx, ReadMem8(source, SourceIndex));
@@ -115,29 +118,31 @@ public sealed partial class Cpu
 
         if (!repeat) return;
 
-        // Decrementa il conteggio e decide se ripetere.
+        // Decrement the count and decide whether to go round again.
         uint remaining;
         if (AddressSize32) remaining = --State.Ecx;
         else { State.Cx = (ushort)(State.Cx - 1); remaining = State.Cx; }
 
         if (remaining == 0) return;
 
-        // CMPS e SCAS confrontano: REPE si ferma quando il confronto fallisce,
-        // REPNE quando riesce. Le altre istruzioni ignorano ZF.
+        // CMPS and SCAS compare, so they also honour ZF: REPE stops when the
+        // comparison fails, REPNE when it succeeds. The other string
+        // instructions ignore ZF entirely and only ever count down.
         bool comparison = opcode is 0xA6 or 0xA7 or 0xAE or 0xAF;
         if (comparison)
         {
-            if (_prefixes.Rep && !Flags.Zero) return;      // REPE: esce se ZF=0
-            if (_prefixes.RepNe && Flags.Zero) return;     // REPNE: esce se ZF=1
+            if (_prefixes.Rep && !Flags.Zero) return;      // REPE: leave when ZF=0
+            if (_prefixes.RepNe && Flags.Zero) return;     // REPNE: leave when ZF=1
         }
 
-        // Riporta EIP all'inizio dell'istruzione: la prossima Step() la
-        // rieseguira', dopo aver dato modo alle interruzioni di intervenire.
+        // Rewind EIP to the start of the instruction: the next Step() will run
+        // it again, having given pending interrupts a chance to come through
+        // in between.
         State.Eip = _instructionStart;
     }
 
-    // Gli indici sorgente e destinazione sono SI/DI o ESI/EDI a seconda della
-    // dimensione degli indirizzi in vigore.
+    // The source and destination indices are SI/DI or ESI/EDI depending on the
+    // address size in effect -- not on the operand size.
 
     private uint SourceIndex => AddressSize32 ? State.Esi : State.Si;
     private uint DestinationIndex => AddressSize32 ? State.Edi : State.Di;
@@ -146,8 +151,10 @@ public sealed partial class Cpu
     private ref uint DestinationIndexRef => ref State.Gpr[(int)Reg.Edi];
 
     /// <summary>
-    /// Avanza un indice. A 16 bit l'incremento avvolge dentro i 16 bit bassi
-    /// senza toccare la meta' alta del registro.
+    /// Advances an index. At 16-bit address size the increment wraps within the
+    /// low 16 bits and leaves the top half of the register alone, so a string
+    /// operation running off the end of a segment comes back round to its
+    /// start rather than spilling into the next one.
     /// </summary>
     private void AdvanceIndex(ref uint index, int delta)
     {

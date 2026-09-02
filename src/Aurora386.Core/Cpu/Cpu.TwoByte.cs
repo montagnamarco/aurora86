@@ -3,15 +3,16 @@ namespace Aurora386.Core.Cpu;
 public sealed partial class Cpu
 {
     /// <summary>
-    /// Opcode a due byte, preceduti da 0x0F. Sono le istruzioni aggiunte dal
-    /// 286 e dal 386: salti condizionati lunghi, SETcc, scorrimenti a doppia
-    /// precisione, manipolazione di bit e accesso ai registri di controllo.
+    /// The two-byte opcodes, introduced by a leading 0x0F. These are the
+    /// instructions added by the 286 and the 386: long conditional jumps,
+    /// SETcc, double-precision shifts, bit manipulation and access to the
+    /// control registers.
     /// </summary>
     private void ExecuteTwoByte(byte opcode)
     {
         switch (opcode)
         {
-            // --- salti condizionati con spiazzamento lungo (0x80-0x8F) ------
+            // --- conditional jumps with a long displacement (0x80-0x8F) -----
             case >= 0x80 and <= 0x8F:
             {
                 int offset = FetchDisplacement();
@@ -20,7 +21,7 @@ public sealed partial class Cpu
                 return;
             }
 
-            // --- SETcc (0x90-0x9F): scrive 1 o 0 in un byte -----------------
+            // --- SETcc (0x90-0x9F): writes 1 or 0 into a byte ---------------
             case >= 0x90 and <= 0x9F:
             {
                 var m = DecodeModRm();
@@ -28,40 +29,42 @@ public sealed partial class Cpu
                 return;
             }
 
-            // --- PUSH/POP di FS e GS, aggiunti dal 386 ----------------------
+            // --- PUSH/POP of FS and GS, both new in the 386 -----------------
             case 0xA0: PushOperand(State.Fs.Selector); return;
             case 0xA1: LoadSegment(SegReg.Fs, (ushort)PopSegmentOperand()); return;
             case 0xA8: PushOperand(State.Gs.Selector); return;
             case 0xA9: LoadSegment(SegReg.Gs, (ushort)PopSegmentOperand()); return;
 
-            // --- estensioni di segno e di zero (0xB6/0xB7/0xBE/0xBF) --------
-            // Sono le istruzioni che rendono efficiente lavorare con byte e
-            // word in registri a 32 bit; il codice a 16 bit di DOS non le usa,
-            // ma i compilatori a 32 bit le producono di continuo.
+            // --- zero and sign extension (0xB6/0xB7/0xBE/0xBF) --------------
+            // These are what make it cheap to work with bytes and words in
+            // 32-bit registers; DOS's 16-bit code never uses them, but 32-bit
+            // compilers emit them constantly, since without them widening a
+            // value takes a mask or a pair of shifts.
             case 0xB6: { var m = DecodeModRm(); WriteRegOperand(m, ReadRm8(m)); return; }
             case 0xB7: { var m = DecodeModRm(); WriteRegOperand(m, ReadRm16(m)); return; }
             case 0xBE: { var m = DecodeModRm(); WriteRegOperand(m, (uint)(sbyte)ReadRm8(m)); return; }
             case 0xBF: { var m = DecodeModRm(); WriteRegOperand(m, (uint)(short)ReadRm16(m)); return; }
 
-            // --- scorrimenti a doppia precisione (386) ----------------------
+            // --- double-precision shifts (386) ------------------------------
             case 0xA4: { var m = DecodeModRm(); ShiftDouble(m, ReadRegOperand(m), FetchByte(), left: true); return; }
             case 0xA5: { var m = DecodeModRm(); ShiftDouble(m, ReadRegOperand(m), State.GetReg8(1), left: true); return; }
             case 0xAC: { var m = DecodeModRm(); ShiftDouble(m, ReadRegOperand(m), FetchByte(), left: false); return; }
             case 0xAD: { var m = DecodeModRm(); ShiftDouble(m, ReadRegOperand(m), State.GetReg8(1), left: false); return; }
 
-            // --- BSF/BSR: cercano il primo bit acceso ------------------------
+            // --- BSF/BSR: find the first bit that is set --------------------
             case 0xBC: BitScan(forward: true); return;
             case 0xBD: BitScan(forward: false); return;
 
-            // --- gruppo 0F 01: tabelle dei descrittori e parola di stato -----
-            // Serve a chi prepara il passaggio in protected mode. HIMEM.SYS lo
-            // usa gia' in real mode: senza, il caricamento di DOS si ferma.
+            // --- group 0F 01: descriptor tables and the machine status word --
+            // Needed by anything that prepares the switch into protected mode.
+            // HIMEM.SYS already uses it while still in real mode: without this
+            // group, loading DOS stops dead.
             case 0x01:
             {
                 var m = DecodeModRm();
                 switch (m.Reg)
                 {
-                    case 0:   // SGDT: limite e base in memoria
+                    case 0:   // SGDT: stores limit and base to memory
                         if (m.IsRegister) throw new CpuException(6);
                         WriteMem16(m.Segment, m.Offset, State.GdtLimit);
                         WriteMem32(m.Segment, m.Offset + 2, State.GdtBase);
@@ -78,8 +81,9 @@ public sealed partial class Cpu
                         if (m.IsRegister) throw new CpuException(6);
                         State.GdtLimit = ReadMem16(m.Segment, m.Offset);
                         uint baseValue = ReadMem32(m.Segment, m.Offset + 2);
-                        // Con operandi a 16 bit il byte alto della base viene
-                        // ignorato: la tabella sta nel primo megabyte.
+                        // With 16-bit operands the top byte of the base is
+                        // discarded: the 286-compatible form assumes the table
+                        // lives inside the first 16 MB.
                         State.GdtBase = OperandSize32 ? baseValue : baseValue & 0x00FFFFFF;
                         return;
                     }
@@ -93,17 +97,21 @@ public sealed partial class Cpu
                         return;
                     }
 
-                    case 4:   // SMSW: i sedici bit bassi di CR0
+                    case 4:   // SMSW: the low sixteen bits of CR0
                         if (m.IsRegister) State.SetReg16(m.Register, (ushort)State.Cr0);
                         else WriteMem16(m.Segment, m.Offset, (ushort)State.Cr0);
                         return;
 
-                    case 6:   // LMSW: scrive i bit bassi di CR0, ma PE non si spegne
+                    case 6:   // LMSW: writes the low CR0 bits, but PE cannot be cleared
                     {
                         ushort valore = ReadRm16(m);
                         uint nuovo = (State.Cr0 & 0xFFFFFFF0) | (uint)(valore & 0x0F);
-                        // Una volta acceso, il bit di protezione non si spegne
-                        // con LMSW: serve un reset.
+                        // Once the protection enable bit is on, LMSW cannot
+                        // turn it back off: leaving protected mode requires a
+                        // reset (or, on later chips, clearing PE through CR0).
+                        // The one-way door is deliberate -- it stops ring 3
+                        // code from demoting the machine out from under the
+                        // operating system.
                         if ((State.Cr0 & CpuState.Cr0ProtectionEnable) != 0)
                             nuovo |= CpuState.Cr0ProtectionEnable;
                         WriteCr0(nuovo);
@@ -115,22 +123,22 @@ public sealed partial class Cpu
                 }
             }
 
-            // --- CLTS: azzera il flag "task switched" di CR0 -----------------
+            // --- CLTS: clears the "task switched" bit of CR0 ----------------
             case 0x06: State.Cr0 &= ~CpuState.Cr0TaskSwitched; return;
 
-            // --- istruzioni sui bit -----------------------------------------
-            // Nella forma /r l'indice del bit e' un registro con segno, e su
-            // memoria puo' puntare ben oltre l'operando indirizzato: il 386 lo
-            // usa per indicizzare vettori di bit, quindi l'indirizzo effettivo
-            // va spostato di indice/dimensione parole.
+            // --- bit instructions -------------------------------------------
+            // In the /r form the bit index is a signed register value, and on a
+            // memory operand it may point well outside the addressed word: the
+            // 386 means it to index long bit vectors, so the effective address
+            // has to be displaced by index/word-size.
             case 0xA3: BitOperation(BitOp.Test, register: true); return;
             case 0xAB: BitOperation(BitOp.Set, register: true); return;
             case 0xB3: BitOperation(BitOp.Reset, register: true); return;
             case 0xBB: BitOperation(BitOp.Complement, register: true); return;
 
-            // Gruppo 0F BA: stesse quattro operazioni con indice immediato. Qui
-            // l'indice non ha segno e viene ridotto alla dimensione operando,
-            // quindi non puo' uscire dall'operando.
+            // Group 0F BA: the same four operations with an immediate index.
+            // Here the index is unsigned and is reduced modulo the operand
+            // size, so it can never escape the operand itself.
             case 0xBA:
             {
                 var m = DecodeModRm();
@@ -139,9 +147,9 @@ public sealed partial class Cpu
                 return;
             }
 
-            // --- IMUL a due operandi: reg = reg * r/m (386) ------------------
-            // Stessa logica della forma con immediato: il secondo fattore e'
-            // il registro di destinazione invece di una costante.
+            // --- two-operand IMUL: reg = reg * r/m (386) --------------------
+            // Same logic as the immediate form; the second factor is simply the
+            // destination register instead of a constant.
             case 0xAF:
             {
                 var m = DecodeModRm();
@@ -149,12 +157,12 @@ public sealed partial class Cpu
                 return;
             }
 
-            // --- caricamento di puntatori lontani con i segmenti del 386 -----
+            // --- far pointer loads into the 386's new segment registers -----
             case 0xB2: LoadFarPointer(SegReg.Ss); return;
             case 0xB4: LoadFarPointer(SegReg.Fs); return;
             case 0xB5: LoadFarPointer(SegReg.Gs); return;
 
-            // --- accesso ai registri di controllo ---------------------------
+            // --- control register access ------------------------------------
             case 0x20:
             {
                 var m = DecodeModRm();
@@ -180,9 +188,10 @@ public sealed partial class Cpu
                 return;
             }
 
-            // --- accesso ai registri di debug -------------------------------
-            // Non c'e' hardware di breakpoint dietro, ma i valori vanno
-            // conservati: chi li scrive si aspetta di rileggerli uguali.
+            // --- debug register access --------------------------------------
+            // There is no breakpoint hardware behind these, but the values
+            // still have to be kept: whoever writes them expects to read the
+            // same values back, and debuggers probe exactly that way.
             case 0x21:
             {
                 var m = DecodeModRm();
@@ -196,12 +205,12 @@ public sealed partial class Cpu
                 return;
             }
 
-            // --- aggancio agli handler nativi -------------------------------
-            // 0x0F 0xFF non e' un opcode del 386: viene usato qui come punto
-            // di ingresso per le funzioni BIOS realizzate in C#. Il byte che
-            // segue identifica quale handler chiamare. E' lo stesso
-            // meccanismo delle callback di DOSBox: molto piu' veloce e piu'
-            // facile da correggere che scrivere il BIOS in assembler.
+            // --- hook for the native handlers --------------------------------
+            // 0x0F 0xFF is not a 386 opcode at all: it is used here as the
+            // entry point for the BIOS functions implemented in C#. The byte
+            // that follows says which handler to call. It is the same trick
+            // DOSBox uses for its callbacks -- far faster to run, and far
+            // easier to fix, than writing the BIOS in assembler.
             case 0xFF:
             {
                 byte handlerId = FetchByte();
@@ -211,26 +220,28 @@ public sealed partial class Cpu
             }
 
             default:
-                // Opcode a due byte non riconosciuto: si segnala con 0x0F00
-                // sommato al secondo byte, per distinguerlo da quelli a un byte.
+                // An unrecognised two-byte opcode. It is reported separately
+                // from the one-byte ones so the two cannot be confused when
+                // reading the log.
                 UnknownTwoByteOpcode?.Invoke(opcode, _instructionStart, State.Cs.Selector);
                 throw new CpuException(6);
         }
     }
 
-    /// <summary>Segnalato per gli opcode 0x0F non riconosciuti.</summary>
+    /// <summary>Raised for unrecognised 0x0F opcodes.</summary>
     public event Action<byte, uint, ushort>? UnknownTwoByteOpcode;
 
     /// <summary>
-    /// Handler delle chiamate native, installato dalla macchina emulata.
-    /// Riceve la CPU e l'identificativo codificato dopo l'opcode.
+    /// The native call handler, installed by the emulated machine. It receives
+    /// the CPU and the identifier encoded after the opcode.
     /// </summary>
     public Action<Cpu, byte>? NativeHandler { get; set; }
 
     /// <summary>
-    /// BSF/BSR: trovano la posizione del primo bit a 1, dal basso o dall'alto.
-    /// Con operando zero il risultato e' indefinito sul ferro reale e ZF viene
-    /// posto a 1; il registro di destinazione resta invariato.
+    /// BSF/BSR: find the position of the first set bit, scanning from the
+    /// bottom or from the top. With a zero operand the result is undefined on
+    /// real silicon and ZF is set instead; the destination register is left
+    /// unchanged, which is the behaviour software actually relies on.
     /// </summary>
     private void BitScan(bool forward)
     {
@@ -251,46 +262,48 @@ public sealed partial class Cpu
         Flags.Zero = false;
     }
 
-    /// <summary>Le quattro operazioni del gruppo di bit, nell'ordine del campo reg.</summary>
+    /// <summary>The four operations of the bit group, in reg-field order.</summary>
     private enum BitOp { Test = 0, Set = 1, Reset = 2, Complement = 3 }
 
     /// <summary>
-    /// BT/BTS/BTR/BTC con indice in un registro. Su memoria l'indice e' con
-    /// segno e non e' limitato alla dimensione dell'operando: l'indirizzo
-    /// effettivo scorre di indice/16 word (o /32 dword), cosi' che un vettore
-    /// di bit lungo si indirizzi con una sola istruzione.
+    /// BT/BTS/BTR/BTC with the index in a register. On a memory operand the
+    /// index is signed and is not clamped to the operand size: the effective
+    /// address slides by index/16 words (or /32 dwords), so that a long bit
+    /// vector can be addressed with a single instruction and no pointer
+    /// arithmetic of its own.
     /// </summary>
     private void BitOperation(BitOp operation, bool register)
     {
         var m = DecodeModRm();
         int width = OperandSize32 ? 32 : 16;
-        // L'indice e' con segno: a 16 bit va esteso, altrimenti un valore come
-        // 0xC386 verrebbe letto come +50054 invece che -15482 e l'indirizzo
-        // effettivo scorrerebbe dalla parte sbagliata.
+        // The index is signed, so at 16 bits it has to be sign-extended:
+        // otherwise a value such as 0xC386 would be read as +50054 instead of
+        // -15482 and the effective address would slide the wrong way entirely.
         int index = OperandSize32 ? (int)ReadRegOperand(m)
                                   : (short)ReadRegOperand(m);
 
         if (m.IsRegister)
         {
-            // Su registro non c'e' nessun indirizzo da spostare: l'indice
-            // viene semplicemente ridotto modulo la dimensione.
+            // On a register there is no address to displace: the index is
+            // simply reduced modulo the operand width.
             uint value = ReadRm(m);
             int bit = index & (width - 1);
             ApplyBit(m, operation, value, bit);
             return;
         }
 
-        // La divisione dev'essere quella che arrotonda verso il basso, non
-        // verso lo zero: con indice negativo l'indirizzo scende. Il conto sta
-        // in long perche' con indice 0x80000000 la sottrazione traboccherebbe.
+        // The division has to round towards negative infinity, not towards
+        // zero: with a negative index the address must move downwards. The
+        // arithmetic is done in long because with an index of 0x80000000 the
+        // subtraction would otherwise overflow.
         long indiceLungo = index;
         long word = indiceLungo >= 0 ? indiceLungo / width
                                      : (indiceLungo - width + 1) / width;
         int bitInWord = (int)(indiceLungo - word * width);
 
         uint offset = (uint)(m.Offset + word * (width / 8));
-        // L'indirizzo avvolge nei 16 bit solo quando anche il calcolo
-        // dell'indirizzo e' a 16 bit: col prefisso 67 resta a 32.
+        // The address wraps within 16 bits only when the address calculation
+        // itself is 16-bit: with the 0x67 prefix it stays 32-bit.
         if (!AddressSize32) offset &= 0xFFFF;
 
         ModRm target = m;
@@ -298,7 +311,7 @@ public sealed partial class Cpu
         ApplyBit(target, operation, ReadRm(target), bitInWord);
     }
 
-    /// <summary>Gruppo 0F BA: l'indice immediato non esce mai dall'operando.</summary>
+    /// <summary>Group 0F BA: the immediate index can never escape the operand.</summary>
     private void BitOperationImmediate(in ModRm m, BitOp operation)
     {
         int width = OperandSize32 ? 32 : 16;
@@ -307,8 +320,8 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Copia il bit selezionato in CF e, tranne che per BT, riscrive
-    /// l'operando. Gli altri flag aritmetici restano quelli di prima.
+    /// Copies the selected bit into CF and, for everything except BT, writes
+    /// the operand back. The other arithmetic flags keep whatever they held.
     /// </summary>
     private void ApplyBit(in ModRm m, BitOp operation, uint value, int bit)
     {
@@ -327,9 +340,9 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Scrittura di CR0. E' il registro che accende protezione e paging: il
-    /// passaggio di PE da 0 a 1 e' la transizione in protected mode, quella
-    /// che Windows 3.1 compie all'avvio.
+    /// Writes CR0. This is the register that turns on protection and paging:
+    /// taking PE from 0 to 1 *is* the switch into protected mode, the one
+    /// Windows 3.1 performs as it starts up.
     /// </summary>
     private void WriteCr0(uint value)
     {

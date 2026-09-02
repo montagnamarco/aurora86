@@ -2,15 +2,17 @@ namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu
 {
-    // Istruzioni di aggiustamento decimale. Servono a fare aritmetica su cifre
-    // BCD (una cifra decimale per nibble), che il software dell'epoca usa per
-    // i calcoli su valuta e per la conversione in stringa senza divisioni.
+    // The decimal adjust instructions. They exist to do arithmetic on BCD
+    // digits (one decimal digit per nibble), which contemporary software used
+    // for currency amounts -- where binary rounding is unacceptable -- and to
+    // convert numbers to strings without dividing by ten.
 
-    /// <summary>DAA: aggiusta AL dopo una somma di due valori BCD impacchettati.</summary>
+    /// <summary>DAA: adjusts AL after adding two packed BCD values.</summary>
     private void Daa()
     {
-        // Entrambe le soglie si valutano sul valore di partenza: il +6 della
-        // prima correzione non deve influenzare il confronto della seconda.
+        // Both thresholds are tested against the *original* AL: the +6 of the
+        // first correction must not feed into the comparison made by the
+        // second, or a value like 0x9A would be corrected twice.
         byte al = State.GetReg8(0);
         byte alIniziale = al;
         bool carryIniziale = Flags.Carry;
@@ -37,7 +39,7 @@ public sealed partial class Cpu
         Flags.Adjust = adjust;
     }
 
-    /// <summary>DAS: aggiusta AL dopo una sottrazione BCD.</summary>
+    /// <summary>DAS: adjusts AL after a packed BCD subtraction.</summary>
     private void Das()
     {
         byte al = State.GetReg8(0);
@@ -66,14 +68,16 @@ public sealed partial class Cpu
         Flags.Adjust = adjust;
     }
 
-    /// <summary>AAA: aggiusta AL dopo una somma di BCD non impacchettati.</summary>
+    /// <summary>AAA: adjusts AL after adding two unpacked BCD digits.</summary>
     private void Aaa()
     {
         byte al = State.GetReg8(0);
         if ((al & 0x0F) > 9 || Flags.Adjust)
         {
-            // La somma avviene su otto bit e il suo riporto si propaga in AH
-            // oltre all'incremento fisso: con AL = FF, AH cresce di due.
+            // The addition happens in eight bits, and its carry out propagates
+            // into AH on top of the fixed increment: with AL = 0xFF, AH grows
+            // by two, not one. Easy to miss, and the hardware-generated tests
+            // catch it immediately.
             int somma = al + 6;
             State.SetReg8(0, (byte)(somma & 0x0F));
             State.SetReg8(4, (byte)(State.GetReg8(4) + 1 + (somma >> 8)));
@@ -88,14 +92,14 @@ public sealed partial class Cpu
         }
     }
 
-    /// <summary>AAS: aggiusta AL dopo una sottrazione di BCD non impacchettati.</summary>
+    /// <summary>AAS: adjusts AL after subtracting two unpacked BCD digits.</summary>
     private void Aas()
     {
         byte al = State.GetReg8(0);
         if ((al & 0x0F) > 9 || Flags.Adjust)
         {
-            // Come per AAA, il prestito della sottrazione a otto bit si
-            // somma al decremento fisso di AH.
+            // As with AAA, the borrow out of the eight-bit subtraction adds to
+            // the fixed decrement of AH.
             int differenza = al - 6;
             State.SetReg8(0, (byte)(differenza & 0x0F));
             State.SetReg8(4, (byte)(State.GetReg8(4) - 1 - ((differenza >> 8) & 1)));
@@ -111,19 +115,22 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// AAM: divide AL per la base (10 di default) mettendo quoziente in AH e
-    /// resto in AL. La base arriva come byte immediato: assemblatori diversi
-    /// permettono basi diverse da 10, ed e' un modo compatto di dividere.
+    /// AAM: divides AL by the base (10 by default), leaving the quotient in AH
+    /// and the remainder in AL. The base arrives as an immediate byte, so
+    /// assemblers can emit other bases too -- which makes AAM a compact way of
+    /// dividing a byte by a small constant, and some code used it for exactly
+    /// that rather than for BCD at all.
     /// </summary>
     private void Aam()
     {
         byte divisor = FetchByte();
         if (divisor == 0)
         {
-            // Il 386 azzera i flag aritmetici prima di accorgersi del divisore
-            // nullo, quindi il gestore di #DE trova questo stato impilato.
-            // PF resta indeterminato: dipende dai passi gia' compiuti dalla
-            // divisione interrotta e non e' riproducibile.
+            // The 386 clears the arithmetic flags before it notices the zero
+            // divisor, so the #DE handler finds this state in the flags pushed
+            // on its stack frame. PF is left indeterminate: it depends on how
+            // far the internal division had already got, and is not
+            // reproducible.
             Flags.Carry = false; Flags.Adjust = false; Flags.Zero = false;
             Flags.Sign = false; Flags.Overflow = false;
             throw new CpuException(0);
@@ -135,7 +142,7 @@ public sealed partial class Cpu
         Flags.Set(FlagOp.Logic, 0, 0, State.GetReg8(0), 8);
     }
 
-    /// <summary>AAD: l'inverso di AAM, comprime AH:AL in AL.</summary>
+    /// <summary>AAD: the inverse of AAM, folding AH:AL back down into AL.</summary>
     private void Aad()
     {
         byte multiplier = FetchByte();

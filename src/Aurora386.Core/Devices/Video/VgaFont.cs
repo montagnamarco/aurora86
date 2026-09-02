@@ -1,27 +1,29 @@
 namespace Aurora386.Core.Devices.Video;
 
 /// <summary>
-/// Font a matrice 8x16 della VGA, come quello contenuto nella ROM della
-/// scheda: 256 caratteri, 16 byte ciascuno, un byte per riga con un bit
-/// per pixel.
+/// The VGA's 8x16 bitmap font, matching the one held in the adapter's own
+/// ROM: 256 glyphs, 16 bytes each, one byte per scanline with one bit per
+/// pixel.
 ///
-/// I caratteri della pagina CP437 sopra 127 (semigrafici, cornici, lettere
-/// accentate) sono quelli che DOS usa per menu e riquadri; senza di essi
-/// programmi come EDIT mostrerebbero cornici sbagliate.
+/// The CP437 characters above 127 -- block graphics, box-drawing lines,
+/// accented letters -- are what DOS builds its menus and frames out of.
+/// Without them, programs like EDIT draw their borders out of whatever
+/// unrelated glyphs happen to occupy those codes.
 /// </summary>
 public static class VgaFont
 {
     public const int CharWidth = 8;
     public const int CharHeight = 16;
 
-    // L'inizializzazione e' pigra: i campi static readonly si costruiscono
-    // nell'ordine di dichiarazione, e BuildFont() dipende da AsciiGlyphs che
-    // e' dichiarato piu' sotto. Lazy<T> rende l'ordine irrilevante.
+    // Initialisation is deferred on purpose: static readonly fields are
+    // constructed in declaration order, and BuildFont() depends on
+    // AsciiGlyphs, which is declared further down. Lazy<T> makes the
+    // declaration order irrelevant instead of leaving a silent null.
     private static readonly Lazy<byte[]> LazyData = new(BuildFont);
 
     private static byte[] Data => LazyData.Value;
 
-    /// <summary>Righe di pixel di un carattere, dall'alto in basso.</summary>
+    /// <summary>A glyph's scanlines, top to bottom.</summary>
     public static ReadOnlySpan<byte> GetGlyph(byte character)
         => Data.AsSpan(character * CharHeight, CharHeight);
 
@@ -31,18 +33,17 @@ public static class VgaFont
     {
         var font = new byte[256 * CharHeight];
 
-        // Il font e' descritto in forma compatta: per ogni carattere otto
-        // righe da 8 pixel, che vengono poi raddoppiate verticalmente e
-        // centrate nella cella da 16 righe. E' il modo in cui la VGA ricava
-        // il font 8x16 da quello 8x8 della CGA per i caratteri di base.
+        // The font is stored compactly: eight 8-pixel rows per glyph, then
+        // doubled vertically to fill the 16-row cell. This mirrors how the
+        // 8x16 VGA font relates to the 8x8 CGA font it grew out of.
         for (int ch = 0; ch < 256; ch++)
         {
             ReadOnlySpan<byte> source = GetBaseGlyph(ch);
             int destination = ch * CharHeight;
 
-            // Ogni riga di origine occupa due righe della cella: otto righe
-            // raddoppiate riempiono esattamente le sedici disponibili, quindi
-            // non c'e' spazio (ne' bisogno) di margini.
+            // Each source row covers two cell rows: eight doubled rows fill
+            // exactly the sixteen available, so there is no room for -- and no
+            // need of -- any padding above or below.
             for (int row = 0; row < 8; row++)
             {
                 font[destination + row * 2] = source[row];
@@ -54,48 +55,49 @@ public static class VgaFont
     }
 
     /// <summary>
-    /// Matrice 8x8 di un carattere. Le lettere e le cifre sono disegnate
-    /// esplicitamente; i caratteri semigrafici sono generati dalle regole
-    /// della pagina CP437.
+    /// The 8x8 bitmap for one character. Letters and digits are drawn out
+    /// explicitly; the block and line-drawing characters are generated from
+    /// the regular patterns CP437 assigns them.
     /// </summary>
     private static ReadOnlySpan<byte> GetBaseGlyph(int ch)
     {
-        // Blocchi pieni e sfumature (0xB0-0xDF): sono generabili da regole
-        // invece che da una tabella, e sono quelli che DOS usa per le cornici.
+        // Solid blocks and dither patterns (0xB0-0xDF). These follow simple
+        // rules rather than needing a table, and they are exactly the glyphs
+        // DOS shades its dialogs and backgrounds with.
         switch (ch)
         {
-            case 0xB0: return [0x88, 0x22, 0x88, 0x22, 0x88, 0x22, 0x88, 0x22];  // sfumatura chiara
-            case 0xB1: return [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];  // media
-            case 0xB2: return [0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77];  // scura
-            case 0xDB: return [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];  // blocco pieno
-            case 0xDC: return [0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];  // meta' bassa
-            case 0xDD: return [0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0];  // meta' sinistra
-            case 0xDE: return [0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F];  // meta' destra
-            case 0xDF: return [0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00];  // meta' alta
+            case 0xB0: return [0x88, 0x22, 0x88, 0x22, 0x88, 0x22, 0x88, 0x22];  // light dither
+            case 0xB1: return [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];  // medium dither
+            case 0xB2: return [0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77];  // dark dither
+            case 0xDB: return [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];  // full block
+            case 0xDC: return [0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];  // lower half block
+            case 0xDD: return [0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0];  // left half block
+            case 0xDE: return [0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F];  // right half block
+            case 0xDF: return [0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00];  // upper half block
 
-            // Linee singole per le cornici.
-            case 0xB3: return [0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18];  // verticale
-            case 0xC4: return [0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00];  // orizzontale
-            case 0xDA: return [0x00, 0x00, 0x00, 0x1F, 0x18, 0x18, 0x18, 0x18];  // angolo alto sx
-            case 0xBF: return [0x00, 0x00, 0x00, 0xF8, 0x18, 0x18, 0x18, 0x18];  // angolo alto dx
-            case 0xC0: return [0x18, 0x18, 0x18, 0x1F, 0x00, 0x00, 0x00, 0x00];  // angolo basso sx
-            case 0xD9: return [0x18, 0x18, 0x18, 0xF8, 0x00, 0x00, 0x00, 0x00];  // angolo basso dx
-            case 0xC3: return [0x18, 0x18, 0x18, 0x1F, 0x18, 0x18, 0x18, 0x18];  // T sinistra
-            case 0xB4: return [0x18, 0x18, 0x18, 0xF8, 0x18, 0x18, 0x18, 0x18];  // T destra
-            case 0xC2: return [0x00, 0x00, 0x00, 0xFF, 0x18, 0x18, 0x18, 0x18];  // T alto
-            case 0xC1: return [0x18, 0x18, 0x18, 0xFF, 0x00, 0x00, 0x00, 0x00];  // T basso
-            case 0xC5: return [0x18, 0x18, 0x18, 0xFF, 0x18, 0x18, 0x18, 0x18];  // incrocio
+            // Single-line box drawing.
+            case 0xB3: return [0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18];  // vertical
+            case 0xC4: return [0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00];  // horizontal
+            case 0xDA: return [0x00, 0x00, 0x00, 0x1F, 0x18, 0x18, 0x18, 0x18];  // top-left corner
+            case 0xBF: return [0x00, 0x00, 0x00, 0xF8, 0x18, 0x18, 0x18, 0x18];  // top-right corner
+            case 0xC0: return [0x18, 0x18, 0x18, 0x1F, 0x00, 0x00, 0x00, 0x00];  // bottom-left corner
+            case 0xD9: return [0x18, 0x18, 0x18, 0xF8, 0x00, 0x00, 0x00, 0x00];  // bottom-right corner
+            case 0xC3: return [0x18, 0x18, 0x18, 0x1F, 0x18, 0x18, 0x18, 0x18];  // left tee
+            case 0xB4: return [0x18, 0x18, 0x18, 0xF8, 0x18, 0x18, 0x18, 0x18];  // right tee
+            case 0xC2: return [0x00, 0x00, 0x00, 0xFF, 0x18, 0x18, 0x18, 0x18];  // top tee
+            case 0xC1: return [0x18, 0x18, 0x18, 0xFF, 0x00, 0x00, 0x00, 0x00];  // bottom tee
+            case 0xC5: return [0x18, 0x18, 0x18, 0xFF, 0x18, 0x18, 0x18, 0x18];  // cross
 
-            // Linee doppie, usate dai menu di DOS 6.22.
-            case 0xCD: return [0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00];  // orizzontale doppia
-            case 0xBA: return [0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66];  // verticale doppia
-            case 0xC9: return [0x00, 0x00, 0x3F, 0x20, 0x2F, 0x26, 0x66, 0x66];  // angolo doppio alto sx
-            case 0xBB: return [0x00, 0x00, 0xFC, 0x04, 0xF4, 0x64, 0x66, 0x66];  // alto dx
-            case 0xC8: return [0x66, 0x66, 0x2F, 0x20, 0x3F, 0x00, 0x00, 0x00];  // basso sx
-            case 0xBC: return [0x66, 0x66, 0xF4, 0x04, 0xFC, 0x00, 0x00, 0x00];  // basso dx
+            // Double lines, the style DOS 6.22's own menus are framed in.
+            case 0xCD: return [0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00];  // double horizontal
+            case 0xBA: return [0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66];  // double vertical
+            case 0xC9: return [0x00, 0x00, 0x3F, 0x20, 0x2F, 0x26, 0x66, 0x66];  // double top-left corner
+            case 0xBB: return [0x00, 0x00, 0xFC, 0x04, 0xF4, 0x64, 0x66, 0x66];  // double top-right
+            case 0xC8: return [0x66, 0x66, 0x2F, 0x20, 0x3F, 0x00, 0x00, 0x00];  // double bottom-left
+            case 0xBC: return [0x66, 0x66, 0xF4, 0x04, 0xFC, 0x00, 0x00, 0x00];  // double bottom-right
         }
 
-        // AsciiGlyphs copre i caratteri 0x00-0x7F, otto byte ciascuno.
+        // AsciiGlyphs covers 0x00-0x7F, eight bytes per glyph.
         const int asciiCount = 128;
         if (ch < asciiCount)
             return AsciiGlyphs.AsSpan(ch * 8, 8);
@@ -106,9 +108,9 @@ public static class VgaFont
     private static readonly byte[] Blank = new byte[8];
 
     /// <summary>
-    /// Matrici 8x8 dei caratteri ASCII da 0x00 a 0x7F. Sono il font della ROM
-    /// del PC IBM originale, che ogni scheda successiva ha mantenuto identico
-    /// per compatibilita'.
+    /// 8x8 bitmaps for the ASCII range 0x00-0x7F. These are the glyphs from
+    /// the original IBM PC's ROM, which every later adapter reproduced
+    /// unchanged for compatibility.
     /// </summary>
     private static readonly byte[] AsciiGlyphs = BuildAsciiGlyphs();
 
@@ -116,8 +118,8 @@ public static class VgaFont
     {
         var glyphs = new byte[128 * 8];
 
-        // Ogni voce e' "carattere: otto righe". I caratteri non elencati
-        // restano vuoti.
+        // Each entry is "character: eight scanlines". Anything not listed is
+        // left blank.
         (char Char, byte[] Rows)[] table =
         [
             (' ', [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),

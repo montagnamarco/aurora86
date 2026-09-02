@@ -5,8 +5,8 @@ using Aurora386.Core.Devices.Video;
 namespace Aurora386.Core.Bios;
 
 /// <summary>
-/// Funzioni video del BIOS (INT 10h). Sono il modo in cui DOS e i programmi
-/// scrivono sullo schermo senza toccare direttamente l'hardware.
+/// BIOS video services (INT 10h). This is how DOS and application software put
+/// text on the screen without touching the adapter hardware directly.
 /// </summary>
 public sealed class VideoServices
 {
@@ -29,8 +29,10 @@ public sealed class VideoServices
         {
             case 0x00: SetVideoMode(cpu.State.GetReg8(0)); return;
             case 0x01: SetCursorShape(cpu.State.Cx); return;
-            // DH e' la riga, DL la colonna: nell'ordine dei registri a 8 bit
-            // sono gli indici 6 e 2, e vanno passati in quest'ordine.
+            // DH is the row and DL the column. In the 8-bit register ordering
+            // (0=AL 1=CL 2=DL 3=BL 4=AH 5=CH 6=DH 7=BH) those are indices 6 and
+            // 2, and they must be passed in that order: getting them backwards
+            // makes text march down the screen vertically instead of across.
             case 0x02: SetCursorPosition(cpu.State.GetReg8(2), cpu.State.GetReg8(6)); return;
             case 0x03: GetCursorPosition(cpu); return;
             case 0x05: SetActivePage(cpu.State.GetReg8(0)); return;
@@ -44,37 +46,37 @@ public sealed class VideoServices
             case 0x13: WriteString(cpu); return;
 
             case 0x11:
-                // Funzioni sui font. La 0x30 restituisce un puntatore alla
-                // tabella dei caratteri, che alcuni programmi leggono.
+                // Font functions. Subfunction 0x30 returns a pointer to the
+                // character table, which some programs read.
                 if (cpu.State.GetReg8(0) == 0x30) GetFontPointer(cpu);
                 return;
 
             case 0x12:
-                // Funzioni EGA/VGA di configurazione. La 0x10 riporta quanta
-                // memoria ha la scheda.
+                // EGA/VGA configuration functions. Subfunction 0x10 reports how
+                // much memory the adapter has.
                 if (cpu.State.GetReg8(3) == 0x10)
                 {
-                    cpu.State.Bx = 0x0003;   // 256 KB di memoria video
+                    cpu.State.Bx = 0x0003;   // 256 KB of video memory
                     cpu.State.Cx = 0x0009;
                 }
                 return;
 
             case 0x1A:
-                // Codice di combinazione video: identifica il tipo di scheda.
-                cpu.State.SetReg8(0, 0x1A);    // funzione supportata
-                cpu.State.Bx = 0x0808;         // VGA a colori
+                // Display combination code: identifies the adapter type.
+                cpu.State.SetReg8(0, 0x1A);    // function supported
+                cpu.State.Bx = 0x0808;         // color VGA
                 return;
 
             default:
-                // Funzione non implementata: si ritorna senza fare nulla,
-                // che e' il comportamento meno dannoso.
+                // Unimplemented function: return without doing anything, which
+                // is the least harmful behavior.
                 return;
         }
     }
 
     private void SetVideoMode(byte mode)
     {
-        // Il bit 7 chiede di non cancellare lo schermo.
+        // Bit 7 asks for the screen not to be cleared.
         bool preserveScreen = (mode & 0x80) != 0;
         mode &= 0x7F;
 
@@ -111,7 +113,7 @@ public sealed class VideoServices
         {
             uint offset = VgaMemory.TextWindowOffset + (uint)(i * 2);
             _video[offset] = (byte)' ';
-            _video[offset + 1] = 0x07;   // grigio su nero
+            _video[offset + 1] = 0x07;   // light grey on black
         }
     }
 
@@ -149,8 +151,9 @@ public sealed class VideoServices
 
     private void GetFontPointer(CpuNs.Cpu cpu)
     {
-        // Il font vive nella ROM emulata; qui basta un puntatore valido e
-        // l'altezza dei caratteri, che e' cio' che i programmi usano davvero.
+        // The font lives in the emulated ROM; all that is needed here is a
+        // valid pointer plus the character height, which is what programs
+        // actually use.
         cpu.SetSegment(SegReg.Es, 0xF000);
         cpu.State.Bp = 0x2000;
         cpu.State.Cx = VgaFont.CharHeight;
@@ -158,9 +161,9 @@ public sealed class VideoServices
     }
 
     /// <summary>
-    /// Scrittura in stile telescrivente: il carattere appare alla posizione
-    /// del cursore, che avanza, con ritorno a capo e scorrimento automatici.
-    /// E' la funzione che DOS usa per quasi tutto l'output.
+    /// Teletype-style output: the character appears at the cursor position, the
+    /// cursor advances, and line wrapping and scrolling happen automatically.
+    /// This is the function DOS uses for nearly all of its output.
     /// </summary>
     public void TeletypeOutput(byte character, byte page)
     {
@@ -171,16 +174,16 @@ public sealed class VideoServices
 
         switch (character)
         {
-            case 0x0D: column = 0; break;                       // ritorno carrello
-            case 0x0A: row++; break;                            // avanzamento riga
+            case 0x0D: column = 0; break;                       // carriage return
+            case 0x0A: row++; break;                            // line feed
             case 0x08: if (column > 0) column--; break;         // backspace
-            case 0x07: break;                                   // campanello: nessun effetto visivo
+            case 0x07: break;                                   // bell: no visible effect
             default:
             {
                 uint offset = VgaMemory.TextWindowOffset + (uint)((row * columns + column) * 2);
                 _video[offset] = character;
-                // L'attributo esistente viene preservato: la funzione 0x0E
-                // scrive il carattere ma non cambia i colori.
+                // The existing attribute is left alone: function 0x0E writes
+                // the character but does not change the colors.
                 column++;
                 if (column >= columns) { column = 0; row++; }
                 break;
@@ -225,8 +228,8 @@ public sealed class VideoServices
             _video[offset] = character;
             if (writeAttribute) _video[offset + 1] = attribute;
         }
-        // Il cursore non avanza: e' il comportamento documentato delle
-        // funzioni 0x09 e 0x0A.
+        // The cursor deliberately does not advance: that is the documented
+        // behavior of functions 0x09 and 0x0A.
     }
 
     private void ReadCharacterAtCursor(CpuNs.Cpu cpu)
@@ -235,13 +238,13 @@ public sealed class VideoServices
         uint offset = VgaMemory.TextWindowOffset
                     + (uint)((_bda.CursorRow * columns + _bda.CursorColumn) * 2);
 
-        cpu.State.SetReg8(0, _video[offset]);        // AL: carattere
-        cpu.State.SetReg8(4, _video[offset + 1]);    // AH: attributo
+        cpu.State.SetReg8(0, _video[offset]);        // AL: character
+        cpu.State.SetReg8(4, _video[offset + 1]);    // AH: attribute
     }
 
     private void ScrollUp(CpuNs.Cpu cpu)
     {
-        byte lines = cpu.State.GetReg8(0);       // AL, 0 = cancella tutto
+        byte lines = cpu.State.GetReg8(0);       // AL, 0 = clear the whole window
         byte attribute = cpu.State.GetReg8(7);   // BH
         if (lines == 0) { ClearRegion(cpu, attribute); return; }
         var area = LeggiRegione(cpu);
@@ -258,21 +261,25 @@ public sealed class VideoServices
     }
 
     /// <summary>
-    /// Fa scorrere lo schermo verso l'alto: e' cio' che accade quando il testo
-    /// arriva in fondo. Le righe si spostano e in basso ne compare una vuota.
+    /// Scrolls the screen upwards: this is what happens when text reaches the
+    /// bottom. The rows shift up and a blank one appears at the bottom.
     /// </summary>
     /// <summary>
-    /// Rettangolo su cui agiscono le funzioni di scorrimento: angolo alto a
-    /// sinistra in CH/CL, angolo basso a destra in DH/DL.
+    /// The rectangle the scroll functions operate on: top-left corner in CH/CL,
+    /// bottom-right corner in DH/DL.
     /// </summary>
     private readonly record struct Regione(int Left, int Top, int Right, int Bottom);
 
-    /// <summary>L'intero schermo, per lo scorrimento del teletype.</summary>
+    /// <summary>The whole screen, used by the teletype scroll.</summary>
     private Regione SchermoIntero
         => new(0, 0, _registers.TextColumns - 1, _registers.TextRows - 1);
 
     private Regione LeggiRegione(CpuNs.Cpu cpu)
     {
+        // Same 8-bit register ordering trap as everywhere else in INT 10h:
+        // 0=AL 1=CL 2=DL 3=BL 4=AH 5=CH 6=DH 7=BH. The right-hand column is DL
+        // (index 2) and the bottom row is DH (index 6), never the other way
+        // round.
         int left = cpu.State.GetReg8(1);      // CL
         int top = cpu.State.GetReg8(5);       // CH
         int right = cpu.State.GetReg8(2);     // DL
@@ -284,9 +291,9 @@ public sealed class VideoServices
     }
 
     /// <summary>
-    /// Fa scorrere verso l'alto la sola finestra indicata: e' cosi' che un
-    /// programma a schermate muove il contenuto di un riquadro senza toccare
-    /// la cornice che gli sta intorno.
+    /// Scrolls only the given window upwards: this is how a full-screen program
+    /// moves the contents of a pane without disturbing the frame drawn around
+    /// it.
     /// </summary>
     private void ScrollScreenUp(int lines, byte attribute, Regione area)
     {
@@ -358,12 +365,12 @@ public sealed class VideoServices
         }
     }
 
-    /// <summary>Cancella il rettangolo indicato da CX (angolo alto) e DX (basso).</summary>
+    /// <summary>Clears the rectangle given by CX (top-left) and DX (bottom-right).</summary>
     private void ClearRegion(CpuNs.Cpu cpu, byte attribute)
     {
-        // Gli indici dei registri a 8 bit sono 0=AL 1=CL 2=DL 3=BL
-        // 4=AH 5=CH 6=DH 7=BH: la colonna destra sta in DL (2) e la riga
-        // inferiore in DH (6), non il contrario.
+        // The 8-bit register indices are 0=AL 1=CL 2=DL 3=BL
+        // 4=AH 5=CH 6=DH 7=BH: the right-hand column is in DL (2) and the
+        // bottom row in DH (6), not the other way round.
         int left = cpu.State.GetReg8(1);      // CL
         int top = cpu.State.GetReg8(5);       // CH
         int right = cpu.State.GetReg8(2);     // DL
@@ -384,7 +391,7 @@ public sealed class VideoServices
         }
     }
 
-    /// <summary>Funzione 0x13: scrive una stringa intera in un colpo solo.</summary>
+    /// <summary>Function 0x13: writes an entire string in one call.</summary>
     private void WriteString(CpuNs.Cpu cpu)
     {
         byte mode = cpu.State.GetReg8(0);        // AL
@@ -397,8 +404,8 @@ public sealed class VideoServices
 
         for (ushort i = 0; i < length; i++)
         {
-            // Nei modi 2 e 3 la stringa contiene carattere e attributo
-            // alternati, negli altri solo caratteri.
+            // In modes 2 and 3 the string holds alternating character and
+            // attribute bytes; in the others it is characters only.
             bool hasAttributes = (mode & 0x02) != 0;
             ushort offset = (ushort)(cpu.State.Bp + (hasAttributes ? i * 2 : i));
             byte character = cpu.ReadMemoryByte(SegReg.Es, offset);
@@ -406,7 +413,7 @@ public sealed class VideoServices
             if (hasAttributes)
                 attribute = cpu.ReadMemoryByte(SegReg.Es, (uint)(offset + 1));
 
-            // Scrive il carattere con il suo attributo e avanza il cursore.
+            // Write the character with its attribute and advance the cursor.
             int columns = _registers.TextColumns;
             uint videoOffset = VgaMemory.TextWindowOffset
                              + (uint)((_bda.CursorRow * columns + _bda.CursorColumn) * 2);
@@ -416,7 +423,7 @@ public sealed class VideoServices
             TeletypeAdvance();
         }
 
-        // Il bit 0 del modo decide se il cursore resta dove era.
+        // Bit 0 of the mode decides whether the cursor stays where it started.
         if ((mode & 0x01) == 0) SetCursorPosition(column, row);
     }
 

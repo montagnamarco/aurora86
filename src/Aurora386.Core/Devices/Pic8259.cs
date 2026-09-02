@@ -3,15 +3,19 @@ using Aurora386.Core.IO;
 namespace Aurora386.Core.Devices;
 
 /// <summary>
-/// Controller di interruzioni 8259A.
+/// 8259A programmable interrupt controller.
 ///
-/// Il PC ne ha due in cascata: il master serve IRQ 0-7 alle porte 0x20/0x21,
-/// lo slave IRQ 8-15 alle porte 0xA0/0xA1, collegato al master tramite IRQ 2.
-/// E' il motivo per cui IRQ 2 e IRQ 9 sono lo stesso piedino sui PC reali.
+/// The PC carries two of them in cascade: the master serves IRQ 0-7 at ports
+/// 0x20/0x21, the slave serves IRQ 8-15 at ports 0xA0/0xA1 and reports to the
+/// master through IRQ 2. That cascade is why IRQ 2 and IRQ 9 are effectively
+/// the same pin on a real PC -- the AT stole the XT's IRQ 2 line to hang the
+/// second controller off, and rerouted anything that used to sit there to the
+/// slave's IRQ 9.
 ///
-/// Il chip si programma con una sequenza di "parole di inizializzazione"
-/// (ICW1-ICW4) che il BIOS invia all'avvio; da quel momento in poi le
-/// scritture sulla porta dispari sono la maschera delle interruzioni abilitate.
+/// The chip is programmed with a sequence of initialisation command words
+/// (ICW1-ICW4) that the BIOS sends at boot. Once that sequence is finished,
+/// writes to the odd port mean something completely different: they are the
+/// interrupt mask, one bit per line.
 /// </summary>
 public sealed class Pic8259 : IIoDevice
 {
@@ -19,22 +23,22 @@ public sealed class Pic8259 : IIoDevice
     private readonly bool _isMaster;
     private readonly Pic8259? _slave;
 
-    /// <summary>Interruzioni in attesa di essere servite.</summary>
+    /// <summary>Interrupt request register: lines asking to be serviced.</summary>
     private byte _requestRegister;
 
-    /// <summary>Interruzioni attualmente in servizio, non ancora concluse da EOI.</summary>
+    /// <summary>In-service register: lines being handled, not yet closed by an EOI.</summary>
     private byte _serviceRegister;
 
-    /// <summary>Maschera: un bit a 1 disabilita la IRQ corrispondente.</summary>
+    /// <summary>Interrupt mask: a set bit disables the corresponding IRQ line.</summary>
     private byte _maskRegister = 0xFF;
 
-    /// <summary>Vettore di interruzione della IRQ 0 di questo controller.</summary>
+    /// <summary>Interrupt vector assigned to this controller's line 0; the rest follow it.</summary>
     private byte _vectorBase;
 
-    // Stato della sequenza di inizializzazione.
+    // Progress through the ICW initialisation sequence.
     private int _initStep;
     private bool _expectIcw4;
-    private bool _readIsr;      // la porta pari legge ISR invece di IRR
+    private bool _readIsr;      // even port reads the ISR instead of the IRR
 
     public Pic8259(ushort basePort, bool isMaster, Pic8259? slave = null)
     {
@@ -43,7 +47,7 @@ public sealed class Pic8259 : IIoDevice
         _slave = slave;
     }
 
-    /// <summary>Segnala l'arrivo di una interruzione hardware su questa linea.</summary>
+    /// <summary>Asserts a hardware interrupt request on this line.</summary>
     public void RaiseIrq(int line)
     {
         _requestRegister |= (byte)(1 << line);
@@ -55,8 +59,11 @@ public sealed class Pic8259 : IIoDevice
     }
 
     /// <summary>
-    /// Vettore della interruzione da servire, o -1 se non ce n'e' nessuna.
-    /// La priorita' e' fissa: la linea 0 batte la 1, e cosi' via.
+    /// Returns the vector of the interrupt to service, or -1 if there is
+    /// nothing to do. Priority is fixed and ordered by line number: line 0
+    /// beats line 1, and so on down to line 7. That is why the timer sits on
+    /// IRQ 0 and the keyboard on IRQ 1 -- the timekeeping must never be
+    /// starved by anything else.
     /// </summary>
     public int GetPendingVector()
     {
@@ -68,14 +75,16 @@ public sealed class Pic8259 : IIoDevice
             byte bit = (byte)(1 << line);
             if ((pending & bit) == 0) continue;
 
-            // Una interruzione di priorita' pari o inferiore a una gia' in
-            // servizio deve attendere: e' cio' che impedisce a un gestore di
-            // essere interrotto da se' stesso.
+            // An interrupt of equal or lower priority than one already in
+            // service has to wait. This is what stops a handler from being
+            // re-entered by its own line before it has sent its EOI.
             if (_serviceRegister != 0 && (_serviceRegister & ~(bit - 1)) != 0)
                 return -1;
 
-            // La cascata: la linea 2 del master non e' una IRQ vera, e' lo
-            // slave che chiede di essere servito.
+            // The cascade: line 2 on the master is not a device at all, it is
+            // the slave controller asking to be serviced. The vector comes
+            // from the slave, but the master still marks line 2 in service so
+            // that both controllers need an EOI when the handler finishes.
             if (_isMaster && line == 2 && _slave is not null)
             {
                 int slaveVector = _slave.GetPendingVector();
@@ -109,7 +118,8 @@ public sealed class Pic8259 : IIoDevice
         {
             if ((value & 0x10) != 0)
             {
-                // ICW1: inizia la sequenza di inizializzazione.
+                // ICW1: bit 4 set means "start the initialisation sequence",
+                // whatever else the controller was doing.
                 _expectIcw4 = (value & 0x01) != 0;
                 _initStep = 1;
                 _maskRegister = 0;
@@ -119,33 +129,36 @@ public sealed class Pic8259 : IIoDevice
 
             if ((value & 0x08) != 0)
             {
-                // OCW3: seleziona quale registro legge la porta pari.
+                // OCW3: chooses which of the two internal registers the even
+                // port will return on the next read.
                 if ((value & 0x02) != 0) _readIsr = (value & 0x01) != 0;
                 return;
             }
 
-            // OCW2: comandi di fine interruzione.
+            // OCW2: end-of-interrupt and priority rotation commands.
             HandleEndOfInterrupt(value);
             return;
         }
 
-        // Porta dispari: durante l'inizializzazione sono ICW2-ICW4, dopo e'
-        // la maschera.
+        // Odd port: ICW2-ICW4 while initialisation is in progress, and the
+        // interrupt mask from then on.
         switch (_initStep)
         {
             case 1:
-                // ICW2: base dei vettori. I tre bit bassi sono ignorati, il
-                // vettore effettivo e' base + numero di linea.
+                // ICW2: vector base. The low three bits are ignored because
+                // the controller substitutes the line number there; the
+                // effective vector is base + line.
                 _vectorBase = (byte)(value & 0xF8);
                 _initStep = 2;
                 return;
             case 2:
-                // ICW3: quale linea porta la cascata. Non serve emularlo, il
-                // collegamento e' fisso.
+                // ICW3: which line carries the cascade. Nothing to emulate,
+                // since our wiring is fixed at IRQ 2.
                 _initStep = _expectIcw4 ? 3 : 0;
                 return;
             case 3:
-                // ICW4: modo 8086 contro modo MCS-80. Il PC usa sempre 8086.
+                // ICW4: 8086 mode versus MCS-80/85 mode, among other options.
+                // The PC always selects 8086 mode.
                 _initStep = 0;
                 return;
             default:
@@ -160,7 +173,7 @@ public sealed class Pic8259 : IIoDevice
 
         switch (mode)
         {
-            case 0b001:   // EOI non specifico: chiude la piu' prioritaria in servizio
+            case 0b001:   // non-specific EOI: closes the highest-priority line in service
             {
                 for (int line = 0; line < 8; line++)
                 {
@@ -173,7 +186,7 @@ public sealed class Pic8259 : IIoDevice
                 }
                 return;
             }
-            case 0b011:   // EOI specifico: chiude la linea indicata
+            case 0b011:   // specific EOI: closes the line named in the low three bits
             {
                 _serviceRegister &= (byte)~(1 << (command & 7));
                 return;
@@ -181,19 +194,21 @@ public sealed class Pic8259 : IIoDevice
         }
     }
 
-    /// <summary>true se c'e' almeno una interruzione non mascherata in attesa.</summary>
+    /// <summary>True when at least one unmasked interrupt is waiting to be serviced.</summary>
     public bool HasPendingInterrupt => (_requestRegister & ~_maskRegister) != 0;
 
     /// <summary>
-    /// true se una interruzione hardware e' in corso di servizio e attende
-    /// l'EOI. Distingue una IRQ vera da una interruzione software finita sullo
-    /// stesso gestore.
+    /// True while a hardware interrupt is being serviced and is still waiting
+    /// for its EOI. This is how we tell a genuine IRQ apart from a software
+    /// INT that happened to land on the same handler -- the latter must not
+    /// send an EOI, or it would close an interrupt that was never open.
     /// </summary>
     public bool HasInterruptInService => _serviceRegister != 0;
 }
 
 /// <summary>
-/// I due 8259 in cascata come li monta il PC, con l'instradamento delle 16 IRQ.
+/// The pair of cascaded 8259s exactly as a PC wires them, with the routing
+/// logic for all 16 IRQ lines.
 /// </summary>
 public sealed class InterruptController
 {
@@ -213,8 +228,9 @@ public sealed class InterruptController
     }
 
     /// <summary>
-    /// Solleva una delle 16 IRQ del PC. Le linee 8-15 passano dallo slave, che
-    /// a sua volta segnala al master sulla linea 2.
+    /// Raises one of the PC's 16 IRQ lines. Lines 8-15 belong to the slave,
+    /// which in turn has to signal the master on line 2 for the CPU to ever
+    /// hear about it.
     /// </summary>
     public void RaiseIrq(int irq)
     {
@@ -232,7 +248,7 @@ public sealed class InterruptController
         else Slave.LowerIrq(irq - 8);
     }
 
-    /// <summary>Vettore da servire, o -1 se nessuna interruzione e' pronta.</summary>
+    /// <summary>The vector to service, or -1 if no interrupt is ready.</summary>
     public int GetPendingVector() => Master.GetPendingVector();
 
     public bool HasPendingInterrupt => Master.HasPendingInterrupt;

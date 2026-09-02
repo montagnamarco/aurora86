@@ -3,15 +3,16 @@ namespace Aurora386.Core.Cpu;
 public sealed partial class Cpu
 {
     /// <summary>
-    /// Verifica se c'e' una interruzione hardware da servire e, in tal caso,
-    /// la avvia. Va chiamata fra un'istruzione e l'altra, mai nel mezzo.
+    /// Checks whether a hardware interrupt is waiting to be serviced and, if so,
+    /// starts it. It must be called between instructions, never in the middle
+    /// of one.
     /// </summary>
-    /// <returns>true se e' stata avviata una interruzione.</returns>
+    /// <returns>true when an interrupt was started.</returns>
     public bool CheckInterrupts()
     {
         if (Interrupts is null) return false;
 
-        // La finestra d'ombra dopo STI dura esattamente una istruzione.
+        // The shadow window opened by STI lasts exactly one instruction.
         if (_interruptShadow)
         {
             _interruptShadow = false;
@@ -24,8 +25,9 @@ public sealed partial class Cpu
         int vector = Interrupts.GetPendingVector();
         if (vector < 0) return false;
 
-        // Una interruzione risveglia la CPU da HLT anche prima di essere
-        // servita: e' il modo in cui il PC resta in attesa consumando poco.
+        // An interrupt wakes the CPU out of HLT even before it is serviced:
+        // that is how a PC idles at a fraction of its normal power draw while
+        // still responding promptly to the timer and the keyboard.
         State.Halted = false;
 
         EnterInterrupt((byte)vector, isSoftware: false);
@@ -33,8 +35,8 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Esegue una istruzione e poi controlla le interruzioni, che e' l'ordine
-    /// corretto: una interruzione non puo' interrompere una istruzione a meta'.
+    /// Executes one instruction and then checks for interrupts, which is the
+    /// correct order: an interrupt may not cut an instruction in half.
     /// </summary>
     public int StepWithInterrupts()
     {

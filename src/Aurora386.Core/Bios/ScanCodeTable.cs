@@ -1,19 +1,19 @@
 namespace Aurora386.Core.Bios;
 
 /// <summary>
-/// Traduzione degli scancode del set 1 (quello che il controller consegna per
-/// default) nei caratteri corrispondenti, per una tastiera US.
+/// Translation of set 1 scancodes -- the set the keyboard controller delivers
+/// by default -- into the characters they produce on a US keyboard.
 ///
-/// Gli scancode non hanno relazione con i codici ASCII: sono numeri di
-/// posizione fisica sulla tastiera. E' il BIOS a fare la traduzione tenendo
-/// conto dello stato di shift.
+/// Scancodes bear no relation to ASCII codes: they identify a physical key
+/// position on the keyboard. Turning them into characters, taking the state of
+/// the shift keys into account, is the BIOS's job.
 /// </summary>
 public static class ScanCodeTable
 {
-    /// <summary>Caratteri prodotti senza shift, indicizzati per scancode.</summary>
+    /// <summary>Characters produced without shift, indexed by scancode.</summary>
     private static readonly char[] Unshifted = BuildUnshifted();
 
-    /// <summary>Caratteri prodotti con shift premuto.</summary>
+    /// <summary>Characters produced with shift held.</summary>
     private static readonly char[] Shifted = BuildShifted();
 
     public static char ToChar(byte scanCode, bool shift)
@@ -26,23 +26,23 @@ public static class ScanCodeTable
     {
         var table = new char[128];
 
-        // Prima riga: escape, cifre, simboli, backspace, tab.
+        // Top row: escape, digits, symbols, backspace, tab.
         Assign(table, 0x01, '\x1B');                       // ESC
         AssignRange(table, 0x02, "1234567890-=");
         Assign(table, 0x0E, '\b');
         Assign(table, 0x0F, '\t');
 
-        // Righe alfabetiche, nella disposizione fisica QWERTY.
+        // Letter rows, in physical QWERTY order.
         AssignRange(table, 0x10, "qwertyuiop[]");
-        Assign(table, 0x1C, '\r');                          // invio
+        Assign(table, 0x1C, '\r');                          // enter
         AssignRange(table, 0x1E, "asdfghjkl;'`");
         Assign(table, 0x2B, '\\');
         AssignRange(table, 0x2C, "zxcvbnm,./");
 
-        Assign(table, 0x37, '*');                           // asterisco del tastierino
-        Assign(table, 0x39, ' ');                           // barra spaziatrice
+        Assign(table, 0x37, '*');                           // keypad asterisk
+        Assign(table, 0x39, ' ');                           // space bar
 
-        // Tastierino numerico con bloc num attivo.
+        // Numeric keypad with num lock on.
         Assign(table, 0x4A, '-');
         Assign(table, 0x4E, '+');
 
@@ -81,8 +81,8 @@ public static class ScanCodeTable
             table[firstScanCode + i] = characters[i];
     }
 
-    // --- scancode dei tasti che non producono caratteri --------------------------
-    // I programmi li riconoscono dal byte alto della coppia restituita da INT 16h.
+    // --- scancodes of the keys that produce no character -------------------------
+    // Programs recognize these from the high byte of the pair INT 16h returns.
 
     public const byte Escape = 0x01;
     public const byte Backspace = 0x0E;

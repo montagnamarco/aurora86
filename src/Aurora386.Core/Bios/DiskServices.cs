@@ -4,24 +4,48 @@ using CpuNs = Aurora386.Core.Cpu;
 namespace Aurora386.Core.Bios;
 
 /// <summary>
-/// Funzioni disco del BIOS (INT 13h). DOS le usa per ogni lettura e scrittura:
-/// il file system e' costruito sopra queste chiamate.
+/// BIOS disk services (INT 13h). DOS goes through them for every read and
+/// write: the whole file system is built on top of these calls.
 ///
-/// Le funzioni segnalano l'esito con il carry -- attivo significa errore, e il
-/// codice sta in AH. Poiche' il carry attuale verrebbe sovrascritto dall'IRET
-/// del punto di ingresso, va modificato nei flag impilati.
+/// The functions report their outcome in the carry flag -- set means failure,
+/// with the error code in AH. Since the entry point returns with IRET, which
+/// reloads the flags from the stack, the carry has to be modified in the
+/// stacked flags rather than in the live CPU register.
 /// </summary>
 public sealed class DiskServices
 {
     private readonly Dictionary<byte, DiskImage> _drives = new();
     private readonly BiosDataArea _bda;
 
-    /// <summary>Codice di errore dell'ultima operazione, per la funzione 0x01.</summary>
+    /// <summary>Error code of the last operation, returned by function 0x01.</summary>
     private byte _lastStatus;
 
     public DiskServices(BiosDataArea bda) => _bda = bda;
 
     public void Attach(DiskImage image) => _drives[image.DriveNumber] = image;
+
+    /// <summary>Removes a drive entirely, as if the cable had been unplugged.</summary>
+    public void Detach(byte driveNumber) => _drives.Remove(driveNumber);
+
+    /// <summary>
+    /// Every drive currently attached, ordered by BIOS drive number: floppies
+    /// (0x00, 0x01) first, then hard disks (0x80 upwards). The user interface
+    /// walks this to decide how many activity lights to show.
+    /// </summary>
+    public IEnumerable<DiskImage> AttachedDrives
+        => _drives.OrderBy(pair => pair.Key).Select(pair => pair.Value);
+
+    /// <summary>
+    /// Raised on every sector transfer, with the BIOS drive number and
+    /// whether it was a write. The user interface uses this to blink the
+    /// activity lights the way a real drive's LED behaves -- which is also a
+    /// genuinely useful diagnostic: a machine that has quietly wedged looks
+    /// different from one that is busy loading.
+    /// </summary>
+    public event Action<byte, bool>? DriveAccessed;
+
+    private void NoteAccess(byte driveNumber, bool write)
+        => DriveAccessed?.Invoke(driveNumber, write);
 
     public DiskImage? GetDrive(byte driveNumber)
         => _drives.TryGetValue(driveNumber, out DiskImage? image) ? image : null;
@@ -45,20 +69,20 @@ public sealed class DiskServices
             case 0x16: DetectDiskChange(cpu, drive); return;
 
             case 0x41:
-                // Verifica del supporto alle estensioni per dischi grandi.
-                // Non sono implementate: DOS 6.22 usa solo il CHS classico.
+                // Installation check for the extended (LBA) disk functions.
+                // We do not implement them: DOS 6.22 only ever uses classic CHS.
                 Fail(cpu, 0x01);
                 return;
 
             default:
-                Fail(cpu, 0x01);   // funzione non valida
+                Fail(cpu, 0x01);   // invalid function
                 return;
         }
     }
 
     private void Reset(CpuNs.Cpu cpu)
     {
-        // Non c'e' hardware da reimpostare: si dichiara riuscito.
+        // There is no controller hardware to reset, so just report success.
         _lastStatus = 0;
         Succeed(cpu);
     }
@@ -66,21 +90,22 @@ public sealed class DiskServices
     private void GetStatus(CpuNs.Cpu cpu)
     {
         cpu.SetCarryInStackedFlags(false);
-        cpu.State.SetReg8(4, _lastStatus);   // AH = stato, non codice di errore
+        cpu.State.SetReg8(4, _lastStatus);   // AH = the stored status, not an error code
     }
 
     private void ReadSectors(CpuNs.Cpu cpu, byte drive)
     {
         DiskImage? image = GetDrive(drive);
-        if (image is null) { Fail(cpu, 0x80); return; }   // unita' non pronta
+        if (image is null) { Fail(cpu, 0x80); return; }   // drive not ready
 
         (int cylinder, int head, int sector, int count) = DecodeChs(cpu);
+        NoteAccess(drive, write: false);
 
-        // Il buffer di destinazione e' ES:BX nello spazio del chiamante.
+        // The destination buffer is ES:BX in the caller's address space.
         var buffer = new byte[count * DiskImage.SectorSize];
         if (!image.ReadSectors(cylinder, head, sector, count, buffer))
         {
-            Fail(cpu, 0x04);   // settore non trovato
+            Fail(cpu, 0x04);   // sector not found
             return;
         }
 
@@ -88,7 +113,7 @@ public sealed class DiskServices
         for (int i = 0; i < buffer.Length; i++)
             cpu.WriteMemoryByte(SegReg.Es, (uint)(destination + i), buffer[i]);
 
-        cpu.State.SetReg8(0, (byte)count);   // AL: settori effettivamente letti
+        cpu.State.SetReg8(0, (byte)count);   // AL: sectors actually transferred
         _lastStatus = 0;
         Succeed(cpu);
     }
@@ -97,9 +122,10 @@ public sealed class DiskServices
     {
         DiskImage? image = GetDrive(drive);
         if (image is null) { Fail(cpu, 0x80); return; }
-        if (image.ReadOnly) { Fail(cpu, 0x03); return; }   // protetto da scrittura
+        if (image.ReadOnly) { Fail(cpu, 0x03); return; }   // write protected
 
         (int cylinder, int head, int sector, int count) = DecodeChs(cpu);
+        NoteAccess(drive, write: true);
 
         var buffer = new byte[count * DiskImage.SectorSize];
         ushort source = cpu.State.Bx;
@@ -119,9 +145,9 @@ public sealed class DiskServices
 
     private void VerifySectors(CpuNs.Cpu cpu, byte drive)
     {
-        // La verifica confronterebbe il contenuto con un CRC; su un'immagine
-        // su file non c'e' nulla che possa essere corrotto, quindi basta
-        // controllare che i settori esistano.
+        // On real hardware verify re-reads the sectors and checks their CRC.
+        // In a file-backed image there is nothing that can rot, so it is enough
+        // to confirm that the requested sectors exist.
         DiskImage? image = GetDrive(drive);
         if (image is null) { Fail(cpu, 0x80); return; }
 
@@ -137,10 +163,10 @@ public sealed class DiskServices
         DiskImage? image = GetDrive(drive);
         if (image is null)
         {
-            // Unita' assente. Non basta segnalare l'errore: i registri devono
-            // essere azzerati, perche' DOS legge comunque DL per sapere quante
-            // unita' esistono. Lasciandoci il valore di una chiamata
-            // precedente, DOS proverebbe a enumerare unita' inesistenti.
+            // No such drive. Reporting the error is not enough: the registers
+            // must also be cleared, because DOS reads DL regardless to learn
+            // how many drives exist. Leaving a value behind from an earlier
+            // call would send it off enumerating drives that are not there.
             cpu.State.Cx = 0;
             cpu.State.Dx = 0;
             cpu.State.Bx = 0;
@@ -150,20 +176,22 @@ public sealed class DiskServices
             return;
         }
 
-        // La geometria viene restituita in una codifica compatta: i due bit
-        // alti del numero di cilindri finiscono nei bit alti di CL.
+        // The geometry comes back in a packed encoding: the two high bits of
+        // the cylinder count are folded into the top bits of CL.
         int lastCylinder = image.Cylinders - 1;
         byte cl = (byte)((image.SectorsPerTrack & 0x3F) | ((lastCylinder >> 2) & 0xC0));
         cpu.State.SetReg8(1, cl);                              // CL
         cpu.State.SetReg8(5, (byte)(lastCylinder & 0xFF));     // CH
-        // Negli indici dei registri a 8 bit DH e' il 6 e DL il 2: l'ultima
-        // testina va nel primo, il numero di unita' nel secondo. Scambiarli
-        // fa credere al software che il disco abbia una testina sola, e i
-        // file finiscono calcolati nel posto sbagliato.
-        cpu.State.SetReg8(6, (byte)(image.Heads - 1));         // DH: ultima testina
+        // Watch the 8-bit register indices here. The order is
+        // 0=AL 1=CL 2=DL 3=BL 4=AH 5=CH 6=DH 7=BH, so DH is index 6 and DL is
+        // index 2 -- the last head number goes in the former, the drive count
+        // in the latter. Swapping the two makes software believe the disk has a
+        // single head, and the MS-DOS setup then writes its files to the wrong
+        // sectors, leaving a disk that will not boot.
+        cpu.State.SetReg8(6, (byte)(image.Heads - 1));         // DH: last head number
 
-        // DL riporta quante unita' dello stesso tipo esistono: i floppy e i
-        // dischi fissi si contano separatamente.
+        // DL reports how many drives of the same kind are installed: floppies
+        // and hard disks are counted separately.
         bool wantHardDisks = drive >= 0x80;
         int sameKind = _drives.Keys.Count(d => (d >= 0x80) == wantHardDisks);
         cpu.State.SetReg8(2, (byte)sameKind);                  // DL
@@ -176,17 +204,17 @@ public sealed class DiskServices
         DiskImage? image = GetDrive(drive);
         if (image is null)
         {
-            // AH=0 significa "unita' non installata". Il carry resta pulito:
-            // la funzione ha risposto correttamente, e' l'unita' a non esserci.
+            // AH=0 means "drive not installed". Carry stays clear: the call
+            // itself answered correctly, it is the drive that is missing.
             cpu.State.Cx = 0;
             cpu.State.Dx = 0;
             cpu.SetCarryInStackedFlags(false);
-            cpu.State.SetReg8(4, 0x00);   // AH = tipo: unita' non installata
+            cpu.State.SetReg8(4, 0x00);   // AH = drive type: not installed
             return;
         }
 
-        // Per questa funzione AH non e' un codice di errore ma il tipo di
-        // unita', quindi va impostato dopo aver pulito il carry.
+        // For this function AH is not an error code but the drive type, so it
+        // has to be written after clearing the carry.
         cpu.SetCarryInStackedFlags(false);
 
         if (image.IsHardDisk)
@@ -194,26 +222,29 @@ public sealed class DiskServices
             long sectors = image.TotalSectors;
             cpu.State.Cx = (ushort)(sectors >> 16);
             cpu.State.Dx = (ushort)sectors;
-            cpu.State.SetReg8(4, 0x03);   // disco fisso
+            cpu.State.SetReg8(4, 0x03);   // fixed disk
         }
         else
         {
-            // Floppy con linea di rilevamento del cambio disco. E' la via
-            // pulita: DOS interroga la funzione 0x16 quando vuole sapere se
-            // il supporto e' stato sostituito, invece di dedurlo dal tempo
-            // trascorso fra un accesso e l'altro.
+            // 0x02 means "floppy drive with a change line"; 0x01 would mean a
+            // drive without one. The distinction matters: with 0x01 DOS cannot
+            // ask the hardware whether the media was swapped, so it falls back
+            // to guessing from how much time passed between accesses, and
+            // swapping the floppy image under a running guest stops working.
+            // Reporting the change line is the clean path -- DOS then queries
+            // function 0x16 whenever it wants to know if the disk changed.
             cpu.State.SetReg8(4, 0x02);
         }
     }
 
     /// <summary>
-    /// Funzione 0x16: dice se il disco e' stato cambiato dall'ultimo accesso.
-    /// Va offerta insieme alla 0x15 che dichiara la linea di rilevamento,
-    /// altrimenti DOS resta in attesa di una risposta che non arriva mai.
+    /// Function 0x16: reports whether the disk has been changed since the last
+    /// access. It has to be offered together with 0x15 declaring the change
+    /// line, otherwise DOS waits for an answer that never comes.
     ///
-    /// Le immagini su file non si sfilano dal lettore: la risposta e' sempre
-    /// "nessun cambio", tranne la prima volta dopo che l'immagine e' stata
-    /// sostituita a macchina accesa.
+    /// File-backed images do not physically leave the drive, so the answer is
+    /// always "no change" -- except the first time after the image has been
+    /// swapped while the machine was running.
     /// </summary>
     private void DetectDiskChange(CpuNs.Cpu cpu, byte drive)
     {
@@ -222,7 +253,7 @@ public sealed class DiskServices
 
         if (_mediaChanged.Remove(drive))
         {
-            Fail(cpu, 0x06);   // supporto cambiato
+            Fail(cpu, 0x06);   // media changed
             return;
         }
 
@@ -230,20 +261,21 @@ public sealed class DiskServices
         cpu.SetCarryInStackedFlags(false);
     }
 
-    /// <summary>Unita' il cui supporto e' stato sostituito e non ancora segnalato.</summary>
+    /// <summary>Drives whose media has been swapped and not yet reported.</summary>
     private readonly HashSet<byte> _mediaChanged = new();
 
-    /// <summary>Segnala che l'immagine di una unita' e' stata sostituita.</summary>
+    /// <summary>Signals that the image behind a drive has been replaced.</summary>
     public void NotifyMediaChanged(byte driveNumber) => _mediaChanged.Add(driveNumber);
 
     /// <summary>
-    /// Estrae cilindro, testina, settore e conteggio dai registri, sciogliendo
-    /// la codifica compatta: i due bit alti del cilindro stanno nei bit 6-7 di CL.
+    /// Extracts cylinder, head, sector and count from the registers, unpacking
+    /// the compact encoding: the two high bits of the cylinder live in bits 6-7
+    /// of CL.
     /// </summary>
     /// <summary>
-    /// Pubblica l'esito nella BIOS Data Area. La funzione 0x01 lo restituisce,
-    /// ma alcuni programmi leggono direttamente quei byte senza chiamarla:
-    /// vanno tenuti allineati a ogni operazione.
+    /// Publishes the outcome in the BIOS Data Area. Function 0x01 hands it
+    /// back, but some programs read those bytes directly instead of calling it,
+    /// so they have to be kept in step with every operation.
     /// </summary>
     private void PublishStatus(byte status)
     {
@@ -267,11 +299,10 @@ public sealed class DiskServices
     private void Succeed(CpuNs.Cpu cpu)
     {
         PublishStatus(0);
-        // AH = 0 significa "nessun errore". Va scritto esplicitamente: al
-        // momento della chiamata AH conteneva il numero della funzione, e
-        // lasciarcelo verrebbe letto come codice di errore -- 0x02 e'
-        // "indirizzo non trovato", che porta DOS a considerare corrotto un
-        // file appena letto correttamente.
+        // AH = 0 means "no error". It has to be written explicitly: on entry AH
+        // held the function number, and leaving it there would be read back as
+        // an error code -- 0x02 is "address mark not found", which makes DOS
+        // treat a file it just read correctly as corrupt.
         cpu.State.SetReg8(4, 0);
         cpu.SetCarryInStackedFlags(false);
     }

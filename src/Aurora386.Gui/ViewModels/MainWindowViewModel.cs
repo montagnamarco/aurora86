@@ -1,0 +1,300 @@
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using Avalonia.Threading;
+using Aurora386.Core.Bios;
+using Aurora386.Gui.Emulation;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+
+namespace Aurora386.Gui.ViewModels;
+
+/// <summary>
+/// Drives the main window: the toolbar commands, the status bar indicators
+/// and the list of mounted media.
+///
+/// The emulator runs on its own thread, so everything here follows one rule:
+/// state is read from the machine only inside <c>WithMachine</c>, and pushed
+/// to the interface through observable properties that Avalonia binds to.
+/// </summary>
+public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
+{
+    private readonly DispatcherTimer _statusTimer;
+
+    /// <summary>
+    /// Access counters as of the last status refresh. Comparing against the
+    /// current values tells us whether a drive did anything in the last tick,
+    /// which is what makes the lights blink instead of staying lit.
+    /// </summary>
+    private readonly Dictionary<byte, long> _lastAccessCounts = new();
+    private readonly Dictionary<byte, long> _accessCounts = new();
+
+    public EmulatorSession Session { get; }
+
+    /// <summary>One entry per attached drive, shown as a light in the status bar.</summary>
+    public ObservableCollection<DriveIndicator> Drives { get; } = new();
+
+    [ObservableProperty] private bool _isRunning;
+    [ObservableProperty] private bool _isPaused;
+    [ObservableProperty] private string _speedText = "—";
+    [ObservableProperty] private string _statusText = "Ready";
+    [ObservableProperty] private bool _powerLedOn;
+
+    /// <summary>
+    /// Set by the view to open a file picker. The view model has no business
+    /// knowing about windows, so it asks through this callback and stays
+    /// testable.
+    /// </summary>
+    public Func<string, IReadOnlyList<string>, Task<string?>>? PickFileAsync { get; set; }
+
+    /// <summary>Set by the view to save a screenshot of the current screen.</summary>
+    public Func<string, Task>? SaveScreenshotAsync { get; set; }
+
+    public MainWindowViewModel()
+    {
+        Session = new EmulatorSession();
+        HookMachineEvents();
+
+        // Four refreshes a second is enough for a human to read, and cheap
+        // enough that it never competes with the emulation thread.
+        _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        _statusTimer.Tick += (_, _) => RefreshStatus();
+        _statusTimer.Start();
+    }
+
+    private void HookMachineEvents()
+    {
+        Session.WithMachine(machine =>
+        {
+            machine.DiskServices.DriveAccessed += OnDriveAccessed;
+        });
+    }
+
+    /// <summary>
+    /// Called on the emulation thread for every sector transfer. Keep it to a
+    /// counter bump: anything heavier would slow the guest down.
+    /// </summary>
+    private void OnDriveAccessed(byte driveNumber, bool write)
+    {
+        lock (_accessCounts)
+        {
+            _accessCounts.TryGetValue(driveNumber, out long count);
+            _accessCounts[driveNumber] = count + 1;
+        }
+    }
+
+    private void RefreshStatus()
+    {
+        IsRunning = Session.IsRunning;
+        IsPaused = Session.IsPaused;
+        PowerLedOn = Session.IsRunning || Session.IsPaused;
+
+        double ips = Session.InstructionsPerSecond;
+        SpeedText = ips <= 0 ? "—"
+                  : ips >= 1_000_000 ? $"{ips / 1_000_000:F1}M inst/s"
+                  : $"{ips / 1000:F0}K inst/s";
+
+        RefreshDriveLights();
+    }
+
+    private void RefreshDriveLights()
+    {
+        foreach (DriveIndicator drive in Drives)
+        {
+            long now;
+            lock (_accessCounts)
+                _accessCounts.TryGetValue(drive.DriveNumber, out now);
+
+            _lastAccessCounts.TryGetValue(drive.DriveNumber, out long before);
+            drive.IsActive = now != before;
+            _lastAccessCounts[drive.DriveNumber] = now;
+        }
+    }
+
+    /// <summary>Rebuilds the drive list from what is actually attached.</summary>
+    private void RefreshDriveList()
+    {
+        List<DiskImage> attached = Session.WithMachine(
+            machine => machine.DiskServices.AttachedDrives.ToList());
+
+        Drives.Clear();
+        foreach (DiskImage image in attached)
+            Drives.Add(new DriveIndicator(image));
+    }
+
+    // --- toolbar commands ---------------------------------------------------
+
+    [RelayCommand]
+    private void Start()
+    {
+        Session.Start();
+        StatusText = "Running";
+    }
+
+    [RelayCommand]
+    private void TogglePause()
+    {
+        Session.TogglePause();
+        StatusText = Session.IsPaused ? "Paused" : "Running";
+    }
+
+    /// <summary>
+    /// A cold reset: the machine is rebuilt from scratch and the media are
+    /// re-inserted, which is what pressing the power switch would do. A warm
+    /// reset (Ctrl-Alt-Del) is a different thing and belongs to the guest.
+    /// </summary>
+    [RelayCommand]
+    private void Reset()
+    {
+        List<(string Path, byte Drive, bool ReadOnly)> media = Session.WithMachine(
+            machine => machine.DiskServices.AttachedDrives
+                .Where(image => image.SourcePath is not null)
+                .Select(image => (image.SourcePath!, image.DriveNumber, image.ReadOnly))
+                .ToList());
+
+        bool wasRunning = Session.IsRunning;
+        Session.Stop();
+        Session.Reset();
+        HookMachineEvents();
+
+        foreach ((string path, byte drive, bool readOnly) in media)
+            AttachImage(path, drive, readOnly);
+
+        RefreshDriveList();
+        if (wasRunning) Session.Start();
+        StatusText = "Reset";
+    }
+
+    [RelayCommand]
+    private void StepInstruction()
+    {
+        Session.Pause();
+        Session.StepOne();
+        StatusText = "Stepped one instruction";
+    }
+
+    [RelayCommand]
+    private async Task Screenshot()
+    {
+        if (SaveScreenshotAsync is null) return;
+
+        string name = $"aurora386-{DateTime.Now:yyyyMMdd-HHmmss}.png";
+        string path = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Desktop), name);
+
+        await SaveScreenshotAsync(path);
+        StatusText = $"Screenshot saved to {name}";
+    }
+
+    // --- media commands -----------------------------------------------------
+
+    [RelayCommand]
+    private Task MountFloppyA() => MountAsync(0x00, "Select a floppy image", FloppyFilters);
+
+    [RelayCommand]
+    private Task MountFloppyB() => MountAsync(0x01, "Select a floppy image", FloppyFilters);
+
+    [RelayCommand]
+    private Task MountHardDisk() => MountAsync(0x80, "Select a hard disk image", HardDiskFilters);
+
+    private static readonly string[] FloppyFilters = ["img", "ima", "dsk", "vfd"];
+    private static readonly string[] HardDiskFilters = ["img", "hdd", "vhd", "raw"];
+
+    /// <summary>
+    /// Asks for a file and inserts it into the given drive.
+    ///
+    /// Swapping a floppy while the guest is running is not just allowed, it
+    /// is expected -- the MS-DOS installer asks for four disks in turn. The
+    /// BIOS reports the change through its "change line", so DOS notices the
+    /// new medium instead of trusting a stale directory cache.
+    /// </summary>
+    private async Task MountAsync(byte driveNumber, string title, string[] extensions)
+    {
+        if (PickFileAsync is null) return;
+
+        string? path = await PickFileAsync(title, extensions);
+        if (path is null) return;
+
+        try
+        {
+            AttachImage(path, driveNumber, readOnly: false);
+            RefreshDriveList();
+            StatusText = $"Mounted {Path.GetFileName(path)}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not mount: {ex.Message}";
+        }
+    }
+
+    private void AttachImage(string path, byte driveNumber, bool readOnly)
+    {
+        Session.WithMachine(machine =>
+        {
+            DiskImage image = driveNumber >= 0x80
+                ? DiskImage.OpenHardDisk(path, driveNumber, readOnly)
+                : DiskImage.OpenFloppy(path, driveNumber, readOnly);
+
+            machine.AttachDisk(image);
+
+            // Tell the guest the medium changed. Without this DOS keeps using
+            // the file allocation table it read from the previous disk, and
+            // the directory listing shows the old disk's files.
+            if (driveNumber < 0x80)
+                machine.DiskServices.NotifyMediaChanged(driveNumber);
+        });
+    }
+
+    [RelayCommand]
+    private void EjectDrive(DriveIndicator? drive)
+    {
+        if (drive is null) return;
+
+        Session.WithMachine(machine =>
+        {
+            machine.DiskServices.Detach(drive.DriveNumber);
+            if (drive.DriveNumber < 0x80)
+                machine.DiskServices.NotifyMediaChanged(drive.DriveNumber);
+        });
+
+        RefreshDriveList();
+        StatusText = $"Ejected {drive.Label}";
+    }
+
+    public void Dispose()
+    {
+        _statusTimer.Stop();
+        Session.Dispose();
+    }
+}
+
+/// <summary>
+/// One drive as the status bar sees it: a label, a light, and the name of
+/// whatever is currently in it.
+/// </summary>
+public sealed partial class DriveIndicator : ObservableObject
+{
+    public byte DriveNumber { get; }
+    public string Label { get; }
+    public string MediaName { get; }
+    public bool IsFloppy => DriveNumber < 0x80;
+
+    [ObservableProperty] private bool _isActive;
+
+    public DriveIndicator(DiskImage image)
+    {
+        DriveNumber = image.DriveNumber;
+        Label = DriveNumber switch
+        {
+            0x00 => "A:",
+            0x01 => "B:",
+            _ => $"HD{DriveNumber - 0x80}",
+        };
+        MediaName = image.SourcePath is null
+            ? "(in memory)"
+            : Path.GetFileName(image.SourcePath);
+    }
+}

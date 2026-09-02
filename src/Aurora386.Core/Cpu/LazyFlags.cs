@@ -4,14 +4,14 @@ using System.Runtime.CompilerServices;
 namespace Aurora386.Core.Cpu;
 
 /// <summary>
-/// Tipo di operazione che ha prodotto l'ultimo risultato aritmetico.
+/// The kind of operation that produced the most recent arithmetic result.
 /// </summary>
 public enum FlagOp : byte
 {
-    /// <summary>I flag sono gia' materializzati in <see cref="LazyFlags.Stored"/>.</summary>
+    /// <summary>The flags are already materialized in <see cref="LazyFlags.Stored"/>.</summary>
     None = 0,
     Add, Adc, Sub, Sbb,
-    /// <summary>AND/OR/XOR/TEST: azzerano sempre carry e overflow.</summary>
+    /// <summary>AND/OR/XOR/TEST: these always clear carry and overflow.</summary>
     Logic,
     Inc, Dec,
     Shl, Shr, Sar,
@@ -20,49 +20,61 @@ public enum FlagOp : byte
 }
 
 /// <summary>
-/// Calcolo pigro dei flag aritmetici.
+/// Lazy evaluation of the arithmetic flags.
 ///
-/// Un'istruzione come ADD dovrebbe aggiornare sei flag, ma il codice reale ne
-/// legge quasi sempre al piu' uno (tipicamente ZF o CF subito dopo un CMP) e
-/// spessissimo nessuno: il risultato viene sovrascritto dall'istruzione dopo.
-/// Calcolarli tutti a ogni operazione e' quindi lavoro in gran parte sprecato.
+/// An instruction like ADD is supposed to update six flags, but real code
+/// almost always reads at most one of them (typically ZF or CF right after a
+/// CMP) and very often none at all: the result is simply overwritten by the
+/// next instruction. Computing all six every time is therefore mostly wasted
+/// work.
 ///
-/// Qui si memorizzano invece operandi, risultato e tipo di operazione; i flag
-/// vengono derivati solo quando qualcuno li legge davvero. E' la stessa
-/// strategia di DOSBox e QEMU, e sul percorso caldo fa una differenza netta.
+/// Instead we record the operands, the result and the kind of operation, and
+/// derive the flags only when someone actually reads one. DOSBox and QEMU use
+/// the same strategy, and on the hot path it makes a clear difference.
 /// </summary>
 public struct LazyFlags
 {
-    /// <summary>Flag gia' calcolati o impostati esplicitamente (POPF, STI, ...).</summary>
+    /// <summary>Flags already computed, or set explicitly (POPF, STI, ...).</summary>
     public Flags Stored;
 
-    /// <summary>Operazione in sospeso, o None se Stored e' gia' valido.</summary>
+    /// <summary>The pending operation, or None when Stored is already valid.</summary>
     public FlagOp Op;
 
     public uint Left;
     public uint Right;
     public uint Result;
-    /// <summary>Dimensione dell'operando in bit: 8, 16 o 32.</summary>
+    /// <summary>Operand width in bits: 8, 16 or 32.</summary>
     public byte Size;
 
     /// <summary>
-    /// Carry entrante di ADC/SBB. Non e' ricostruibile dal risultato -- ADC con
-    /// carry 1 e ADC con carry 0 su operandi diversi possono dare lo stesso
-    /// risultato -- quindi va memorizzato quando l'operazione viene registrata.
+    /// Incoming carry for ADC/SBB. It cannot be reconstructed from the result
+    /// -- an ADC with carry 1 and an ADC with carry 0 on different operands can
+    /// land on the same result -- so it has to be recorded when the operation
+    /// is registered.
     /// </summary>
     public bool CarryIn;
 
     /// <summary>
-    /// Registra un'operazione senza calcolarne i flag. I flag non aritmetici
-    /// (IF, DF, TF...) restano in Stored e non vengono toccati.
+    /// Records an operation without computing its flags. The non-arithmetic
+    /// flags (IF, DF, TF...) live in Stored and are left untouched.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Set(FlagOp op, uint left, uint right, uint result, byte size,
                     bool carryIn = false)
     {
-        // INC e DEC ereditano il carry invece di calcolarlo: se l'operazione
-        // precedente e' ancora pigra il suo carry vive in Op/Left/Right e non
-        // in Stored, quindi va risolto adesso o andrebbe perso.
+        // INC and DEC are the one family that *inherits* the carry flag rather
+        // than computing it: the 386 deliberately leaves CF alone so that INC
+        // can be used as a loop counter inside a multi-precision addition
+        // without destroying the running carry.
+        //
+        // Inheriting means reading, and reading a lazy flag is only safe once
+        // the pending operation has been resolved. If the previous instruction
+        // is still lazy, its carry does not exist anywhere in Stored yet -- it
+        // is implied by Op/Left/Right/Result, which we are about to overwrite.
+        // Materializing first turns that implied carry into a real bit in
+        // Stored; skipping it would leave INC copying whatever stale carry
+        // predated the previous instruction, and the bug would only surface in
+        // ADC/INC chains, i.e. precisely in bignum arithmetic.
         if (op is FlagOp.Inc or FlagOp.Dec) Materialize();
 
         Op = op;
@@ -73,7 +85,7 @@ public struct LazyFlags
         CarryIn = carryIn;
     }
 
-    /// <summary>Maschera dei bit significativi per la dimensione corrente.</summary>
+    /// <summary>Mask of the significant bits for the current operand width.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static uint MaskFor(byte size) => size switch
     {
@@ -82,13 +94,13 @@ public struct LazyFlags
         _ => 0xFFFFFFFFu,
     };
 
-    /// <summary>Bit di segno per la dimensione corrente.</summary>
+    /// <summary>Sign bit for the current operand width.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static uint SignBit(byte size) => 1u << (size - 1);
 
     /// <summary>
-    /// Materializza i flag aritmetici in Stored e azzera l'operazione pendente.
-    /// Chiamata solo quando un flag viene effettivamente letto.
+    /// Materializes the arithmetic flags into Stored and clears the pending
+    /// operation. Called only when a flag is actually read.
     /// </summary>
     public void Materialize()
     {
@@ -100,15 +112,17 @@ public struct LazyFlags
         uint left = Left & mask;
         uint right = Right & mask;
 
-        // I flag derivati dal solo risultato sono comuni a tutte le operazioni.
+        // The flags that depend only on the result are common to every
+        // operation, so they are computed once up front.
         Flags flags = Stored & ~(Flags.Carry | Flags.Parity | Flags.Adjust
                                | Flags.Zero | Flags.Sign | Flags.Overflow);
 
         if (result == 0) flags |= Flags.Zero;
         if ((result & sign) != 0) flags |= Flags.Sign;
 
-        // La parita' su x86 guarda solo gli 8 bit bassi, sempre, anche per
-        // operandi a 16 e 32 bit.
+        // Parity on x86 only ever looks at the low 8 bits, even for 16- and
+        // 32-bit operands. It is a leftover from the 8080's serial-link
+        // heritage, and no later processor changed it.
         if ((BitOperations.PopCount(result & 0xFF) & 1) == 0) flags |= Flags.Parity;
 
         switch (Op)
@@ -116,9 +130,10 @@ public struct LazyFlags
             case FlagOp.Add:
             case FlagOp.Adc:
             {
-                // Con carry entrante 1 il risultato puo' essere uguale a left
-                // pur avendo generato riporto (es. 0xFF + 0x00 + 1 = 0x00, ma
-                // anche 0xFF + 0xFF + 1 = 0xFF): il confronto diventa <=.
+                // With an incoming carry of 1 the result can equal the left
+                // operand and still have carried out (0xFF + 0x00 + 1 = 0x00,
+                // but also 0xFF + 0xFF + 1 = 0xFF), so the comparison has to
+                // become <= rather than <.
                 bool carry = CarryIn ? result <= left : result < left;
                 if (carry) flags |= Flags.Carry;
                 if (((left ^ result) & (right ^ result) & sign) != 0) flags |= Flags.Overflow;
@@ -137,13 +152,16 @@ public struct LazyFlags
             }
 
             case FlagOp.Logic:
-                // AND/OR/XOR azzerano CF e OF; AF resta indefinito sul ferro
-                // reale, lo lasciamo a zero.
+                // AND/OR/XOR clear CF and OF, which the mask above already did.
+                // AF is architecturally undefined here; real silicon leaves
+                // something unpredictable in it, and we leave it at zero.
                 break;
 
             case FlagOp.Inc:
-                // INC e DEC preservano deliberatamente il carry: e' cio' che
-                // permette di usarli dentro cicli di addizione multiprecisione.
+                // INC and DEC deliberately preserve the carry flag: that is
+                // what makes them usable as counters inside multi-precision
+                // addition loops, where CF must survive from one limb to the
+                // next.
                 flags |= Stored & Flags.Carry;
                 if (result == sign) flags |= Flags.Overflow;
                 if ((result & 0x0F) == 0) flags |= Flags.Adjust;
@@ -156,15 +174,17 @@ public struct LazyFlags
                 break;
 
             case FlagOp.Neg:
-                // NEG e' 0 - operando: il carry e' posto se l'operando non era zero.
+                // NEG is 0 - operand, so the borrow -- and hence CF -- is set
+                // exactly when the operand was non-zero.
                 if (left != 0) flags |= Flags.Carry;
                 if (result == sign) flags |= Flags.Overflow;
                 if ((result & 0x0F) != 0) flags |= Flags.Adjust;
                 break;
 
             case FlagOp.Shl:
-                // Il carry e' l'ultimo bit uscito a sinistra; l'overflow ha
-                // senso solo per scorrimenti di 1 ed e' CF xor bit di segno.
+                // CF is the last bit shifted out of the top; OF is only
+                // meaningful for a shift of 1, where it is CF xor the new sign
+                // bit -- that is, "did the sign change".
                 if (Right != 0 && Right <= Size
                     && ((left >> (Size - (int)Right)) & 1) != 0) flags |= Flags.Carry;
                 if (Right == 1 && (((result & sign) != 0) != ((flags & Flags.Carry) != 0)))
@@ -180,14 +200,16 @@ public struct LazyFlags
             case FlagOp.Sar:
                 if (Right != 0 && ((left >> Math.Min((int)Right - 1, Size - 1)) & 1) != 0)
                     flags |= Flags.Carry;
-                // SAR non puo' mai produrre overflow.
+                // SAR replicates the sign bit, so the sign can never flip and
+                // OF is always cleared.
                 break;
 
             case FlagOp.Mul:
             case FlagOp.Imul:
-                // Per MUL/IMUL carry e overflow sono impostati insieme dal
-                // chiamante in Right (0 o 1): indicano se il risultato eccede
-                // la meta' bassa. ZF/SF/PF sono indefiniti sul ferro reale.
+                // For MUL/IMUL, CF and OF are set together and the caller has
+                // already made the decision, passing 0 or 1 in Right: they
+                // report whether the result overflowed the low half. ZF/SF/PF
+                // are undefined on real silicon after a multiply.
                 if (Right != 0) flags |= Flags.Carry | Flags.Overflow;
                 break;
         }
@@ -196,7 +218,7 @@ public struct LazyFlags
         Op = FlagOp.None;
     }
 
-    /// <summary>Valore completo di EFLAGS, materializzando se necessario.</summary>
+    /// <summary>The complete EFLAGS value, materializing first if needed.</summary>
     public uint Value
     {
         get
@@ -206,7 +228,7 @@ public struct LazyFlags
         }
     }
 
-    /// <summary>Imposta EFLAGS per intero (POPF, IRET), scartando la pigrizia.</summary>
+    /// <summary>Sets EFLAGS wholesale (POPF, IRET), discarding any laziness.</summary>
     public void SetValue(uint value)
     {
         Stored = (Flags)value | Flags.Reserved1;
@@ -214,7 +236,7 @@ public struct LazyFlags
         CarryIn = false;
     }
 
-    // --- accesso ai singoli flag -------------------------------------------
+    // --- access to the individual flags ---------------------------------------
 
     public bool Carry
     {
@@ -252,7 +274,8 @@ public struct LazyFlags
         set { Materialize(); Stored = value ? Stored | Flags.Overflow : Stored & ~Flags.Overflow; }
     }
 
-    // I flag di controllo non sono mai pigri: si leggono e scrivono diretti.
+    // The control flags are never lazy -- no arithmetic operation produces them
+    // -- so they can be read and written directly.
     public bool Interrupt
     {
         readonly get => (Stored & Flags.Interrupt) != 0;

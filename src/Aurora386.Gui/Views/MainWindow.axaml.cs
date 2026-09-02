@@ -1,0 +1,128 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform.Storage;
+using Aurora386.Gui.Emulation;
+using Aurora386.Gui.ViewModels;
+
+namespace Aurora386.Gui.Views;
+
+/// <summary>
+/// The main window. Its job is the part a view model cannot do: turning
+/// keystrokes into scancodes, and putting the platform's file picker and
+/// screenshot facilities behind the callbacks the view model asks for.
+/// </summary>
+public partial class MainWindow : Window
+{
+    public MainWindow()
+    {
+        InitializeComponent();
+
+        // The screen must have focus for the guest to receive keystrokes, and
+        // it should get it back whenever the user clicks anywhere in the
+        // window -- a toolbar button stealing focus permanently would be a
+        // nasty surprise mid-typing.
+        Opened += (_, _) => Screen.Focus();
+        PointerPressed += (_, _) => Screen.Focus();
+
+        DataContextChanged += OnDataContextChanged;
+    }
+
+    private MainWindowViewModel? ViewModel => DataContext as MainWindowViewModel;
+
+    private void OnDataContextChanged(object? sender, EventArgs e)
+    {
+        if (ViewModel is null) return;
+
+        ViewModel.PickFileAsync = PickFileAsync;
+        ViewModel.SaveScreenshotAsync = SaveScreenshotAsync;
+    }
+
+    // --- keyboard -----------------------------------------------------------
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (SendKey(e.Key, released: false)) e.Handled = true;
+        else base.OnKeyDown(e);
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        if (SendKey(e.Key, released: true)) e.Handled = true;
+        else base.OnKeyUp(e);
+    }
+
+    /// <summary>
+    /// Pushes a key into the emulated keyboard controller.
+    ///
+    /// A PC keyboard reports presses and releases separately: the release is
+    /// the same scancode with bit 7 set. Software needs both, because that is
+    /// how it tracks whether Shift is being held.
+    /// </summary>
+    private bool SendKey(Key key, bool released)
+    {
+        MainWindowViewModel? model = ViewModel;
+        if (model is null) return false;
+
+        byte code = AvaloniaKeyMap.ToScanCode(key, out bool extended);
+        if (code == 0) return false;
+
+        model.Session.WithMachine(machine =>
+        {
+            // Extended keys are announced by a 0xE0 byte ahead of the code,
+            // which is how the controller distinguishes the arrow keys from
+            // the numeric keypad keys that share their scancodes.
+            if (extended) machine.Keyboard.PushScanCode(0xE0);
+            machine.Keyboard.PushScanCode(released ? (byte)(code | 0x80) : code);
+        });
+
+        return true;
+    }
+
+    // --- platform services the view model asks for --------------------------
+
+    private async Task<string?> PickFileAsync(string title, IReadOnlyList<string> extensions)
+    {
+        IStorageProvider? storage = StorageProvider;
+        if (storage is null) return null;
+
+        var options = new FilePickerOpenOptions
+        {
+            Title = title,
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("Disk images")
+                {
+                    Patterns = extensions.Select(extension => $"*.{extension}").ToArray(),
+                },
+                new FilePickerFileType("All files") { Patterns = ["*"] },
+            ],
+        };
+
+        IReadOnlyList<IStorageFile> chosen = await storage.OpenFilePickerAsync(options);
+        return chosen.Count > 0 ? chosen[0].Path.LocalPath : null;
+    }
+
+    private Task SaveScreenshotAsync(string path)
+    {
+        // Render the control into a bitmap at its natural size. This captures
+        // what is actually on screen, aspect correction included.
+        var size = new Avalonia.PixelSize(
+            Math.Max(1, (int)Screen.Bounds.Width),
+            Math.Max(1, (int)Screen.Bounds.Height));
+
+        using var target = new RenderTargetBitmap(size);
+        target.Render(Screen);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        target.Save(path);
+
+        return Task.CompletedTask;
+    }
+}

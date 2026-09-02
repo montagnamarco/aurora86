@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Aurora386.Core/Aurora386.Core.csproj" />
+    <Project Path="src/Aurora386.Gui/Aurora386.Gui.csproj" />
     <Project Path="src/Aurora386.Sdl/Aurora386.Sdl.csproj" />
   </Folder>
   <Folder Name="/tests/">

@@ -4,15 +4,15 @@ using System.Runtime.InteropServices;
 namespace Aurora386.Core.Memory;
 
 /// <summary>
-/// Bus di memoria fisica del 386. Lo spazio di indirizzamento e' diviso in
-/// pagine da 4 KB; ogni pagina e' o RAM diretta (puntatore non nullo, percorso
-/// veloce senza indirezioni) o un dispositivo mappato (handler).
+/// The 386's physical memory bus. The address space is divided into 4 KB
+/// pages; each page is either plain RAM (a non-null pointer, taking the fast
+/// path with no indirection at all) or a mapped device served by a handler.
 ///
-/// Il 386 ha 32 bit di indirizzamento, ma popolare una tabella per l'intero
-/// spazio da 4 GB costerebbe 1M di voci. Poiche' la macchina emulata ha 16 MB
-/// di RAM e non esistono dispositivi oltre, la tabella copre i primi 16 MB;
-/// tutto cio' che sta sopra legge 0xFF e ignora le scritture, come un bus
-/// senza nulla collegato.
+/// The 386 addresses 32 bits, but a page table covering the full 4 GB would
+/// need a million entries. Since the emulated machine has 16 MB of RAM and
+/// nothing is mapped above it, the table covers only the first 16 MB;
+/// everything higher reads 0xFF and swallows writes, exactly like a bus with
+/// nothing connected to it.
 /// </summary>
 public sealed unsafe class PhysicalMemoryBus : IDisposable
 {
@@ -23,16 +23,16 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     private readonly uint _addressableBytes;
     private readonly int _pageCount;
 
-    /// <summary>Puntatore alla RAM della pagina, o null se e' MMIO/non mappata.</summary>
+    /// <summary>Pointer to the page's backing RAM, or null for MMIO and unmapped pages.</summary>
     private readonly byte*[] _pageRam;
 
-    /// <summary>Dispositivo che serve la pagina, quando non e' RAM diretta.</summary>
+    /// <summary>The device serving this page, when it is not plain RAM.</summary>
     private readonly IMemoryDevice?[] _pageDevice;
 
-    /// <summary>Base fisica del dispositivo, per convertire in offset relativo.</summary>
+    /// <summary>The device's physical base, used to turn an address into a device-relative offset.</summary>
     private readonly uint[] _pageDeviceBase;
 
-    /// <summary>Pagine di sola lettura (ROM): le scritture vengono scartate.</summary>
+    /// <summary>Read-only pages (ROM): writes are silently discarded.</summary>
     private readonly bool[] _pageReadOnly;
 
     private readonly byte* _ram;
@@ -40,46 +40,45 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     private bool _disposed;
 
     /// <summary>
-    /// Rimappatura degli indirizzi alti sulla ROM del BIOS.
+    /// Aliasing of the top of the address space onto the BIOS ROM.
     ///
-    /// Dopo il reset il 386 fetcha da 0xFFFFFFF0, vicino al limite dei 4 GB,
-    /// mentre la ROM sta nell'ultimo tratto del primo megabyte. Su una scheda
-    /// reale e' un circuito del chipset a far coincidere le due cose; qui si
-    /// ottiene lo stesso effetto traducendo gli indirizzi che ricadono
-    /// nell'ultimo megabyte dello spazio a 32 bit, senza dover allocare una
-    /// tabella di pagine per 4 GB.
+    /// After reset the 386 fetches from 0xFFFFFFF0, right up against the 4 GB
+    /// boundary, while the ROM actually sits in the last stretch of the first
+    /// megabyte. On a real board it is chipset decoding that makes those two
+    /// coincide. Here we get the same effect by translating addresses that
+    /// land in the top megabyte of the 32-bit space, which avoids having to
+    /// allocate a page table spanning 4 GB just to serve a handful of bytes.
     /// </summary>
     private uint _highAliasStart;
     private uint _highAliasTarget;
     private bool _highAliasEnabled;
 
     /// <summary>
-    /// Stato della linea di indirizzo A20.
+    /// State of the A20 address line.
     ///
-    /// Sull'8086 gli indirizzi erano a 20 bit: FFFF:0010 non arrivava a
-    /// 0x100000 ma avvolgeva a 0x00000, e parecchio software ci contava.
-    /// L'AT aggiunse la ventunesima linea ma la lascio' disattivata di
-    /// default proprio per non rompere quel software; da allora abilitarla e'
-    /// compito del sistema operativo.
+    /// The 8086 had only 20 address lines, so a segment:offset pair such as
+    /// FFFF:0010 did not reach 0x100000: it wrapped around to 0x00000, and a
+    /// surprising amount of software came to depend on that wrap. When the AT
+    /// added a twenty-first line it deliberately left it disabled at power-on
+    /// so as not to break that software, and ever since, turning it on has
+    /// been the operating system's job.
     ///
-    /// Con A20 disattivata il bit 20 dell'indirizzo viene forzato a zero, e
-    /// i 64 KB appena sopra il megabyte (la HMA) risultano inaccessibili --
-    /// e' esattamente lo spazio in cui DOS 6.22 si sposta con DOS=HIGH.
-    /// </summary>
-    /// <summary>
-    /// Un PC reale accende con A20 <b>disattivata</b>, per compatibilita' con
-    /// il software scritto per l'8086. Abilitarla e' compito del sistema
-    /// operativo o del gestore di memoria estesa.
+    /// With A20 disabled, the 64 KB just above the first megabyte -- the High
+    /// Memory Area -- becomes unreachable, and that is exactly the space
+    /// DOS 6.22 relocates itself into with DOS=HIGH.
+    ///
+    /// A real PC therefore powers up with A20 <b>disabled</b>; enabling it is
+    /// left to the operating system or to the extended memory manager.
     /// </summary>
     private bool _a20Enabled;
 
-    /// <summary>Maschera applicata a ogni indirizzo: esclude il bit 20 quando A20 e' spenta.</summary>
+    /// <summary>Mask applied to every address: it clears bit 20 while A20 is disabled.</summary>
     private uint _addressMask = ~(1u << 20);
 
     /// <summary>
-    /// Abilita o disabilita la linea A20. Cambiarla altera il significato di
-    /// ogni indirizzo sopra il megabyte, quindi va fatto solo dal controller
-    /// della tastiera o dalla porta 0x92, come sul ferro reale.
+    /// Enables or disables the A20 line. Flipping it changes the meaning of
+    /// every address above the first megabyte, so it must only ever be driven
+    /// by the keyboard controller or by port 0x92, just as on real hardware.
     /// </summary>
     public bool A20Enabled
     {
@@ -87,9 +86,14 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         set
         {
             _a20Enabled = value;
-            // Il wrapping dell'8086 azzera il bit 20 lasciando intatti gli
-            // altri: non tronca l'indirizzo a 20 bit, altrimenti nemmeno la
-            // memoria estesa oltre i 2 MB sarebbe raggiungibile.
+            // Note carefully what the 8086 wrap actually does: it forces
+            // BIT 20 to zero and leaves every other bit alone. It does not
+            // truncate the address to 20 bits. Truncating would be a much
+            // easier mask to write and is a classic emulator bug, because it
+            // silently makes every byte of extended memory above 2 MB
+            // unreachable while the low megabyte keeps working perfectly --
+            // so the machine boots and then fails in bewildering ways much
+            // later, once a memory manager starts using high RAM.
             _addressMask = value ? 0xFFFFFFFF : ~(1u << 20);
         }
     }
@@ -99,16 +103,16 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     public PhysicalMemoryBus(uint ramSize = 16 * 1024 * 1024, uint addressableBytes = 16 * 1024 * 1024)
     {
         if (ramSize == 0 || (ramSize & PageMask) != 0)
-            throw new ArgumentException("La dimensione della RAM deve essere un multiplo di 4 KB.", nameof(ramSize));
+            throw new ArgumentException("RAM size must be a multiple of 4 KB.", nameof(ramSize));
         if (addressableBytes < ramSize)
-            throw new ArgumentException("Lo spazio indirizzabile non puo' essere minore della RAM.", nameof(addressableBytes));
+            throw new ArgumentException("The addressable space cannot be smaller than the installed RAM.", nameof(addressableBytes));
 
         _ramSize = ramSize;
         _addressableBytes = addressableBytes;
         _pageCount = (int)(addressableBytes >> PageShift);
 
-        // Allocazione non gestita e azzerata: la RAM non deve essere spostata dal
-        // GC ne' scansionata, e all'accensione una macchina reale ha memoria a zero.
+        // Unmanaged, zeroed allocation: guest RAM must not be relocated or
+        // scanned by the GC, and a real machine comes up with memory cleared.
         _ram = (byte*)NativeMemory.AllocZeroed(ramSize);
 
         _pageRam = new byte*[_pageCount];
@@ -116,7 +120,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         _pageDeviceBase = new uint[_pageCount];
         _pageReadOnly = new bool[_pageCount];
 
-        // Di default ogni pagina entro la RAM installata punta alla RAM.
+        // By default every page within the installed RAM points straight at it.
         for (int i = 0; i < _pageCount; i++)
         {
             uint physical = (uint)i << PageShift;
@@ -125,8 +129,8 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     }
 
     /// <summary>
-    /// Mappa un dispositivo su un intervallo fisico, sostituendo la RAM che vi
-    /// si trovava (es. il framebuffer VGA che copre 0xA0000-0xBFFFF).
+    /// Maps a device over a physical range, displacing whatever RAM was there
+    /// -- the VGA framebuffer covering 0xA0000-0xBFFFF being the obvious case.
     /// </summary>
     public void MapDevice(uint physicalBase, uint length, IMemoryDevice device)
     {
@@ -137,7 +141,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         for (int i = 0; i < count; i++)
         {
             int page = first + i;
-            _pageRam[page] = null;              // forza il percorso lento
+            _pageRam[page] = null;              // forces the slow path through the handler
             _pageDevice[page] = device;
             _pageDeviceBase[page] = physicalBase;
             _pageReadOnly[page] = false;
@@ -145,10 +149,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     }
 
     /// <summary>
-    /// Mappa una ROM: il contenuto viene copiato nella RAM sottostante e la
-    /// pagina resa di sola lettura. Le letture restano cosi' sul percorso
-    /// veloce (una ROM viene letta molto piu' spesso di quanto non venga
-    /// scritta, cioe' mai), e le scritture vengono scartate silenziosamente.
+    /// Maps a ROM: the contents are copied into the underlying RAM and the
+    /// pages are marked read-only. Reads therefore keep taking the fast path,
+    /// which matters because a ROM is read constantly and written never, and
+    /// writes are discarded without complaint.
     /// </summary>
     public void MapRom(uint physicalBase, ReadOnlySpan<byte> content)
     {
@@ -156,7 +160,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         ValidateRange(physicalBase, length);
 
         if (physicalBase + length > _ramSize)
-            throw new ArgumentException("La ROM deve risiedere entro la RAM installata.", nameof(physicalBase));
+            throw new ArgumentException("A ROM must lie within the installed RAM.", nameof(physicalBase));
 
         content.CopyTo(new Span<byte>(_ram + physicalBase, content.Length));
 
@@ -172,10 +176,9 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     }
 
     /// <summary>
-    /// Fa in modo che gli indirizzi da <paramref name="aliasStart"/> alla fine
-    /// dello spazio a 32 bit vengano serviti a partire da
-    /// <paramref name="target"/>. Serve a rendere la ROM raggiungibile
-    /// all'indirizzo di reset del 386.
+    /// Makes addresses from <paramref name="aliasStart"/> to the top of the
+    /// 32-bit space be served starting at <paramref name="target"/>. This is
+    /// what puts the ROM under the 386's reset vector.
     /// </summary>
     public void MapHighAlias(uint aliasStart, uint target)
     {
@@ -185,34 +188,34 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     }
 
     /// <summary>
-    /// Traduce un indirizzo fisico prima di ogni accesso.
+    /// Translates a physical address before every access.
     ///
-    /// L'ordine e' importante e non e' quello che verrebbe naturale. La
-    /// finestra alta (l'accesso alla ROM vicino al limite dei 4 GB, da cui il
-    /// 386 parte dopo il reset) viene decodificata dal chipset <b>prima</b>
-    /// che A20 entri in gioco: quegli indirizzi hanno il bit 20 acceso, e se
-    /// A20 li mascherasse nessun PC riuscirebbe ad avviarsi con la linea
-    /// disattivata -- che e' proprio lo stato in cui un PC reale accende.
+    /// The order of these two steps matters, and it is not the order one
+    /// would naturally write. The high alias -- the ROM window near the 4 GB
+    /// boundary that the 386 starts fetching from after reset -- is decoded by
+    /// the chipset <b>before</b> A20 gets a say. Those addresses have bit 20
+    /// set, so if A20 masking were applied first, no PC could ever boot with
+    /// the line disabled, which is precisely the state a real PC powers up in.
     ///
-    /// Il mascheramento di A20 riguarda quindi solo gli indirizzi che il
-    /// programma genera davvero, non la rimappatura del vettore di reset.
+    /// A20 masking therefore only applies to addresses the running program
+    /// actually generates, never to the reset-vector aliasing.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint Translate(uint address)
     {
-        // Finestra alta: decodificata per prima, senza mascheramento.
+        // High alias: decoded first, and never masked.
         if (_highAliasEnabled && address >= _highAliasStart)
             return _highAliasTarget + (address - _highAliasStart);
 
         return address & _addressMask;
     }
 
-    /// <summary>Ripristina un intervallo a RAM normale scrivibile.</summary>
+    /// <summary>Restores a range to ordinary writable RAM.</summary>
     public void MapRam(uint physicalBase, uint length)
     {
         ValidateRange(physicalBase, length);
         if (physicalBase + length > _ramSize)
-            throw new ArgumentException("L'intervallo eccede la RAM installata.", nameof(physicalBase));
+            throw new ArgumentException("The range extends past the installed RAM.", nameof(physicalBase));
 
         int first = (int)(physicalBase >> PageShift);
         int count = (int)(length >> PageShift);
@@ -225,7 +228,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         }
     }
 
-    // ---------------------------------------------------------------- letture
+    // ------------------------------------------------------------------ reads
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public byte ReadByte(uint address)
@@ -245,9 +248,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     {
         address = Translate(address);
 
-        // Percorso veloce: l'accesso non attraversa il confine di pagina e la
-        // pagina e' RAM. Gli accessi disallineati sono leciti su x86, quindi
-        // va comunque verificato che i due byte stiano nella stessa pagina.
+        // Fast path: the access does not straddle a page boundary and the
+        // page is RAM. Unaligned accesses are perfectly legal on x86, so we
+        // cannot assume anything and must check that both bytes fall inside
+        // the same page.
         if (address < _addressableBytes && (address & PageMask) <= PageMask - 1)
         {
             byte* page = _pageRam[address >> PageShift];
@@ -279,9 +283,9 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     }
 
     /// <summary>
-    /// Legge un byte da un indirizzo <b>gia' tradotto</b>. Usata solo dai
-    /// percorsi lenti, che ricevono l'indirizzo da Translate() e non devono
-    /// applicarlo una seconda volta.
+    /// Reads a byte from an <b>already translated</b> address. Used only by
+    /// the slow paths, which received their address from Translate() and must
+    /// not run it through translation a second time.
     /// </summary>
     private byte ReadByteTranslated(uint address)
     {
@@ -311,9 +315,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     private ushort ReadWordSlow(uint address)
     {
         int index = (int)(address >> PageShift);
-        // Un accesso interamente dentro una pagina MMIO va servito con una sola
-        // chiamata: certi registri hanno effetti collaterali sulla lettura, e
-        // spezzarla in due byte li innescherebbe due volte.
+        // An access that lies entirely within one MMIO page must be served by
+        // a single call: some registers have side effects on read -- advancing
+        // an index, clearing a latch -- and splitting the access into two byte
+        // reads would trigger them twice.
         if (address < _addressableBytes && (address & PageMask) <= PageMask - 1)
         {
             IMemoryDevice? device = _pageDevice[index];
@@ -336,7 +341,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         return (uint)(ReadWordSlow(address) | (ReadWordSlow(address + 2) << 16));
     }
 
-    // -------------------------------------------------------------- scritture
+    // ----------------------------------------------------------------- writes
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteByte(uint address, byte value)
@@ -348,7 +353,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         byte* page = _pageRam[index];
         if (page is not null)
         {
-            if (_pageReadOnly[index]) return;   // scrittura su ROM: scartata
+            if (_pageReadOnly[index]) return;   // write to ROM: discarded
             page[address & PageMask] = value;
             return;
         }
@@ -431,16 +436,16 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         WriteWordSlow(address + 2, (ushort)(value >> 16));
     }
 
-    // ----------------------------------------------------------------- utilita'
+    // ---------------------------------------------------------------- utilities
 
     /// <summary>
-    /// Accesso diretto alla RAM per DMA e caricamento immagini disco, che non
-    /// devono passare per la logica di mappatura.
+    /// Direct access to RAM for DMA and for loading disk images, neither of
+    /// which should go through the page-mapping logic.
     /// </summary>
     public Span<byte> GetRamSpan(uint physicalBase, int length)
     {
         if (physicalBase + (uint)length > _ramSize)
-            throw new ArgumentOutOfRangeException(nameof(length), "L'intervallo eccede la RAM installata.");
+            throw new ArgumentOutOfRangeException(nameof(length), "The range extends past the installed RAM.");
         return new Span<byte>(_ram + physicalBase, length);
     }
 
@@ -449,11 +454,11 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     private void ValidateRange(uint physicalBase, uint length)
     {
         if ((physicalBase & PageMask) != 0)
-            throw new ArgumentException("La base deve essere allineata a 4 KB.", nameof(physicalBase));
+            throw new ArgumentException("The base address must be 4 KB aligned.", nameof(physicalBase));
         if (length == 0 || (length & PageMask) != 0)
-            throw new ArgumentException("La lunghezza deve essere un multiplo di 4 KB.", nameof(length));
+            throw new ArgumentException("The length must be a multiple of 4 KB.", nameof(length));
         if (physicalBase + length > _addressableBytes)
-            throw new ArgumentOutOfRangeException(nameof(length), "L'intervallo eccede lo spazio indirizzabile.");
+            throw new ArgumentOutOfRangeException(nameof(length), "The range extends past the addressable space.");
     }
 
     public void Dispose()
