@@ -6,13 +6,13 @@ using Silk.NET.SDL;
 namespace Aurora386.Sdl.Frontend;
 
 /// <summary>
-/// Finestra dell'emulatore: mostra il framebuffer, raccoglie i tasti e manda
-/// avanti la macchina in tempo reale.
+/// The emulator window: presents the framebuffer, collects keystrokes and
+/// drives the machine in real time.
 ///
-/// Il ciclo lavora a fotogrammi: a ogni giro esegue le istruzioni
-/// corrispondenti al tempo trascorso, poi ridisegna. Legare l'esecuzione al
-/// tempo reale invece che alla velocita' dell'ospite e' cio' che fa scorrere
-/// l'orologio del sistema emulato alla velocita' giusta.
+/// The loop is frame-based: each pass executes the instructions corresponding
+/// to the time that has actually elapsed, then redraws. Pacing execution
+/// against real time rather than against how fast the host happens to be is
+/// what makes the guest's own clock run at the right speed.
 /// </summary>
 public sealed unsafe class EmulatorWindow : IDisposable
 {
@@ -26,13 +26,13 @@ public sealed unsafe class EmulatorWindow : IDisposable
     private int _textureWidth;
     private int _textureHeight;
 
-    /// <summary>Fattore di ingrandimento della finestra rispetto al framebuffer.</summary>
+    /// <summary>How many screen pixels the window uses per framebuffer pixel.</summary>
     private int _scale = 2;
 
     private bool _running;
     private bool _paused;
 
-    /// <summary>Statistiche mostrate nel titolo.</summary>
+    /// <summary>Statistics reported in the window title.</summary>
     private long _instructionsExecuted;
     private int _framesDrawn;
     private readonly Stopwatch _statsTimer = Stopwatch.StartNew();
@@ -51,9 +51,9 @@ public sealed unsafe class EmulatorWindow : IDisposable
         var frameTimer = Stopwatch.StartNew();
         double accumulatedSeconds = 0;
 
-        // 60 fotogrammi al secondo: piu' che sufficiente per una macchina che
-        // ne produceva 70 in modo testo, e un buon compromesso fra fluidita'
-        // e granularita' dell'esecuzione.
+        // 60 frames per second: plenty for a machine that generated 70 in
+        // text mode, and a good balance between smoothness and how coarsely
+        // execution gets chopped up between frames.
         const double TargetFrameSeconds = 1.0 / 60.0;
 
         while (_running)
@@ -63,9 +63,10 @@ public sealed unsafe class EmulatorWindow : IDisposable
             double elapsed = frameTimer.Elapsed.TotalSeconds;
             frameTimer.Restart();
 
-            // Un limite sul tempo accumulato evita che, dopo una pausa lunga
-            // (finestra ridotta a icona, sistema sotto carico), la macchina
-            // tenti di recuperare eseguendo milioni di istruzioni in un colpo.
+            // Capping the accumulated time stops the machine from trying to
+            // catch up after a long stall -- window minimised, host under
+            // load -- by executing millions of instructions in one go, which
+            // would freeze the UI and make the guest's timing lurch.
             accumulatedSeconds = Math.Min(accumulatedSeconds + elapsed, 0.25);
 
             while (accumulatedSeconds >= TargetFrameSeconds)
@@ -82,7 +83,7 @@ public sealed unsafe class EmulatorWindow : IDisposable
     private void Initialize()
     {
         if (_sdl.Init(Silk.NET.SDL.Sdl.InitVideo | Silk.NET.SDL.Sdl.InitEvents) < 0)
-            throw new InvalidOperationException($"SDL non inizializzato: {_sdl.GetErrorS()}");
+            throw new InvalidOperationException($"SDL failed to initialise: {_sdl.GetErrorS()}");
 
         _textureWidth = _machine.Video.Width;
         _textureHeight = _machine.Video.Height;
@@ -94,13 +95,13 @@ public sealed unsafe class EmulatorWindow : IDisposable
             (uint)(WindowFlags.Shown | WindowFlags.Resizable));
 
         if (_window is null)
-            throw new InvalidOperationException($"finestra non creata: {_sdl.GetErrorS()}");
+            throw new InvalidOperationException($"could not create the window: {_sdl.GetErrorS()}");
 
         _renderer = _sdl.CreateRenderer(_window, -1,
             (uint)(RendererFlags.Accelerated | RendererFlags.Presentvsync));
 
         if (_renderer is null)
-            throw new InvalidOperationException($"renderer non creato: {_sdl.GetErrorS()}");
+            throw new InvalidOperationException($"could not create the renderer: {_sdl.GetErrorS()}");
 
         CreateTexture();
     }
@@ -112,14 +113,16 @@ public sealed unsafe class EmulatorWindow : IDisposable
         _textureWidth = _machine.Video.Width;
         _textureHeight = _machine.Video.Height;
 
-        // Streaming: la texture viene riscritta a ogni fotogramma che cambia.
+        // Streaming access: the texture is rewritten on every frame that
+        // actually changes.
         _texture = _sdl.CreateTexture(_renderer,
             (uint)PixelFormatEnum.Abgr8888,
             (int)TextureAccess.Streaming,
             _textureWidth, _textureHeight);
 
-        // Filtro a pixel netti: ingrandire un'immagine a 640x400 con
-        // interpolazione la renderebbe sfocata invece che fedele.
+        // Nearest-neighbour filtering: scaling a 640x400 image up with
+        // interpolation would produce a blurry approximation rather than a
+        // faithful picture of what the hardware emitted.
         _sdl.SetHint(Silk.NET.SDL.Sdl.HintRenderScaleQuality, "0");
     }
 
@@ -132,12 +135,12 @@ public sealed unsafe class EmulatorWindow : IDisposable
 
     private void Render()
     {
-        // Il cursore lampeggia due volte al secondo, come su un PC reale.
+        // The cursor blinks twice a second, as it does on a real PC.
         _machine.Video.CursorBlinkOn = (_statsTimer.ElapsedMilliseconds / 500) % 2 == 0;
 
         bool changed = _machine.Video.Render();
 
-        // Un cambio di modalita' video puo' aver ridimensionato il framebuffer.
+        // A video mode change may have resized the framebuffer underneath us.
         if (_machine.Video.Width != _textureWidth || _machine.Video.Height != _textureHeight)
         {
             CreateTexture();
@@ -159,9 +162,9 @@ public sealed unsafe class EmulatorWindow : IDisposable
 
         _sdl.RenderClear(_renderer);
 
-        // Mantiene le proporzioni originali quando la finestra viene
-        // ridimensionata: un 640x400 stirato a caso e' peggio di uno con
-        // bande nere ai lati.
+        // Preserve the original proportions when the window is resized:
+        // arbitrarily stretched 640x400 output looks worse than the same
+        // picture letterboxed with black bars.
         int windowWidth, windowHeight;
         _sdl.GetWindowSize(_window, &windowWidth, &windowHeight);
 
@@ -204,8 +207,9 @@ public sealed unsafe class EmulatorWindow : IDisposable
     {
         var code = (Scancode)key.Keysym.Scancode;
 
-        // I comandi dell'emulatore usano il tasto Meta (Command su Mac), che
-        // il software emulato non puo' intercettare.
+        // The emulator's own shortcuts hang off the Meta key (Command on a
+        // Mac), which the guest software has no way of intercepting -- a PC
+        // keyboard has no such key, so nothing running inside can claim it.
         bool commandHeld = (key.Keysym.Mod & (ushort)Keymod.Gui) != 0;
         if (pressed && commandHeld)
         {
@@ -218,8 +222,9 @@ public sealed unsafe class EmulatorWindow : IDisposable
             }
         }
 
-        // Ripetizione automatica di SDL: il BIOS emulato ha la propria, quindi
-        // le pressioni ripetute vanno ignorate per non riempire il buffer.
+        // SDL's own key auto-repeat: the emulated BIOS implements typematic
+        // repeat itself, so repeated press events must be dropped or the
+        // keyboard buffer fills with duplicates.
         if (pressed && key.Repeat != 0) return;
 
         byte scanCode = KeyMap.ToScanCode(code);

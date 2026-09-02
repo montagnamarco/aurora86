@@ -174,8 +174,8 @@ public static class HardDiskImage
         // These strings are guest-visible screen output rather than developer
         // text, and the test suite asserts on them verbatim, so they are left
         // in the original language.
-        "Nessuna partizione avviabile\r\n\0"u8.CopyTo(mbr.AsSpan(0x100));
-        "Errore di lettura del disco\r\n\0"u8.CopyTo(mbr.AsSpan(0x120));
+        "No bootable partition\r\n\0"u8.CopyTo(mbr.AsSpan(0x100));
+        "Disk read error\r\n\0"u8.CopyTo(mbr.AsSpan(0x120));
 
         // Partition table: four 16-byte entries starting at 0x1BE.
         WritePartitionEntry(mbr, 0x1BE, geometry, startSector, partitionSectors,
@@ -282,7 +282,7 @@ public static class HardDiskImage
         boot[p++] = 0xF4;                                       // HLT
         boot[p++] = 0xEB; boot[p++] = 0xFD;                     // JMP -3
 
-        "Disco non di sistema\r\n\0"u8.CopyTo(boot.AsSpan(0x180));
+        "Non-system disk\r\n\0"u8.CopyTo(boot.AsSpan(0x180));
 
         boot[0x1FE] = 0x55;
         boot[0x1FF] = 0xAA;

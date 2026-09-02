@@ -4,7 +4,7 @@ namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu
 {
-    // --- accumulatore alla dimensione corrente -------------------------------
+    // --- the accumulator at the current operand size --------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint ReadAccumulator() => OperandSize32 ? State.Eax : State.Ax;
@@ -26,14 +26,15 @@ public sealed partial class Cpu
         else WriteMem16(segment, offset, (ushort)value);
     }
 
-    /// <summary>Dimensione degli operandi in bit, per i flag.</summary>
+    /// <summary>Operand size in bits, as the flag logic wants it.</summary>
     private byte OperandBits => OperandSize32 ? (byte)32 : (byte)16;
 
-    // --- operazioni ALU ------------------------------------------------------
+    // --- ALU operations --------------------------------------------------------
 
     /// <summary>
-    /// Le otto operazioni ALU condividono la struttura: cambia solo il calcolo
-    /// e il tipo di flag. L'indice corrisponde ai bit 3-5 dell'opcode.
+    /// The eight ALU operations all share the same shape: only the computation
+    /// and the flavour of flags differ. The index is bits 3-5 of the opcode,
+    /// which is exactly how the hardware itself picks the operation.
     /// </summary>
     private uint AluOperate(int operation, uint left, uint right, byte size)
     {
@@ -66,12 +67,12 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Una delle sei forme di un'operazione ALU:
+    /// One of the six forms an ALU operation can take:
     /// 0: r/m8, r8   1: r/m, r   2: r8, r/m8   3: r, r/m   4: AL, imm8   5: eAX, imm
     /// </summary>
     private void ExecuteAluGroup(int operation, int form)
     {
-        bool isCompare = operation == 7;   // CMP scarta il risultato
+        bool isCompare = operation == 7;   // CMP throws the result away
 
         switch (form)
         {
@@ -118,7 +119,7 @@ public sealed partial class Cpu
         }
     }
 
-    /// <summary>Gruppo 0x80: operazione ALU su r/m8 con immediato a 8 bit.</summary>
+    /// <summary>Group 0x80: an ALU operation on r/m8 with an 8-bit immediate.</summary>
     private void AluImmediate8()
     {
         var m = DecodeModRm();
@@ -128,9 +129,10 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Gruppi 0x81/0x83. Il secondo prende un immediato a 8 bit esteso con
-    /// segno alla dimensione degli operandi: e' la forma compatta usata per le
-    /// costanti piccole, molto frequente nel codice reale.
+    /// Groups 0x81/0x83. The second one takes an 8-bit immediate sign-extended
+    /// to the operand size: it is the compact encoding used for small
+    /// constants, and it is extremely common in real code, since most
+    /// immediates in practice are tiny.
     /// </summary>
     private void AluImmediate(bool signExtendedByte)
     {
@@ -143,7 +145,7 @@ public sealed partial class Cpu
     private void SetLogicFlags(uint result) => Flags.Set(FlagOp.Logic, 0, 0, result, OperandBits);
     private void SetLogicFlags8(byte result) => Flags.Set(FlagOp.Logic, 0, 0, result, 8);
 
-    // --- INC/DEC -------------------------------------------------------------
+    // --- INC/DEC ---------------------------------------------------------------
 
     private void IncReg(int index)
     {
@@ -177,12 +179,13 @@ public sealed partial class Cpu
         }
     }
 
-    // --- PUSHA/POPA ----------------------------------------------------------
+    // --- PUSHA/POPA ------------------------------------------------------------
 
     private void Pusha()
     {
-        // Il valore di SP salvato e' quello *prima* delle push, non quello che
-        // si ha quando tocca a lui.
+        // The SP value that gets stored is the one from *before* the pushes
+        // began, not the value it happens to hold when its turn comes round.
+        // That is what lets POPA restore a coherent stack.
         uint originalSp = State.Esp;
 
         if (OperandSize32)
@@ -199,22 +202,22 @@ public sealed partial class Cpu
 
     private void Popa()
     {
-        // POPA legge un blocco unico di 16 o 32 byte: il processore ne
-        // verifica l'estensione prima di cominciare, quindi un blocco che
-        // sfora il limite fallisce subito, senza avvolgere come farebbe una
-        // singola pop.
-        // Vale per la forma a 32 bit: quella a 16 usa pop ordinarie, che
-        // seguono le regole delle singole letture.
+        // POPA reads one contiguous block of 16 or 32 bytes: the processor
+        // checks the whole extent before it starts, so a block that overruns
+        // the limit fails up front instead of wrapping the way an individual
+        // pop would.
+        // This applies to the 32-bit form; the 16-bit one is built from
+        // ordinary pops and follows the rules for individual reads.
         if (!State.Ss.Big && OperandSize32)
             CheckLimit(SegReg.Ss, State.Sp, 32u);
 
         if (OperandSize32)
         {
             State.Edi = Pop32(); State.Esi = Pop32(); State.Ebp = Pop32();
-            // Il valore di ESP impilato non viene ignorato del tutto: la sua
-            // meta' alta finisce comunque nel registro, e solo la meta' bassa
-            // resta quella prodotta dalle pop. Con SS a 16 bit e' l'unico modo
-            // di spiegare l'ESP finale osservato sul 386.
+            // The stacked ESP is not discarded outright: its high half does
+            // reach the register, and only the low half stays as the pops left
+            // it. With a 16-bit SS that is the only explanation that matches
+            // the final ESP observed on a real 386.
             uint impilato = Pop32();
             if (!State.Ss.Big)
             {
@@ -231,61 +234,64 @@ public sealed partial class Cpu
         }
     }
 
-    // --- flag ----------------------------------------------------------------
+    // --- flags -----------------------------------------------------------------
 
-    // PUSHFD impila i flag su 32 bit, ma i bit 16-31 escono azzerati: il 386
-    // non ha ancora nulla da metterci (VM e RF arrivano col 486).
+    // PUSHFD pushes the flags as 32 bits, but bits 16-31 come out zeroed: the
+    // 386 has nothing to put up there yet (VM and RF arrive with the 486).
     private void Pushf() => PushOperand(OperandSize32 ? Flags.Value & 0x0000FFFFu
                                                       : Flags.Value & 0xFFFFu);
 
     private void Popf()
     {
         uint value = PopOperand();
-        // In real mode tutti i flag sono scrivibili; in protected mode IOPL e
-        // IF sono protetti dal livello di privilegio, cosa che andra' gestita
-        // insieme al resto della protezione.
+        // In real mode every flag is writable; in protected mode IOPL and IF
+        // are guarded by the current privilege level, which will have to be
+        // handled along with the rest of the protection machinery.
         Flags.SetValue(OperandSize32 ? value : (Flags.Value & 0xFFFF0000) | (value & 0xFFFF));
     }
 
     private void Sahf()
     {
-        // SAHF carica AH nel byte basso di EFLAGS, preservando i bit riservati.
+        // SAHF loads AH into the low byte of EFLAGS, leaving the reserved bits
+        // as they were.
         uint value = (Flags.Value & 0xFFFFFF00) | State.GetReg8(4);
         Flags.SetValue(value);
     }
 
     private void Lahf() => State.SetReg8(4, (byte)(Flags.Value & 0xFF));
 
-    // --- estensioni di segno -------------------------------------------------
+    // --- sign extension --------------------------------------------------------
 
-    /// <summary>CBW/CWDE: estende AL in AX, o AX in EAX.</summary>
+    /// <summary>CBW/CWDE: widens AL into AX, or AX into EAX.</summary>
     private void Cbw()
     {
         if (OperandSize32) State.Eax = (uint)(short)State.Ax;
         else State.Ax = (ushort)(sbyte)State.GetReg8(0);
     }
 
-    /// <summary>CWD/CDQ: estende il segno di AX in DX:AX, o di EAX in EDX:EAX.</summary>
+    /// <summary>CWD/CDQ: sign-extends AX into DX:AX, or EAX into EDX:EAX.</summary>
     private void Cwd()
     {
         if (OperandSize32) State.Edx = (State.Eax & 0x80000000) != 0 ? 0xFFFFFFFF : 0;
         else State.Dx = (ushort)((State.Ax & 0x8000) != 0 ? 0xFFFF : 0);
     }
 
-    // --- indirizzi e salti ---------------------------------------------------
+    // --- addresses and jumps ---------------------------------------------------
 
     private void Lea()
     {
         var m = DecodeModRm();
-        // LEA calcola l'indirizzo senza accedere alla memoria; con mod == 3
-        // non ha senso e sul ferro reale e' un'istruzione non valida.
+        // LEA computes an address without ever touching memory; with mod == 3
+        // there is no address to compute, and real hardware treats it as an
+        // invalid instruction.
         if (m.IsRegister) throw new CpuException(6);
         WriteRegOperand(m, m.Offset);
     }
 
     /// <summary>
-    /// Salto relativo. In modalita' a 16 bit EIP viene troncato a 16 bit: e'
-    /// cio' che fa avvolgere l'esecuzione dentro il segmento invece di uscirne.
+    /// Relative jump. In 16-bit mode EIP is truncated to 16 bits, and that
+    /// truncation is what makes execution wrap around inside the segment
+    /// instead of escaping past its end.
     /// </summary>
     private void JumpRelative(int offset)
     {
@@ -294,20 +300,20 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// CALL lontana diretta (0x9A): l'indirizzo completo segmento:offset e'
-    /// codificato nell'istruzione. Impila CS e IP di ritorno prima di saltare,
-    /// cosi' una RETF puo' tornare indietro.
+    /// Direct far CALL (0x9A): the complete segment:offset destination is
+    /// encoded in the instruction itself. It pushes the return CS and IP before
+    /// jumping, so that a RETF can find its way back.
     ///
-    /// E' il modo in cui il codice a 16 bit chiama routine fuori dal proprio
-    /// segmento, quindi DOS la usa di continuo per le chiamate interne.
+    /// This is how 16-bit code calls routines outside its own segment, so DOS
+    /// leans on it constantly for its internal calls.
     /// </summary>
     private void CallFar()
     {
         uint offset = FetchImmediate();
         ushort selector = FetchWord();
 
-        // L'ordine di impilamento e' fissato dall'architettura: prima il
-        // segmento, poi l'offset, cosi' la RETF li estrae al contrario.
+        // The push order is fixed by the architecture: segment first, then
+        // offset, so that RETF pops them back off in the opposite order.
         PushOperand(State.Cs.Selector);
         PushOperand(State.Eip);
 
@@ -316,11 +322,11 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// XLAT (0xD7): sostituisce AL con il byte che si trova in DS:[BX + AL].
+    /// XLAT (0xD7): replaces AL with the byte found at DS:[BX + AL].
     ///
-    /// E' una traduzione tramite tabella in una sola istruzione, usata per
-    /// convertire caratteri: maiuscole/minuscole, pagine di codici, set di
-    /// caratteri nazionali. DOS ne fa un uso intensissimo.
+    /// It is a whole table lookup in a single instruction, used for character
+    /// translation: upper/lower case, code pages, national character sets. DOS
+    /// uses it very heavily indeed.
     /// </summary>
     private void Xlat()
     {
@@ -341,8 +347,9 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Limite che avrebbe il segmento caricando questo selettore. In real mode
-    /// e' sempre 64 KB meno uno, ma serve saperlo prima di toccare CS.
+    /// The limit a segment would end up with if this selector were loaded. In
+    /// real mode it is always 64 KB minus one, but the far returns need to know
+    /// it *before* they touch CS, so the question has to be asked separately.
     /// </summary>
     private static uint LimiteRealMode(ushort selector) => 0xFFFF;
 
@@ -351,16 +358,16 @@ public sealed partial class Cpu
         uint espPrima = State.Esp;
         try
         {
-            // Solo la forma a 32 bit legge il blocco in un colpo solo.
+            // Only the 32-bit form reads the block in one go.
             if (OperandSize32) ControllaBloccoStack(8u);
             uint offset = PopOperand();
             ushort selector = (ushort)PopOperand();
             uint destinazione = OperandSize32 ? offset : offset & 0xFFFF;
 
-            // Il limite si controlla sul segmento che si sta per caricare, ma
-            // prima di caricarlo davvero: se l'indirizzo non ci sta, CS deve
-            // restare quello di partenza, perche' e' quello che finisce nel
-            // frame dell'eccezione.
+            // The limit is checked against the segment about to be loaded, but
+            // before it is actually loaded: if the address does not fit, CS has
+            // to stay as it was, because it is the old CS that ends up in the
+            // exception's stack frame and that the handler will report.
             uint limiteNuovo = LimiteRealMode(selector);
             if (destinazione > limiteNuovo) throw new CpuException(13, 0);
 
@@ -369,15 +376,16 @@ public sealed partial class Cpu
         }
         catch (CpuException)
         {
-            // Lo stack torna com'era: il gestore deve vedere il puntatore che
-            // aveva chi ha eseguito la RET, non uno a meta' dell'operazione.
+            // The stack is put back the way it was: the handler must see the
+            // stack pointer the code executing the RET had, not one stranded
+            // halfway through the operation.
             State.Esp = espPrima;
             throw;
         }
         AdjustStack(popBytes);
     }
 
-    /// <summary>Rimuove dallo stack i byte richiesti da RET n.</summary>
+    /// <summary>Removes the bytes that RET n asks to discard from the stack.</summary>
     private void AdjustStack(ushort bytes)
     {
         if (bytes == 0) return;
@@ -387,7 +395,7 @@ public sealed partial class Cpu
 
     private void Leave()
     {
-        // LEAVE annulla ENTER: sposta EBP in ESP e ripristina EBP.
+        // LEAVE undoes ENTER: it moves EBP into ESP and then restores EBP.
         uint espPrima = State.Esp;
         try
         {
@@ -398,16 +406,16 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Carica un registro di segmento. In real mode e' base = selettore * 16;
-    /// in protected mode passera' per il descrittore.
+    /// Loads a segment register. In real mode that means base = selector * 16;
+    /// in protected mode it will go through the descriptor.
     ///
-    /// Caricare SS inibisce le interruzioni per l'istruzione successiva. E'
-    /// una garanzia dell'architettura, non un dettaglio: lo stack si cambia
-    /// con due istruzioni (MOV SS,.. seguito da MOV SP,..) e fra le due
-    /// SS:SP indica un'area che non esiste. Un'interruzione in quel punto
-    /// impilerebbe il proprio contesto in un posto arbitrario, corrompendo
-    /// la memoria e lasciando lo stack del chiamante in uno stato che il
-    /// codice interrotto non si aspetta.
+    /// Loading SS inhibits interrupts for the following instruction. That is an
+    /// architectural guarantee rather than an implementation detail: switching
+    /// stacks takes two instructions (MOV SS,.. followed by MOV SP,..) and
+    /// between them SS:SP points at an area that does not exist. An interrupt
+    /// arriving right there would push its own context somewhere arbitrary,
+    /// corrupting memory and leaving the caller's stack in a state the
+    /// interrupted code has no way to anticipate.
     /// </summary>
     private void LoadSegment(SegReg segment, ushort selector)
     {
@@ -421,11 +429,12 @@ public sealed partial class Cpu
         LoadSegmentProtected(segment, selector);
     }
 
-    // --- condizioni dei salti -------------------------------------------------
+    // --- jump conditions -------------------------------------------------------
 
     /// <summary>
-    /// Valuta la condizione di un Jcc/SETcc/CMOVcc. Il bit 0 del codice inverte
-    /// la condizione, per questo i casi vanno a coppie.
+    /// Evaluates the condition of a Jcc/SETcc/CMOVcc. Bit 0 of the condition
+    /// code inverts the test, which is why the cases come in pairs -- and why a
+    /// single table serves all three instruction families.
     /// </summary>
     private bool TestCondition(byte condition) => condition switch
     {
@@ -447,19 +456,19 @@ public sealed partial class Cpu
         _ => !Flags.Zero && Flags.Sign == Flags.Overflow,    // greater
     };
 
-    // --- interruzioni ---------------------------------------------------------
+    // --- interrupts ------------------------------------------------------------
 
     /// <summary>
-    /// INT n. In real mode il vettore si legge dalla tabella a indirizzo 0:
-    /// quattro byte per vettore, offset e poi segmento.
+    /// INT n. In real mode the vector is read out of the table at address 0:
+    /// four bytes per vector, offset first and then segment.
     /// </summary>
     private void SoftwareInterrupt(byte vector) => EnterInterrupt(vector, isSoftware: true);
 
-    /// <summary>Eccezione generata dal processore.</summary>
+    /// <summary>An exception raised by the processor itself.</summary>
     private void RaiseException(byte vector, uint errorCode)
     {
-        // In protected mode certe eccezioni impilano anche un codice di errore;
-        // in real mode non esiste e viene ignorato.
+        // In protected mode some exceptions also push an error code; in real
+        // mode there is no such thing and it is simply ignored.
         EnterInterrupt(vector, isSoftware: false, errorCode);
     }
 
@@ -471,12 +480,12 @@ public sealed partial class Cpu
             return;
         }
 
-        // Real mode: salva FLAGS, CS e IP, poi salta al vettore.
+        // Real mode: save FLAGS, CS and IP, then jump through the vector.
         Push16((ushort)Flags.Value);
         Push16(State.Cs.Selector);
         Push16((ushort)State.Eip);
 
-        Flags.Interrupt = false;   // le interruzioni sono disabilitate nel gestore
+        Flags.Interrupt = false;   // interrupts start out disabled in the handler
         Flags.Trap = false;
 
         uint tableEntry = (uint)vector * 4;
@@ -495,10 +504,11 @@ public sealed partial class Cpu
             return;
         }
 
-        // IRET ripristina l'intero registro dei flag, IF compreso: e' cosi' che
-        // le interruzioni si riabilitano all'uscita dal gestore. Con il
-        // prefisso di dimensione ogni voce impilata occupa quattro byte, e il
-        // selettore di CS ne spreca due.
+        // IRET restores the whole flags register, IF included: that is how
+        // interrupts get re-enabled on the way out of a handler, without the
+        // handler having to remember whether they were on when it was entered.
+        // With an operand-size prefix every stacked entry occupies four bytes,
+        // and the CS selector wastes two of them.
         uint espPrima = State.Esp;
         try
         {
@@ -527,7 +537,7 @@ public sealed partial class Cpu
 
 public sealed partial class Cpu
 {
-    // --- porte di I/O alla dimensione corrente -------------------------------
+    // --- I/O ports at the current operand size ---------------------------------
 
     private void ReadPortToAccumulator(ushort port)
     {
@@ -541,12 +551,12 @@ public sealed partial class Cpu
         else _io.WriteWord(port, State.Ax);
     }
 
-    // --- IMUL a tre operandi --------------------------------------------------
+    // --- three-operand IMUL -----------------------------------------------------
 
     /// <summary>
-    /// IMUL reg, r/m, imm. A differenza della forma a un operando non tocca
-    /// DX:AX: il risultato sta tutto nel registro di destinazione, e CF/OF
-    /// segnalano se e' stato troncato.
+    /// IMUL reg, r/m, imm. Unlike the one-operand form it leaves DX:AX alone:
+    /// the whole result goes into the destination register, and CF/OF report
+    /// whether it had to be truncated to fit.
     /// </summary>
     private void ImulImmediate(in ModRm m, uint immediate)
     {
@@ -566,12 +576,13 @@ public sealed partial class Cpu
         }
     }
 
-    // --- puntatori lontani ----------------------------------------------------
+    // --- far pointers -----------------------------------------------------------
 
     /// <summary>
-    /// LES/LDS: caricano da memoria un puntatore completo, offset nel registro
-    /// e segmento nel registro di segmento indicato. E' il modo in cui il
-    /// codice a 16 bit passa puntatori che escono dai 64 KB di un segmento.
+    /// LES/LDS: load a complete far pointer from memory, the offset into a
+    /// general register and the segment into the named segment register. It is
+    /// how 16-bit code passes pointers that reach beyond a single segment's
+    /// 64 KB.
     /// </summary>
     private void LoadFarPointer(SegReg segment)
     {
@@ -579,13 +590,14 @@ public sealed partial class Cpu
         if (m.IsRegister) throw new CpuException(6);
 
         uint offset = ReadMemOperand(m.Segment, m.Offset);
-        // Il selettore segue l'offset, e il suo indirizzo avvolge dentro il
-        // segmento: con offset FFFE il selettore si legge a 0000, non oltre
-        // la fine. Solo la singola lettura a cavallo del limite e' un errore.
+        // The selector follows the offset, and its address wraps inside the
+        // segment: with an offset of 0xFFFE the selector is read back at 0x0000
+        // rather than past the end. Only a single access straddling the limit
+        // is an error; two separate accesses each wrap on their own.
         uint selectorOffset = m.Offset + (OperandSize32 ? 4u : 2u);
-        // L'avvolgimento segue la dimensione degli indirizzi in vigore, non
-        // il bit B del segmento: col prefisso 67 l'offset resta a 32 bit
-        // anche dentro un segmento a 16.
+        // The wrap follows the address size in effect, not the segment's B bit:
+        // with the 0x67 prefix the offset stays 32-bit even inside a 16-bit
+        // segment.
         if (!AddressSize32) selectorOffset &= 0xFFFF;
         ushort selector = ReadMem16(m.Segment, selectorOffset);
 
@@ -593,21 +605,24 @@ public sealed partial class Cpu
         LoadSegment(segment, selector);
     }
 
-    // --- ENTER ----------------------------------------------------------------
+    // --- ENTER -------------------------------------------------------------------
 
     /// <summary>
-    /// ENTER: costruisce il frame di stack di una procedura annidata. Il
-    /// livello di annidamento copia i puntatori ai frame esterni, meccanismo
-    /// pensato per linguaggi come il Pascal; il codice C usa sempre livello 0.
+    /// ENTER: builds the stack frame for a nested procedure. The nesting level
+    /// copies pointers to the enclosing frames, a mechanism designed for
+    /// languages like Pascal that allow nested procedures to see their parents'
+    /// locals; C code always uses level 0, which reduces ENTER to a push of BP
+    /// plus a subtraction.
     /// </summary>
     private void Enter()
     {
         ushort frameSize = FetchWord();
         byte level = (byte)(FetchByte() & 0x1F);
 
-        // Le voci da copiare si leggono a BP calante: il processore verifica
-        // che stiano tutte dentro il segmento prima di toccare lo stack, e se
-        // una sfora non esegue nemmeno la push iniziale di BP.
+        // The entries to copy are read at descending BP: the processor checks
+        // that all of them fall inside the segment before it touches the stack
+        // at all, so if one overruns it does not even perform the initial push
+        // of BP. That all-or-nothing behaviour is what lets a fault be retried.
         if (!State.Ss.Big && level > 1)
         {
             uint voce = OperandSize32 ? 4u : 2u;
@@ -620,15 +635,15 @@ public sealed partial class Cpu
 
         for (int i = 1; i < level; i++)
         {
-            // Il puntatore da cui si copiano i frame annidati segue la
-            // larghezza dello stack, non quella degli operandi: con SS a 16
-            // bit resta BP, altrimenti EBP.
-            // Il puntatore scende di una voce e poi si copia quello che
-            // trova: leggere prima di scendere copierebbe il frame corrente
-            // invece di quello che lo racchiude.
-            // Prima si verifica che la push ci stia, poi si legge la voce da
-            // copiare: quando lo spazio finisce il processore si ferma senza
-            // aver scritto niente, e lo stack resta all'iterazione precedente.
+            // The pointer the nested frames are copied from follows the stack
+            // width, not the operand size: with a 16-bit SS it stays BP,
+            // otherwise EBP.
+            // The pointer descends by one entry and only then reads what it
+            // finds: reading before descending would copy the current frame
+            // instead of the one enclosing it.
+            // The push is checked for room first and the entry read second, so
+            // that when the space runs out the processor stops having written
+            // nothing, leaving the stack exactly as the previous iteration did.
             if (OperandSize32)
             {
                 if (State.Ss.Big) State.Ebp -= 4; else State.Bp -= 4;
@@ -647,9 +662,9 @@ public sealed partial class Cpu
 
         if (level > 0) PushOperand(framePointer);
 
-        // Con operandi a 32 bit EBP riceve il puntatore intero, anche quando
-        // lo stack e' a 16 bit: in quel caso la meta' alta resta azzerata,
-        // perche' framePointer viene da SP.
+        // With 32-bit operands EBP receives the whole pointer even when the
+        // stack is 16-bit: in that case the top half simply comes out zeroed,
+        // because framePointer was taken from SP.
         if (OperandSize32) State.Ebp = framePointer;
         else State.Bp = (ushort)framePointer;
 
@@ -657,12 +672,12 @@ public sealed partial class Cpu
         else State.Sp -= frameSize;
     }
 
-    // --- cicli -----------------------------------------------------------------
+    // --- loops ---------------------------------------------------------------------
 
     /// <summary>
-    /// LOOP, LOOPE e LOOPNE: decrementano CX e saltano se non e' zero,
-    /// eventualmente anche in base a ZF. Il conteggio usa CX o ECX a seconda
-    /// della dimensione degli indirizzi, non di quella degli operandi.
+    /// LOOP, LOOPE and LOOPNE: decrement CX and branch while it is non-zero,
+    /// optionally also testing ZF. The counter is CX or ECX according to the
+    /// address size, not the operand size -- an easy detail to get backwards.
     /// </summary>
     private void LoopCondition(bool zeroRequired, bool useZeroFlag)
     {
@@ -678,7 +693,7 @@ public sealed partial class Cpu
         if (take) JumpRelative(offset);
     }
 
-    /// <summary>JCXZ/JECXZ: salta se il contatore e' gia' zero.</summary>
+    /// <summary>JCXZ/JECXZ: branch when the counter is already zero.</summary>
     private void JumpIfCxZero()
     {
         sbyte offset = (sbyte)FetchByte();

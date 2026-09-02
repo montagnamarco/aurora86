@@ -6,9 +6,10 @@ using CpuNs = Aurora386.Core.Cpu;
 namespace Aurora386.Tests;
 
 /// <summary>
-/// Regressioni emerse facendo avviare MS-DOS 6.22 da un'immagine reale.
-/// Ognuno di questi difetti si manifestava come "il sistema non parte", molto
-/// lontano dalla causa: senza un test dedicato tornerebbero inosservati.
+/// Regressions found while getting MS-DOS 6.22 to boot from a real disk
+/// image. Every one of these bugs presented as "the system does not start",
+/// with the visible symptom a very long way from the cause; without a test
+/// pinning each one down, they would creep back unnoticed.
 /// </summary>
 public class BootRegressionTests
 {
@@ -29,9 +30,10 @@ public class BootRegressionTests
     [Fact]
     public void CallFarDirettaImpilaCsEIpESalta()
     {
-        // 0x9A: senza questa istruzione DOS non riesce a fare una sola
-        // chiamata fra segmenti, e ogni tentativo finiva come opcode non
-        // valido -- cioe' come una INT, con l'esecuzione dirottata altrove.
+        // 0x9A: without this instruction DOS cannot make a single
+        // inter-segment call, and every attempt was raising an invalid-opcode
+        // exception -- which is to say an INT, quietly sending execution
+        // somewhere else entirely.
         //   9A 00 20 00 30   CALL FAR 3000:2000
         var (cpu, bus) = Setup(0x9A, 0x00, 0x20, 0x00, 0x30);
         using (bus)
@@ -41,24 +43,25 @@ public class BootRegressionTests
             Assert.Equal(0x3000, cpu.State.Cs.Selector);
             Assert.Equal(0x2000u, cpu.State.Eip);
 
-            // Sullo stack: prima il segmento di ritorno, poi l'offset.
+            // On the stack: the return segment is pushed first, then the
+            // offset, so the offset ends up at the lower address.
             Assert.Equal(0x7FFCu, cpu.State.Esp);
-            Assert.Equal(CodeBase + 5, bus.ReadWord(0x7FFC));   // IP di ritorno
-            Assert.Equal(0x0000, bus.ReadWord(0x7FFE));         // CS di ritorno
+            Assert.Equal(CodeBase + 5, bus.ReadWord(0x7FFC));   // return IP
+            Assert.Equal(0x0000, bus.ReadWord(0x7FFE));         // return CS
         }
     }
 
     [Fact]
     public void CallFarERetfSonoSimmetriche()
     {
-        // La prova che conta: andata e ritorno devono riportare esattamente
-        // dove si era.
+        // The test that actually matters: out and back must land exactly
+        // where execution left off, with the stack balanced.
         //   9A 00 20 00 00   CALL FAR 0000:2000
-        //   90               NOP  (punto di ritorno)
+        //   90               NOP  (the return point)
         var (cpu, bus) = Setup(0x9A, 0x00, 0x20, 0x00, 0x00);
         using (bus)
         {
-            bus.WriteByte(0x2000, 0xCB);      // RETF nella routine chiamata
+            bus.WriteByte(0x2000, 0xCB);      // RETF in the called routine
 
             cpu.Step();                        // CALL FAR
             Assert.Equal(0x2000u, cpu.State.Eip);
@@ -66,23 +69,24 @@ public class BootRegressionTests
             cpu.Step();                        // RETF
             Assert.Equal(CodeBase + 5, cpu.State.Eip);
             Assert.Equal(0x0000, cpu.State.Cs.Selector);
-            Assert.Equal(0x8000u, cpu.State.Esp);   // stack bilanciato
+            Assert.Equal(0x8000u, cpu.State.Esp);   // stack balanced
         }
     }
 
     [Fact]
     public void XlatTraduceTramiteTabella()
     {
-        // 0xD7: DOS la chiama milioni di volte per convertire caratteri.
+        // 0xD7: DOS executes this millions of times for character
+        // translation, so getting it wrong is not subtle.
         //   D7   XLAT  ->  AL = DS:[BX + AL]
         var (cpu, bus) = Setup(0xD7);
         using (bus)
         {
-            // Tabella a 0x3000: converte l'indice nel suo doppio.
+            // Table at 0x3000: maps each index to twice its value.
             for (uint i = 0; i < 256; i++) bus.WriteByte(0x3000 + i, (byte)(i * 2));
 
             cpu.State.Bx = 0x3000;
-            cpu.State.SetReg8(0, 5);      // AL = indice
+            cpu.State.SetReg8(0, 5);      // AL = index into the table
             cpu.Step();
 
             Assert.Equal(10, cpu.State.GetReg8(0));
@@ -92,29 +96,30 @@ public class BootRegressionTests
     [Fact]
     public void XlatRispettaLOverrideDiSegmento()
     {
-        //   2E D7   XLAT con prefisso CS
+        //   2E D7   XLAT with a CS segment override
         var (cpu, bus) = Setup(0x2E, 0xD7);
         using (bus)
         {
             cpu.State.LoadSegmentRealMode(CpuNs.SegReg.Cs, 0);
-            cpu.State.LoadSegmentRealMode(CpuNs.SegReg.Ds, 0x1000);   // DS diverso
-            bus.WriteByte(0x4000, 0xAA);      // via CS
-            bus.WriteByte(0x14000, 0xBB);     // via DS
+            cpu.State.LoadSegmentRealMode(CpuNs.SegReg.Ds, 0x1000);   // a different DS
+            bus.WriteByte(0x4000, 0xAA);      // what CS would reach
+            bus.WriteByte(0x14000, 0xBB);     // what DS would reach
 
             cpu.State.Bx = 0x4000;
             cpu.State.SetReg8(0, 0);
             cpu.Step();
 
-            Assert.Equal(0xAA, cpu.State.GetReg8(0));   // ha usato CS
+            Assert.Equal(0xAA, cpu.State.GetReg8(0));   // the override was honoured
         }
     }
 
     [Fact]
     public void NessunVettoreDiInterruzioneRestaAZero()
     {
-        // DOS legge parole dalla tabella dei vettori e le usa come segmenti,
-        // anche per vettori che non gestisce. Uno zero non significa "libero":
-        // significa un puntatore a 0000:0000, dove non c'e' codice.
+        // DOS reads words out of the interrupt vector table and uses them as
+        // segment values, even for vectors it does not itself handle. A zero
+        // there does not mean "unused": it means a pointer to 0000:0000,
+        // where there is no code at all.
         using var machine = new Machine();
         machine.RunInstructions(300);
 
@@ -124,14 +129,14 @@ public class BootRegressionTests
             ushort segment = machine.Memory.ReadWord((uint)vector * 4 + 2);
 
             Assert.True(segment != 0 || offset != 0,
-                $"il vettore {vector:X2}h e' nullo: DOS lo userebbe come puntatore");
+                $"vector {vector:X2}h is null: DOS would still use it as a pointer");
         }
     }
 
     [Fact]
     public void OgniVettorePuntaACodiceEseguibile()
     {
-        // Non basta che sia diverso da zero: deve portare a codice vero.
+        // Being non-zero is not enough: the vector has to lead to real code.
         using var machine = new Machine();
         machine.RunInstructions(300);
 
@@ -142,22 +147,22 @@ public class BootRegressionTests
             uint linear = (uint)segment * 16 + offset;
 
             byte first = machine.Memory.ReadByte(linear);
-            // Ogni punto di ingresso comincia con l'aggancio nativo (0F FF)
-            // oppure e' un IRET immediato.
+            // Every entry point begins either with the native trap hook
+            // (0F FF) or with an immediate IRET.
             Assert.True(first == 0x0F || first == 0xCF,
-                $"il vettore {vector:X2}h punta a {segment:X4}:{offset:X4}, " +
-                $"dove il primo byte e' {first:X2} e non e' codice di gestore");
+                $"vector {vector:X2}h points at {segment:X4}:{offset:X4}, " +
+                $"where the first byte is {first:X2}, which is not handler code");
         }
     }
 
     [Fact]
     public void Int13hAzzeraAhSuOperazioneRiuscita()
     {
-        // AH e' il codice di errore al ritorno: lasciarci il numero di
-        // funzione fa credere a DOS che la lettura sia fallita. Con AH=02
-        // ("indirizzo non trovato") DOS considera corrotto un file appena
-        // letto correttamente.
-        //   B4 02  MOV AH,2      (leggi settori)
+        // AH is the error code on return, so leaving the function number in
+        // it convinces DOS that the read failed. With AH=02 ("address mark
+        // not found") DOS declares a file corrupt that was in fact read
+        // perfectly.
+        //   B4 02  MOV AH,2      (read sectors)
         //   B0 01  MOV AL,1
         //   B5 00  MOV CH,0
         //   B1 01  MOV CL,1
@@ -179,49 +184,50 @@ public class BootRegressionTests
         machine.AttachDisk(disk);
         machine.RunInstructions(3000);
 
-        Assert.Equal(0, machine.Cpu.State.GetReg8(4));   // AH = 0: nessun errore
-        Assert.Equal(1, machine.Cpu.State.GetReg8(0));   // AL = settori letti
+        Assert.Equal(0, machine.Cpu.State.GetReg8(4));   // AH = 0: no error
+        Assert.Equal(1, machine.Cpu.State.GetReg8(0));   // AL = sectors actually read
     }
 
     [Fact]
     public void Int13hSuUnitaAssenteAzzeraIRegistri()
     {
-        // Un'unita' che non c'e' non deve lasciare in DL il conteggio di una
-        // chiamata precedente: DOS lo legge per sapere quante unita' esistono
-        // e proverebbe a enumerarne di inesistenti.
+        // A drive that is not there must not leave the count from a previous
+        // call sitting in DL: DOS reads that to learn how many drives exist,
+        // and would go on to enumerate ones that do not.
         using var machine = new Machine();
         machine.RunInstructions(300);
         var cpu = machine.Cpu;
 
-        // Prepara lo stack come dopo una INT.
+        // Set up the stack as it would look just after an INT.
         cpu.State.Esp = 0x7000;
         cpu.SetSegment(CpuNs.SegReg.Ss, 0);
         machine.Memory.WriteWord(0x7004, 0);
 
-        // Prima interroga un'unita' esistente, poi una assente.
+        // Query a drive that exists first, then one that does not.
         DiskImage floppy = DiskImage.CreateInMemory(0x00, 80, 2, 18);
         machine.AttachDisk(floppy);
 
         cpu.State.SetReg8(4, 0x08);
         cpu.State.SetReg8(2, 0x00);
         machine.DiskServices.Handle(cpu);
-        Assert.NotEqual(0, cpu.State.Dx);      // l'unita' esiste
+        Assert.NotEqual(0, cpu.State.Dx);      // the drive is there
 
         cpu.State.SetReg8(4, 0x08);
-        cpu.State.SetReg8(2, 0x80);            // disco fisso assente
+        cpu.State.SetReg8(2, 0x80);            // a hard disk that is not fitted
         machine.DiskServices.Handle(cpu);
 
-        Assert.Equal(0, cpu.State.Dx);         // niente residui
+        Assert.Equal(0, cpu.State.Dx);         // nothing left over from before
         Assert.Equal(0, cpu.State.Cx);
         ushort flags = machine.Memory.ReadWord(0x7004);
-        Assert.Equal(1, flags & 1);            // carry: errore segnalato
+        Assert.Equal(1, flags & 1);            // carry set: the error was reported
     }
 
     [Fact]
     public void Int13hAh15RiportaIlTipoInAhSenzaCarry()
     {
-        // Per questa funzione AH non e' un codice di errore ma il tipo di
-        // unita': azzerarlo come si fa per le altre la renderebbe muta.
+        // For this one function AH is not an error code but the drive type,
+        // so clearing it the way the other functions do would make the call
+        // report nothing at all.
         using var machine = new Machine();
         machine.RunInstructions(300);
         var cpu = machine.Cpu;
@@ -236,22 +242,22 @@ public class BootRegressionTests
         cpu.State.SetReg8(2, 0x00);
         machine.DiskServices.Handle(cpu);
 
-        // AH=02 significa "floppy con linea di rilevamento del cambio disco".
-        // Il valore 01 sarebbe un floppy senza quella linea, e allora DOS
-        // dedurrebbe il cambio dal tempo trascorso invece di interrogare la
-        // funzione 0x16 -- che e' proprio cio' che serve per lo swap.
-        Assert.Equal(0x02, cpu.State.GetReg8(4));           // floppy con change-line
-        Assert.Equal(0, machine.Memory.ReadWord(0x7004) & 1);   // nessun errore
+        // AH=02 means "floppy with a disk change line". The value 01 would
+        // be a floppy without one, and DOS would then infer media changes from
+        // elapsed time rather than asking function 0x16 -- which is exactly
+        // the mechanism a disk swap during installation depends on.
+        Assert.Equal(0x02, cpu.State.GetReg8(4));           // floppy with change-line
+        Assert.Equal(0, machine.Memory.ReadWord(0x7004) & 1);   // no error
     }
 
     [Fact]
     public void CaricareSsInibisceLeInterruzioniPerUnIstruzione()
     {
-        // Lo stack si cambia con due istruzioni (MOV SS,.. poi MOV SP,..) e
-        // fra le due SS:SP indica un'area che non esiste. L'architettura
-        // garantisce che nessuna interruzione possa intromettersi: senza
-        // questa garanzia il gestore impilerebbe il proprio contesto in un
-        // punto arbitrario della memoria.
+        // Switching stacks takes two instructions (MOV SS,.. then MOV SP,..)
+        // and in between them SS:SP points at an area that does not exist.
+        // The architecture guarantees no interrupt can slip in there; without
+        // that guarantee the handler would push its saved context into an
+        // arbitrary spot in memory and quietly corrupt it.
         var bus = new PhysicalMemoryBus();
         var io = new Aurora386.Core.IO.IoBus();
         var interrupts = new Aurora386.Core.Devices.InterruptController();
@@ -265,7 +271,7 @@ public class BootRegressionTests
             cpu.State.Esp = 0x9000;
             cpu.State.Eip = CodeBase;
 
-            // Gestore di IRQ 0 che segna il proprio passaggio.
+            // An IRQ 0 handler that leaves a mark to prove it ran.
             bus.WriteWord(0x08 * 4, 0x0500);
             bus.WriteWord(0x08 * 4 + 2, 0x0000);
             new byte[] {
@@ -275,8 +281,8 @@ public class BootRegressionTests
             }.CopyTo(bus.GetRamSpan(0x0500, 10));
 
             //   B8 00 20   MOV AX,0x2000
-            //   8E D0      MOV SS,AX      <- da qui le interruzioni sono inibite
-            //   BC 00 10   MOV SP,0x1000  <- lo stack e' coerente solo da qui
+            //   8E D0      MOV SS,AX      <- interrupts inhibited from here
+            //   BC 00 10   MOV SP,0x1000  <- the stack is only coherent from here
             //   90         NOP
             new byte[] { 0xB8, 0x00, 0x20, 0x8E, 0xD0, 0xBC, 0x00, 0x10, 0x90 }
                 .CopyTo(bus.GetRamSpan(CodeBase, 9));
@@ -286,26 +292,27 @@ public class BootRegressionTests
             io.WriteByte(0x21, 0x04); io.WriteByte(0x21, 0x01); io.WriteByte(0x21, 0xFE);
 
             cpu.StepWithInterrupts();          // MOV AX
-            interrupts.RaiseIrq(0);            // l'interruzione arriva ORA
-            cpu.StepWithInterrupts();          // MOV SS: deve inibire
+            interrupts.RaiseIrq(0);            // the interrupt arrives RIGHT NOW
+            cpu.StepWithInterrupts();          // MOV SS: must inhibit it
 
-            // Il gestore non deve essere entrato: siamo fra MOV SS e MOV SP.
+            // The handler must not have run: we are sitting between MOV SS
+            // and MOV SP, in the window the architecture protects.
             Assert.Equal(0, bus.ReadByte(0x7000));
             Assert.Equal(0x2000, cpu.State.Ss.Selector);
 
-            // MOV SP completa il cambio di stack; subito dopo l'interruzione
-            // viene servita, e il gestore impila IP, CS e FLAGS sul nuovo
-            // stack -- che ora e' valido. SP scende quindi di sei byte.
+            // MOV SP completes the switch; the interrupt is serviced right
+            // afterwards and the handler pushes IP, CS and FLAGS onto the new
+            // stack -- which is now valid. SP therefore drops by six bytes.
             cpu.StepWithInterrupts();
             Assert.Equal(0x1000u - 6, cpu.State.Esp);
-            Assert.Equal(0x0500u, cpu.State.Eip);   // dentro il gestore
+            Assert.Equal(0x0500u, cpu.State.Eip);   // inside the handler
 
-            // Il gestore lascia la propria traccia.
+            // The handler leaves its mark.
             cpu.StepWithInterrupts();
             Assert.Equal(1, bus.ReadByte(0x7000));
 
-            // La prova che conta: il contesto e' finito sul nuovo stack,
-            // non in un'area arbitraria.
+            // The assertion that matters: the saved context landed on the new
+            // stack, not in some arbitrary region of memory.
             Assert.Equal(0x2000u * 16 + 0x1000 - 6, cpu.State.Ss.Base + cpu.State.Esp);
         }
     }
@@ -313,20 +320,20 @@ public class BootRegressionTests
     [Fact]
     public void OpcodeSconosciutoVieneSegnalato()
     {
-        // La diagnostica che ha permesso di trovare XLAT: senza, un opcode
-        // mancante e' indistinguibile da un salto sbagliato.
-        var (cpu, bus) = Setup(0x0F, 0x0B);   // opcode a due byte inesistente
+        // The diagnostic that led us to the missing XLAT: without it, an
+        // unimplemented opcode is indistinguishable from a bad jump.
+        var (cpu, bus) = Setup(0x0F, 0x0B);   // a two-byte opcode that does not exist
         using (bus)
         {
             byte reported = 0;
             bool called = false;
             cpu.UnknownTwoByteOpcode += (op, ip, cs) => { reported = op; called = true; };
 
-            bus.WriteWord(6 * 4, 0x0500);     // vettore dell'eccezione 6
+            bus.WriteWord(6 * 4, 0x0500);     // vector for exception 6
             bus.WriteWord(6 * 4 + 2, 0x0000);
             cpu.Step();
 
-            Assert.True(called, "l'opcode sconosciuto non e' stato segnalato");
+            Assert.True(called, "the unknown opcode was not reported");
             Assert.Equal(0x0B, reported);
         }
     }

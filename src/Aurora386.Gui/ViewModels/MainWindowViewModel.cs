@@ -53,6 +53,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// <summary>Set by the view to save a screenshot of the current screen.</summary>
     public Func<string, Task>? SaveScreenshotAsync { get; set; }
 
+    /// <summary>Set by the view to open the debugger window.</summary>
+    public Action<DebuggerViewModel>? ShowDebugger { get; set; }
+
     public MainWindowViewModel()
     {
         Session = new EmulatorSession();
@@ -174,6 +177,20 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Session.Pause();
         Session.StepOne();
         StatusText = "Stepped one instruction";
+    }
+
+    /// <summary>
+    /// Opens the debugger, pausing the machine first: inspecting registers
+    /// that are changing millions of times a second would be useless.
+    /// </summary>
+    [RelayCommand]
+    private void OpenDebugger()
+    {
+        if (ShowDebugger is null) return;
+
+        Session.Pause();
+        ShowDebugger(new DebuggerViewModel(Session));
+        StatusText = "Debugger open (machine paused)";
     }
 
     [RelayCommand]

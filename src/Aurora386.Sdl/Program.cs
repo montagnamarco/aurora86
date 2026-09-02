@@ -2,8 +2,8 @@ using Aurora386.Core;
 using Aurora386.Core.Bios;
 using Aurora386.Sdl.Frontend;
 
-// Punto di ingresso dell'emulatore. Gli argomenti indicano quali immagini
-// collegare e come configurare la macchina.
+// Emulator entry point. The command line says which disk images to attach and
+// how the machine should be configured.
 
 if (args.Length == 0 || args.Contains("--aiuto") || args.Contains("-h"))
 {
@@ -47,15 +47,15 @@ for (int i = 0; i < args.Length; i++)
             break;
 
         default:
-            // Un percorso senza opzione viene trattato come floppy: e' il caso
-            // piu' comune e risparmia di digitare l'opzione.
+            // A bare path with no option is taken as a floppy image: it is by
+            // far the most common case, so it is worth saving the typing.
             if (!args[i].StartsWith('-')) floppies.Add(args[i]);
             else return Fail($"opzione sconosciuta: {args[i]}");
             break;
     }
 }
 
-// Creazione di un nuovo disco fisso, se richiesta.
+// Create a new hard disk image, if that was asked for.
 if (createDisk is not null)
 {
     if (File.Exists(createDisk))
@@ -67,7 +67,7 @@ if (createDisk is not null)
                       $"{geometry.SectorsPerTrack} settori)");
     Console.WriteLine("il disco e' partizionato e formattato FAT16, pronto per l'installazione.");
 
-    // Se non e' stato chiesto altro, l'operazione finisce qui.
+    // If nothing else was requested, creating the image was the whole job.
     if (floppies.Count == 0 && hardDisk is null) return 0;
     hardDisk ??= createDisk;
 }
@@ -77,7 +77,8 @@ if (ramMegabytes is < 1 or > 64)
 
 using var machine = new Machine(ramMegabytes * 1024 * 1024);
 
-// I floppy occupano le unita' 0x00 e 0x01, il disco fisso la 0x80.
+// Floppies take BIOS drive numbers 0x00 and 0x01; the hard disk takes 0x80,
+// the convention that separates removable from fixed media.
 for (int i = 0; i < floppies.Count && i < 2; i++)
 {
     if (!File.Exists(floppies[i])) return Fail($"immagine non trovata: {floppies[i]}");

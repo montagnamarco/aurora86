@@ -3,8 +3,8 @@ namespace Aurora386.Core.Cpu;
 public sealed partial class Cpu
 {
     /// <summary>
-    /// Esegue una singola istruzione: raccoglie i prefissi, legge l'opcode e
-    /// lo esegue. Ritorna il numero di cicli consumati.
+    /// Executes a single instruction: collects the prefixes, reads the opcode
+    /// and runs it. Returns the number of cycles consumed.
     /// </summary>
     public int Step()
     {
@@ -20,8 +20,8 @@ public sealed partial class Cpu
         }
         catch (PageFaultException fault)
         {
-            // L'istruzione va riavviata da capo dopo che il gestore ha
-            // sistemato la pagina, quindi EIP torna al suo inizio.
+            // The instruction has to be restarted from the top once the handler
+            // has brought the page in, so EIP is rewound to where it began.
             State.Eip = _instructionStart;
             State.Cr2 = fault.LinearAddress;
             RaiseException(14, errorCode: (uint)((fault.Present ? 1 : 0) | (fault.Write ? 2 : 0)));
@@ -37,9 +37,8 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Consuma i prefissi che precedono l'istruzione e ritorna il primo byte
-    /// che non lo e'. I prefissi possono essere piu' di uno e in qualsiasi
-    /// ordine.
+    /// Consumes the prefixes that precede an instruction and returns the first
+    /// byte that is not one. There may be several prefixes, in any order.
     /// </summary>
     private byte FetchPrefixesAndOpcode()
     {
@@ -65,36 +64,37 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Dice se il prefisso LOCK e' ammesso davanti a questo opcode. La lista
-    /// e' quella del manuale: solo le forme che scrivono in memoria il
-    /// risultato di una lettura sullo stesso indirizzo. Il byte ModR/M non e'
-    /// ancora stato letto, quindi qui si filtra per opcode e il caso
-    /// "destinazione in registro" viene escluso subito dopo.
+    /// Decides whether the LOCK prefix is legal in front of this opcode. The
+    /// list is the manual's: only the forms that write back to memory the
+    /// result of a read from that same address. The ModR/M byte has not been
+    /// consumed yet, so this filters by opcode and the "destination is a
+    /// register" case is ruled out immediately afterwards.
     /// </summary>
     private bool LockAllowed(byte opcode)
     {
-        // Le otto operazioni ALU nelle forme con destinazione r/m. CMP
-        // (gruppo 0x38) e' esclusa: confronta soltanto, non riscrive nulla,
-        // quindi non c'e' niente da rendere atomico.
+        // The eight ALU operations in their r/m-destination forms. CMP (the
+        // 0x38 group) is excluded: it only compares and writes nothing back, so
+        // there is nothing to make atomic.
         if (opcode < 0x38 && (opcode & 0x07) <= 1) return PeekModRmIsMemory();
 
-        // 0x0F apre gli opcode a due byte: la decisione dipende dal secondo,
-        // che qui non e' ancora stato consumato.
+        // 0x0F opens the two-byte opcodes: the decision depends on the second
+        // byte, which has not been consumed here either.
         if (opcode == 0x0F) return LockAllowedTwoByte(ReadMem8(SegReg.Cs, State.Eip));
 
         return opcode switch
         {
-            // ALU con immediato: il campo reg del ModR/M sceglie
-            // l'operazione, e il valore 7 e' di nuovo CMP.
-            // 0x82 e' l'alias non documentato di 0x80 e accetta LOCK come lui.
+            // ALU with an immediate: the ModR/M reg field picks the operation,
+            // and the value 7 is CMP once again.
+            // 0x82 is the undocumented alias of 0x80 and accepts LOCK just as
+            // it does.
             0x80 or 0x81 or 0x82 or 0x83 => PeekModRmIsMemory() && PeekModRmReg() != 7,
             0x86 or 0x87 => PeekModRmIsMemory(),           // XCHG
-            // Del gruppo F6/F7 solo NOT (2) e NEG (3) scrivono in memoria:
-            // TEST, MUL e DIV no.
+            // Of the F6/F7 group only NOT (2) and NEG (3) write to memory;
+            // TEST, MUL and DIV do not.
             0xF6 or 0xF7 => PeekModRmIsMemory()
                             && PeekModRmReg() is 2 or 3,
-            // Del gruppo FE/FF solo INC (0) e DEC (1): le altre forme sono
-            // salti e push, che non riscrivono l'operando.
+            // Of the FE/FF group only INC (0) and DEC (1): the other forms are
+            // jumps and pushes, which never write the operand back.
             0xFE or 0xFF => PeekModRmIsMemory()
                             && PeekModRmReg() is 0 or 1,
             _ => false,
@@ -102,56 +102,57 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Sbircia il byte ModR/M senza consumarlo per sapere se l'operando r/m
-    /// e' in memoria: e' il solo caso in cui LOCK ha senso.
-    /// </summary>
-    /// <summary>
-    /// Fra gli opcode a due byte solo le istruzioni di bit che riscrivono
-    /// l'operando accettano LOCK: BT si limita a leggere, quindi e' esclusa
-    /// come lo sono CMP e TEST fra quelli a un byte.
+    /// Among the two-byte opcodes only the bit instructions that write the
+    /// operand back accept LOCK: BT merely reads, so it is excluded just as CMP
+    /// and TEST are among the one-byte opcodes.
     /// </summary>
     private bool LockAllowedTwoByte(byte opcode)
     {
-        // Il ModR/M viene dopo il secondo byte dell'opcode.
+        // The ModR/M byte comes after the second opcode byte.
         bool memory = (ReadMem8(SegReg.Cs, State.Eip + 1) >> 6) != 3;
         int reg = (ReadMem8(SegReg.Cs, State.Eip + 1) >> 3) & 7;
 
         return opcode switch
         {
             0xAB or 0xB3 or 0xBB => memory,          // BTS, BTR, BTC
-            0xBA => memory && reg >= 5,              // il gruppo, tranne BT (4)
+            0xBA => memory && reg >= 5,              // the group, minus BT (4)
             _ => false,
         };
     }
 
+    /// <summary>
+    /// Peeks at the ModR/M byte without consuming it, to find out whether the
+    /// r/m operand is in memory: the only case in which LOCK means anything.
+    /// </summary>
     private bool PeekModRmIsMemory()
         => (ReadMem8(SegReg.Cs, State.Eip) >> 6) != 3;
 
-    /// <summary>Campo reg del ModR/M, che in alcuni gruppi sceglie l'operazione.</summary>
+    /// <summary>The ModR/M reg field, which in some groups selects the operation.</summary>
     private int PeekModRmReg()
         => (ReadMem8(SegReg.Cs, State.Eip) >> 3) & 7;
 
     /// <summary>
-    /// Dispatch dell'opcode.
+    /// Opcode dispatch.
     ///
-    /// La tabella x86 e' fortemente regolare: i primi 0x40 byte sono otto
-    /// operazioni ALU con sei forme ciascuna, disposte in modo che i bit bassi
-    /// dell'opcode indichino direzione e dimensione. Sfruttare questa
-    /// regolarita' evita centinaia di casi quasi identici, e riduce il codice
-    /// caldo abbastanza da tenerlo nella cache istruzioni.
+    /// The x86 table is strongly regular: the first 0x40 bytes are eight ALU
+    /// operations with six forms each, laid out so that the low bits of the
+    /// opcode encode direction and size. Exploiting that regularity avoids
+    /// hundreds of nearly identical cases and keeps the hot path small enough
+    /// to stay resident in the instruction cache.
     /// </summary>
     private void Execute(byte opcode)
     {
-        // LOCK rende atomico un accesso in memoria, quindi ha senso solo sulle
-        // istruzioni che leggono e riscrivono un operando in memoria. Su tutto
-        // il resto -- destinazione in un registro, o istruzione che non e'
-        // read-modify-write -- il processore rifiuta l'istruzione.
+        // LOCK makes a memory access atomic, so it only means anything on the
+        // instructions that read an operand from memory and write it back. On
+        // everything else -- a register destination, or an instruction that is
+        // not read-modify-write -- the processor rejects the instruction rather
+        // than ignoring the prefix.
         if (_prefixes.Lock && !LockAllowed(opcode)) throw new CpuException(6);
 
         // --- 0x00-0x3F: ADD OR ADC SBB AND SUB XOR CMP ---------------------
-        // Ogni gruppo di 8 opcode e' una operazione; dentro il gruppo i bit
-        // 0-2 selezionano la forma. I due opcode restanti di ogni gruppo
-        // (0x06/0x07 ecc.) sono PUSH/POP di segmento, gestiti dopo.
+        // Each block of 8 opcodes is one operation; within the block bits 0-2
+        // select the form. The two remaining opcodes of each block (0x06/0x07
+        // and so on) are segment PUSH/POP, handled further down.
         if (opcode < 0x40)
         {
             int form = opcode & 7;
@@ -164,7 +165,7 @@ public sealed partial class Cpu
 
         switch (opcode)
         {
-            // --- PUSH/POP di segmento (i buchi nella tabella ALU) ----------
+            // --- segment PUSH/POP (the gaps in the ALU table) --------------
             case 0x06: PushOperand(State.Es.Selector); return;
             case 0x07: LoadSegment(SegReg.Es, (ushort)PopSegmentOperand()); return;
             case 0x0E: PushOperand(State.Cs.Selector); return;
@@ -173,11 +174,11 @@ public sealed partial class Cpu
             case 0x1E: PushOperand(State.Ds.Selector); return;
             case 0x1F: LoadSegment(SegReg.Ds, (ushort)PopSegmentOperand()); return;
 
-            // --- INC/DEC di registro (0x40-0x4F) ---------------------------
+            // --- register INC/DEC (0x40-0x4F) ------------------------------
             case >= 0x40 and <= 0x47: IncReg(opcode - 0x40); return;
             case >= 0x48 and <= 0x4F: DecReg(opcode - 0x48); return;
 
-            // --- PUSH/POP di registro (0x50-0x5F) --------------------------
+            // --- register PUSH/POP (0x50-0x5F) -----------------------------
             case >= 0x50 and <= 0x57:
                 PushOperand(State.Gpr[opcode - 0x50]);
                 return;
@@ -192,8 +193,9 @@ public sealed partial class Cpu
             case 0x60: Pusha(); return;
             case 0x61: Popa(); return;
 
-            // BOUND: verifica che il registro stia fra i due limiti letti da
-            // memoria, estremi compresi. Fuori intervallo e' #BR, il vettore 5.
+            // BOUND: checks that the register lies between the two limits read
+            // from memory, endpoints included. Out of range raises #BR, vector
+            // 5 -- it exists so that array bounds checks cost one instruction.
             case 0x62:
             {
                 var m = DecodeModRm();
@@ -215,8 +217,8 @@ public sealed partial class Cpu
                 return;
             }
 
-            // ARPL: allinea il livello di privilegio di un selettore. Fuori dal
-            // protected mode non e' definita e il 386 la rifiuta.
+            // ARPL: adjusts a selector's requested privilege level. Outside
+            // protected mode it has no meaning and the 386 rejects it.
             case 0x63:
             {
                 if (!State.ProtectedMode) throw new CpuException(6);
@@ -232,7 +234,7 @@ public sealed partial class Cpu
                 return;
             }
 
-            // --- BCD (i "buchi" ogni 8 opcode nella tabella ALU) -----------
+            // --- BCD (the "holes" every 8 opcodes in the ALU table) --------
             case 0x27: Daa(); return;
             case 0x2F: Das(); return;
             case 0x37: Aaa(); return;
@@ -240,12 +242,13 @@ public sealed partial class Cpu
             case 0xD4: Aam(); return;
             case 0xD5: Aad(); return;
 
-            // SALC: non documentata da Intel ma presente in tutti i chip.
-            // Riempie AL con il carry: FF se acceso, 00 se spento, senza
-            // toccare i flag. Serviva a trasformare CF in una maschera.
+            // SALC: undocumented by Intel but present in every chip. It fills
+            // AL with the carry flag -- 0xFF when set, 0x00 when clear --
+            // without disturbing the flags. It was a way of turning CF into a
+            // bit mask in a single byte.
             case 0xD6: State.SetReg8(0, Flags.Carry ? (byte)0xFF : (byte)0x00); return;
 
-            // --- IMUL con immediato (forme a tre operandi del 186) ---------
+            // --- IMUL with an immediate (the 186's three-operand forms) ----
             case 0x69:
             {
                 var m = DecodeModRm();
@@ -262,7 +265,7 @@ public sealed partial class Cpu
             case 0x68: PushOperand(FetchImmediate()); return;
             case 0x6A: PushOperand((uint)(sbyte)FetchByte()); return;
 
-            // --- istruzioni su stringhe -------------------------------------
+            // --- string instructions ----------------------------------------
             case 0x6C: case 0x6D:   // INS
             case 0x6E: case 0x6F:   // OUTS
             case 0xA4: case 0xA5:   // MOVS
@@ -273,7 +276,7 @@ public sealed partial class Cpu
                 ExecuteString(opcode);
                 return;
 
-            // --- porte di I/O -----------------------------------------------
+            // --- I/O ports ---------------------------------------------------
             case 0xE4: State.SetReg8(0, _io.ReadByte(FetchByte())); return;
             case 0xE5: ReadPortToAccumulator(FetchByte()); return;
             case 0xE6: _io.WriteByte(FetchByte(), State.GetReg8(0)); return;
@@ -283,7 +286,7 @@ public sealed partial class Cpu
             case 0xEE: _io.WriteByte(State.Dx, State.GetReg8(0)); return;
             case 0xEF: WriteAccumulatorToPort(State.Dx); return;
 
-            // --- scorrimenti e rotazioni -------------------------------------
+            // --- shifts and rotates -------------------------------------------
             case 0xC0: { var m = DecodeModRm(); ExecuteShift(m, FetchByte(), true); return; }
             case 0xC1: { var m = DecodeModRm(); ExecuteShift(m, FetchByte(), false); return; }
             case 0xD0: { var m = DecodeModRm(); ExecuteShift(m, 1, true); return; }
@@ -291,30 +294,31 @@ public sealed partial class Cpu
             case 0xD2: { var m = DecodeModRm(); ExecuteShift(m, State.GetReg8(1), true); return; }
             case 0xD3: { var m = DecodeModRm(); ExecuteShift(m, State.GetReg8(1), false); return; }
 
-            // --- gruppi con estensione dell'opcode ---------------------------
+            // --- groups that extend the opcode through the reg field ---------
             case 0xF6: Group3Byte(); return;
             case 0xF7: Group3Word(); return;
             case 0xFE: Group4(); return;
             case 0xFF: Group5(); return;
 
-            // --- LES/LDS: caricano puntatore lontano in segmento + registro --
+            // --- LES/LDS: load a far pointer into segment + register ---------
             case 0xC4: LoadFarPointer(SegReg.Es); return;
             case 0xC5: LoadFarPointer(SegReg.Ds); return;
 
             // --- ENTER/LEAVE ---------------------------------------------------
-            // WAIT: sincronizza con il coprocessore. Senza 387 installato non
-            // c'e' nulla da attendere, ma l'istruzione e' valida.
+            // WAIT: synchronises with the coprocessor. With no 387 installed
+            // there is nothing to wait for, but the instruction is still valid
+            // and must not fault.
             case 0x9B: return;
 
             case 0xC8: Enter(); return;
 
-            // --- cicli e salto su CX ------------------------------------------
+            // --- loops and the jump on CX --------------------------------------
             case 0xE0: LoopCondition(zeroRequired: false, useZeroFlag: true); return;
             case 0xE1: LoopCondition(zeroRequired: true, useZeroFlag: true); return;
             case 0xE2: LoopCondition(zeroRequired: false, useZeroFlag: false); return;
             case 0xE3: JumpIfCxZero(); return;
 
-            // --- salti condizionati corti (0x70-0x7F) ----------------------
+            // --- short conditional jumps (0x70-0x7F) -----------------------
             case >= 0x70 and <= 0x7F:
             {
                 sbyte offset = (sbyte)FetchByte();
@@ -323,15 +327,15 @@ public sealed partial class Cpu
                 return;
             }
 
-            // --- gruppo immediato (0x80-0x83) ------------------------------
-            // 0x82 e' un alias non documentato di 0x80: stessa codifica,
-            // stesso effetto. Il 386 lo esegue, e del software dell'epoca lo
-            // usa, quindi va accettato invece di dare #UD.
+            // --- the immediate group (0x80-0x83) ---------------------------
+            // 0x82 is an undocumented alias of 0x80: same encoding, same
+            // effect. The 386 executes it, and software of the era does emit
+            // it, so it has to be accepted rather than raising #UD.
             case 0x80 or 0x82: AluImmediate8(); return;
             case 0x81: AluImmediate(signExtendedByte: false); return;
             case 0x83: AluImmediate(signExtendedByte: true); return;
 
-            // --- TEST e XCHG -----------------------------------------------
+            // --- TEST and XCHG ---------------------------------------------
             case 0x84: { var m = DecodeModRm(); SetLogicFlags8((byte)(ReadRm8(m) & State.GetReg8(m.Reg))); return; }
             case 0x85: { var m = DecodeModRm(); SetLogicFlags(ReadRm(m) & ReadRegOperand(m)); return; }
             case 0x86: { var m = DecodeModRm(); byte t = ReadRm8(m); WriteRm8(m, State.GetReg8(m.Reg)); State.SetReg8(m.Reg, t); return; }
@@ -345,13 +349,13 @@ public sealed partial class Cpu
             case 0x8C:
             {
                 var m = DecodeModRm();
-                // I codici 6 e 7 non corrispondono ad alcun registro di
-                // segmento: il 386 rifiuta l'istruzione.
+                // Codes 6 and 7 name no segment register at all, so the 386
+                // rejects the instruction.
                 if (m.Reg > (int)SegReg.Gs) throw new CpuException(6);
                 ushort selettore = State.Segments[m.Reg].Selector;
-                // Verso un registro a 32 bit il selettore viene esteso con
-                // zeri, non innestato nella meta' bassa: la parte alta va
-                // azzerata. In memoria invece si scrivono due soli byte.
+                // Into a 32-bit register the selector is zero-extended rather
+                // than merged into the low half, so the top half has to be
+                // cleared. To memory, by contrast, only two bytes are written.
                 if (m.IsRegister && OperandSize32) State.SetReg32(m.Register, selettore);
                 else WriteRm16(m, selettore);
                 return;
@@ -360,9 +364,10 @@ public sealed partial class Cpu
             case 0x8E:
             {
                 var m = DecodeModRm();
-                // CS non si carica cosi': cambiarlo senza cambiare anche IP
-                // lascerebbe l'esecuzione a un indirizzo senza senso, quindi
-                // serve un salto lontano. I codici 6 e 7 non sono registri.
+                // CS cannot be loaded this way: changing it without changing IP
+                // at the same time would leave execution at a meaningless
+                // address, so a far jump is required instead. Codes 6 and 7 are
+                // not registers.
                 if (m.Reg == (int)SegReg.Cs || m.Reg > (int)SegReg.Gs)
                     throw new CpuException(6);
                 LoadSegment((SegReg)m.Reg, ReadRm16(m));
@@ -370,11 +375,11 @@ public sealed partial class Cpu
             }
             case 0x8F:
             {
-                // La destinazione viene verificata prima che lo stack si
-                // muova: se la scrittura sfora il limite del segmento
-                // l'eccezione trova ESP ancora intatto, e il gestore vede il
-                // puntatore che aveva chi ha eseguito la POP.
-                // Anche di questo gruppo esiste solo la forma /0.
+                // The destination is validated before the stack moves: if the
+                // write would overrun the segment limit, the exception finds
+                // ESP still intact, and the handler sees the same stack pointer
+                // the code executing the POP had.
+                // This group, too, only has the /0 form.
                 var m = DecodeModRm();
                 if (m.Reg != 0) throw new CpuException(6);
                 if (!m.IsRegister)
@@ -382,9 +387,9 @@ public sealed partial class Cpu
 
                 uint valore = PopOperand();
 
-                // Se la destinazione e' calcolata a partire dal puntatore di
-                // stack, l'indirizzo effettivo e' quello di dopo la pop: il
-                // ModR/M e' gia' stato decodificato, quindi basta spostarlo.
+                // When the destination is computed from the stack pointer, the
+                // effective address is the one *after* the pop: the ModR/M has
+                // already been decoded, so it is enough to displace it.
                 ModRm destinazione = m;
                 if (!m.IsRegister && m.UsesStackPointer)
                     destinazione.Offset += OperandSize32 ? 4u : 2u;
@@ -393,7 +398,7 @@ public sealed partial class Cpu
                 return;
             }
 
-            case 0x90: return;   // NOP (XCHG EAX, EAX)
+            case 0x90: return;   // NOP (which really is XCHG EAX, EAX)
             case >= 0x91 and <= 0x97:
             {
                 int index = opcode - 0x90;
@@ -420,7 +425,7 @@ public sealed partial class Cpu
             case 0x9E: Sahf(); return;
             case 0x9F: Lahf(); return;
 
-            // --- MOV con indirizzo diretto (moffs) --------------------------
+            // --- MOV with a direct address (moffs) --------------------------
             case 0xA0: State.SetReg8(0, ReadMem8(EffectiveSegment(SegReg.Ds), FetchAddress())); return;
             case 0xA1: WriteAccumulator(ReadMemOperand(EffectiveSegment(SegReg.Ds), FetchAddress())); return;
             case 0xA2: WriteMem8(EffectiveSegment(SegReg.Ds), FetchAddress(), State.GetReg8(0)); return;
@@ -429,7 +434,7 @@ public sealed partial class Cpu
             case 0xA8: SetLogicFlags8((byte)(State.GetReg8(0) & FetchByte())); return;
             case 0xA9: SetLogicFlags(ReadAccumulator() & FetchImmediate()); return;
 
-            // --- MOV immediato in registro (0xB0-0xBF) ----------------------
+            // --- MOV immediate into a register (0xB0-0xBF) ------------------
             case >= 0xB0 and <= 0xB7: State.SetReg8(opcode - 0xB0, FetchByte()); return;
             case >= 0xB8 and <= 0xBF:
             {
@@ -439,10 +444,10 @@ public sealed partial class Cpu
                 return;
             }
 
-            // --- ritorni ------------------------------------------------------
-            // Il puntatore di stack va ripristinato se l'indirizzo di ritorno
-            // sfora il limite del codice: l'eccezione deve trovare lo stack
-            // come stava prima della RET, non a meta' strada.
+            // --- returns ------------------------------------------------------
+            // The stack pointer has to be restored if the return address
+            // overruns the code segment limit: the exception must find the
+            // stack as it stood before the RET, not halfway through it.
             case 0xC2:
             {
                 ushort pop = FetchWord();
@@ -462,8 +467,8 @@ public sealed partial class Cpu
                 return;
             }
 
-            // Di questi due gruppi esiste solo la forma /0: il campo reg e'
-            // altrimenti privo di significato e il 386 rifiuta l'istruzione.
+            // Both of these groups only have the /0 form: the reg field carries
+            // no meaning otherwise, and the 386 rejects the instruction.
             case 0xC6:
             {
                 var m = DecodeModRm();
@@ -488,7 +493,7 @@ public sealed partial class Cpu
             case 0xCE: if (Flags.Overflow) SoftwareInterrupt(4); return;
             case 0xCF: Iret(); return;
 
-            // --- chiamate e salti ---------------------------------------------
+            // --- calls and jumps -----------------------------------------------
             case 0xE8:
             {
                 int offset = FetchDisplacement();
@@ -506,8 +511,8 @@ public sealed partial class Cpu
             case 0xF9: Flags.Carry = true; return;
             case 0xFA: Flags.Interrupt = false; return;
             case 0xFB:
-                // L'abilitazione ha effetto dopo la prossima istruzione, non
-                // subito: vedi _interruptShadow.
+                // Enabling takes effect only after the next instruction, not
+                // immediately: see _interruptShadow.
                 Flags.Interrupt = true;
                 _interruptShadow = true;
                 return;
@@ -517,40 +522,35 @@ public sealed partial class Cpu
             case 0x0F: ExecuteTwoByte(FetchByte()); return;
 
             default:
-                // Un opcode non riconosciuto e' un'istruzione non valida: sul
-                // ferro reale genera l'eccezione 6, e certi programmi la usano
-                // deliberatamente per rilevare il tipo di processore. Poiche'
-                // pero' un opcode semplicemente non implementato produce lo
-                // stesso sintomo, l'evento viene segnalato: senza questo, la
-                // diagnosi di "il sistema non parte" richiederebbe di
-                // ispezionare a mano ogni salto sospetto.
+                // An unrecognised opcode is an invalid instruction: real
+                // hardware raises exception 6, and some programs trigger it
+                // deliberately to identify the processor. But since an opcode
+                // that is merely unimplemented here produces exactly the same
+                // symptom, the event is reported as well -- without it,
+                // diagnosing "the system does not boot" would mean inspecting
+                // every suspicious branch by hand.
                 UnknownOpcode?.Invoke(opcode, _instructionStart, State.Cs.Selector);
                 throw new CpuException(6);
         }
     }
 
     /// <summary>
-    /// Segnalato quando si incontra un opcode non riconosciuto: byte
-    /// dell'opcode, offset dell'istruzione e segmento di codice.
+    /// Raised when an unrecognised opcode is encountered: the opcode byte, the
+    /// instruction's offset and the code segment.
     /// </summary>
     public event Action<byte, uint, ushort>? UnknownOpcode;
 
-    /// <summary>Segmento effettivo, tenendo conto di un eventuale override.</summary>
+    /// <summary>Effective segment, taking any override prefix into account.</summary>
     private SegReg EffectiveSegment(SegReg dflt)
         => _prefixes.Segment ?? dflt;
 
-    /// <summary>Indirizzo diretto, della dimensione degli indirizzi in vigore.</summary>
+    /// <summary>A direct address, at the address size currently in effect.</summary>
     private uint FetchAddress() => AddressSize32 ? FetchDword() : FetchWord();
 
     /// <summary>
-    /// Spiazzamento relativo di un salto o di una chiamata, esteso con segno
-    /// dalla dimensione degli operandi in vigore. L'estensione va fatta dal
-    /// tipo giusto: a 16 bit 0xFFF3 vale -13, non +65523.
-    /// </summary>
-    /// <summary>
-    /// Porta EIP a un nuovo valore verificando che resti dentro il limite del
-    /// segmento di codice. Un indirizzo oltre il limite non viene eseguito: il
-    /// 386 lo rifiuta con #GP prima ancora di prelevare l'istruzione.
+    /// Moves EIP to a new value, checking that it stays inside the code
+    /// segment limit. An address past the limit is never executed: the 386
+    /// rejects it with #GP before it even fetches the instruction there.
     /// </summary>
     private void SaltaA(uint destinazione)
     {
@@ -559,26 +559,31 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// Verifica in anticipo che un blocco di stack ci stia tutto dentro il
-    /// limite. Le istruzioni che leggono piu' valori insieme -- i ritorni,
-    /// POPA -- controllano l'intera estensione prima di cominciare, e quindi
-    /// falliscono invece di avvolgere come farebbe una singola pop.
+    /// Checks up front that a block of stack fits entirely inside the limit.
+    /// The instructions that read several values at once -- the returns, POPA
+    /// -- validate the whole extent before starting, and so they fail outright
+    /// rather than wrapping the way a single pop would.
     /// </summary>
     private void ControllaBloccoStack(uint dimensione)
     {
         if (!State.Ss.Big) CheckLimit(SegReg.Ss, State.Sp, dimensione);
     }
 
+    /// <summary>
+    /// The relative displacement of a jump or call, sign-extended from the
+    /// operand size in effect. The extension has to start from the right type:
+    /// at 16 bits 0xFFF3 means -13, not +65523.
+    /// </summary>
     private int FetchDisplacement()
         => OperandSize32 ? (int)FetchDword() : (short)FetchWord();
 }
 
 /// <summary>
-/// Eccezione del processore (divisione per zero, opcode non valido, ...).
-/// Viene convertita in un vettore di interruzione da <see cref="Cpu.Step"/>.
+/// A processor exception (divide by zero, invalid opcode, ...). It is turned
+/// into an interrupt vector by <see cref="Cpu.Step"/>.
 /// </summary>
 public class CpuException(byte vector, uint errorCode = 0)
-    : Exception($"Eccezione CPU {vector}")
+    : Exception($"CPU exception {vector}")
 {
     public byte Vector { get; } = vector;
     public uint ErrorCode { get; } = errorCode;

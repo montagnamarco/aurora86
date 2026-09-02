@@ -41,6 +41,28 @@ public partial class MainWindow : Window
 
         ViewModel.PickFileAsync = PickFileAsync;
         ViewModel.SaveScreenshotAsync = SaveScreenshotAsync;
+        ViewModel.ShowDebugger = ShowDebugger;
+    }
+
+    /// <summary>
+    /// Shows the debugger, reusing the window if it is already open rather
+    /// than piling up copies.
+    /// </summary>
+    private DebuggerWindow? _debuggerWindow;
+
+    private void ShowDebugger(DebuggerViewModel model)
+    {
+        if (_debuggerWindow is null)
+        {
+            _debuggerWindow = new DebuggerWindow { DataContext = model };
+            _debuggerWindow.Closed += (_, _) => _debuggerWindow = null;
+            _debuggerWindow.Show(this);
+        }
+        else
+        {
+            _debuggerWindow.DataContext = model;
+            _debuggerWindow.Activate();
+        }
     }
 
     // --- keyboard -----------------------------------------------------------

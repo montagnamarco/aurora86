@@ -83,6 +83,8 @@
 
         <Separator Classes="vertical" />
 
+        <Button Classes="tool" Command="{Binding OpenDebuggerCommand}"
+                ToolTip.Tip="Open the debugger: registers, disassembly, memory, breakpoints">Debugger</Button>
         <Button Classes="tool" Command="{Binding StepInstructionCommand}"
                 ToolTip.Tip="Execute a single instruction and stop">Step</Button>
 

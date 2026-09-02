@@ -3,17 +3,17 @@ using Silk.NET.SDL;
 namespace Aurora386.Sdl.Frontend;
 
 /// <summary>
-/// Traduzione dai codici tasto di SDL agli scancode del set 1, quelli che il
-/// controller di tastiera del PC consegna.
+/// Translation from SDL key codes to set 1 scancodes, the ones a PC keyboard
+/// controller actually delivers.
 ///
-/// La corrispondenza e' per <b>posizione fisica</b>, non per carattere: e' il
-/// BIOS emulato a decidere quale carattere produce un tasto, esattamente come
-/// su una macchina reale. Cosi' anche le disposizioni non americane si
-/// comportano in modo prevedibile.
+/// The mapping is by <b>physical position</b>, not by character. Deciding
+/// which character a key produces is the emulated BIOS's job, exactly as it
+/// is on real hardware -- so a non-US host layout behaves predictably instead
+/// of fighting the guest's own keyboard handling.
 /// </summary>
 public static class KeyMap
 {
-    /// <summary>Scancode del tasto, o 0 se non ha corrispondenza sul PC.</summary>
+    /// <summary>The key's scancode, or 0 if it has no counterpart on a PC keyboard.</summary>
     public static byte ToScanCode(Scancode code) => code switch
     {
         Scancode.ScancodeEscape => 0x01,
@@ -94,7 +94,7 @@ public static class KeyMap
         Scancode.ScancodeNumlockclear => 0x45,
         Scancode.ScancodeScrolllock => 0x46,
 
-        // Tastierino numerico.
+        // Numeric keypad.
         Scancode.ScancodeKP7 => 0x47,
         Scancode.ScancodeKP8 => 0x48,
         Scancode.ScancodeKP9 => 0x49,
@@ -112,8 +112,10 @@ public static class KeyMap
         Scancode.ScancodeF11 => 0x57,
         Scancode.ScancodeF12 => 0x58,
 
-        // I tasti cursore separati condividono lo scancode con il tastierino:
-        // sulle tastiere estese vengono preceduti dal prefisso 0xE0.
+        // The separate cursor keys share their scancodes with the keypad --
+        // the XT keyboard had no separate cluster, so when the AT added one
+        // there were no spare codes left. Extended keyboards distinguish them
+        // by prefixing 0xE0.
         Scancode.ScancodeUp => 0x48,
         Scancode.ScancodeDown => 0x50,
         Scancode.ScancodeLeft => 0x4B,
@@ -134,8 +136,8 @@ public static class KeyMap
     };
 
     /// <summary>
-    /// true per i tasti che sulle tastiere estese mandano il prefisso 0xE0
-    /// prima dello scancode, per distinguerli dai gemelli sul tastierino.
+    /// True for keys that an extended keyboard prefixes with 0xE0 before the
+    /// scancode itself, to tell them apart from their keypad twins.
     /// </summary>
     public static bool IsExtended(Scancode code) => code switch
     {

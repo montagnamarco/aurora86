@@ -4,9 +4,10 @@ using Aurora386.Core.Memory;
 namespace Aurora386.Tests;
 
 /// <summary>
-/// La linea A20 e il wrapping a 1 MB. Il comportamento e' contro-intuitivo:
-/// A20 <b>disattivata</b> e' lo stato di compatibilita' in cui gli indirizzi
-/// avvolgono come sull'8086, e la HMA risulta irraggiungibile.
+/// The A20 line and address wrapping at 1 MB. The polarity is the
+/// counter-intuitive part: A20 <b>disabled</b> is the compatibility state in
+/// which addresses wrap the way they did on the 8086, and the High Memory
+/// Area becomes unreachable.
 /// </summary>
 public class A20Tests
 {
@@ -18,7 +19,7 @@ public class A20Tests
 
         bus.WriteDword(0x000000, 0x12345678);
 
-        // 0x100000 ha il bit 20 acceso: spento A20, punta a 0x000000.
+        // 0x100000 has bit 20 set, so with A20 off it resolves to 0x000000.
         Assert.Equal(0x12345678u, bus.ReadDword(0x100000));
     }
 
@@ -38,8 +39,8 @@ public class A20Tests
     [Fact]
     public void IlWrappingValeAncheInScrittura()
     {
-        // Una scrittura sopra il megabyte con A20 spenta deve finire in basso,
-        // altrimenti letture e scritture userebbero indirizzi diversi.
+        // A write above the megabyte with A20 off must land low as well;
+        // otherwise reads and writes would disagree about where memory is.
         using var bus = new PhysicalMemoryBus();
         bus.A20Enabled = false;
 
@@ -56,11 +57,11 @@ public class A20Tests
     [Fact]
     public void SoloIlBitVentiVieneEscluso()
     {
-        // Il wrapping azzera il bit 20, non tronca a 20 bit: la memoria oltre
-        // i 2 MB deve restare raggiungibile anche con A20 spenta.
+        // The wrap clears bit 20; it does not truncate to 20 bits. Memory
+        // above 2 MB must stay reachable even with A20 disabled.
         using var bus = new PhysicalMemoryBus();
         bus.A20Enabled = true;
-        bus.WriteDword(0x200000, 0xAAAAAAAA);   // 2 MB, bit 21
+        bus.WriteDword(0x200000, 0xAAAAAAAA);   // 2 MB: bit 21, not bit 20
 
         bus.A20Enabled = false;
         Assert.Equal(0xAAAAAAAAu, bus.ReadDword(0x200000));
@@ -69,32 +70,33 @@ public class A20Tests
     [Fact]
     public void LaProvaDiWrappingUsataDalSoftwareDaLEsitoAtteso()
     {
-        // E' il modo canonico in cui un programma verifica lo stato di A20:
-        // scrive in basso e rilegge un megabyte piu' su.
+        // This is the canonical way a program probes A20: write low, then
+        // read back one megabyte higher and see whether it aliased.
         using var bus = new PhysicalMemoryBus();
 
         bus.A20Enabled = false;
         bus.WriteDword(0x000000, 0xDEADBEEF);
         bus.WriteDword(0x100000, 0x00000000);
-        Assert.Equal(0u, bus.ReadDword(0x000000));      // sono lo stesso indirizzo
+        Assert.Equal(0u, bus.ReadDword(0x000000));      // same address after all
 
         bus.A20Enabled = true;
         bus.WriteDword(0x000000, 0xDEADBEEF);
         bus.WriteDword(0x100000, 0x00000000);
-        Assert.Equal(0xDEADBEEFu, bus.ReadDword(0x000000));   // indirizzi distinti
+        Assert.Equal(0xDEADBEEFu, bus.ReadDword(0x000000));   // genuinely distinct addresses
     }
 
     [Fact]
     public void AccessoACavalloDelMegabyteConA20Spenta()
     {
-        // Caso limite: un accesso a 32 bit che comincia poco sotto il confine.
-        // Ogni byte va mascherato coerentemente.
+        // Edge case: a 32-bit access starting just below the boundary. Every
+        // byte of it has to be masked consistently.
         using var bus = new PhysicalMemoryBus();
         bus.A20Enabled = true;
         bus.WriteDword(0x0FFFFE, 0x11223344);
         bus.A20Enabled = false;
 
-        // Con A20 spenta l'indirizzo resta sotto il megabyte e non cambia.
+        // With A20 off the address is still below the megabyte, so nothing
+        // about it changes.
         Assert.Equal(0x11223344u, bus.ReadDword(0x0FFFFE));
     }
 }
@@ -107,7 +109,7 @@ public class A20HardwareTests
         using var machine = new Machine();
         machine.RunInstructions(300);
 
-        // Bit 1 azzerato: A20 spenta.
+        // Bit 1 clear: A20 disabled.
         machine.Io.WriteByte(0x92, 0x00);
         Assert.False(machine.Memory.A20Enabled);
 
@@ -121,8 +123,9 @@ public class A20HardwareTests
         using var machine = new Machine();
         machine.RunInstructions(300);
 
-        // Anche se la linea e' stata cambiata altrove, la lettura deve dire
-        // la verita': c'e' una sola linea A20, non una copia per controller.
+        // Even when the line was changed elsewhere, reading the port must
+        // tell the truth: there is one A20 line, not a private copy per
+        // controller.
         machine.Memory.A20Enabled = false;
         Assert.Equal(0x00, machine.Io.ReadByte(0x92) & 0x02);
 
@@ -136,9 +139,9 @@ public class A20HardwareTests
         using var machine = new Machine();
         machine.RunInstructions(300);
 
-        // Comando 0xD1 (scrivi porta di uscita) seguito dal dato.
+        // Command 0xD1 (write output port), followed by the data byte.
         machine.Io.WriteByte(0x64, 0xD1);
-        machine.Io.WriteByte(0x60, 0x00);      // bit 1 spento
+        machine.Io.WriteByte(0x60, 0x00);      // bit 1 clear
         Assert.False(machine.Memory.A20Enabled);
 
         machine.Io.WriteByte(0x64, 0xD1);
@@ -149,23 +152,23 @@ public class A20HardwareTests
     [Fact]
     public void LeDueVieDiControlloVedonoLaStessaLinea()
     {
-        // Il controller di tastiera e la porta 0x92 comandano lo stesso filo:
-        // tenere due stati separati li farebbe divergere.
+        // The keyboard controller and port 0x92 drive the same physical wire.
+        // Keeping two separate states would let them drift apart.
         using var machine = new Machine();
         machine.RunInstructions(300);
 
-        machine.Io.WriteByte(0x92, 0x00);                  // spenta dalla porta veloce
-        Assert.False(machine.Keyboard.A20Enabled);         // il controller lo vede
+        machine.Io.WriteByte(0x92, 0x00);                  // disabled via the fast port
+        Assert.False(machine.Keyboard.A20Enabled);         // the controller sees it too
 
         machine.Io.WriteByte(0x64, 0xD1);
-        machine.Io.WriteByte(0x60, 0x02);                  // accesa dal controller
+        machine.Io.WriteByte(0x60, 0x02);                  // enabled via the controller
         Assert.Equal(0x02, machine.Io.ReadByte(0x92) & 0x02);
     }
 
     [Fact]
     public void Int15hFunzione24hGestisceA20()
     {
-        //   B8 01 24   MOV AX,0x2401  (abilita A20)
+        //   B8 01 24   MOV AX,0x2401  (enable A20)
         //   CD 15      INT 15h
         //   F4         HLT
         var sector = new byte[512];
@@ -181,12 +184,12 @@ public class A20HardwareTests
         machine.RunInstructions(2000);
 
         Assert.True(machine.Memory.A20Enabled);
-        Assert.Equal(0, machine.Cpu.State.GetReg8(4));   // AH = 0: riuscito
+        Assert.Equal(0, machine.Cpu.State.GetReg8(4));   // AH = 0: success
     }
 }
 
 /// <summary>
-/// Il gestore XMS, cioe' il servizio che su un PC reale fornisce HIMEM.SYS.
+/// The XMS driver: the service HIMEM.SYS provides on a real PC.
 /// </summary>
 public class XmsTests
 {
@@ -211,7 +214,7 @@ public class XmsTests
         CallXms(machine, 0x00);
 
         Assert.Equal(0x0300, machine.Cpu.State.Ax);   // XMS 3.0
-        Assert.Equal(1, machine.Cpu.State.Dx);        // la HMA esiste
+        Assert.Equal(1, machine.Cpu.State.Dx);        // the HMA exists
     }
 
     [Fact]
@@ -220,7 +223,7 @@ public class XmsTests
         using Machine machine = CreateBootedMachine();
         machine.Memory.A20Enabled = false;
 
-        // DX=0xFFFF e' cio' che passa DOS con DOS=HIGH: "prendo tutta la HMA".
+        // DX=0xFFFF is what DOS passes with DOS=HIGH: "give me the whole HMA".
         CallXms(machine, 0x01, c => c.State.Dx = 0xFFFF);
 
         Assert.Equal(1, machine.Cpu.State.Ax);
@@ -237,18 +240,18 @@ public class XmsTests
         CallXms(machine, 0x01, c => c.State.Dx = 0xFFFF);
 
         Assert.Equal(0, machine.Cpu.State.Ax);
-        Assert.Equal(0x91, machine.Cpu.State.GetReg8(3));   // gia' assegnata
+        Assert.Equal(0x91, machine.Cpu.State.GetReg8(3));   // already allocated
     }
 
     [Fact]
     public void SpegnereA20ConLaHmaInUsoVieneRifiutato()
     {
-        // Spegnerla renderebbe irraggiungibile il codice che ci sta girando:
-        // e' una protezione, non una limitazione.
+        // Turning it off would make the code currently executing up there
+        // unreachable. This is a safeguard, not an arbitrary restriction.
         using Machine machine = CreateBootedMachine();
         CallXms(machine, 0x01, c => c.State.Dx = 0xFFFF);
 
-        CallXms(machine, 0x04);   // disabilitazione globale di A20
+        CallXms(machine, 0x04);   // global A20 disable
 
         Assert.Equal(0, machine.Cpu.State.Ax);
         Assert.Equal(0x94, machine.Cpu.State.GetReg8(3));
@@ -259,7 +262,7 @@ public class XmsTests
     public void UnaRichiestaTroppoGrandeVieneRifiutata()
     {
         using Machine machine = CreateBootedMachine();
-        CallXms(machine, 0x01, c => c.State.Dx = 0xFFF1);   // oltre la HMA
+        CallXms(machine, 0x01, c => c.State.Dx = 0xFFF1);   // larger than the HMA
 
         Assert.Equal(0, machine.Cpu.State.Ax);
         Assert.Equal(0xA1, machine.Cpu.State.GetReg8(3));
@@ -271,7 +274,7 @@ public class XmsTests
         using Machine machine = CreateBootedMachine();
         CallXms(machine, 0x08);
 
-        // 16 MB meno il primo megabyte e meno la HMA.
+        // 16 MB, less the first megabyte and less the HMA.
         Assert.True(machine.Cpu.State.Dx > 15000);
         Assert.True(machine.Cpu.State.Dx < 16000);
     }
@@ -290,7 +293,7 @@ public class XmsTests
         Assert.NotEqual(0, handle);
 
         CallXms(machine, 0x0E, c => c.State.Dx = handle);
-        Assert.Equal(64, machine.Cpu.State.Dx);      // dimensione richiesta
+        Assert.Equal(64, machine.Cpu.State.Dx);      // the size that was requested
 
         CallXms(machine, 0x0A, c => c.State.Dx = handle);
         Assert.Equal(1, machine.Cpu.State.Ax);
@@ -314,14 +317,14 @@ public class XmsTests
         CallXms(machine, 0x09, c => c.State.Dx = 32);
         ushort handle = machine.Cpu.State.Dx;
 
-        CallXms(machine, 0x0C, c => c.State.Dx = handle);   // blocca
+        CallXms(machine, 0x0C, c => c.State.Dx = handle);   // lock the block
         Assert.Equal(1, machine.Cpu.State.Ax);
 
-        CallXms(machine, 0x0A, c => c.State.Dx = handle);   // prova a liberare
+        CallXms(machine, 0x0A, c => c.State.Dx = handle);   // try to free it
         Assert.Equal(0, machine.Cpu.State.Ax);
         Assert.Equal(0xAB, machine.Cpu.State.GetReg8(3));
 
-        CallXms(machine, 0x0D, c => c.State.Dx = handle);   // sblocca
+        CallXms(machine, 0x0D, c => c.State.Dx = handle);   // unlock
         CallXms(machine, 0x0A, c => c.State.Dx = handle);
         Assert.Equal(1, machine.Cpu.State.Ax);
     }
@@ -341,15 +344,15 @@ public class XmsTests
 
         machine.Cpu.SetSegment(Aurora386.Core.Cpu.SegReg.Ds, 0);
         machine.Memory.WriteDword(parameters, (uint)payload.Length);
-        machine.Memory.WriteWord(parameters + 4, 0);            // origine: convenzionale
+        machine.Memory.WriteWord(parameters + 4, 0);            // source: conventional memory
         machine.Memory.WriteDword(parameters + 6, source);
-        machine.Memory.WriteWord(parameters + 10, handle);      // destinazione: il blocco
+        machine.Memory.WriteWord(parameters + 10, handle);      // destination: the XMS block
         machine.Memory.WriteDword(parameters + 12, 0);
 
         CallXms(machine, 0x0B, c => c.State.Si = (ushort)parameters);
         Assert.Equal(1, machine.Cpu.State.Ax);
 
-        // Rilegge dall'indirizzo fisico del blocco.
+        // Read it back from the block's physical address.
         CallXms(machine, 0x0C, c => c.State.Dx = handle);
         uint physical = ((uint)machine.Cpu.State.Dx << 16) | machine.Cpu.State.Bx;
 
@@ -362,14 +365,14 @@ public class XmsTests
     [Fact]
     public void UnaLunghezzaDispariVieneRifiutata()
     {
-        // La specifica XMS richiede lunghezze pari.
+        // The XMS specification requires even transfer lengths.
         using Machine machine = CreateBootedMachine();
         CallXms(machine, 0x09, c => c.State.Dx = 16);
         ushort handle = machine.Cpu.State.Dx;
 
         const uint parameters = 0x3000;
         machine.Cpu.SetSegment(Aurora386.Core.Cpu.SegReg.Ds, 0);
-        machine.Memory.WriteDword(parameters, 7);               // dispari
+        machine.Memory.WriteDword(parameters, 7);               // odd length
         machine.Memory.WriteWord(parameters + 4, 0);
         machine.Memory.WriteDword(parameters + 6, 0x2000);
         machine.Memory.WriteWord(parameters + 10, handle);
@@ -400,7 +403,7 @@ public class MultiplexTests
         machine.AttachDisk(disk);
         machine.RunInstructions(2000);
 
-        // 0x80 e' la risposta con cui un gestore XMS dichiara di esserci.
+        // 0x80 in AL is how an XMS driver declares itself present.
         Assert.Equal(0x80, machine.Memory.ReadByte(0x6000));
     }
 
@@ -427,7 +430,7 @@ public class MultiplexTests
         machine.AttachDisk(disk);
         machine.RunInstructions(2000);
 
-        Assert.Equal(0xF000, machine.Memory.ReadWord(0x6002));   // segmento del BIOS
-        Assert.NotEqual(0, machine.Memory.ReadWord(0x6000));     // offset valido
+        Assert.Equal(0xF000, machine.Memory.ReadWord(0x6002));   // the BIOS segment
+        Assert.NotEqual(0, machine.Memory.ReadWord(0x6000));     // a plausible offset
     }
 }

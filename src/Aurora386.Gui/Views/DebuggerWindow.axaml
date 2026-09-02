@@ -1,0 +1,175 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Aurora386.Gui.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="1000" d:DesignHeight="640"
+        x:Class="Aurora386.Gui.Views.DebuggerWindow"
+        x:DataType="vm:DebuggerViewModel"
+        Width="1000" Height="640"
+        Background="#1E1E1E"
+        Title="Aurora386 — Debugger">
+
+  <Window.Styles>
+    <Style Selector="TextBlock.mono">
+      <Setter Property="FontFamily" Value="Menlo,Consolas,monospace" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="#D4D4D4" />
+    </Style>
+    <Style Selector="TextBlock.header">
+      <Setter Property="Foreground" Value="#9CDCFE" />
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Margin" Value="0,0,0,4" />
+    </Style>
+    <Style Selector="Button.tool">
+      <Setter Property="Padding" Value="10,5" />
+      <Setter Property="Margin" Value="1,0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="#E0E0E0" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style Selector="Button.tool:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#333333" />
+    </Style>
+    <Style Selector="Border.panel">
+      <Setter Property="Background" Value="#252526" />
+      <Setter Property="BorderBrush" Value="#3A3A3A" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="8" />
+      <Setter Property="Margin" Value="3" />
+    </Style>
+  </Window.Styles>
+
+  <DockPanel>
+
+    <!-- controls -->
+    <Border DockPanel.Dock="Top" Background="#252525"
+            BorderBrush="#3A3A3A" BorderThickness="0,0,0,1">
+      <StackPanel Orientation="Horizontal" Margin="4,3">
+        <Button Classes="tool" Command="{Binding StepInstructionCommand}"
+                ToolTip.Tip="Execute one instruction (F11)">Step</Button>
+        <Button Classes="tool" Command="{Binding StepOverCommand}"
+                ToolTip.Tip="Execute one instruction, running through calls (F10)">Step over</Button>
+        <Button Classes="tool" Command="{Binding RunToBreakpointCommand}"
+                ToolTip.Tip="Resume until a breakpoint is hit (F5)">Run</Button>
+      </StackPanel>
+    </Border>
+
+    <!-- status -->
+    <Border DockPanel.Dock="Bottom" Background="#252525"
+            BorderBrush="#3A3A3A" BorderThickness="0,1,0,0">
+      <TextBlock Margin="8,4" Classes="mono" Text="{Binding StatusText}" />
+    </Border>
+
+    <Grid ColumnDefinitions="*,300" RowDefinitions="*,220">
+
+      <!-- disassembly -->
+      <Border Grid.Row="0" Grid.Column="0" Classes="panel">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Classes="header" Text="DISASSEMBLY" />
+          <ListBox ItemsSource="{Binding Disassembly}" Background="Transparent"
+                   BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:DisassemblyLine">
+                <Grid ColumnDefinitions="14,90,130,*">
+                  <!-- a filled dot marks a breakpoint, an arrow the next
+                       instruction to execute -->
+                  <TextBlock Grid.Column="0" Classes="mono" Foreground="#F48771"
+                             Text="●" IsVisible="{Binding HasBreakpoint}" />
+                  <TextBlock Grid.Column="1" Classes="mono" Text="{Binding Address}"
+                             Foreground="#858585" />
+                  <TextBlock Grid.Column="2" Classes="mono" Text="{Binding Bytes}"
+                             Foreground="#6A9955" />
+                  <TextBlock Grid.Column="3" Classes="mono" Text="{Binding Text}" />
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Border>
+
+      <!-- registers -->
+      <Border Grid.Row="0" Grid.Column="1" Classes="panel">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Classes="header" Text="REGISTERS" />
+          <TextBlock DockPanel.Dock="Bottom" Classes="mono" Margin="0,6,0,0"
+                     Foreground="#DCDCAA" Text="{Binding FlagsText}"
+                     ToolTip.Tip="Overflow Direction Interrupt Sign Zero Adjust Parity Carry" />
+          <ItemsControl ItemsSource="{Binding Registers}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:RegisterEntry">
+                <Grid ColumnDefinitions="50,*">
+                  <TextBlock Grid.Column="0" Classes="mono" Text="{Binding Name}"
+                             Foreground="#9CDCFE" />
+                  <TextBlock Grid.Column="1" Classes="mono" Text="{Binding Value}" />
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </DockPanel>
+      </Border>
+
+      <!-- memory -->
+      <Border Grid.Row="1" Grid.Column="0" Classes="panel">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                      Margin="0,0,0,6">
+            <TextBlock Classes="header" Text="MEMORY" VerticalAlignment="Center" />
+            <TextBox Text="{Binding MemoryAddressText}" Width="110"
+                     FontFamily="Menlo,Consolas,monospace" FontSize="11"
+                     Padding="4,2"
+                     ToolTip.Tip="Linear (100000) or segment:offset (0040:001E)" />
+            <Button Classes="tool" Command="{Binding GoToMemoryAddressCommand}">Go</Button>
+          </StackPanel>
+          <ScrollViewer>
+            <ItemsControl ItemsSource="{Binding MemoryLines}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock Classes="mono" Text="{Binding}" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+        </DockPanel>
+      </Border>
+
+      <!-- stack and breakpoints -->
+      <Border Grid.Row="1" Grid.Column="1" Classes="panel">
+        <Grid RowDefinitions="Auto,*,Auto,Auto">
+          <TextBlock Grid.Row="0" Classes="header" Text="STACK" />
+          <ItemsControl Grid.Row="1" ItemsSource="{Binding StackLines}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Classes="mono" Text="{Binding}" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+
+          <TextBlock Grid.Row="2" Classes="header" Text="BREAKPOINTS" Margin="0,8,0,4" />
+          <StackPanel Grid.Row="3" Spacing="4">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <TextBox Text="{Binding BreakpointAddressText}" Width="110"
+                       FontFamily="Menlo,Consolas,monospace" FontSize="11"
+                       Padding="4,2" Watermark="CS:IP" />
+              <Button Classes="tool" Command="{Binding AddBreakpointCommand}">Add</Button>
+            </StackPanel>
+            <ItemsControl ItemsSource="{Binding Breakpoints}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:BreakpointEntry">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Grid.Column="0" Classes="mono" Text="{Binding Display}" />
+                    <Button Grid.Column="1" Classes="tool" Padding="6,1"
+                            Command="{Binding $parent[Window].((vm:DebuggerViewModel)DataContext).RemoveBreakpointCommand}"
+                            CommandParameter="{Binding}">✕</Button>
+                  </Grid>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+    </Grid>
+  </DockPanel>
+</Window>

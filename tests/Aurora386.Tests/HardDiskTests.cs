@@ -281,7 +281,7 @@ public class HardDiskTests : IDisposable
         for (int i = 0; i < 20; i++) machine.RunInstructions(200_000);
 
         string screen = machine.GetScreenText();
-        Assert.Contains("Disco non di sistema", screen);
+        Assert.Contains("Non-system disk", screen);
         Assert.True(machine.Cpu.State.Halted, "la macchina deve fermarsi dopo il messaggio");
     }
 
