@@ -79,7 +79,9 @@
         <Button Classes="tool" Command="{Binding MountFloppyBCommand}"
                 ToolTip.Tip="Insert a floppy image into drive B:">Floppy B…</Button>
         <Button Classes="tool" Command="{Binding MountHardDiskCommand}"
-                ToolTip.Tip="Attach a hard disk image">Hard disk…</Button>
+                ToolTip.Tip="Attach a hard disk image (up to four)">Hard disk…</Button>
+        <Button Classes="tool" Command="{Binding MountCompactDiscCommand}"
+                ToolTip.Tip="Insert a CD-ROM image (ISO 9660)">CD-ROM…</Button>
 
         <Separator Classes="vertical" />
 

@@ -14,7 +14,10 @@ namespace Aurora386.Core.Devices.Video;
 ///
 /// The most important group is the CRTC (0x3D4/0x3D5), which sets the screen
 /// dimensions, the cursor position and shape, and the start address of the
-/// visible region.
+/// visible region. The Sequencer (0x3C4/0x3C5) and the Graphics Controller
+/// (0x3CE/0x3CF) are what turn a plain byte write at 0xA0000 into an update
+/// of up to four bit planes at once; see <see cref="VgaMemory"/> for how
+/// those two groups cooperate.
 /// </summary>
 public sealed class VgaRegisters : IIoDevice
 {
@@ -42,14 +45,72 @@ public sealed class VgaRegisters : IIoDevice
 
     private byte _miscOutput = 0x67;
 
+    // --- named register indices ----------------------------------------------
+    // Naming these is not decoration: the whole planar write path is four
+    // registers deep, and "_graphics[0x08]" tells a reader nothing about why
+    // a byte lost half its bits on the way to memory.
+
+    /// <summary>Sequencer index 0x02: which planes accept CPU writes.</summary>
+    public const int SeqMapMask = 0x02;
+
+    /// <summary>Sequencer index 0x04: memory mode (bit 3 = chain-4, i.e. mode 13h).</summary>
+    public const int SeqMemoryMode = 0x04;
+
+    /// <summary>Graphics index 0x00: the colour written when Enable Set/Reset says so.</summary>
+    public const int GcSetReset = 0x00;
+
+    /// <summary>Graphics index 0x01: per-plane switch between Set/Reset and CPU data.</summary>
+    public const int GcEnableSetReset = 0x01;
+
+    /// <summary>Graphics index 0x02: reference colour for read mode 1.</summary>
+    public const int GcColorCompare = 0x02;
+
+    /// <summary>Graphics index 0x03: raster op (bits 3-4) and rotate count (bits 0-2).</summary>
+    public const int GcDataRotate = 0x03;
+
+    /// <summary>Graphics index 0x04: which plane read mode 0 returns.</summary>
+    public const int GcReadMapSelect = 0x04;
+
+    /// <summary>Graphics index 0x05: write mode (bits 0-1) and read mode (bit 3).</summary>
+    public const int GcMode = 0x05;
+
+    /// <summary>Graphics index 0x06: memory map select and the text/graphics flag.</summary>
+    public const int GcMiscellaneous = 0x06;
+
+    /// <summary>Graphics index 0x07: planes that take part in read mode 1's compare.</summary>
+    public const int GcColorDontCare = 0x07;
+
+    /// <summary>Graphics index 0x08: which bits of the target byte may change.</summary>
+    public const int GcBitMask = 0x08;
+
     /// <summary>Current video mode, as a BIOS mode number.</summary>
-    public byte VideoMode { get; set; } = 0x03;
+    public byte VideoMode
+    {
+        get => _videoMode;
+        set
+        {
+            _videoMode = value;
+            ModeInfo = VgaModes.Get(value);
+        }
+    }
+
+    private byte _videoMode = 0x03;
+
+    /// <summary>Geometry and memory organisation of the current mode.</summary>
+    public VgaModeInfo ModeInfo { get; private set; } = VgaModes.Text80x25;
 
     /// <summary>True in graphics modes, false in text modes.</summary>
-    public bool IsGraphicsMode => VideoMode is not (0x00 or 0x01 or 0x02 or 0x03 or 0x07);
+    public bool IsGraphicsMode => ModeInfo.IsGraphics;
 
     public int TextColumns { get; set; } = 80;
     public int TextRows { get; set; } = 25;
+
+    /// <summary>
+    /// Height of the character cell in scanlines. 16 is the VGA default; the
+    /// 43- and 50-row text modes get there by switching to a 14- or 8-line
+    /// font rather than by changing the raster, which stays at 400 lines.
+    /// </summary>
+    public int CharacterHeight { get; set; } = 16;
 
     /// <summary>Raised on a mode change, so the renderer can resize and redraw everything.</summary>
     public event Action? ModeChanged;
@@ -65,6 +126,11 @@ public sealed class VgaRegisters : IIoDevice
         _crtc[0x12] = 199;   // last displayed scanline
         _crtc[0x0A] = 13;    // cursor start scanline within the cell
         _crtc[0x0B] = 14;    // cursor end scanline within the cell
+
+        // Sequencer defaults: all four planes writable, and the bit mask wide
+        // open. A freshly reset adapter must not silently drop writes.
+        _sequencer[SeqMapMask] = 0x0F;
+        _graphics[GcBitMask] = 0xFF;
     }
 
     public void Register(IoBus io)
@@ -78,6 +144,42 @@ public sealed class VgaRegisters : IIoDevice
         io.Register(0x3CC, this);       // miscellaneous output (read)
         io.Register(0x3C2, this);       // miscellaneous output (write)
     }
+
+    // --- register access for the memory path ----------------------------------
+    // The planar read/write logic in VgaMemory needs these on every single byte
+    // touched, so they are plain indexed reads rather than anything clever.
+
+    public byte Sequencer(int index) => _sequencer[index & 7];
+    public byte Graphics(int index) => _graphics[index & 0x0F];
+
+    /// <summary>Directly sets a sequencer register; used by the BIOS mode setup and by tests.</summary>
+    public void SetSequencer(int index, byte value) => _sequencer[index & 7] = value;
+
+    /// <summary>Directly sets a graphics controller register.</summary>
+    public void SetGraphics(int index, byte value) => _graphics[index & 0x0F] = value;
+
+    /// <summary>Directly sets a CRTC register.</summary>
+    public void SetCrtc(int index, byte value) => _crtc[index & 0x1F] = value;
+
+    public byte Crtc(int index) => _crtc[index & 0x1F];
+
+    /// <summary>Map Mask: bit N enables CPU writes to plane N.</summary>
+    public byte MapMask => (byte)(_sequencer[SeqMapMask] & 0x0F);
+
+    /// <summary>Write mode 0-3, from the low two bits of the Graphics Mode register.</summary>
+    public int WriteMode => _graphics[GcMode] & 0x03;
+
+    /// <summary>Read mode: 0 returns one plane, 1 returns a colour-compare result.</summary>
+    public int ReadMode => (_graphics[GcMode] >> 3) & 1;
+
+    /// <summary>True when the sequencer has chained the four planes into one linear space (mode 13h).</summary>
+    public bool Chain4 => (_sequencer[SeqMemoryMode] & 0x08) != 0;
+
+    /// <summary>
+    /// Offset in bytes between one displayed scan line and the next, in plane
+    /// units. CRTC register 0x13 holds it in words, hence the doubling.
+    /// </summary>
+    public int RowOffsetBytes => _crtc[0x13] * 2;
 
     // --- cursor position ------------------------------------------------------
     // The cursor lives in two 8-bit CRTC registers that together form an
@@ -179,6 +281,22 @@ public sealed class VgaRegisters : IIoDevice
         }
     }
 
+    /// <summary>Writes one DAC entry directly, in 6-bit components.</summary>
+    public void SetPaletteEntry(int index, byte red, byte green, byte blue)
+    {
+        int offset = (index & 0xFF) * 3;
+        _palette[offset] = (byte)(red & 0x3F);
+        _palette[offset + 1] = (byte)(green & 0x3F);
+        _palette[offset + 2] = (byte)(blue & 0x3F);
+    }
+
+    /// <summary>The raw 6-bit components of a palette entry, as the DAC stores them.</summary>
+    public (byte R, byte G, byte B) GetRawPaletteEntry(int index)
+    {
+        int offset = (index & 0xFF) * 3;
+        return (_palette[offset], _palette[offset + 1], _palette[offset + 2]);
+    }
+
     /// <summary>A palette entry expanded to 8 bits per component.</summary>
     public (byte R, byte G, byte B) GetPaletteColor(int index)
     {
@@ -192,6 +310,18 @@ public sealed class VgaRegisters : IIoDevice
     }
 
     public void NotifyModeChanged() => ModeChanged?.Invoke();
+
+    /// <summary>
+    /// Restores the 16 CGA colours plus the standard 256-colour ramp, which is
+    /// what the BIOS loads on a mode set. Programs that never touch the DAC --
+    /// most 16-colour ones -- rely entirely on this.
+    /// </summary>
+    public void ResetPalette(bool includeMode13Ramp)
+    {
+        Array.Clear(_palette);
+        LoadDefaultPalette();
+        if (includeMode13Ramp) LoadDefault256Palette();
+    }
 
     private void LoadDefaultPalette()
     {
@@ -217,5 +347,60 @@ public sealed class VgaRegisters : IIoDevice
             0x3F, 0x3F, 0x3F,  // white
         ];
         cga.CopyTo(_palette);
+    }
+
+    /// <summary>
+    /// The standard mode 13h palette above the first sixteen entries: sixteen
+    /// greys, then a 6x6x6-ish colour body arranged as hue rings. Programs
+    /// that load their own palette overwrite it immediately, but the ones that
+    /// do not -- and there are many -- expect this exact layout to be present.
+    /// </summary>
+    private void LoadDefault256Palette()
+    {
+        // 16-31: a grey ramp.
+        for (int i = 0; i < 16; i++)
+        {
+            byte level = (byte)(i * 4 + i / 4);   // 0..63 in sixteen steps
+            SetPaletteEntry(16 + i, level, level, level);
+        }
+
+        // 32-247: 9 hues x 6 value/saturation blocks x 4 shades. Reproducing
+        // IBM's table exactly is not the point here; what matters is that the
+        // upper entries are populated with a smoothly varying spread rather
+        // than left black, so an image drawn with them is visible.
+        int index = 32;
+        for (int block = 0; block < 6 && index < 248; block++)
+        {
+            // Each block dims the previous one, mimicking the value ramp of
+            // the real table.
+            int scale = 63 - block * 10;
+            for (int hue = 0; hue < 36 && index < 248; hue++)
+            {
+                (byte r, byte g, byte b) = HueToRgb(hue / 36.0, scale);
+                SetPaletteEntry(index++, r, g, b);
+            }
+        }
+
+        // 248-255 stay black, as they do on real hardware.
+
+        static (byte, byte, byte) HueToRgb(double hue, int scale)
+        {
+            double sector = hue * 6.0;
+            int slice = (int)sector % 6;
+            double fraction = sector - Math.Floor(sector);
+            byte high = (byte)Math.Clamp(scale, 0, 63);
+            byte rising = (byte)Math.Clamp(scale * fraction, 0, 63);
+            byte falling = (byte)Math.Clamp(scale * (1 - fraction), 0, 63);
+
+            return slice switch
+            {
+                0 => (high, rising, (byte)0),
+                1 => (falling, high, (byte)0),
+                2 => ((byte)0, high, rising),
+                3 => ((byte)0, falling, high),
+                4 => (rising, (byte)0, high),
+                _ => (high, (byte)0, falling),
+            };
+        }
     }
 }

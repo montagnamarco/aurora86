@@ -89,7 +89,7 @@ public sealed unsafe class EmulatorWindow : IDisposable
         _textureHeight = _machine.Video.Height;
 
         _window = _sdl.CreateWindow(
-            "Emulatore 386",
+            "Aurora386",
             Silk.NET.SDL.Sdl.WindowposCentered, Silk.NET.SDL.Sdl.WindowposCentered,
             _textureWidth * _scale, _textureHeight * _scale,
             (uint)(WindowFlags.Shown | WindowFlags.Resizable));
@@ -254,7 +254,7 @@ public sealed unsafe class EmulatorWindow : IDisposable
 
         string state = _paused ? " — in pausa" : "";
         _sdl.SetWindowTitle(_window,
-            $"Emulatore 386 — {mips:F1} MIPS, {fps} fps{state}");
+            $"Aurora386 — {mips:F1} MIPS, {fps} fps{state}");
 
         _instructionsExecuted = 0;
         _framesDrawn = 0;

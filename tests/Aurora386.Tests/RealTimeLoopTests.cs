@@ -4,16 +4,16 @@ using Aurora386.Core.Bios;
 namespace Aurora386.Tests;
 
 /// <summary>
-/// Il ciclo di esecuzione a tempo reale, quello che il frontend usa a ogni
-/// fotogramma. Verifica che il tempo del sistema emulato scorra alla
-/// velocita' giusta e che il rendering non lavori inutilmente.
+/// The real-time execution loop, the one the frontend drives once per frame.
+/// These tests check that time inside the emulated machine passes at the right
+/// rate and that the renderer does not do work it does not have to.
 /// </summary>
 public class RealTimeLoopTests
 {
     private static byte[] IdleBootSector()
     {
-        // Un settore che abilita le interruzioni e attende: cosi' la macchina
-        // resta viva mentre il timer scorre.
+        // A sector that enables interrupts and waits, so the machine stays
+        // alive and interruptible while the timer runs.
         var sector = new byte[512];
         new byte[] { 0xFB, 0xF4, 0xEB, 0xFD }.CopyTo(sector, 0);   // STI; HLT; JMP -3
         sector[510] = 0x55; sector[511] = 0xAA;
@@ -28,26 +28,27 @@ public class RealTimeLoopTests
         disk.WriteSectors(0, 0, 1, 1, IdleBootSector());
         machine.AttachDisk(disk);
 
-        machine.RunInstructions(2000);      // avvio
+        machine.RunInstructions(2000);      // boot
         uint before = machine.Bda.TimerTicks;
 
-        // Due secondi simulati, un fotogramma alla volta come fa il frontend.
+        // Two simulated seconds, one frame at a time, exactly as the frontend
+        // drives it.
         for (int i = 0; i < 120; i++)
             machine.RunFor(TimeSpan.FromSeconds(1.0 / 60.0));
 
         uint ticks = machine.Bda.TimerTicks - before;
 
-        // A 18,2 Hz due secondi danno circa 36 tick. Il margine tiene conto
-        // dell'arrotondamento fra la frequenza della CPU e quella del timer.
+        // At 18.2 Hz, two seconds is about 36 ticks. The tolerance absorbs
+        // the rounding between the CPU's declared frequency and the timer's.
         Assert.InRange(ticks, 30u, 42u);
     }
 
     [Fact]
     public void IlRenderNonRidisegnaSenzaCambiamenti()
     {
-        // Ridisegnare 80x25 celle a ogni fotogramma quando nulla e' cambiato
-        // sarebbe lavoro quasi tutto sprecato: il tracciamento delle righe
-        // modificate esiste proprio per evitarlo.
+        // Redrawing 80x25 cells every frame when nothing has changed is
+        // almost entirely wasted work, and dirty row tracking exists precisely
+        // to avoid it.
         using var machine = new Machine();
         machine.RunInstructions(500);
 
@@ -60,7 +61,7 @@ public class RealTimeLoopTests
             machine.Video.Render();
         }
 
-        // Senza scritture in memoria video il conteggio non deve crescere.
+        // With no writes to video memory the frame count must not move.
         Assert.Equal(baseline, machine.Video.FramesRendered);
     }
 
@@ -96,7 +97,7 @@ public class RealTimeLoopTests
         using var machine = new Machine();
         DiskImage disk = DiskImage.CreateInMemory(0x00, 80, 2, 18);
 
-        // Un ciclo che gira senza fermarsi, per contare le istruzioni.
+        // A loop that never stops, so there is always something to count.
         var sector = new byte[512];
         new byte[] { 0x90, 0xEB, 0xFD }.CopyTo(sector, 0);   // NOP; JMP -3
         sector[510] = 0x55; sector[511] = 0xAA;
@@ -111,8 +112,8 @@ public class RealTimeLoopTests
         long executed = machine.Cpu.Cycles - before;
         long expected = (long)(machine.CpuFrequencyHz * 0.1);
 
-        // Il conteggio deve corrispondere alla frequenza dichiarata, entro
-        // la granularita' dei blocchi di esecuzione.
+        // The count must match the declared frequency, within the batch size
+        // the execution loop works in.
         Assert.InRange(executed, expected - 5000, expected + 5000);
     }
 
@@ -123,8 +124,8 @@ public class RealTimeLoopTests
         machine.RunInstructions(500);
         machine.Video.Render(force: true);
 
-        // Il lampeggio e' uno stato del renderer: cambiarlo deve produrre un
-        // ridisegno della riga del cursore senza che la memoria video cambi.
+        // Blink phase is renderer state: toggling it must redraw the cursor's
+        // row without any write to video memory.
         byte cellBefore = machine.VideoMemory[
             Aurora386.Core.Devices.Video.VgaMemory.TextWindowOffset];
 

@@ -8,9 +8,9 @@ public class VgaFontTests
     [Fact]
     public void OgniCarattereHaSedicRigheDiPixel()
     {
-        // Il font si costruisce tutto alla prima richiesta: se il calcolo
-        // degli indici sfora, l'errore emerge qui invece che al primo
-        // fotogramma disegnato.
+        // The whole font is built on first use, so if the index arithmetic
+        // overruns anywhere the failure shows up here rather than in the
+        // middle of drawing the first frame.
         for (int ch = 0; ch < 256; ch++)
         {
             ReadOnlySpan<byte> glyph = VgaFont.GetGlyph((byte)ch);
@@ -21,14 +21,14 @@ public class VgaFontTests
     [Fact]
     public void CaratteriStampabiliNonSonoVuoti()
     {
-        // Una lettera senza pixel accesi significa font non caricato: lo
-        // schermo resterebbe bianco senza alcun errore visibile.
+        // A letter with no lit pixels means the font never loaded, and the
+        // screen would come up blank with no error anywhere to explain it.
         foreach (char ch in "ABCXYZabcxyz0189")
         {
             ReadOnlySpan<byte> glyph = VgaFont.GetGlyph((byte)ch);
             bool hasPixels = false;
             foreach (byte row in glyph) if (row != 0) { hasPixels = true; break; }
-            Assert.True(hasPixels, $"il carattere '{ch}' non ha pixel accesi");
+            Assert.True(hasPixels, $"character '{ch}' has no lit pixels");
         }
     }
 
@@ -42,8 +42,8 @@ public class VgaFontTests
     [Fact]
     public void CaratteriSemigraficiSonoDisegnati()
     {
-        // 0xDB e' il blocco pieno: tutte le righe devono essere piene, ed e'
-        // il carattere con cui DOS disegna barre e riempimenti.
+        // 0xDB is the full block: every scanline must be solid. It is the
+        // character DOS draws bars and fills with.
         foreach (byte row in VgaFont.GetGlyph(0xDB))
             Assert.Equal(0xFF, row);
     }
@@ -51,7 +51,7 @@ public class VgaFontTests
     [Fact]
     public void IlRaddoppioVerticaleProduceRigheAppaiate()
     {
-        // Ogni riga di origine occupa due righe consecutive della cella.
+        // Each source row occupies two consecutive rows of the cell.
         ReadOnlySpan<byte> glyph = VgaFont.GetGlyph((byte)'A');
         for (int row = 0; row < VgaFont.CharHeight; row += 2)
             Assert.Equal(glyph[row], glyph[row + 1]);
@@ -66,14 +66,14 @@ public class VgaRendererTests
         using var machine = new Machine();
         machine.RunInstructions(200);        // POST
 
-        // Scrive 'A' bianco su nero nella prima cella.
+        // Write a white-on-black 'A' into the first cell.
         machine.VideoMemory[VgaMemory.TextWindowOffset] = (byte)'A';
         machine.VideoMemory[VgaMemory.TextWindowOffset + 1] = 0x0F;
 
         Assert.True(machine.Video.Render(force: true));
 
-        // La cella occupa 8x16 pixel in alto a sinistra: almeno uno deve
-        // essere del colore di primo piano.
+        // The cell covers 8x16 pixels in the top-left corner, and at least
+        // one of them must be in the foreground colour.
         bool foundLitPixel = false;
         for (int y = 0; y < VgaFont.CharHeight && !foundLitPixel; y++)
         for (int x = 0; x < VgaFont.CharWidth; x++)
@@ -82,7 +82,7 @@ public class VgaRendererTests
             if ((pixel & 0x00FFFFFF) != 0) { foundLitPixel = true; break; }
         }
 
-        Assert.True(foundLitPixel, "nessun pixel acceso dove doveva esserci una 'A'");
+        Assert.True(foundLitPixel, "no lit pixel where an 'A' should have been drawn");
     }
 
     [Fact]
@@ -94,11 +94,11 @@ public class VgaRendererTests
         machine.Video.Render(force: true);
         long frames = machine.Video.FramesRendered;
 
-        // Nulla e' cambiato: il render deve accorgersene e non ridisegnare.
+        // Nothing changed, so the renderer must notice and skip the work.
         Assert.False(machine.Video.Render());
         Assert.Equal(frames, machine.Video.FramesRendered);
 
-        // Dopo una scrittura invece deve ridisegnare.
+        // After a write, though, it has to redraw.
         machine.VideoMemory[VgaMemory.TextWindowOffset] = (byte)'Z';
         Assert.True(machine.Video.Render());
     }
@@ -121,8 +121,8 @@ public class VgaRendererTests
     {
         var registers = new VgaRegisters();
 
-        // Il bianco della tavolozza CGA e' 0x3F su tutte le componenti, che a
-        // 8 bit deve dare 0xFF pieno, non 0xFC.
+        // White in the CGA palette is 0x3F on every component, which must
+        // expand to a full 0xFF at 8 bits, not 0xFC.
         (byte r, byte g, byte b) = registers.GetPaletteColor(15);
         Assert.Equal(0xFF, r);
         Assert.Equal(0xFF, g);
@@ -143,7 +143,7 @@ public class ScrollingTests
         using var machine = new Machine();
         machine.RunInstructions(200);
 
-        // Riempie lo schermo di righe numerate scrivendo con il BIOS.
+        // Fill the screen with numbered lines, writing through the BIOS.
         for (int row = 0; row < 30; row++)
         {
             string line = $"riga{row}\r\n";
@@ -153,9 +153,9 @@ public class ScrollingTests
 
         string[] lines = machine.GetScreenText().Split(Environment.NewLine);
 
-        // Dopo 30 righe su uno schermo da 25 le prime sono uscite in alto.
-        // L'ultimo "\r\n" fa scorrere un'altra volta, quindi l'ultima riga
-        // scritta si trova alla penultima posizione e la 24 resta vuota.
+        // After 30 lines on a 25-line screen the first ones have scrolled off
+        // the top. The trailing "\r\n" scrolls once more, so the last line
+        // written ends up second from the bottom and line 24 is left blank.
         Assert.DoesNotContain("riga0", lines[0]);
         Assert.StartsWith("riga29", lines[23]);
         Assert.Equal("", lines[24].TrimEnd());

@@ -99,6 +99,32 @@ public sealed class Machine : IDisposable
         Cpu.Reset();
     }
 
+    /// <summary>
+    /// The CD-ROM currently in the drive, if any.
+    ///
+    /// A compact disc is kept apart from the disk drives on purpose. Its
+    /// sectors are 2048 bytes rather than 512 and it is addressed by block
+    /// number rather than by cylinder/head/sector, so none of the INT 13h
+    /// services apply: DOS reaches a CD through MSCDEX and a device driver.
+    /// Pretending it were another <see cref="DiskImage"/> would leak
+    /// immediately.
+    /// </summary>
+    public IsoImage? CompactDisc { get; private set; }
+
+    /// <summary>Inserts a disc, replacing whatever was in the drive.</summary>
+    public void AttachCompactDisc(IsoImage disc)
+    {
+        CompactDisc?.Dispose();
+        CompactDisc = disc;
+    }
+
+    /// <summary>Ejects the disc, leaving the drive empty.</summary>
+    public void EjectCompactDisc()
+    {
+        CompactDisc?.Dispose();
+        CompactDisc = null;
+    }
+
     /// <summary>Attaches a disk image to a BIOS drive number.</summary>
     public void AttachDisk(DiskImage image)
     {
@@ -606,6 +632,7 @@ public sealed class Machine : IDisposable
     public void Dispose()
     {
         foreach (DiskImage disk in _disks) disk.Dispose();
+        CompactDisc?.Dispose();
         Memory.Dispose();
     }
 }

@@ -5,7 +5,7 @@ using Aurora386.Sdl.Frontend;
 // Emulator entry point. The command line says which disk images to attach and
 // how the machine should be configured.
 
-if (args.Length == 0 || args.Contains("--aiuto") || args.Contains("-h"))
+if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
 {
     PrintUsage();
     return 0;
@@ -22,28 +22,28 @@ for (int i = 0; i < args.Length; i++)
     switch (args[i])
     {
         case "--floppy" or "-f":
-            if (++i >= args.Length) return Fail("--floppy richiede un percorso");
+            if (++i >= args.Length) return Fail("--floppy needs a path");
             floppies.Add(args[i]);
             break;
 
-        case "--disco" or "-d":
-            if (++i >= args.Length) return Fail("--disco richiede un percorso");
+        case "--hdd" or "-d":
+            if (++i >= args.Length) return Fail("--hdd needs a path");
             hardDisk = args[i];
             break;
 
-        case "--crea-disco":
-            if (++i >= args.Length) return Fail("--crea-disco richiede un percorso");
+        case "--create-hdd":
+            if (++i >= args.Length) return Fail("--create-hdd needs a path");
             createDisk = args[i];
             break;
 
-        case "--dimensione":
+        case "--size":
             if (++i >= args.Length || !long.TryParse(args[i], out createSizeMb))
-                return Fail("--dimensione richiede un numero di megabyte");
+                return Fail("--size needs a number of megabytes");
             break;
 
         case "--ram":
             if (++i >= args.Length || !uint.TryParse(args[i], out ramMegabytes))
-                return Fail("--ram richiede un numero di megabyte");
+                return Fail("--ram needs a number of megabytes");
             break;
 
         default:
@@ -62,10 +62,10 @@ if (createDisk is not null)
         return Fail($"il file {createDisk} esiste gia': rimuovilo o scegli un altro nome");
 
     var geometry = HardDiskImage.Create(createDisk, createSizeMb * 1024 * 1024);
-    Console.WriteLine($"creato {createDisk}: {geometry.TotalBytes / 1024 / 1024} MB " +
+    Console.WriteLine($"created {createDisk}: {geometry.TotalBytes / 1024 / 1024} MB " +
                       $"({geometry.Cylinders} cilindri, {geometry.Heads} testine, " +
                       $"{geometry.SectorsPerTrack} settori)");
-    Console.WriteLine("il disco e' partizionato e formattato FAT16, pronto per l'installazione.");
+    Console.WriteLine("The disk is partitioned and formatted FAT16, ready to install onto.");
 
     // If nothing else was requested, creating the image was the whole job.
     if (floppies.Count == 0 && hardDisk is null) return 0;
@@ -85,7 +85,7 @@ for (int i = 0; i < floppies.Count && i < 2; i++)
     try
     {
         machine.AttachDisk(DiskImage.OpenFloppy(floppies[i], (byte)i));
-        Console.WriteLine($"unita' {(char)('A' + i)}: {Path.GetFileName(floppies[i])}");
+        Console.WriteLine($"drive {(char)('A' + i)}: {Path.GetFileName(floppies[i])}");
     }
     catch (InvalidDataException ex)
     {
@@ -97,12 +97,12 @@ if (hardDisk is not null)
 {
     if (!File.Exists(hardDisk)) return Fail($"immagine non trovata: {hardDisk}");
     machine.AttachDisk(DiskImage.OpenHardDisk(hardDisk));
-    Console.WriteLine($"unita' C: {Path.GetFileName(hardDisk)}");
+    Console.WriteLine($"drive C: {Path.GetFileName(hardDisk)}");
 }
 
-Console.WriteLine($"memoria: {ramMegabytes} MB");
+Console.WriteLine($"memory: {ramMegabytes} MB");
 Console.WriteLine();
-Console.WriteLine("comandi:  Cmd+Q esci   Cmd+P pausa   Cmd+R riavvia   Cmd+F schermo intero");
+Console.WriteLine("keys:  Cmd+Q quit   Cmd+P pause   Cmd+R reset   Cmd+F full screen");
 Console.WriteLine();
 
 try
@@ -122,39 +122,39 @@ return 0;
 
 static int Fail(string message)
 {
-    Console.Error.WriteLine($"errore: {message}");
-    Console.Error.WriteLine("usa --aiuto per l'elenco delle opzioni");
+    Console.Error.WriteLine($"error: {message}");
+    Console.Error.WriteLine("run with --help for the list of options");
     return 1;
 }
 
 static void PrintUsage()
 {
     Console.WriteLine("""
-        Emulatore di PC 80386
+        Aurora386 -- an 80386 PC emulator
 
-        USO
-          emulator [opzioni] [immagine-floppy]
+        USAGE
+          aurora386 [options] [floppy-image]
 
-        OPZIONI
-          -f, --floppy <file>      immagine floppy (fino a due: unita' A: e B:)
-          -d, --disco <file>       immagine di disco fisso (unita' C:)
-              --crea-disco <file>  crea un nuovo disco fisso partizionato
-              --dimensione <MB>    dimensione del disco da creare (default 100)
-              --ram <MB>           memoria installata (default 16)
-          -h, --aiuto              questo messaggio
+        OPTIONS
+          -f, --floppy <file>      floppy image (up to two: drives A: and B:)
+          -d, --hdd <file>         hard disk image (drive C:)
+              --create-hdd <file>  create a new partitioned hard disk
+              --size <MB>          size of the disk to create (default 100)
+              --ram <MB>           installed memory (default 16)
+          -h, --help               this message
 
-        ESEMPI
-          Avviare da un floppy:
-            emulator dischi/dos622-1.img
+        EXAMPLES
+          Boot from a floppy:
+            aurora386 disks/dos622-1.img
 
-          Creare un disco fisso da 200 MB:
-            emulator --crea-disco hdd.img --dimensione 200
+          Create a 200 MB hard disk:
+            aurora386 --create-hdd hdd.img --size 200
 
-          Installare DOS dal floppy sul disco fisso:
-            emulator -f dischi/dos622-1.img -d hdd.img
+          Install DOS from floppy onto the hard disk:
+            aurora386 -f disks/dos622-1.img -d hdd.img
 
-        COMANDI DURANTE L'ESECUZIONE
-          Cmd+Q  esci        Cmd+P  pausa
-          Cmd+R  riavvia     Cmd+F  schermo intero
+        KEYS WHILE RUNNING
+          Cmd+Q  quit        Cmd+P  pause
+          Cmd+R  reset       Cmd+F  full screen
         """);
 }

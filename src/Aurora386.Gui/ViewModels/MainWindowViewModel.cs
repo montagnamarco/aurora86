@@ -123,9 +123,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         List<DiskImage> attached = Session.WithMachine(
             machine => machine.DiskServices.AttachedDrives.ToList());
 
+        IsoImage? disc = Session.WithMachine(machine => machine.CompactDisc);
+
         Drives.Clear();
         foreach (DiskImage image in attached)
             Drives.Add(new DriveIndicator(image));
+
+        if (disc is not null) Drives.Add(new DriveIndicator(disc));
     }
 
     // --- toolbar commands ---------------------------------------------------
@@ -215,10 +219,61 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private Task MountFloppyB() => MountAsync(0x01, "Select a floppy image", FloppyFilters);
 
     [RelayCommand]
-    private Task MountHardDisk() => MountAsync(0x80, "Select a hard disk image", HardDiskFilters);
+    private Task MountHardDisk() => MountAsync(NextHardDiskNumber(), "Select a hard disk image", HardDiskFilters);
+
+    /// <summary>
+    /// Mounts an ISO image as the CD-ROM drive.
+    ///
+    /// A CD is not a disk as far as the BIOS is concerned: its sectors are
+    /// 2048 bytes and it is addressed by block number, so DOS reaches it
+    /// through MSCDEX and a device driver rather than through INT 13h. The
+    /// image is therefore held separately from the disk drives.
+    /// </summary>
+    [RelayCommand]
+    private async Task MountCompactDisc()
+    {
+        if (PickFileAsync is null) return;
+
+        string? path = await PickFileAsync("Select a CD-ROM image", CdFilters);
+        if (path is null) return;
+
+        try
+        {
+            Session.WithMachine(machine => machine.AttachCompactDisc(IsoImage.Open(path)));
+            RefreshDriveList();
+            StatusText = $"Inserted {Path.GetFileName(path)}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not read the disc: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Picks the next free hard disk number. The BIOS numbers hard disks from
+    /// 0x80 upwards, so a second disk is 0x81 and so on; mounting several
+    /// should extend the chain rather than replace the first one.
+    /// </summary>
+    private byte NextHardDiskNumber()
+    {
+        return Session.WithMachine(machine =>
+        {
+            var used = machine.DiskServices.AttachedDrives
+                .Select(image => image.DriveNumber)
+                .Where(number => number >= 0x80)
+                .ToHashSet();
+
+            for (byte candidate = 0x80; candidate < 0x84; candidate++)
+                if (!used.Contains(candidate)) return candidate;
+
+            // All four slots taken: replace the last one rather than refuse.
+            return (byte)0x83;
+        });
+    }
 
     private static readonly string[] FloppyFilters = ["img", "ima", "dsk", "vfd"];
     private static readonly string[] HardDiskFilters = ["img", "hdd", "vhd", "raw"];
+    private static readonly string[] CdFilters = ["iso", "cue", "bin"];
 
     /// <summary>
     /// Asks for a file and inserts it into the given drive.
@@ -313,5 +368,18 @@ public sealed partial class DriveIndicator : ObservableObject
         MediaName = image.SourcePath is null
             ? "(in memory)"
             : Path.GetFileName(image.SourcePath);
+    }
+
+    /// <summary>
+    /// The CD drive. It has no BIOS drive number of its own, so it is given
+    /// one past the hard disks purely so the indicator list can key on it.
+    /// </summary>
+    public DriveIndicator(IsoImage disc)
+    {
+        DriveNumber = 0xF0;
+        Label = "CD";
+        MediaName = disc.SourcePath is null
+            ? disc.VolumeLabel
+            : Path.GetFileName(disc.SourcePath);
     }
 }
