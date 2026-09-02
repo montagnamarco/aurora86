@@ -143,9 +143,12 @@ public static class Disassembler
         public string? Rep { get; set; }
         public bool Lock { get; set; }
 
-        public int Length => _bytes.Count;
-        public uint Start => _start;
-        public uint CurrentAddress => (uint)(_start + (uint)_bytes.Count);
+        public readonly int Length => _bytes.Count;
+        public readonly uint Start => _start;
+        public readonly uint CurrentAddress => (uint)(_start + (uint)_bytes.Count);
+
+        /// <summary>Reads the next byte without consuming it.</summary>
+        public readonly byte Peek() => _bytes.Count >= 15 ? (byte)0 : _read(CurrentAddress);
 
         /// <summary>Consumes the next byte, recording it for the byte dump.</summary>
         public byte Next()
@@ -280,6 +283,14 @@ public static class Disassembler
         string hint = showSize ? SizePrefix(size) + "ptr " : "";
         return new ModRm(mod, reg, rm, hint + seg + "[" + inner + "]", false);
     }
+
+    /// <summary>
+    /// Looks at the reg field of the ModR/M byte that is about to be read,
+    /// without consuming anything. Group 5 needs this because the size of its
+    /// memory operand depends on which member of the group the reg field
+    /// selects, and the size has to be known before the operand is rendered.
+    /// </summary>
+    private static byte PeekModRmReg(in Context ctx) => (byte)((ctx.Peek() >> 3) & 7);
 
     /// <summary>
     /// 16-bit addressing, inherited straight from the 8086: only seven fixed
@@ -1020,7 +1031,14 @@ public static class Disassembler
     /// </summary>
     private static string DecodeGroup5(ref Context ctx, int osize)
     {
-        var m = ReadModRm(ref ctx, osize, showSize: true);
+        // Peek at the reg field before consuming the ModR/M byte: the far forms
+        // (reg 3 and 5) address a selector:offset pair, which is 4 bytes in
+        // 16-bit code and 6 in 32-bit -- not the plain operand size the near
+        // forms use.
+        byte peek = PeekModRmReg(in ctx);
+        bool far = peek == 3 || peek == 5;
+        int size = far ? (ctx.OperandSize32 ? 6 : 4) : osize;
+        var m = ReadModRm(ref ctx, size, showSize: true);
         return m.Reg switch
         {
             0 => WithPrefixes(in ctx, "inc " + m.Text),
@@ -1292,9 +1310,12 @@ public static class Disassembler
             case 0x0B: return "ud2";
 
             default:
-                // Unknown two-byte opcode: back the escape byte out and emit the
-                // 0Fh alone, so the caller advances by one byte and can try again.
-                return Db(0x0F);
+                // Unknown two-byte opcode: rewind to the 0Fh escape byte and emit
+                // it alone, so the caller advances by exactly one byte and can
+                // re-synchronise on the next. Reporting length 2 here would make
+                // the debugger skip a byte that may well start a real instruction.
+                ctx.Reset();
+                return Db(ctx.Next());
         }
     }
 

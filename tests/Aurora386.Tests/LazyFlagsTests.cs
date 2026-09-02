@@ -3,11 +3,11 @@ using Aurora386.Core.Cpu;
 namespace Aurora386.Tests;
 
 /// <summary>
-/// I flag sono il componente da cui dipende ogni salto condizionato: un errore
-/// qui non da' un crash, da' un programma che prende il ramo sbagliato molto
-/// piu' tardi. Per questo ADD/SUB/ADC/SBB sono verificati in modo esaustivo su
-/// tutte le 65536 combinazioni a 8 bit, contro flag calcolati in modo
-/// indipendente dall'implementazione sotto test.
+/// Every conditional branch in existence rests on the flags. A mistake here
+/// does not crash anything: it produces a program that takes the wrong branch
+/// much later, somewhere entirely unrelated. That is why ADD/SUB/ADC/SBB are
+/// checked exhaustively across all 65536 8-bit operand combinations, against
+/// expected flags computed independently of the implementation under test.
 /// </summary>
 public class LazyFlagsTests
 {
@@ -15,7 +15,7 @@ public class LazyFlagsTests
     {
         int bits = 0;
         for (int i = 0; i < 8; i++) bits += (int)((result >> i) & 1);
-        return (bits & 1) == 0;      // PF e' 1 quando i bit a 1 sono pari
+        return (bits & 1) == 0;      // PF is set when the number of set bits is even
     }
 
     [Fact]
@@ -34,8 +34,8 @@ public class LazyFlagsTests
             Assert.Equal(ExpectedParity(result), f.Parity);
             Assert.Equal(((a & 0xF) + (b & 0xF)) > 0xF, f.Adjust);
 
-            // Overflow con segno: i due addendi hanno lo stesso segno e il
-            // risultato ha segno opposto.
+            // Signed overflow: both operands share a sign and the result
+            // came out with the opposite one.
             bool overflow = ((sbyte)a > 0 && (sbyte)b > 0 && (sbyte)result < 0)
                          || ((sbyte)a < 0 && (sbyte)b < 0 && (sbyte)result >= 0);
             Assert.Equal(overflow, f.Overflow);
@@ -52,7 +52,7 @@ public class LazyFlagsTests
             uint result = (a - b) & 0xFF;
             f.Set(FlagOp.Sub, a, b, result, 8);
 
-            Assert.Equal(a < b, f.Carry);            // prestito
+            Assert.Equal(a < b, f.Carry);            // carry acts as borrow for subtraction
             Assert.Equal(result == 0, f.Zero);
             Assert.Equal((result & 0x80) != 0, f.Sign);
             Assert.Equal(ExpectedParity(result), f.Parity);
@@ -101,8 +101,8 @@ public class LazyFlagsTests
     [Fact]
     public void IncEDecPreservanoIlCarry()
     {
-        // E' cio' che permette di usarli dentro cicli di somma multiprecisione
-        // senza distruggere il riporto in corso.
+        // This is what makes them usable inside multi-precision addition
+        // loops: the running carry survives the loop counter's own INC/DEC.
         var f = new LazyFlags();
         f.Carry = true;
         f.Set(FlagOp.Inc, 5, 1, 6, 8);
@@ -153,13 +153,14 @@ public class LazyFlagsTests
     [Fact]
     public void ParitaGuardaSoloGliOttoBitBassi()
     {
-        // Vale anche per operandi a 16 e 32 bit: PF e' definito sul byte basso.
+        // True for 16- and 32-bit operands as well: PF is defined over the
+        // low byte only, a quirk inherited straight from the 8080.
         var f = new LazyFlags();
         f.Set(FlagOp.Logic, 0, 0, 0xFF00, 16);
-        Assert.True(f.Parity);          // byte basso 0x00: zero bit a 1, pari
+        Assert.True(f.Parity);          // low byte 0x00: zero set bits, even
 
         f.Set(FlagOp.Logic, 0, 0, 0xFF01, 16);
-        Assert.False(f.Parity);         // byte basso 0x01: un bit a 1, dispari
+        Assert.False(f.Parity);         // low byte 0x01: one set bit, odd
     }
 
     [Fact]
@@ -169,7 +170,7 @@ public class LazyFlagsTests
         f.Interrupt = true;
         f.Direction = true;
 
-        // Un'operazione aritmetica non deve toccare IF/DF.
+        // An arithmetic operation must not disturb IF or DF.
         f.Set(FlagOp.Add, 0xFF, 0xFF, 0xFE, 8);
         Assert.True(f.Carry);
         Assert.True(f.Interrupt);
@@ -180,8 +181,8 @@ public class LazyFlagsTests
     public void SetValueScartaLOperazionePendente()
     {
         var f = new LazyFlags();
-        f.Set(FlagOp.Add, 0xFF, 0xFF, 0xFE, 8);   // produrrebbe carry
-        f.SetValue((uint)Flags.Zero);              // POPF
+        f.Set(FlagOp.Add, 0xFF, 0xFF, 0xFE, 8);   // would evaluate to carry set
+        f.SetValue((uint)Flags.Zero);              // POPF discards the pending op
 
         Assert.False(f.Carry);
         Assert.True(f.Zero);
@@ -194,11 +195,11 @@ public class LazyFlagsTests
         f.Set(FlagOp.Add, 0xFFFFFFFF, 1, 0, 32);
         Assert.True(f.Carry);
         Assert.True(f.Zero);
-        Assert.False(f.Overflow);       // -1 + 1 = 0, nessun overflow con segno
+        Assert.False(f.Overflow);       // -1 + 1 = 0: no signed overflow
 
         f.Set(FlagOp.Add, 0x7FFFFFFF, 1, 0x80000000, 32);
         Assert.False(f.Carry);
-        Assert.True(f.Overflow);        // massimo positivo + 1
+        Assert.True(f.Overflow);        // largest positive value plus one
         Assert.True(f.Sign);
     }
 
@@ -207,12 +208,12 @@ public class LazyFlagsTests
     {
         var f = new LazyFlags();
         f.Set(FlagOp.Shl, 0x80, 1, 0x00, 8);
-        Assert.True(f.Carry);           // il bit 7 e' uscito
+        Assert.True(f.Carry);           // bit 7 was shifted out
         Assert.True(f.Zero);
 
         f.Set(FlagOp.Shl, 0x40, 1, 0x80, 8);
         Assert.False(f.Carry);
-        Assert.True(f.Overflow);        // il segno e' cambiato
+        Assert.True(f.Overflow);        // the sign bit changed
     }
 
     [Fact]
@@ -220,11 +221,11 @@ public class LazyFlagsTests
     {
         var f = new LazyFlags();
         f.Set(FlagOp.Shr, 0x81, 1, 0x40, 8);
-        Assert.True(f.Carry);           // bit 0 uscito
-        Assert.True(f.Overflow);        // SHR di 1: OF = bit di segno originale
+        Assert.True(f.Carry);           // bit 0 was shifted out
+        Assert.True(f.Overflow);        // for SHR by 1, OF is the original sign bit
 
         f.Set(FlagOp.Sar, 0x81, 1, 0xC0, 8);
         Assert.True(f.Carry);
-        Assert.False(f.Overflow);       // SAR non produce mai overflow
+        Assert.False(f.Overflow);       // SAR can never overflow: the sign is preserved
     }
 }

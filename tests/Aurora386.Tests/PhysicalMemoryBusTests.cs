@@ -4,7 +4,7 @@ namespace Aurora386.Tests;
 
 public class PhysicalMemoryBusTests
 {
-    /// <summary>Dispositivo di prova: registra gli accessi e serve un buffer.</summary>
+    /// <summary>A stub device: serves a buffer and records how it was accessed.</summary>
     private sealed class FakeDevice : IMemoryDevice
     {
         public readonly byte[] Data = new byte[PhysicalMemoryBus.PageSize * 2];
@@ -52,15 +52,15 @@ public class PhysicalMemoryBusTests
     public void AccessoDisallineatoAttraversoConfineDiPaginaFunziona()
     {
         using var bus = new PhysicalMemoryBus();
-        // Ultimi due byte della pagina 0 e primi due della pagina 1.
+        // The last two bytes of page 0 and the first two of page 1.
         uint address = PhysicalMemoryBus.PageSize - 2;
         bus.WriteDword(address, 0x11223344);
 
         Assert.Equal(0x11223344u, bus.ReadDword(address));
         Assert.Equal(0x3344, bus.ReadWord(address));
         Assert.Equal(0x1122, bus.ReadWord(address + 2));
-        Assert.Equal(0x22, bus.ReadByte(PhysicalMemoryBus.PageSize));      // 3o byte
-        Assert.Equal(0x11, bus.ReadByte(PhysicalMemoryBus.PageSize + 1));  // 4o byte
+        Assert.Equal(0x22, bus.ReadByte(PhysicalMemoryBus.PageSize));      // third byte
+        Assert.Equal(0x11, bus.ReadByte(PhysicalMemoryBus.PageSize + 1));  // fourth byte
     }
 
     [Fact]
@@ -75,7 +75,7 @@ public class PhysicalMemoryBusTests
 
         bus.WriteByte(0xF0000, 0x00);
         bus.WriteDword(0xF0000, 0);
-        Assert.Equal(0xAA, bus.ReadByte(0xF0000));   // invariata
+        Assert.Equal(0xAA, bus.ReadByte(0xF0000));   // unchanged
     }
 
     [Fact]
@@ -86,7 +86,7 @@ public class PhysicalMemoryBusTests
         bus.MapDevice(0xA0000, PhysicalMemoryBus.PageSize * 2, device);
 
         bus.WriteByte(0xA0000, 0x42);
-        Assert.Equal(0x42, device.Data[0]);          // offset 0, non 0xA0000
+        Assert.Equal(0x42, device.Data[0]);          // offset 0, not 0xA0000
 
         bus.WriteByte(0xA1234, 0x99);
         Assert.Equal(0x99, device.Data[0x1234]);
@@ -97,8 +97,8 @@ public class PhysicalMemoryBusTests
     [Fact]
     public void LetturaLargaSuMmioUsaUnaSolaChiamata()
     {
-        // Importante: i registri con effetti collaterali sulla lettura non
-        // devono essere innescati piu' volte per un singolo accesso a 32 bit.
+        // This matters: registers with side effects on read must not be
+        // triggered several times over by one 32-bit access.
         using var bus = new PhysicalMemoryBus();
         var device = new FakeDevice();
         bus.MapDevice(0xA0000, PhysicalMemoryBus.PageSize * 2, device);
@@ -121,10 +121,10 @@ public class PhysicalMemoryBusTests
 
         var device = new FakeDevice();
         bus.MapDevice(0xA0000, PhysicalMemoryBus.PageSize, device);
-        Assert.Equal(0x00, bus.ReadByte(0xA0000));   // ora risponde il dispositivo
+        Assert.Equal(0x00, bus.ReadByte(0xA0000));   // the device answers now
 
         bus.MapRam(0xA0000, PhysicalMemoryBus.PageSize);
-        Assert.Equal(0x11, bus.ReadByte(0xA0000));   // la RAM sottostante e' intatta
+        Assert.Equal(0x11, bus.ReadByte(0xA0000));   // the RAM underneath survived
     }
 
     [Fact]
@@ -132,7 +132,7 @@ public class PhysicalMemoryBusTests
     {
         using var bus = new PhysicalMemoryBus();
         Assert.Equal(0xFF, bus.ReadByte(0xFFFFFFFF));
-        bus.WriteByte(0xFFFFFFFF, 0x42);            // non deve lanciare
+        bus.WriteByte(0xFFFFFFFF, 0x42);            // must not throw
         Assert.Equal(0xFF, bus.ReadByte(0xF0000000));
     }
 

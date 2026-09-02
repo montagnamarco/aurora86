@@ -5,8 +5,9 @@ using Aurora386.Core.Memory;
 namespace Aurora386.Tests;
 
 /// <summary>
-/// Copertura del set real mode aggiunto oltre alle istruzioni di base:
-/// moltiplicazione e divisione, scorrimenti, stringhe con REP, I/O, cicli.
+/// Coverage of the real-mode instructions built on top of the basic set:
+/// multiply and divide, shifts and rotates, REP string operations, port I/O
+/// and the loop instructions.
 /// </summary>
 public class CpuRealModeTests
 {
@@ -28,8 +29,9 @@ public class CpuRealModeTests
     }
 
     /// <summary>
-    /// Esegue finche' EIP non supera l'istruzione che inizia a <paramref name="from"/>,
-    /// cioe' finche' un'istruzione ripetuta non ha finito di ripetersi.
+    /// Steps until EIP moves past the instruction starting at
+    /// <paramref name="from"/> -- that is, until a repeated instruction has
+    /// finished repeating.
     /// </summary>
     private static void RunUntilPast(Cpu cpu, uint from, int maxSteps = 1000)
     {
@@ -43,7 +45,7 @@ public class CpuRealModeTests
         using (bus) { for (int i = 0; i < steps; i++) cpu.Step(); return cpu; }
     }
 
-    // --- moltiplicazione e divisione -----------------------------------------
+    // --- multiply and divide ---------------------------------------------------
 
     [Fact]
     public void MulA16BitProduceIlRisultatoInDxAx()
@@ -53,13 +55,13 @@ public class CpuRealModeTests
         // 0x1000 * 0x1000 = 0x01000000
         Assert.Equal(0x0000, cpu.State.Ax);
         Assert.Equal(0x0100, cpu.State.Dx);
-        Assert.True(cpu.Flags.Carry);     // il risultato non sta in 16 bit
+        Assert.True(cpu.Flags.Carry);     // the result does not fit in 16 bits
     }
 
     [Fact]
     public void MulSenzaOverflowAzzeraCarry()
     {
-        // 2 * 3 sta comodamente in 16 bit
+        // 2 * 3 fits comfortably in 16 bits
         var cpu = Run(3, 0xB8, 0x02, 0x00, 0xBB, 0x03, 0x00, 0xF7, 0xE3);
         Assert.Equal(6, cpu.State.Ax);
         Assert.Equal(0, cpu.State.Dx);
@@ -72,7 +74,7 @@ public class CpuRealModeTests
         // MOV AX,-2 ; MOV BX,3 ; IMUL BX  ->  -6
         var cpu = Run(3, 0xB8, 0xFE, 0xFF, 0xBB, 0x03, 0x00, 0xF7, 0xEB);
         Assert.Equal(unchecked((ushort)-6), cpu.State.Ax);
-        Assert.Equal(0xFFFF, cpu.State.Dx);     // estensione di segno
+        Assert.Equal(0xFFFF, cpu.State.Dx);     // sign extension into DX
     }
 
     [Fact]
@@ -80,8 +82,8 @@ public class CpuRealModeTests
     {
         // MOV DX,0 ; MOV AX,17 ; MOV BX,5 ; DIV BX
         var cpu = Run(4, 0xBA, 0x00, 0x00, 0xB8, 0x11, 0x00, 0xBB, 0x05, 0x00, 0xF7, 0xF3);
-        Assert.Equal(3, cpu.State.Ax);   // quoziente
-        Assert.Equal(2, cpu.State.Dx);   // resto
+        Assert.Equal(3, cpu.State.Ax);   // quotient
+        Assert.Equal(2, cpu.State.Dx);   // remainder
     }
 
     [Fact]
@@ -90,7 +92,7 @@ public class CpuRealModeTests
         var (cpu, bus) = Setup(0xBA, 0x00, 0x00, 0xB8, 0x11, 0x00, 0xBB, 0x00, 0x00, 0xF7, 0xF3);
         using (bus)
         {
-            bus.WriteWord(0, 0x0500);       // vettore 0 -> 0000:0500
+            bus.WriteWord(0, 0x0500);       // vector 0 -> 0000:0500
             bus.WriteWord(2, 0x0000);
             for (int i = 0; i < 4; i++) cpu.Step();
             Assert.Equal(0x0500u, cpu.State.Eip);
@@ -100,8 +102,8 @@ public class CpuRealModeTests
     [Fact]
     public void QuozienteTroppoGrandeGeneraEccezione0()
     {
-        // DX:AX / 1 con DX != 0 da' un quoziente che non entra in 16 bit:
-        // sul ferro reale e' un errore di divisione, non un troncamento.
+        // DX:AX / 1 with DX non-zero yields a quotient too large for 16 bits.
+        // On real hardware that is a divide error, not a silent truncation.
         var (cpu, bus) = Setup(0xBA, 0xFF, 0xFF, 0xB8, 0x00, 0x00, 0xBB, 0x01, 0x00, 0xF7, 0xF3);
         using (bus)
         {
@@ -124,7 +126,7 @@ public class CpuRealModeTests
         Assert.False(cpu2.Flags.Carry);
     }
 
-    // --- scorrimenti ----------------------------------------------------------
+    // --- shifts and rotates ----------------------------------------------------
 
     [Fact]
     public void ShlSpostaEImpostaIlCarry()
@@ -132,13 +134,13 @@ public class CpuRealModeTests
         // MOV AX,0x8001 ; SHL AX,1
         var cpu = Run(2, 0xB8, 0x01, 0x80, 0xD1, 0xE0);
         Assert.Equal(0x0002, cpu.State.Ax);
-        Assert.True(cpu.Flags.Carry);      // il bit 15 e' uscito
+        Assert.True(cpu.Flags.Carry);      // bit 15 was shifted out
     }
 
     [Fact]
     public void SarReplicaIlSegno()
     {
-        // MOV AX,0x8000 ; SAR AX,1  ->  0xC000, non 0x4000
+        // MOV AX,0x8000 ; SAR AX,1  ->  0xC000, not 0x4000
         var cpu = Run(2, 0xB8, 0x00, 0x80, 0xD1, 0xF8);
         Assert.Equal(0xC000, cpu.State.Ax);
     }
@@ -153,16 +155,17 @@ public class CpuRealModeTests
     [Fact]
     public void ConteggioDiScorrimentoMascheratoA5Bit()
     {
-        // SHL AX,32 sul 386 e' SHL AX,0: nessun effetto, nemmeno sui flag.
-        // Sull'8086 invece azzerava il registro.
+        // On a 386 the shift count is masked to five bits, so SHL AX,32 is
+        // SHL AX,0: no effect at all, not even on the flags. On an 8086 the
+        // same instruction cleared the register.
         var (cpu, bus) = Setup(0xB8, 0x34, 0x12, 0xC1, 0xE0, 0x20);
         using (bus)
         {
             cpu.Step();
             cpu.Flags.Carry = true;
             cpu.Step();
-            Assert.Equal(0x1234, cpu.State.Ax);   // invariato
-            Assert.True(cpu.Flags.Carry);         // flag intatti
+            Assert.Equal(0x1234, cpu.State.Ax);   // unchanged
+            Assert.True(cpu.Flags.Carry);         // flags untouched
         }
     }
 
@@ -170,7 +173,7 @@ public class CpuRealModeTests
     public void RolRuotaSenzaPerdereBit()
     {
         var cpu = Run(2, 0xB8, 0x01, 0x80, 0xD1, 0xC0);      // MOV AX,0x8001 ; ROL AX,1
-        Assert.Equal(0x0003, cpu.State.Ax);                   // il bit 15 rientra in fondo
+        Assert.Equal(0x0003, cpu.State.Ax);                   // bit 15 comes back in at the bottom
         Assert.True(cpu.Flags.Carry);
     }
 
@@ -183,12 +186,12 @@ public class CpuRealModeTests
             cpu.Step();
             cpu.Flags.Carry = true;
             cpu.Step();
-            Assert.Equal(0x8000, cpu.State.Ax);    // il carry entra dal bit alto
+            Assert.Equal(0x8000, cpu.State.Ax);    // carry rotates in at the top
             Assert.False(cpu.Flags.Carry);
         }
     }
 
-    // --- stringhe --------------------------------------------------------------
+    // --- string operations -----------------------------------------------------
 
     [Fact]
     public void MovsbCopiaUnByteEAvanza()
@@ -218,7 +221,7 @@ public class CpuRealModeTests
             cpu.Flags.Direction = true;
             cpu.Step();
 
-            Assert.Equal(0x1FFF, cpu.State.Si);   // all'indietro
+            Assert.Equal(0x1FFF, cpu.State.Si);   // moving backwards
             Assert.Equal(0x2FFF, cpu.State.Di);
         }
     }
@@ -234,7 +237,8 @@ public class CpuRealModeTests
             cpu.State.Di = 0x3000;
             cpu.State.Cx = 16;
 
-            // Ogni iterazione e' uno Step separato: REP resta interrompibile.
+            // Each iteration is its own Step, which is what keeps a REP
+            // interruptible -- a long REP MOVSB must not lock out interrupts.
             RunUntilPast(cpu, CodeBase);
 
             Assert.Equal(0, cpu.State.Cx);
@@ -255,8 +259,8 @@ public class CpuRealModeTests
             cpu.State.Cx = 0;
             cpu.Step();
 
-            Assert.Equal(0x00, bus.ReadByte(0x3000));   // nessuna copia
-            Assert.Equal(CodeBase + 2, cpu.State.Eip);  // istruzione conclusa
+            Assert.Equal(0x00, bus.ReadByte(0x3000));   // nothing was copied
+            Assert.Equal(CodeBase + 2, cpu.State.Eip);  // the instruction completed
         }
     }
 
@@ -277,11 +281,11 @@ public class CpuRealModeTests
 
             RunUntilPast(cpu, CodeBase);
 
-            // Si ferma dopo aver confrontato il terzo byte (A vs X).
+            // Stops after comparing the third byte (A against X).
             Assert.False(cpu.Flags.Zero);
             Assert.Equal(1, cpu.State.Cx);
             Assert.Equal(CodeBase + 2, cpu.State.Eip);
-            Assert.Equal(0x2003, cpu.State.Si);      // fermato dopo il byte diverso
+            Assert.Equal(0x2003, cpu.State.Si);      // stopped just past the differing byte
         }
     }
 
@@ -292,14 +296,14 @@ public class CpuRealModeTests
         using (bus)
         {
             "hello\0"u8.CopyTo(bus.GetRamSpan(0x3000, 6));
-            cpu.State.SetReg8(0, (byte)'l');     // cerca 'l'
+            cpu.State.SetReg8(0, (byte)'l');     // scan for 'l'
             cpu.State.Di = 0x3000;
             cpu.State.Cx = 6;
 
             RunUntilPast(cpu, CodeBase);
 
-            Assert.True(cpu.Flags.Zero);         // trovato
-            Assert.Equal(0x3003, cpu.State.Di);  // subito dopo la prima 'l'
+            Assert.True(cpu.Flags.Zero);         // found it
+            Assert.Equal(0x3003, cpu.State.Di);  // just past the first 'l'
         }
     }
 
@@ -351,19 +355,19 @@ public class CpuRealModeTests
     [Fact]
     public void PortaNonAssegnataLeggeFf()
     {
-        // Un PC reale con uno slot vuoto legge 0xFF: e' cosi' che il software
-        // dell'epoca rileva l'assenza di una scheda.
+        // A real PC reading an unpopulated port gets 0xFF back, and that is
+        // exactly how period software detects that a card is not fitted.
         var cpu = Run(1, 0xE4, 0x71);
         Assert.Equal(0xFF, cpu.State.GetReg8(0));
     }
 
-    // --- cicli ---------------------------------------------------------------------
+    // --- loops -----------------------------------------------------------------
 
     [Fact]
     public void LoopRipeteFinoAContatoreZero()
     {
         //   B9 05 00   MOV CX,5
-        //   40         INC AX      <- corpo
+        //   40         INC AX      <- loop body
         //   E2 FD      LOOP -3
         var cpu = Run(20, 0xB9, 0x05, 0x00, 0x40, 0xE2, 0xFD);
         Assert.Equal(5, cpu.State.Ax);
@@ -386,11 +390,11 @@ public class CpuRealModeTests
         {
             cpu2.State.Cx = 1;
             cpu2.Step();
-            Assert.Equal(CodeBase + 2, cpu2.State.Eip);   // non saltato
+            Assert.Equal(CodeBase + 2, cpu2.State.Eip);   // not taken
         }
     }
 
-    // --- puntatori lontani e chiamate indirette -------------------------------------
+    // --- far pointers and indirect calls ---------------------------------------
 
     [Fact]
     public void LesCaricaOffsetESegmento()
@@ -400,7 +404,7 @@ public class CpuRealModeTests
         using (bus)
         {
             bus.WriteWord(0x2000, 0x1234);      // offset
-            bus.WriteWord(0x2002, 0xB800);      // segmento
+            bus.WriteWord(0x2002, 0xB800);      // segment
             cpu.Step();
 
             Assert.Equal(0x1234, cpu.State.Bx);
@@ -415,7 +419,7 @@ public class CpuRealModeTests
         // BB 00 20 = MOV BX,0x2000 ; FF D3 = CALL BX
         var cpu = Run(2, 0xBB, 0x00, 0x20, 0xFF, 0xD3);
         Assert.Equal(0x2000u, cpu.State.Eip);
-        Assert.Equal(0x7FFEu, cpu.State.Esp);      // ritorno impilato
+        Assert.Equal(0x7FFEu, cpu.State.Esp);      // return address pushed
     }
 
     [Fact]
@@ -450,7 +454,7 @@ public class CpuRealModeTests
         Assert.Equal(9, cpu.State.GetReg8(0));
     }
 
-    // --- istruzioni del 386 -----------------------------------------------------------
+    // --- 386-specific instructions ---------------------------------------------
 
     [Fact]
     public void MovzxEstendeConZero()
@@ -494,10 +498,10 @@ public class CpuRealModeTests
 }
 
 /// <summary>
-/// Prove d'insieme: programmi che usano piu' meccanismi contemporaneamente.
-/// Un'istruzione puo' funzionare isolata e rompersi quando interagisce con le
-/// altre, ed e' questo il tipo di guasto che poi si manifesta come "il BIOS
-/// non parte" senza indicare la causa.
+/// Integration tests: small programs that exercise several mechanisms at
+/// once. An instruction can pass in isolation and still break once it has to
+/// cooperate with the others, and that is precisely the class of fault that
+/// later surfaces as "the BIOS does not start" with no hint as to why.
 /// </summary>
 public class CpuIntegrationTests
 {
@@ -518,15 +522,15 @@ public class CpuIntegrationTests
     [Fact]
     public void StrlenSuStringaTerminataDaZero()
     {
-        // Misura la lunghezza di una stringa con REPNE SCASB. Dopo la scansione
-        // DI punta al byte dopo il terminatore, quindi la lunghezza si ottiene
-        // da DI meno l'indirizzo iniziale meno uno:
-        //   B0 00        MOV AL,0        (cerca il terminatore)
-        //   B9 FF 00     MOV CX,255      (limite di sicurezza)
+        // Measures a string's length with REPNE SCASB. After the scan DI
+        // points one past the terminator, so the length is DI minus the start
+        // address minus one:
+        //   B0 00        MOV AL,0        (scan for the terminator)
+        //   B9 FF 00     MOV CX,255      (safety limit)
         //   F2 AE        REPNE SCASB
         //   89 F8        MOV AX,DI
-        //   2D 00 30     SUB AX,0x3000   (indirizzo iniziale)
-        //   48           DEC AX          -> AX = lunghezza
+        //   2D 00 30     SUB AX,0x3000   (start address)
+        //   48           DEC AX          -> AX = length
         var (cpu, bus) = Setup(0xB0, 0x00, 0xB9, 0xFF, 0x00, 0xF2, 0xAE,
                                0x89, 0xF8, 0x2D, 0x00, 0x30, 0x48);
         using (bus)
@@ -536,9 +540,9 @@ public class CpuIntegrationTests
 
             for (int i = 0; i < 300 && cpu.State.Eip < CodeBase + 13; i++) cpu.Step();
 
-            Assert.Equal(9, cpu.State.Ax);       // "emulatore" e' lungo 9
+            Assert.Equal(9, cpu.State.Ax);       // "emulatore" is 9 characters
             Assert.True(cpu.Flags.Zero || cpu.State.Ax == 9);
-            Assert.Equal(0x300A, cpu.State.Di);  // fermato dopo il terminatore
+            Assert.Equal(0x300A, cpu.State.Di);  // stopped one past the terminator
         }
     }
 
@@ -547,7 +551,7 @@ public class CpuIntegrationTests
     {
         //   B8 01 00     MOV AX,1
         //   B9 05 00     MOV CX,5
-        //   F7 E1        MUL CX        <- corpo: AX *= CX
+        //   F7 E1        MUL CX        <- loop body: AX *= CX
         //   E2 FC        LOOP -4
         var (cpu, bus) = Setup(0xB8, 0x01, 0x00, 0xB9, 0x05, 0x00, 0xF7, 0xE1, 0xE2, 0xFC);
         using (bus)
@@ -560,12 +564,12 @@ public class CpuIntegrationTests
     [Fact]
     public void ChiamataDiFunzioneConParametriSulloStack()
     {
-        // Convenzione di chiamata reale: parametri impilati, frame con BP,
-        // pulizia dello stack al ritorno.
+        // A genuine calling convention: arguments pushed on the stack, a BP
+        // frame inside the callee, and the caller cleaning up afterwards.
         //   0x1000:  6A 07        PUSH 7
         //   0x1002:  6A 05        PUSH 5
         //   0x1004:  E8 04 00     CALL +4  -> 0x100B
-        //   0x1007:  83 C4 04     ADD SP,4    (pulizia)
+        //   0x1007:  83 C4 04     ADD SP,4    (caller cleanup)
         //   0x100A:  F4           HLT
         //   0x100B:  55           PUSH BP
         //   0x100C:  89 E5        MOV BP,SP
@@ -581,16 +585,16 @@ public class CpuIntegrationTests
             for (int i = 0; i < 50 && !cpu.State.Halted; i++) cpu.Step();
 
             Assert.Equal(12, cpu.State.Ax);         // 5 + 7
-            Assert.Equal(0x8000u, cpu.State.Esp);   // stack bilanciato
+            Assert.Equal(0x8000u, cpu.State.Esp);   // stack balanced
         }
     }
 
     [Fact]
     public void CopiaDiMemoriaConRepMovswEVerifica()
     {
-        // Copia 256 byte con REP MOVSW e li riconfronta con REPE CMPSW.
+        // Copies 256 bytes with REP MOVSW and checks them afterwards.
         //   FC           CLD
-        //   B9 80 00     MOV CX,128        (128 word = 256 byte)
+        //   B9 80 00     MOV CX,128        (128 words = 256 bytes)
         //   F3 A5        REP MOVSW
         var (cpu, bus) = Setup(0xFC, 0xB9, 0x80, 0x00, 0xF3, 0xA5);
         using (bus)
@@ -612,21 +616,22 @@ public class CpuIntegrationTests
     [Fact]
     public void ConversioneNumeroInStringaDecimale()
     {
-        // Converte 1234 in cifre ASCII dividendo ripetutamente per 10:
-        // e' il nucleo di printf("%d") e usa DIV, stringhe e cicli insieme.
+        // Converts 1234 into ASCII digits by repeated division by 10. This is
+        // the heart of printf("%d"), and it exercises DIV, string stores and
+        // loops together.
         //   B8 D2 04     MOV AX,1234
-        //   BB 0A 00     MOX BX,10
-        //   BF 10 30     MOV DI,0x3010     (si scrive a ritroso)
+        //   BB 0A 00     MOV BX,10
+        //   BF 10 30     MOV DI,0x3010     (digits are written backwards)
         //   FD           STD
-        // ciclo:
+        // loop:
         //   BA 00 00     MOV DX,0
         //   F7 F3        DIV BX
-        //   92           XCHG AX,DX        (resto in AL)
+        //   92           XCHG AX,DX        (remainder into AL)
         //   04 30        ADD AL,'0'
         //   AA           STOSB
-        //   92           XCHG AX,DX        (quoziente di nuovo in AX)
+        //   92           XCHG AX,DX        (quotient back into AX)
         //   85 C0        TEST AX,AX
-        //   75 F1        JNZ ciclo
+        //   75 F1        JNZ loop
         var (cpu, bus) = Setup(
             0xB8, 0xD2, 0x04,
             0xBB, 0x0A, 0x00,
@@ -644,7 +649,7 @@ public class CpuIntegrationTests
         {
             for (int i = 0; i < 200 && cpu.State.Eip < CodeBase + 24; i++) cpu.Step();
 
-            // Le cifre sono state scritte a ritroso da 0x3010: "1234"
+            // The digits were written backwards from 0x3010, spelling "1234"
             string digits = System.Text.Encoding.ASCII.GetString(
                 bus.GetRamSpan(0x300D, 4).ToArray());
             Assert.Equal("1234", digits);
