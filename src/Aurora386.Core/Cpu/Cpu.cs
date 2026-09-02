@@ -325,6 +325,14 @@ public sealed partial class Cpu
     public void SetSegment(SegReg segment, ushort selector) => LoadSegment(segment, selector);
 
     /// <summary>
+    /// Delivers an interrupt as if the hardware had raised it. Exposed so that
+    /// tests can exercise the descriptor and gate machinery directly, without
+    /// having to assemble a program that faults in exactly the right way.
+    /// </summary>
+    public void RaiseInterruptForTest(byte vector, uint errorCode = 0)
+        => EnterInterrupt(vector, isSoftware: false, errorCode);
+
+    /// <summary>
     /// Returns from an interrupt, as IRET would. The native handlers call it to
     /// finish off a BIOS function.
     /// </summary>

@@ -136,6 +136,11 @@
 
         <!-- speed and message -->
         <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="12">
+          <StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center"
+                      ToolTip.Tip="Network activity">
+            <Ellipse Classes="led activity" Classes.on="{Binding NetworkLedOn}" />
+            <TextBlock Classes="status" Text="NET" />
+          </StackPanel>
           <TextBlock Classes="status" Text="{Binding SpeedText}" />
           <TextBlock Classes="status" Text="{Binding StatusText}" />
         </StackPanel>

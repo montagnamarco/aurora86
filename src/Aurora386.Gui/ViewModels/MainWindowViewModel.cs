@@ -42,6 +42,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _speedText = "—";
     [ObservableProperty] private string _statusText = "Ready";
     [ObservableProperty] private bool _powerLedOn;
+    [ObservableProperty] private bool _networkLedOn;
+
+    /// <summary>Frame counts as of the last refresh, to detect activity.</summary>
+    private long _lastFramesSent, _lastFramesReceived;
 
     /// <summary>
     /// Set by the view to open a file picker. The view model has no business
@@ -101,6 +105,22 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                   : $"{ips / 1000:F0}K inst/s";
 
         RefreshDriveLights();
+        RefreshNetworkLight();
+    }
+
+    /// <summary>
+    /// Lights the network indicator when frames moved since the last tick.
+    /// Reading the counters is cheap enough to do from the timer, and the
+    /// card is only ever written by the emulation thread in whole updates.
+    /// </summary>
+    private void RefreshNetworkLight()
+    {
+        (long sent, long received) = Session.WithMachine(
+            machine => (machine.Network.FramesSent, machine.Network.FramesReceived));
+
+        NetworkLedOn = sent != _lastFramesSent || received != _lastFramesReceived;
+        _lastFramesSent = sent;
+        _lastFramesReceived = received;
     }
 
     private void RefreshDriveLights()

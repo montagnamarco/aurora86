@@ -96,11 +96,216 @@ public sealed partial class Cpu
              | ((ulong)_memory.ReadDword(TranslateLinear(indirizzo + 4, false)) << 32);
     }
 
-    private void EnterInterruptProtected(byte vector, uint errorCode)
-        => throw new NotImplementedException(
-            $"Interrupt {vector} in protected mode is not implemented yet.");
+    /// <summary>
+    /// Which exceptions push an error code, and which do not.
+    ///
+    /// The error code names the descriptor that caused the fault, which is
+    /// only meaningful for faults that involve one. A divide by zero has
+    /// nothing to name, so it pushes nothing -- and a handler that popped a
+    /// code that was never pushed would return to the wrong address, which is
+    /// why this distinction has to be exact.
+    /// </summary>
+    private static bool ExceptionPushesErrorCode(byte vector)
+        => vector is 8 or 10 or 11 or 12 or 13 or 14 or 17;
 
+    /// <summary>
+    /// Delivers an interrupt or exception through the Interrupt Descriptor
+    /// Table.
+    ///
+    /// In real mode the vector table is 256 far pointers and there is nothing
+    /// to decide. Protected mode replaces it with a table of *gates*, and a
+    /// gate carries permission as well as an address: it says which privilege
+    /// level may reach the handler through a software INT, and whether
+    /// interrupts stay enabled once inside.
+    ///
+    /// That second field is the only difference between an interrupt gate and
+    /// a trap gate, and it matters more than it sounds. An interrupt gate
+    /// clears IF, so a device handler cannot be interrupted by the same device
+    /// again halfway through. A trap gate leaves IF alone, which is what a
+    /// debugger's breakpoint handler wants: the machine must keep servicing
+    /// the clock and the keyboard while a human stares at the screen.
+    /// </summary>
+    private void EnterInterruptProtected(byte vector, uint errorCode)
+    {
+        // Each IDT entry is eight bytes, exactly like a GDT descriptor, so the
+        // same limit check applies: an entry that does not fit inside the
+        // table is not an entry.
+        uint offsetInTable = (uint)vector * 8;
+        if (offsetInTable + 7 > State.IdtLimit)
+            throw new CpuException(13, (uint)(vector * 8 + 2));
+
+        uint gateAddress = State.IdtBase + offsetInTable;
+        uint low = _memory.ReadDword(TranslateLinear(gateAddress, false));
+        uint high = _memory.ReadDword(TranslateLinear(gateAddress + 4, false));
+
+        byte access = (byte)(high >> 8);
+        byte gateType = (byte)(access & 0x1F);
+        byte gateDpl = (byte)((access >> 5) & 3);
+        bool present = (access & 0x80) != 0;
+
+        // A gate that is not present is how an operating system traps the
+        // first use of a vector it has not set up yet.
+        if (!present) throw new CpuException(11, (uint)(vector * 8 + 2));
+
+        // 32-bit gates carry the offset's upper half in the high dword; 16-bit
+        // gates leave it zero, which is exactly what a 286-era handler wants.
+        bool is32Bit = gateType is 0x0E or 0x0F;
+        bool isTrapGate = gateType is 0x07 or 0x0F;
+
+        if (gateType is not (0x05 or 0x06 or 0x07 or 0x0E or 0x0F))
+            throw new CpuException(13, (uint)(vector * 8 + 2));
+
+        // Task gates would switch the whole context through a TSS. Nothing we
+        // run needs them, and pretending otherwise would be worse than saying
+        // so plainly.
+        if (gateType == 0x05)
+            throw new NotImplementedException(
+                $"Task gate on vector {vector} is not implemented.");
+
+        ushort selector = (ushort)(low >> 16);
+        uint handlerOffset = is32Bit
+            ? (low & 0xFFFF) | (high & 0xFFFF0000)
+            : low & 0xFFFF;
+
+        // The privilege check applies only to software interrupts. Hardware
+        // must always get through: a device does not have a privilege level,
+        // and a timer that user code could block would be no timer at all.
+        // (Our INT instruction path is the only caller that can be user code,
+        // and in real terms everything we run is at ring 0 today -- but the
+        // check belongs here so it is right when that changes.)
+        byte currentPrivilege = (byte)(State.Cs.Selector & 3);
+        if (gateDpl < currentPrivilege)
+            throw new CpuException(13, (uint)(vector * 8 + 2));
+
+        uint savedFlags = Flags.Value;
+        ushort savedCs = State.Cs.Selector;
+        uint savedEip = State.Eip;
+
+        // Load the handler's code segment first: if the selector is bad we
+        // want to fault before anything has been pushed, so the frame the
+        // fault handler sees describes the original instruction.
+        LoadSegmentProtected(SegReg.Cs, selector);
+
+        if (handlerOffset > State.Cs.Limit)
+            throw new CpuException(13, 0);
+
+        // The stack frame. Order matters: the handler's IRET pops it in
+        // reverse, so flags must go on first and the return address last.
+        if (is32Bit)
+        {
+            Push32(savedFlags);
+            Push32(savedCs);
+            Push32(savedEip);
+            if (ExceptionPushesErrorCode(vector)) Push32(errorCode);
+        }
+        else
+        {
+            Push16((ushort)savedFlags);
+            Push16(savedCs);
+            Push16((ushort)savedEip);
+            if (ExceptionPushesErrorCode(vector)) Push16((ushort)errorCode);
+        }
+
+        State.Eip = handlerOffset;
+
+        // An interrupt gate closes the door behind it; a trap gate leaves it
+        // open. Both clear TF, so single-stepping does not step through the
+        // handler as well as the code being debugged.
+        if (!isTrapGate) Flags.Interrupt = false;
+        Flags.Trap = false;
+    }
+
+    /// <summary>
+    /// Returns from an interrupt in protected mode.
+    ///
+    /// The simple case mirrors the entry: pop EIP, CS and EFLAGS. The
+    /// interesting case is a return to *less* privileged code, which needs the
+    /// stack pointer restored as well.
+    ///
+    /// The reason is worth spelling out. When an interrupt arrives while user
+    /// code is running, the processor switches to the kernel's stack, because
+    /// leaving the kernel to run on a stack the user controls would let user
+    /// code read -- or corrupt -- whatever the kernel pushed. On the way back
+    /// out, that switch has to be undone, so the entry sequence pushed the old
+    /// SS and ESP underneath everything else, and IRET pops them again.
+    ///
+    /// The processor knows which case it is looking at by comparing the
+    /// privilege in the popped CS selector against the current one.
+    /// </summary>
     private void IretProtected()
-        => throw new NotImplementedException(
-            "IRET in protected mode is not implemented yet.");
+    {
+        uint espBefore = State.Esp;
+
+        try
+        {
+            uint returnEip;
+            ushort returnCs;
+            uint returnFlags;
+
+            if (OperandSize32)
+            {
+                returnEip = Pop32();
+                returnCs = (ushort)Pop32();
+                returnFlags = Pop32();
+            }
+            else
+            {
+                returnEip = Pop16();
+                returnCs = Pop16();
+                returnFlags = (Flags.Value & 0xFFFF0000) | Pop16();
+            }
+
+            // Returning into virtual 8086 mode is a different sequence again:
+            // the processor pops all six segment registers. Nothing we run
+            // does this yet, so refuse clearly rather than half-doing it.
+            if ((returnFlags & 0x00020000) != 0)
+                throw new NotImplementedException(
+                    "IRET into virtual 8086 mode is not implemented.");
+
+            byte currentPrivilege = (byte)(State.Cs.Selector & 3);
+            byte returnPrivilege = (byte)(returnCs & 3);
+
+            if (returnPrivilege > currentPrivilege)
+            {
+                // Going out to less privileged code: the entry sequence left
+                // the caller's stack underneath ours.
+                uint returnEsp;
+                ushort returnSs;
+
+                if (OperandSize32)
+                {
+                    returnEsp = Pop32();
+                    returnSs = (ushort)Pop32();
+                }
+                else
+                {
+                    returnEsp = Pop16();
+                    returnSs = Pop16();
+                }
+
+                LoadSegmentProtected(SegReg.Cs, returnCs);
+                if (returnEip > State.Cs.Limit) throw new CpuException(13, 0);
+
+                LoadSegmentProtected(SegReg.Ss, returnSs);
+                State.Esp = returnEsp;
+                State.Eip = returnEip;
+            }
+            else
+            {
+                LoadSegmentProtected(SegReg.Cs, returnCs);
+                if (returnEip > State.Cs.Limit) throw new CpuException(13, 0);
+                State.Eip = returnEip;
+            }
+
+            Flags.SetValue(returnFlags);
+        }
+        catch (CpuException)
+        {
+            // A fault partway through must leave the stack as it was, so the
+            // handler sees the IRET that failed rather than a half-unwound
+            // frame.
+            State.Esp = espBefore;
+            throw;
+        }
+    }
 }
