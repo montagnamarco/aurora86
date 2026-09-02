@@ -1,9 +1,0 @@
-<Solution>
-  <Folder Name="/src/">
-    <Project Path="src/Emulator.Core/Emulator.Core.csproj" />
-    <Project Path="src/Emulator.Sdl/Emulator.Sdl.csproj" />
-  </Folder>
-  <Folder Name="/tests/">
-    <Project Path="tests/Emulator.Tests/Emulator.Tests.csproj" />
-  </Folder>
-</Solution>
