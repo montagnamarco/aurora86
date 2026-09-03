@@ -25,17 +25,22 @@ extended memory scan completing.
 | Component | State |
 |---|---|
 | 80386 CPU, real mode | Complete |
-| 80386 CPU, protected mode | Segment descriptors; no interrupts or V86 yet |
+| 80386 CPU, protected mode | Descriptors, interrupt and trap gates, IRET |
 | Memory bus, A20 gate, unreal mode | Complete |
 | 8259 interrupt controllers (master + slave) | Complete |
 | 8253 programmable interval timer | Complete |
+| 8237 DMA controller | Complete |
 | 8042 keyboard controller | Complete |
 | CMOS / real-time clock | Complete |
-| VGA | Text modes; graphics modes in progress |
+| VGA text modes | Complete, including 40-column and 43/50-row |
+| VGA graphics modes | 0Dh, 0Eh, 10h, 12h planar; 13h with DAC palette |
 | BIOS services (disk, video, keyboard, system) | Complete for DOS |
 | XMS memory manager | Complete |
 | Floppy and hard disk images | Complete, with media change detection |
-| CD-ROM, sound, network | Planned |
+| CD-ROM (ISO 9660) | Image reading; no MSCDEX driver yet |
+| Sound Blaster 16 + OPL3 | DSP, mixer, DMA playback, FM synthesis |
+| NE2000 Ethernet | Registers, ring buffer, remote DMA; loopback backend |
+| Virtual 8086 mode, TSS, paging | Not yet |
 
 ## Building
 
@@ -48,13 +53,39 @@ dotnet test tests/Aurora386.Tests -c Release
 
 ## Running
 
+The graphical front end is the one to use. It has a toolbar, drive activity
+lights, a file browser for swapping disks while the guest is running, and a
+step-by-step debugger:
+
+```
+dotnet run --project src/Aurora386.Gui
+```
+
+There is also a minimal SDL front end for running headless:
+
 ```
 dotnet run --project src/Aurora386.Sdl -- --floppy disk.img
 dotnet run --project src/Aurora386.Sdl -- --hdd hdd.img
+dotnet run --project src/Aurora386.Sdl -- --help
 ```
 
 Disk images are not included: they are large and generally covered by
 copyright. Point the emulator at your own.
+
+## Installing MS-DOS
+
+Create a disk, then boot the first installation floppy with it attached:
+
+```
+dotnet run --project src/Aurora386.Sdl -- --create-hdd hdd.img --size 200
+dotnet run --project src/Aurora386.Gui
+```
+
+In the GUI, attach `hdd.img` as the hard disk and the first floppy as drive
+A:, then press Start. When setup asks for the next disk, use the *Floppy A…*
+button to swap the image: the BIOS reports the media change through its
+change line, so DOS notices the new disk rather than trusting what it read
+from the last one.
 
 ## Design notes
 

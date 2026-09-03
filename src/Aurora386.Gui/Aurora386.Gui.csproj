@@ -29,5 +29,10 @@
       <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
     </PackageReference>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+
+    <!-- Cross-platform audio output. The core renders samples into a buffer
+         and knows nothing about the host; this is what carries them to the
+         speakers on macOS, Windows and Linux alike. -->
+    <PackageReference Include="OpenTK.Audio.OpenAL" Version="4.9.4" />
   </ItemGroup>
 </Project>

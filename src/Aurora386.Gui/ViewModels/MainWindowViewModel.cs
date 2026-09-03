@@ -60,10 +60,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// <summary>Set by the view to open the debugger window.</summary>
     public Action<DebuggerViewModel>? ShowDebugger { get; set; }
 
+    /// <summary>Carries the sound card's output to the host's speakers.</summary>
+    private readonly AudioOutput _audio;
+
     public MainWindowViewModel()
     {
         Session = new EmulatorSession();
         HookMachineEvents();
+
+        _audio = new AudioOutput(Session);
+        _audio.Start();
 
         // Four refreshes a second is enough for a human to read, and cheap
         // enough that it never competes with the emulation thread.
@@ -359,6 +365,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         _statusTimer.Stop();
+        _audio.Dispose();
         Session.Dispose();
     }
 }
