@@ -335,8 +335,13 @@ public sealed class VideoServices
     private void GetCursorPosition(CpuNs.Cpu cpu)
     {
         cpu.State.Cx = _bda.CursorShape;
-        cpu.State.SetReg8(2, _bda.CursorRow);      // DH
-        cpu.State.SetReg8(6, _bda.CursorColumn);   // DL
+
+        // The 8-bit register indices do not follow the order of the 16-bit
+        // ones: 0=AL 1=CL 2=DL 3=BL 4=AH 5=CH 6=DH 7=BH. So DL is 2 and DH
+        // is 6 -- the column goes in DL and the row in DH, matching what
+        // function 02 reads back out of them.
+        cpu.State.SetReg8(2, _bda.CursorColumn);   // DL
+        cpu.State.SetReg8(6, _bda.CursorRow);      // DH
     }
 
     private void SetActivePage(byte page)

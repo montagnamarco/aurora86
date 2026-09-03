@@ -367,3 +367,66 @@ public class TeletypeWrapTests
         Assert.Equal(0, machine.Bda.CursorColumn);
     }
 }
+
+/// <summary>
+/// The BIOS reports the cursor's position in DX, and reads it back from DX.
+/// The two halves of that register are easy to swap, and a swap is invisible
+/// on the diagonal -- row 5 column 5 survives it -- so these tests deliberately
+/// use a position whose row and column differ.
+/// </summary>
+public class CursorPositionRoundTripTests
+{
+    private static Machine PoweredOn()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(200);
+        return machine;
+    }
+
+    [Fact]
+    public void ReadingBackTheCursorGivesTheRowAndColumnThatWereSet()
+    {
+        // A program that saves the cursor, prints something and puts the
+        // cursor back must land where it started. When the read swaps row and
+        // column, it instead lands somewhere it has already written, and the
+        // text ends up on top of earlier lines.
+        using var machine = PoweredOn();
+
+        const byte Row = 8;
+        const byte Column = 3;
+
+        // AH=02, BH=page 0, DH=row, DL=column.
+        machine.Cpu.State.SetReg8(4, 0x02);   // AH
+        machine.Cpu.State.SetReg8(7, 0);      // BH
+        machine.Cpu.State.SetReg8(6, Row);    // DH
+        machine.Cpu.State.SetReg8(2, Column); // DL
+        machine.VideoServices.Handle(machine.Cpu);
+
+        // AH=03 reads it back into the same two registers.
+        machine.Cpu.State.SetReg8(4, 0x03);   // AH
+        machine.Cpu.State.SetReg8(7, 0);      // BH
+        machine.Cpu.State.SetReg8(6, 0xFF);
+        machine.Cpu.State.SetReg8(2, 0xFF);
+        machine.VideoServices.Handle(machine.Cpu);
+
+        Assert.Equal(Row, machine.Cpu.State.GetReg8(6));      // DH
+        Assert.Equal(Column, machine.Cpu.State.GetReg8(2));   // DL
+    }
+
+    [Fact]
+    public void TheReportedPositionMatchesTheBiosDataArea()
+    {
+        // The BIOS data area is the other place software looks for the cursor,
+        // so the two must agree about which number is the row.
+        using var machine = PoweredOn();
+
+        machine.Cpu.State.SetReg8(4, 0x02);
+        machine.Cpu.State.SetReg8(7, 0);
+        machine.Cpu.State.SetReg8(6, 11);   // DH: row
+        machine.Cpu.State.SetReg8(2, 40);   // DL: column
+        machine.VideoServices.Handle(machine.Cpu);
+
+        Assert.Equal(11, machine.Bda.CursorRow);
+        Assert.Equal(40, machine.Bda.CursorColumn);
+    }
+}
