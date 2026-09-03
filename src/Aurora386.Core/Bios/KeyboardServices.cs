@@ -17,6 +17,11 @@ public sealed class KeyboardServices
     private readonly PhysicalMemoryBus _memory;
     private readonly Keyboard8042 _controller;
 
+    /// <summary>
+    /// Set when a 0xE0 byte has arrived and its partner is still to come.
+    /// </summary>
+    private bool _extendedPrefix;
+
     public KeyboardServices(BiosDataArea bda, PhysicalMemoryBus memory, Keyboard8042 controller)
     {
         _bda = bda;
@@ -201,14 +206,33 @@ public sealed class KeyboardServices
     public void HandleIrq(CpuNs.Cpu cpu)
     {
         byte scanCode = cpu.Io.ReadByte(0x60);
+
+        // 0xE0 is not a key. It announces that the next byte names one of the
+        // keys added after the original PC keyboard -- the arrow cluster, the
+        // keypad's Enter and slash, right Ctrl and Alt -- which share their
+        // scancodes with older keys and are told apart only by this prefix.
+        //
+        // It must be recognised on the raw byte, before the release bit is
+        // stripped: 0xE0 has that bit set already, so masking it first turns
+        // it into 0x60 and the prefix becomes an ordinary keypress of a key
+        // that does not exist.
+        if (scanCode is 0xE0 or 0xE1)
+        {
+            _extendedPrefix = true;
+            cpu.Io.WriteByte(0x20, 0x20);
+            return;
+        }
+
         bool released = (scanCode & 0x80) != 0;
         byte code = (byte)(scanCode & 0x7F);
+        bool extended = _extendedPrefix;
+        _extendedPrefix = false;
 
-        UpdateModifiers(code, released);
+        UpdateModifiers(code, released, extended);
 
         if (!released)
         {
-            ushort key = Translate(code);
+            ushort key = Translate(code, extended);
             if (key != 0) Enqueue(key);
         }
 
@@ -216,9 +240,15 @@ public sealed class KeyboardServices
         cpu.Io.WriteByte(0x20, 0x20);
     }
 
-    private void UpdateModifiers(byte code, bool released)
+    private void UpdateModifiers(byte code, bool released, bool extended)
     {
         byte flags = _bda.KeyboardFlags;
+
+        // The keypad's own Enter and slash sit behind the prefix and are not
+        // modifiers at all; right Ctrl and right Alt are, and they set the
+        // same status bits as the left-hand pair, so the prefix changes
+        // nothing here. It matters only for the toggle keys below, where an
+        // extended 0x45 is Pause rather than Num Lock.
 
         // The keyboard status bits are fixed by the PC architecture:
         // 0 right shift, 1 left shift, 2 ctrl, 3 alt.
@@ -241,6 +271,10 @@ public sealed class KeyboardServices
         // Toggle keys only change state on press, never on release.
         if (released) return;
 
+        // Pause arrives as an extended 0x45 and must not be mistaken for Num
+        // Lock, which is the same code without the prefix.
+        if (extended && code == 0x45) return;
+
         byte toggle = code switch
         {
             0x3A => 0x40,   // caps lock
@@ -257,9 +291,16 @@ public sealed class KeyboardServices
     /// that do not produce a character get an ASCII byte of zero, and programs
     /// identify them by the scancode instead.
     /// </summary>
-    private ushort Translate(byte code)
+    private ushort Translate(byte code, bool extended)
     {
         byte flags = _bda.KeyboardFlags;
+
+        // An extended key produces no character of its own: the arrows and
+        // their neighbours share their scancodes with the numeric keypad,
+        // and it is only the prefix that tells them apart. Translating one
+        // through the character table would turn the up arrow into the digit
+        // 8 -- which is exactly what the keypad key beside it means.
+        if (extended) return (ushort)(code << 8);
         bool shift = (flags & 0x03) != 0;
         bool capsLock = (flags & 0x40) != 0;
         bool ctrl = (flags & 0x04) != 0;

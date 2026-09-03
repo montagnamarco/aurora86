@@ -258,3 +258,96 @@ public class KeyboardRepeatTests
         Assert.Empty(Drain(machine));
     }
 }
+
+/// <summary>
+/// The BIOS turns scancodes into the (scancode, ASCII) pairs DOS reads. The
+/// keys added after the original PC keyboard arrive behind a 0xE0 prefix and
+/// share their scancodes with the numeric keypad, so the prefix is the only
+/// thing telling the up arrow from the digit 8.
+/// </summary>
+public class ExtendedKeyTranslationTests
+{
+    private static Machine PoweredOn()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(200);
+        return machine;
+    }
+
+    /// <summary>
+    /// Delivers scancodes the way the hardware does: every byte the keyboard
+    /// sends raises IRQ 1 once, and the handler reads exactly one byte per
+    /// interrupt.
+    /// </summary>
+    private static void Deliver(Machine machine, params byte[] scanCodes)
+    {
+        foreach (byte code in scanCodes)
+        {
+            machine.Keyboard.PushScanCode(code);
+            machine.KeyboardServices.HandleIrq(machine.Cpu);
+        }
+    }
+
+    [Fact]
+    public void AnArrowKeyProducesOneKeystrokeWithNoCharacter()
+    {
+        using var machine = PoweredOn();
+
+        Deliver(machine, 0xE0, 0x48);   // up arrow
+
+        Assert.True(machine.KeyboardServices.TryDequeue(out ushort key));
+
+        // Scancode in the high byte, and an ASCII byte of zero: that zero is
+        // how a program knows to look at the scancode instead.
+        Assert.Equal(0x48, key >> 8);
+        Assert.Equal(0, key & 0xFF);
+
+        // And nothing else: the prefix must not have queued a keystroke of
+        // its own.
+        Assert.False(machine.KeyboardServices.TryDequeue(out _));
+    }
+
+    [Fact]
+    public void EscapeStillProducesItsCharacter()
+    {
+        using var machine = PoweredOn();
+
+        Deliver(machine, 0x01);
+
+        Assert.True(machine.KeyboardServices.TryDequeue(out ushort key));
+        Assert.Equal(0x01, key >> 8);
+        Assert.Equal(0x1B, key & 0xFF);   // ESC
+    }
+
+    [Fact]
+    public void PauseIsNotMistakenForNumLock()
+    {
+        // Pause arrives as an extended 0x45; Num Lock is the same code
+        // without the prefix. Toggling Num Lock by accident would turn the
+        // keypad's arrows into digits, which is the sort of fault a user
+        // reports as "the keyboard went strange" and nobody can reproduce.
+        //
+        // This is the one case where the prefix genuinely changes what the
+        // BIOS must do, and it fails if the prefix is not tracked.
+        using var machine = PoweredOn();
+        byte before = machine.Bda.KeyboardFlags;
+
+        Deliver(machine, 0xE1, 0x45);
+
+        Assert.Equal(before, machine.Bda.KeyboardFlags);
+    }
+
+    [Fact]
+    public void RightControlSetsTheSameFlagAsTheLeftOne()
+    {
+        // The two Ctrl keys are one modifier as far as software is concerned,
+        // so the prefixed one has to set the same status bit.
+        using var machine = PoweredOn();
+
+        Deliver(machine, 0xE0, 0x1D);
+        Assert.Equal(0x04, machine.Bda.KeyboardFlags & 0x04);
+
+        Deliver(machine, 0xE0, 0x1D | 0x80);
+        Assert.Equal(0, machine.Bda.KeyboardFlags & 0x04);
+    }
+}

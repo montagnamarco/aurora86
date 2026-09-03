@@ -56,7 +56,6 @@ public sealed class Machine : IDisposable
     /// <summary>True once the boot sector has been loaded and given control.</summary>
     public bool Booted { get; private set; }
 
-    public Action<string> Int10Trace;
 
     private readonly List<DiskImage> _disks = [];
 
@@ -169,16 +168,7 @@ public sealed class Machine : IDisposable
         switch ((BiosRom.Handler)handlerId)
         {
             case BiosRom.Handler.Post: RunPost(); return;
-            case BiosRom.Handler.Video:
-                if (Int10Trace is not null)
-                {
-                    var st = cpu.State;
-                    Int10Trace($"AH={st.GetReg8(4):X2} AL={st.GetReg8(0):X2} BX={st.Bx:X4} CX={st.Cx:X4} DX={st.Dx:X4} | pre row={Bda.CursorRow} col={Bda.CursorColumn}");
-                    VideoServices.Handle(cpu);
-                    Int10Trace($"   -> DX={cpu.State.Dx:X4} post row={Bda.CursorRow} col={Bda.CursorColumn}");
-                    return;
-                }
-                VideoServices.Handle(cpu); return;
+            case BiosRom.Handler.Video: VideoServices.Handle(cpu); return;
             case BiosRom.Handler.Disk: DiskServices.Handle(cpu); return;
             case BiosRom.Handler.Keyboard: KeyboardServices.Handle(cpu); return;
             case BiosRom.Handler.KeyboardIrq: KeyboardServices.HandleIrq(cpu); return;
