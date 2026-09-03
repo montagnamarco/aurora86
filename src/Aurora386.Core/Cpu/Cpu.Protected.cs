@@ -311,6 +311,123 @@ public sealed partial class Cpu
         Flags.Trap = false;
     }
 
+    /// <summary>
+    /// Whether a selector names a call gate rather than an ordinary segment.
+    /// </summary>
+    private bool IsCallGate(ushort selector)
+    {
+        if ((selector & 0xFFFC) == 0) return false;
+
+        ulong descriptor;
+        try { descriptor = ReadDescriptor(selector); }
+        catch (CpuException) { return false; }
+
+        byte access = (byte)(descriptor >> 40);
+
+        // Bit 4 set marks an ordinary code or data segment; clear marks a
+        // system descriptor, and type 4 or 12 within that is a call gate --
+        // the 286's 16-bit form and the 386's 32-bit one.
+        if ((access & 0x10) != 0) return false;
+
+        byte type = (byte)(access & 0x0F);
+        return type is 0x04 or 0x0C;
+    }
+
+    /// <summary>
+    /// Calls through a call gate.
+    ///
+    /// A gate is how a program reaches a routine it is not allowed to know
+    /// the address of. It names the code segment and the offset itself, so
+    /// the caller supplies only the gate's selector -- the offset in the
+    /// instruction is discarded. The gate's own privilege says who may call
+    /// it, and the code segment's says what privilege the routine then runs
+    /// at, which is how a kernel publishes an entry point that anybody may
+    /// call but nobody may enter anywhere except at the top.
+    ///
+    /// This is the mechanism OS/2 and the 286-era protected-mode systems used
+    /// for their system calls, and it is the ancestor of every trap-based
+    /// system call since.
+    /// </summary>
+    private void CallThroughGate(ushort gateSelector)
+    {
+        ulong gate = ReadDescriptor(gateSelector);
+
+        byte access = (byte)(gate >> 40);
+        byte gateDpl = (byte)((gate >> 45) & 3);
+        bool is32Bit = (access & 0x0F) == 0x0C;
+
+        // Who may call it: the caller's privilege and the privilege it asked
+        // for both have to be at least as trusted as the gate demands.
+        //
+        // This comes before the presence check, and the order is deliberate.
+        // A caller that may not use the gate gets the same answer whether the
+        // gate is there or not, so it cannot go probing the descriptor table
+        // to find out what services exist.
+        byte requestorPrivilege = (byte)(gateSelector & 3);
+        if (State.Cpl > gateDpl || requestorPrivilege > gateDpl)
+            throw new CpuException(13, gateSelector);
+
+        if ((access & 0x80) == 0)
+            throw new CpuException(11, gateSelector);   // #NP: gate not present
+
+        ushort targetSelector = (ushort)(gate >> 16);
+        uint targetOffset = is32Bit
+            ? (uint)((gate & 0xFFFF) | ((gate >> 32) & 0xFFFF0000))
+            : (uint)(gate & 0xFFFF);
+
+        // How many arguments to copy across if the stack changes. The caller
+        // pushed them on its own stack, and the routine has to find them on
+        // the one it is about to run on.
+        int parameterCount = (int)((gate >> 32) & 0x1F);
+
+        byte targetPrivilege = ReadDescriptorPrivilege(targetSelector);
+        bool changingPrivilege = targetPrivilege < State.Cpl;
+
+        ushort callerSs = State.Ss.Selector;
+        uint callerEsp = State.Esp;
+        ushort callerCs = State.Cs.Selector;
+        uint callerEip = State.Eip;
+
+        if (changingPrivilege)
+        {
+            // Read the arguments off the caller's stack before switching away
+            // from it.
+            var parameters = new uint[parameterCount];
+            for (int i = 0; i < parameterCount; i++)
+                parameters[i] = is32Bit
+                    ? ReadMem32(SegReg.Ss, callerEsp + (uint)(i * 4))
+                    : ReadMem16(SegReg.Ss, callerEsp + (uint)(i * 2));
+
+            (ushort newSs, uint newEsp) = ReadStackFromTss(targetPrivilege);
+
+            LoadSegmentProtected(SegReg.Cs, targetSelector);
+            LoadSegmentProtected(SegReg.Ss, newSs);
+            State.Esp = newEsp;
+            State.Cpl = targetPrivilege;
+
+            // The caller's stack goes on first, so that RETF can restore it.
+            if (is32Bit) { Push32(callerSs); Push32(callerEsp); }
+            else { Push16(callerSs); Push16((ushort)callerEsp); }
+
+            // Then the arguments, in the order the caller had them.
+            for (int i = parameterCount - 1; i >= 0; i--)
+            {
+                if (is32Bit) Push32(parameters[i]);
+                else Push16((ushort)parameters[i]);
+            }
+        }
+        else
+        {
+            LoadSegmentProtected(SegReg.Cs, targetSelector);
+        }
+
+        // The return address, last, so RETF finds it on top.
+        if (is32Bit) { Push32(callerCs); Push32(callerEip); }
+        else { Push16(callerCs); Push16((ushort)callerEip); }
+
+        State.Eip = is32Bit ? targetOffset : targetOffset & 0xFFFF;
+    }
+
     /// <summary>Bit 17 of EFLAGS: the processor is in virtual 8086 mode.</summary>
     private const uint VirtualModeFlag = 1u << 17;
 

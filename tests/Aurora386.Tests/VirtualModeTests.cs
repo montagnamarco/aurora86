@@ -316,3 +316,244 @@ public class VirtualModeTests
         Assert.False(machine.Cpu.State.Virtual8086Mode);
     }
 }
+
+/// <summary>
+/// A call gate is how a program reaches a routine it is not allowed to know
+/// the address of. The caller names the gate, not the destination: the gate
+/// holds the code segment and the offset, and the offset in the instruction
+/// is discarded. Its privilege says who may call it; the code segment's says
+/// what the routine runs at.
+///
+/// This is how the 286-era protected-mode systems made their system calls,
+/// and the ancestor of every trap-based system call since.
+/// </summary>
+public class CallGateTests
+{
+    private const uint GdtBase = 0x1000;
+    private const uint TssBase = 0x4000;
+    private const uint KernelStackTop = 0x8000;
+    private const uint UserStackTop = 0x9000;
+
+    private static void WriteDescriptor(Machine machine, int index, uint baseAddress,
+                                        uint limit, byte access, byte granularity)
+    {
+        uint address = GdtBase + (uint)(index * 8);
+
+        machine.Memory.WriteWord(address, (ushort)(limit & 0xFFFF));
+        machine.Memory.WriteWord(address + 2, (ushort)(baseAddress & 0xFFFF));
+        machine.Memory.WriteByte(address + 4, (byte)((baseAddress >> 16) & 0xFF));
+        machine.Memory.WriteByte(address + 5, access);
+        machine.Memory.WriteByte(address + 6,
+            (byte)((granularity & 0xF0) | ((limit >> 16) & 0x0F)));
+        machine.Memory.WriteByte(address + 7, (byte)((baseAddress >> 24) & 0xFF));
+    }
+
+    /// <summary>
+    /// Writes a call gate: the code segment it leads to, the offset within
+    /// it, how many arguments to copy across a stack switch, and who may use
+    /// it.
+    /// </summary>
+    private static void WriteCallGate(Machine machine, int index, ushort targetSelector,
+                                      uint offset, byte dpl, int parameterCount = 0)
+    {
+        uint address = GdtBase + (uint)(index * 8);
+
+        machine.Memory.WriteWord(address, (ushort)(offset & 0xFFFF));
+        machine.Memory.WriteWord(address + 2, targetSelector);
+        machine.Memory.WriteByte(address + 4, (byte)(parameterCount & 0x1F));
+
+        // 0x8C: present, system descriptor, type 12 -- a 32-bit call gate.
+        machine.Memory.WriteByte(address + 5, (byte)(0x8C | (dpl << 5)));
+        machine.Memory.WriteWord(address + 6, (ushort)(offset >> 16));
+    }
+
+    private static Machine BuildMachine()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(200);
+
+        WriteDescriptor(machine, 1, 0, 0xFFFFF, 0x9A, 0xC0);   // ring 0 code
+        WriteDescriptor(machine, 2, 0, 0xFFFFF, 0x92, 0xC0);   // ring 0 data
+        WriteDescriptor(machine, 3, TssBase, 0x67, 0x89, 0x00);
+        WriteDescriptor(machine, 4, 0, 0xFFFFF, 0xFA, 0xC0);   // ring 3 code
+        WriteDescriptor(machine, 5, 0, 0xFFFFF, 0xF2, 0xC0);   // ring 3 data
+
+        machine.Cpu.State.GdtBase = GdtBase;
+        machine.Cpu.State.GdtLimit = 0x4F;
+
+        machine.Memory.WriteDword(TssBase + 4, KernelStackTop);
+        machine.Memory.WriteDword(TssBase + 8, 0x10);
+
+        machine.Cpu.State.Cr0 |= CpuState.Cr0ProtectionEnable;
+        machine.Cpu.State.TaskRegister = 0x18;
+        machine.Cpu.State.Halted = false;
+
+        return machine;
+    }
+
+    /// <summary>Places a far call to the given selector at EIP and runs it.</summary>
+    private static void CallThrough(Machine machine, ushort selector)
+    {
+        uint address = machine.Cpu.State.Cs.Base + machine.Cpu.State.Eip;
+
+        machine.Memory.WriteByte(address, 0x9A);              // far CALL
+        machine.Memory.WriteDword(address + 1, 0xDEADBEEF);   // offset: ignored
+        machine.Memory.WriteWord(address + 5, selector);
+
+        machine.Cpu.Step();
+    }
+
+    [Fact]
+    public void TheGateSuppliesTheDestinationAndTheOffsetIsIgnored()
+    {
+        // The caller does not know where the routine is, and the address it
+        // writes into the instruction counts for nothing. That is the point:
+        // a program cannot enter the kernel anywhere except where the kernel
+        // said.
+        using Machine machine = BuildMachine();
+        WriteCallGate(machine, 6, targetSelector: 0x08, offset: 0x7000, dpl: 3);
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x08);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x10);
+        machine.Cpu.State.Esp = KernelStackTop;
+        machine.Cpu.State.Eip = 0x1000;
+
+        CallThrough(machine, 0x30);   // the gate, not a code segment
+
+        Assert.Equal(0x7000u, machine.Cpu.State.Eip);
+        Assert.Equal((ushort)0x08, machine.Cpu.State.Cs.Selector);
+    }
+
+    [Fact]
+    public void CallingFromRingThreeSwitchesToTheKernelStack()
+    {
+        // Raising privilege means changing stack, for the same reason an
+        // interrupt does: the kernel must not run on memory the caller can
+        // reach.
+        using Machine machine = BuildMachine();
+        WriteCallGate(machine, 6, targetSelector: 0x08, offset: 0x7000, dpl: 3);
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x23);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x2B);
+        machine.Cpu.State.Esp = UserStackTop;
+        machine.Cpu.State.Eip = 0x1000;
+        machine.Cpu.State.Cpl = 3;
+
+        CallThrough(machine, 0x33);
+
+        Assert.Equal(0, (int)machine.Cpu.State.Cpl);
+        Assert.Equal((ushort)0x10, machine.Cpu.State.Ss.Selector);
+        Assert.Equal(0x7000u, machine.Cpu.State.Eip);
+    }
+
+    [Fact]
+    public void TheCallersStackIsRecordedSoItCanBeReturnedTo()
+    {
+        using Machine machine = BuildMachine();
+        WriteCallGate(machine, 6, targetSelector: 0x08, offset: 0x7000, dpl: 3);
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x23);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x2B);
+        machine.Cpu.State.Esp = UserStackTop;
+        machine.Cpu.State.Eip = 0x1000;
+        machine.Cpu.State.Cpl = 3;
+
+        CallThrough(machine, 0x33);
+
+        // Under the return address: the caller's ESP and SS.
+        Assert.Equal(UserStackTop, machine.Memory.ReadDword(KernelStackTop - 8));
+        Assert.Equal(0x2Bu, machine.Memory.ReadDword(KernelStackTop - 4));
+    }
+
+    [Fact]
+    public void ArgumentsAreCopiedOntoTheNewStack()
+    {
+        // The caller pushed its arguments on its own stack, and the routine
+        // has to find them on the one it is about to run on. The gate says
+        // how many to bring across -- the kernel decides that, not the
+        // caller, so a program cannot make it copy an unbounded amount.
+        using Machine machine = BuildMachine();
+        WriteCallGate(machine, 6, targetSelector: 0x08, offset: 0x7000,
+                      dpl: 3, parameterCount: 2);
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x23);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x2B);
+        machine.Cpu.State.Esp = UserStackTop;
+        machine.Cpu.State.Eip = 0x1000;
+        machine.Cpu.State.Cpl = 3;
+
+        machine.Memory.WriteDword(UserStackTop, 0x11111111);
+        machine.Memory.WriteDword(UserStackTop + 4, 0x22222222);
+
+        CallThrough(machine, 0x33);
+
+        // Above the return address, in the order the caller had them.
+        Assert.Equal(0x11111111u, machine.Memory.ReadDword(machine.Cpu.State.Esp + 8));
+        Assert.Equal(0x22222222u, machine.Memory.ReadDword(machine.Cpu.State.Esp + 12));
+    }
+
+    [Fact]
+    public void AGateTooPrivilegedForTheCallerIsRefused()
+    {
+        // A gate with DPL 0 is one the kernel keeps to itself. Ring 3 asking
+        // for it is exactly the case the check exists for.
+        using Machine machine = BuildMachine();
+        WriteCallGate(machine, 6, targetSelector: 0x08, offset: 0x7000, dpl: 0);
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x23);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x2B);
+        machine.Cpu.State.Esp = UserStackTop;
+        machine.Cpu.State.Eip = 0x1000;
+        machine.Cpu.State.Cpl = 3;
+
+        uint address = machine.Cpu.State.Cs.Base + machine.Cpu.State.Eip;
+        machine.Memory.WriteByte(address, 0x9A);
+        machine.Memory.WriteDword(address + 1, 0);
+        machine.Memory.WriteWord(address + 5, 0x33);
+
+        // The refusal shows up as a general protection fault. With a handler
+        // installed for it, the processor ends up there instead of in the
+        // routine the gate names -- which is the observable difference
+        // between refusing the call and allowing it.
+        WriteDescriptor(machine, 7, 0, 0xFFFFF, 0x9A, 0xC0);
+        uint idtBase = 0x2000;
+        machine.Cpu.State.IdtBase = idtBase;
+        machine.Cpu.State.IdtLimit = 0x7FF;
+
+        uint gateAddress = idtBase + 13 * 8;
+        machine.Memory.WriteWord(gateAddress, 0x0500);       // handler offset
+        machine.Memory.WriteWord(gateAddress + 2, 0x08);
+        machine.Memory.WriteByte(gateAddress + 4, 0);
+        machine.Memory.WriteByte(gateAddress + 5, 0x8E);     // present, interrupt gate
+        machine.Memory.WriteWord(gateAddress + 6, 0);
+
+        machine.Cpu.Step();
+
+        // In the fault handler, not at the gate's destination.
+        Assert.Equal(0x0500u, machine.Cpu.State.Eip);
+        Assert.NotEqual(0x7000u, machine.Cpu.State.Eip);
+    }
+
+    [Fact]
+    public void AnOrdinaryFarCallStillGoesWhereItIsTold()
+    {
+        // Only a gate selector is redirected. A call to a real code segment
+        // has to keep using the offset in the instruction, or every far call
+        // in protected mode would break.
+        using Machine machine = BuildMachine();
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x08);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x10);
+        machine.Cpu.State.Esp = KernelStackTop;
+        machine.Cpu.State.Eip = 0x1000;
+
+        uint address = machine.Cpu.State.Cs.Base + machine.Cpu.State.Eip;
+        machine.Memory.WriteByte(address, 0x9A);
+        machine.Memory.WriteDword(address + 1, 0x00005000);
+        machine.Memory.WriteWord(address + 5, 0x08);
+
+        machine.Cpu.Step();
+
+        Assert.Equal(0x5000u, machine.Cpu.State.Eip);
+    }
+}

@@ -312,6 +312,15 @@ public sealed partial class Cpu
         uint offset = FetchImmediate();
         ushort selector = FetchWord();
 
+        // Under protection the selector may name a call gate rather than a
+        // code segment, and then the offset in the instruction is ignored
+        // entirely: the gate holds the real destination.
+        if (State.ProtectedMode && !State.Virtual8086Mode && IsCallGate(selector))
+        {
+            CallThroughGate(selector);
+            return;
+        }
+
         // The push order is fixed by the architecture: segment first, then
         // offset, so that RETF pops them back off in the opposite order.
         PushOperand(State.Cs.Selector);
