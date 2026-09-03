@@ -150,19 +150,19 @@ public sealed partial class Cpu
             // above 16 the destination has already been shifted out entirely
             // and both halves end up filled with the source operand.
             // Verified against every case in the hardware-generated suite.
-            uint doppia = (source & 0xFFFF) << 16 | (source & 0xFFFF);
-            uint esito = left ? (doppia << (count - 16)) >> 16
-                              : (doppia >> (count - 16)) & 0xFFFF;
-            esito &= 0xFFFF;
+            uint doubled = (source & 0xFFFF) << 16 | (source & 0xFFFF);
+            uint shifted = left ? (doubled << (count - 16)) >> 16
+                                : (doubled >> (count - 16)) & 0xFFFF;
+            shifted &= 0xFFFF;
 
             Flags.Carry = left
                 ? ((source >> (32 - count)) & 1) != 0
                 : ((source >> (count - 17)) & 1) != 0;
             bool cf = Flags.Carry;
-            Flags.Set(FlagOp.Logic, 0, 0, esito, size);
+            Flags.Set(FlagOp.Logic, 0, 0, shifted, size);
             Flags.Carry = cf;
 
-            WriteRm(m, esito);
+            WriteRm(m, shifted);
             return;
         }
 

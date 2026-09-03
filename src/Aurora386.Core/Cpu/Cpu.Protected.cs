@@ -33,46 +33,46 @@ public sealed partial class Cpu
             return;
         }
 
-        ulong descrittore = LeggiDescrittore(selector);
+        ulong descriptor = ReadDescriptor(selector);
 
         // The descriptor's fields are scattered across the eight bytes so that
         // the layout stays backwards compatible with the 286, which only had
         // 24-bit bases and 16-bit limits: the base arrives in three pieces and
         // the limit in two, with the 386's extra bits bolted on at the top.
-        uint baseAddress = (uint)(((descrittore >> 16) & 0xFFFFFF)
-                                | ((descrittore >> 32) & 0xFF000000));
-        uint limite = (uint)((descrittore & 0xFFFF)
-                           | ((descrittore >> 32) & 0x0F0000));
+        uint baseAddress = (uint)(((descriptor >> 16) & 0xFFFFFF)
+                                | ((descriptor >> 32) & 0xFF000000));
+        uint limit = (uint)((descriptor & 0xFFFF)
+                           | ((descriptor >> 32) & 0x0F0000));
 
-        byte accesso = (byte)(descrittore >> 40);
-        byte granularita = (byte)(descrittore >> 52);
+        byte access = (byte)(descriptor >> 40);
+        byte granularity = (byte)(descriptor >> 52);
 
         // The granularity bit scales the limit by 4096. The remainder of the
         // final page stays accessible, so the low twelve bits are filled with
         // ones rather than zeroed -- a 4 GB segment is encoded as a limit of
         // 0xFFFFF pages, which has to expand to 0xFFFFFFFF.
-        if ((granularita & 0x08) != 0) limite = (limite << 12) | 0xFFF;
+        if ((granularity & 0x08) != 0) limit = (limit << 12) | 0xFFF;
 
         // Bit 7 of the access byte: the descriptor is present in memory. A
         // not-present segment raises #NP (or #SS when it is the stack), which
         // is the hook a virtual memory system uses to load it on demand.
-        if ((accesso & 0x80) == 0)
+        if ((access & 0x80) == 0)
             throw new CpuException(segment == SegReg.Ss ? (byte)12 : (byte)11, selector);
 
         cache.Selector = selector;
         cache.Base = baseAddress;
-        cache.Limit = limite;
-        cache.Big = (granularita & 0x04) != 0;
-        cache.Dpl = (byte)((accesso >> 5) & 3);
+        cache.Limit = limit;
+        cache.Big = (granularity & 0x04) != 0;
+        cache.Dpl = (byte)((access >> 5) & 3);
 
         // Bit 3 of the access byte separates code from data; for code, bit 1
         // says whether it is readable, for data whether it is writable. Code is
         // never writable, which is how the architecture keeps a program from
         // rewriting itself through its own CS.
-        bool codice = (accesso & 0x08) != 0;
-        cache.Readable = !codice || (accesso & 0x02) != 0;
-        cache.Writable = !codice && (accesso & 0x02) != 0;
-        cache.ExpandDown = !codice && (accesso & 0x04) != 0;
+        bool isCode = (access & 0x08) != 0;
+        cache.Readable = !isCode || (access & 0x02) != 0;
+        cache.Writable = !isCode && (access & 0x02) != 0;
+        cache.ExpandDown = !isCode && (access & 0x04) != 0;
     }
 
     /// <summary>
@@ -80,20 +80,20 @@ public sealed partial class Cpu
     /// has to fall inside the table's limit, otherwise the selector simply is
     /// not valid and the load raises #GP with the selector as error code.
     /// </summary>
-    private ulong LeggiDescrittore(ushort selector)
+    private ulong ReadDescriptor(ushort selector)
     {
-        bool locale = (selector & 0x04) != 0;
-        uint indice = (uint)(selector & 0xFFF8);
+        bool isLocalTable = (selector & 0x04) != 0;
+        uint index = (uint)(selector & 0xFFF8);
 
-        uint tabellaBase = locale ? State.LdtBase : State.GdtBase;
-        uint tabellaLimite = locale ? State.LdtLimit : State.GdtLimit;
+        uint tableBase = isLocalTable ? State.LdtBase : State.GdtBase;
+        uint tableLimit = isLocalTable ? State.LdtLimit : State.GdtLimit;
 
-        if (indice + 7 > tabellaLimite)
+        if (index + 7 > tableLimit)
             throw new CpuException(13, selector);
 
-        uint indirizzo = tabellaBase + indice;
-        return _memory.ReadDword(TranslateLinear(indirizzo, false))
-             | ((ulong)_memory.ReadDword(TranslateLinear(indirizzo + 4, false)) << 32);
+        uint address = tableBase + index;
+        return _memory.ReadDword(TranslateLinear(address, false))
+             | ((ulong)_memory.ReadDword(TranslateLinear(address + 4, false)) << 32);
     }
 
     /// <summary>

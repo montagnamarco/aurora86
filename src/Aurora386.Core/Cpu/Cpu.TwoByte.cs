@@ -296,10 +296,10 @@ public sealed partial class Cpu
         // zero: with a negative index the address must move downwards. The
         // arithmetic is done in long because with an index of 0x80000000 the
         // subtraction would otherwise overflow.
-        long indiceLungo = index;
-        long word = indiceLungo >= 0 ? indiceLungo / width
-                                     : (indiceLungo - width + 1) / width;
-        int bitInWord = (int)(indiceLungo - word * width);
+        long indexAsLong = index;
+        long word = indexAsLong >= 0 ? indexAsLong / width
+                                     : (indexAsLong - width + 1) / width;
+        int bitInWord = (int)(indexAsLong - word * width);
 
         uint offset = (uint)(m.Offset + word * (width / 8));
         // The address wraps within 16 bits only when the address calculation

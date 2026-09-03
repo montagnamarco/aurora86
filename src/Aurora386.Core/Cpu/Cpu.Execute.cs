@@ -223,11 +223,11 @@ public sealed partial class Cpu
             {
                 if (!State.ProtectedMode) throw new CpuException(6);
                 var m = DecodeModRm();
-                ushort destinazione = ReadRm16(m);
-                ushort sorgente = State.GetReg16(m.Reg);
-                if ((destinazione & 3) < (sorgente & 3))
+                ushort destination = ReadRm16(m);
+                ushort source = State.GetReg16(m.Reg);
+                if ((destination & 3) < (source & 3))
                 {
-                    WriteRm16(m, (ushort)((destinazione & ~3) | (sorgente & 3)));
+                    WriteRm16(m, (ushort)((destination & ~3) | (source & 3)));
                     Flags.Zero = true;
                 }
                 else Flags.Zero = false;
@@ -352,12 +352,12 @@ public sealed partial class Cpu
                 // Codes 6 and 7 name no segment register at all, so the 386
                 // rejects the instruction.
                 if (m.Reg > (int)SegReg.Gs) throw new CpuException(6);
-                ushort selettore = State.Segments[m.Reg].Selector;
+                ushort selector = State.Segments[m.Reg].Selector;
                 // Into a 32-bit register the selector is zero-extended rather
                 // than merged into the low half, so the top half has to be
                 // cleared. To memory, by contrast, only two bytes are written.
-                if (m.IsRegister && OperandSize32) State.SetReg32(m.Register, selettore);
-                else WriteRm16(m, selettore);
+                if (m.IsRegister && OperandSize32) State.SetReg32(m.Register, selector);
+                else WriteRm16(m, selector);
                 return;
             }
             case 0x8D: Lea(); return;
@@ -390,11 +390,11 @@ public sealed partial class Cpu
                 // When the destination is computed from the stack pointer, the
                 // effective address is the one *after* the pop: the ModR/M has
                 // already been decoded, so it is enough to displace it.
-                ModRm destinazione = m;
+                ModRm destination = m;
                 if (!m.IsRegister && m.UsesStackPointer)
-                    destinazione.Offset += OperandSize32 ? 4u : 2u;
+                    destination.Offset += OperandSize32 ? 4u : 2u;
 
-                WriteRm(destinazione, valore);
+                WriteRm(destination, valore);
                 return;
             }
 
@@ -451,19 +451,19 @@ public sealed partial class Cpu
             case 0xC2:
             {
                 ushort pop = FetchWord();
-                uint espPrima = State.Esp;
-                if (OperandSize32) ControllaBloccoStack(4u);
-                try { SaltaA(PopOperand()); }
-                catch (CpuException) { State.Esp = espPrima; throw; }
+                uint espBefore = State.Esp;
+                if (OperandSize32) CheckStackBlock(4u);
+                try { JumpTo(PopOperand()); }
+                catch (CpuException) { State.Esp = espBefore; throw; }
                 AdjustStack(pop);
                 return;
             }
             case 0xC3:
             {
-                uint espPrima = State.Esp;
-                if (OperandSize32) ControllaBloccoStack(4u);
-                try { SaltaA(PopOperand()); }
-                catch (CpuException) { State.Esp = espPrima; throw; }
+                uint espBefore = State.Esp;
+                if (OperandSize32) CheckStackBlock(4u);
+                try { JumpTo(PopOperand()); }
+                catch (CpuException) { State.Esp = espBefore; throw; }
                 return;
             }
 
@@ -552,10 +552,10 @@ public sealed partial class Cpu
     /// segment limit. An address past the limit is never executed: the 386
     /// rejects it with #GP before it even fetches the instruction there.
     /// </summary>
-    private void SaltaA(uint destinazione)
+    private void JumpTo(uint destination)
     {
-        if (destinazione > State.Cs.Limit) throw new CpuException(13, 0);
-        State.Eip = destinazione;
+        if (destination > State.Cs.Limit) throw new CpuException(13, 0);
+        State.Eip = destination;
     }
 
     /// <summary>
@@ -564,7 +564,7 @@ public sealed partial class Cpu
     /// -- validate the whole extent before starting, and so they fail outright
     /// rather than wrapping the way a single pop would.
     /// </summary>
-    private void ControllaBloccoStack(uint dimensione)
+    private void CheckStackBlock(uint dimensione)
     {
         if (!State.Ss.Big) CheckLimit(SegReg.Ss, State.Sp, dimensione);
     }

@@ -218,11 +218,11 @@ public sealed partial class Cpu
             // reach the register, and only the low half stays as the pops left
             // it. With a 16-bit SS that is the only explanation that matches
             // the final ESP observed on a real 386.
-            uint impilato = Pop32();
+            uint stacked = Pop32();
             if (!State.Ss.Big)
             {
                 ushort sp = State.Sp;
-                State.Esp = (impilato & 0xFFFF0000u) | sp;
+                State.Esp = (stacked & 0xFFFF0000u) | sp;
             }
             State.Ebx = Pop32(); State.Edx = Pop32(); State.Ecx = Pop32(); State.Eax = Pop32();
         }
@@ -351,35 +351,35 @@ public sealed partial class Cpu
     /// real mode it is always 64 KB minus one, but the far returns need to know
     /// it *before* they touch CS, so the question has to be asked separately.
     /// </summary>
-    private static uint LimiteRealMode(ushort selector) => 0xFFFF;
+    private static uint RealModeLimit(ushort selector) => 0xFFFF;
 
     private void RetFar(ushort popBytes)
     {
-        uint espPrima = State.Esp;
+        uint espBefore = State.Esp;
         try
         {
             // Only the 32-bit form reads the block in one go.
-            if (OperandSize32) ControllaBloccoStack(8u);
+            if (OperandSize32) CheckStackBlock(8u);
             uint offset = PopOperand();
             ushort selector = (ushort)PopOperand();
-            uint destinazione = OperandSize32 ? offset : offset & 0xFFFF;
+            uint destination = OperandSize32 ? offset : offset & 0xFFFF;
 
             // The limit is checked against the segment about to be loaded, but
             // before it is actually loaded: if the address does not fit, CS has
             // to stay as it was, because it is the old CS that ends up in the
             // exception's stack frame and that the handler will report.
-            uint limiteNuovo = LimiteRealMode(selector);
-            if (destinazione > limiteNuovo) throw new CpuException(13, 0);
+            uint limiteNuovo = RealModeLimit(selector);
+            if (destination > limiteNuovo) throw new CpuException(13, 0);
 
             LoadSegment(SegReg.Cs, selector);
-            State.Eip = destinazione;
+            State.Eip = destination;
         }
         catch (CpuException)
         {
             // The stack is put back the way it was: the handler must see the
             // stack pointer the code executing the RET had, not one stranded
             // halfway through the operation.
-            State.Esp = espPrima;
+            State.Esp = espBefore;
             throw;
         }
         AdjustStack(popBytes);
@@ -396,13 +396,13 @@ public sealed partial class Cpu
     private void Leave()
     {
         // LEAVE undoes ENTER: it moves EBP into ESP and then restores EBP.
-        uint espPrima = State.Esp;
+        uint espBefore = State.Esp;
         try
         {
             if (State.Ss.Big) State.Esp = State.Ebp; else State.Sp = State.Bp;
             if (OperandSize32) State.Ebp = Pop32(); else State.Bp = Pop16();
         }
-        catch (CpuException) { State.Esp = espPrima; throw; }
+        catch (CpuException) { State.Esp = espBefore; throw; }
     }
 
     /// <summary>
@@ -509,29 +509,29 @@ public sealed partial class Cpu
         // handler having to remember whether they were on when it was entered.
         // With an operand-size prefix every stacked entry occupies four bytes,
         // and the CS selector wastes two of them.
-        uint espPrima = State.Esp;
+        uint espBefore = State.Esp;
         try
         {
             if (OperandSize32)
             {
-                uint destinazione = Pop32();
-                ushort selettore = (ushort)Pop32();
-                if (destinazione > LimiteRealMode(selettore)) throw new CpuException(13, 0);
-                State.LoadSegmentRealMode(SegReg.Cs, selettore);
-                State.Eip = destinazione;
+                uint destination = Pop32();
+                ushort selector = (ushort)Pop32();
+                if (destination > RealModeLimit(selector)) throw new CpuException(13, 0);
+                State.LoadSegmentRealMode(SegReg.Cs, selector);
+                State.Eip = destination;
                 Flags.SetValue(Pop32());
             }
             else
             {
-                uint destinazione = Pop16();
-                ushort selettore = Pop16();
-                if (destinazione > LimiteRealMode(selettore)) throw new CpuException(13, 0);
-                State.LoadSegmentRealMode(SegReg.Cs, selettore);
-                State.Eip = destinazione;
+                uint destination = Pop16();
+                ushort selector = Pop16();
+                if (destination > RealModeLimit(selector)) throw new CpuException(13, 0);
+                State.LoadSegmentRealMode(SegReg.Cs, selector);
+                State.Eip = destination;
                 Flags.SetValue((Flags.Value & 0xFFFF0000) | Pop16());
             }
         }
-        catch (CpuException) { State.Esp = espPrima; throw; }
+        catch (CpuException) { State.Esp = espBefore; throw; }
     }
 }
 
@@ -625,9 +625,9 @@ public sealed partial class Cpu
         // of BP. That all-or-nothing behaviour is what lets a fault be retried.
         if (!State.Ss.Big && level > 1)
         {
-            uint voce = OperandSize32 ? 4u : 2u;
+            uint entry = OperandSize32 ? 4u : 2u;
             for (int k = 1; k < level; k++)
-                CheckLimit(SegReg.Ss, (uint)(ushort)(State.Bp - voce * (uint)k), voce);
+                CheckLimit(SegReg.Ss, (uint)(ushort)(State.Bp - entry * (uint)k), entry);
         }
 
         PushOperand(State.Ebp);
@@ -648,15 +648,15 @@ public sealed partial class Cpu
             {
                 if (State.Ss.Big) State.Ebp -= 4; else State.Bp -= 4;
                 if (!State.Ss.Big) CheckLimit(SegReg.Ss, (uint)(ushort)(State.Sp - 4), 4);
-                uint voce = ReadMem32(SegReg.Ss, State.Ss.Big ? State.Ebp : State.Bp);
-                Push32(voce);
+                uint entry = ReadMem32(SegReg.Ss, State.Ss.Big ? State.Ebp : State.Bp);
+                Push32(entry);
             }
             else
             {
                 if (State.Ss.Big) State.Ebp -= 2; else State.Bp -= 2;
                 if (!State.Ss.Big) CheckLimit(SegReg.Ss, (uint)(ushort)(State.Sp - 2), 2);
-                ushort voce = ReadMem16(SegReg.Ss, State.Ss.Big ? State.Ebp : State.Bp);
-                Push16(voce);
+                ushort entry = ReadMem16(SegReg.Ss, State.Ss.Big ? State.Ebp : State.Bp);
+                Push16(entry);
             }
         }
 

@@ -152,7 +152,7 @@ public sealed partial class Cpu
         // consistently across every SIB form. Getting it wrong silently
         // corrupts effective addresses in exactly the programs that were
         // clever enough to depend on it.
-        bool scalaSullaBase = index == 4 && scale != 0;
+        bool scaleAppliesToBase = index == 4 && scale != 0;
         if (index != 4)
             address += State.Gpr[index] << scale;
 
@@ -163,7 +163,7 @@ public sealed partial class Cpu
         }
         else
         {
-            address += scalaSullaBase ? State.Gpr[baseReg] << scale
+            address += scaleAppliesToBase ? State.Gpr[baseReg] << scale
                                       : State.Gpr[baseReg];
             if (baseReg == 4 || baseReg == 5) segment = SegReg.Ss;  // ESP or EBP
             if (baseReg == 4) result.UsesStackPointer = true;

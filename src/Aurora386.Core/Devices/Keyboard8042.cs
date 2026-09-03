@@ -41,7 +41,7 @@ public sealed class Keyboard8042 : IIoDevice
     /// controller, precisely so that a keystroke cannot wedge itself between
     /// a command and its reply.
     /// </summary>
-    private readonly Queue<byte> _scanCodes = new();
+    private readonly Queue<byte> _pendingScanCodes = new();
 
     /// <summary>
     /// True when the byte waiting in the output register is a command
@@ -51,7 +51,7 @@ public sealed class Keyboard8042 : IIoDevice
     /// may not -- the key was genuinely pressed and the software is entitled
     /// to see it.
     /// </summary>
-    private bool _uscitaERisposta;
+    private bool _outputIsResponse;
 
     private byte _commandByte = 0x45;   // keyboard interrupts enabled
     private byte _pendingCommand;
@@ -91,9 +91,9 @@ public sealed class Keyboard8042 : IIoDevice
     /// </summary>
     public void PushScanCode(byte scanCode)
     {
-        if (_scanCodes.Count >= 16) return;       // buffer full, just like real hardware
-        _scanCodes.Enqueue(scanCode);
-        ConsegnaScanCode();
+        if (_pendingScanCodes.Count >= 16) return;       // buffer full, just like real hardware
+        _pendingScanCodes.Enqueue(scanCode);
+        DeliverScanCode();
     }
 
     /// <summary>
@@ -101,10 +101,10 @@ public sealed class Keyboard8042 : IIoDevice
     /// enabled and the register is not already holding something that must
     /// not be lost.
     /// </summary>
-    private void ConsegnaScanCode()
+    private void DeliverScanCode()
     {
-        bool disabilitata = (_commandByte & 0x10) != 0;
-        if (disabilitata || _scanCodes.Count == 0) return;
+        bool disabled = (_commandByte & 0x10) != 0;
+        if (disabled || _pendingScanCodes.Count == 0) return;
 
         // A response nobody bothered to read must not dam up the keyboard.
         // There is a single output register, so the newer byte simply takes
@@ -113,12 +113,12 @@ public sealed class Keyboard8042 : IIoDevice
         // and the machine would look like it had stopped accepting input.
         if (_outputBuffer.Count > 0)
         {
-            if (!_uscitaERisposta) return;   // a keystroke is already queued: wait our turn
+            if (!_outputIsResponse) return;   // a keystroke is already queued: wait our turn
             _outputBuffer.Clear();
         }
 
-        _outputBuffer.Enqueue(_scanCodes.Dequeue());
-        _uscitaERisposta = false;
+        _outputBuffer.Enqueue(_pendingScanCodes.Dequeue());
+        _outputIsResponse = false;
         // Bit 0 of the command byte is the keyboard interrupt enable.
         if ((_commandByte & 0x01) != 0) _interrupts.RaiseIrq(1);
     }
@@ -144,7 +144,7 @@ public sealed class Keyboard8042 : IIoDevice
         byte value = _outputBuffer.Dequeue();
         if (_outputBuffer.Count == 0) _interrupts.LowerIrq(1);
         // The register is free again, so the next queued key can move up.
-        ConsegnaScanCode();
+        DeliverScanCode();
         return value;
     }
 
@@ -168,11 +168,11 @@ public sealed class Keyboard8042 : IIoDevice
                     // The value has no effect for us, but it still has to be
                     // acknowledged: the software waits for an ACK after the
                     // parameter byte just as it did after the command byte.
-                    EnqueueRisposta(0xFA);
-                    SegnalaSeConsentito();
+                    EnqueueResponse(0xFA);
+                    SignalIfEnabled();
                     break;
 
-                case 0x60: _commandByte = value; ConsegnaScanCode(); break;
+                case 0x60: _commandByte = value; DeliverScanCode(); break;
                 case 0xD1:
                     // Write output port: bit 1 is the A20 line, and driving
                     // bit 0 low pulses the CPU's reset pin.
@@ -189,19 +189,19 @@ public sealed class Keyboard8042 : IIoDevice
         switch (value)
         {
             case 0xFF:                        // reset
-                EnqueueRisposta(0xFA);  // ACK
-                EnqueueRisposta(0xAA);  // basic assurance test passed
-                SegnalaSeConsentito();
+                EnqueueResponse(0xFA);  // ACK
+                EnqueueResponse(0xAA);  // basic assurance test passed
+                SignalIfEnabled();
                 break;
 
             case 0xF2:
                 // Identify: an ACK followed by the two ID bytes. 0xAB 0x41 is
                 // an MF2 keyboard with translation done by the controller,
                 // which is what essentially every PC of the era reports.
-                EnqueueRisposta(0xFA);
-                EnqueueRisposta(0xAB);
-                EnqueueRisposta(0x41);
-                SegnalaSeConsentito();
+                EnqueueResponse(0xFA);
+                EnqueueResponse(0xAB);
+                EnqueueResponse(0x41);
+                SignalIfEnabled();
                 break;
 
             case 0xF3:                        // set typematic rate/delay
@@ -210,28 +210,28 @@ public sealed class Keyboard8042 : IIoDevice
                 // keyboard would appear to answer nonsense.
                 _expectingData = true;
                 _pendingCommand = 0xF3;
-                EnqueueRisposta(0xFA);
-                SegnalaSeConsentito();
+                EnqueueResponse(0xFA);
+                SignalIfEnabled();
                 break;
 
             case 0xEE:                        // echo: the keyboard answers with itself
-                EnqueueRisposta(0xEE);
-                SegnalaSeConsentito();
+                EnqueueResponse(0xEE);
+                SignalIfEnabled();
                 break;
 
             case 0xF0:                        // select scancode set
                 _expectingData = true;
                 _pendingCommand = 0xF0;
-                EnqueueRisposta(0xFA);
-                SegnalaSeConsentito();
+                EnqueueResponse(0xFA);
+                SignalIfEnabled();
                 break;
 
             case 0xF4:                        // enable scanning
             case 0xF5:                        // disable scanning and restore defaults
             case 0xF6:                        // restore defaults
             case 0xED:                        // set the indicator LEDs
-                EnqueueRisposta(0xFA);
-                SegnalaSeConsentito();
+                EnqueueResponse(0xFA);
+                SignalIfEnabled();
                 break;
 
             default:
@@ -240,17 +240,17 @@ public sealed class Keyboard8042 : IIoDevice
                 // driver knows how to cope with that. Staying silent instead
                 // leaves the software spinning on a timeout, which is far
                 // worse than a clean rejection.
-                EnqueueRisposta(0xFE);   // RESEND
-                SegnalaSeConsentito();
+                EnqueueResponse(0xFE);   // RESEND
+                SignalIfEnabled();
                 break;
         }
     }
 
     /// <summary>Places a controller response in the output register.</summary>
-    private void EnqueueRisposta(byte value)
+    private void EnqueueResponse(byte value)
     {
         _outputBuffer.Enqueue(value);
-        _uscitaERisposta = true;
+        _outputIsResponse = true;
     }
 
     /// <summary>
@@ -260,7 +260,7 @@ public sealed class Keyboard8042 : IIoDevice
     /// uninvited IRQ 1 would make it run its keyboard handler for a key that
     /// was never pressed.
     /// </summary>
-    private void SegnalaSeConsentito()
+    private void SignalIfEnabled()
     {
         if ((_commandByte & 0x01) != 0) _interrupts.RaiseIrq(1);
     }
@@ -288,18 +288,18 @@ public sealed class Keyboard8042 : IIoDevice
         // it. Getting either half of this wrong produces one of two very
         // confusing failures: phantom keys the user never typed, or real
         // keys stuck forever behind a stale command response.
-        bool produceRisposta = command is 0x20 or 0xAA or 0xAB or 0xA9 or 0xA1 or 0xD0;
-        if (_uscitaERisposta && produceRisposta)
+        bool producesResponse = command is 0x20 or 0xAA or 0xAB or 0xA9 or 0xA1 or 0xD0;
+        if (_outputIsResponse && producesResponse)
         {
             _outputBuffer.Clear();
-            _uscitaERisposta = false;
+            _outputIsResponse = false;
             _interrupts.LowerIrq(1);
         }
 
         switch (command)
         {
             case 0x20:   // read the command byte
-                EnqueueRisposta(_commandByte);
+                EnqueueResponse(_commandByte);
                 break;
             case 0x60:   // write the command byte: the data follows on 0x60
             case 0xD1:   // write the output port
@@ -309,26 +309,26 @@ public sealed class Keyboard8042 : IIoDevice
             case 0xA7: _commandByte |= 0x20; break;    // disable the auxiliary (mouse) port
             case 0xA8: _commandByte &= 0xDF; break;    // enable the auxiliary (mouse) port
             case 0xAA:                                  // controller self-test
-                EnqueueRisposta(0x55);            // passed
+                EnqueueResponse(0x55);            // passed
                 break;
             case 0xAB:                                  // interface test
                 // Zero means "no fault on the clock or data lines". Anything
                 // that fails to answer here convinces the BIOS there is no
                 // keyboard at all, and it stops reading the port entirely.
-                EnqueueRisposta(0x00);
+                EnqueueResponse(0x00);
                 break;
             case 0xA9:                                  // auxiliary port test
-                EnqueueRisposta(0x00);
+                EnqueueResponse(0x00);
                 break;
             case 0xA1:                                  // controller firmware version
-                EnqueueRisposta(0x00);
+                EnqueueResponse(0x00);
                 break;
-            case 0xAE: _commandByte &= 0xEF; ConsegnaScanCode(); break;   // enable keyboard
+            case 0xAE: _commandByte &= 0xEF; DeliverScanCode(); break;   // enable keyboard
             case 0xAD: _commandByte |= 0x10; break;    // disable keyboard
             case 0xD0:                                  // read the output port
                 // Bit 0 is always set, meaning "reset is not being asserted";
                 // bit 1 reports the current state of A20.
-                EnqueueRisposta((byte)(0x01 | (A20Enabled ? 0x02 : 0x00)));
+                EnqueueResponse((byte)(0x01 | (A20Enabled ? 0x02 : 0x00)));
                 break;
             case 0xFE:                                  // pulse the CPU reset line
                 ResetRequested = true;

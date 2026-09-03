@@ -14,19 +14,19 @@ public sealed partial class Cpu
         // first correction must not feed into the comparison made by the
         // second, or a value like 0x9A would be corrected twice.
         byte al = State.GetReg8(0);
-        byte alIniziale = al;
-        bool carryIniziale = Flags.Carry;
+        byte initialAl = al;
+        bool initialCarry = Flags.Carry;
         bool carry = false;
 
         if ((al & 0x0F) > 9 || Flags.Adjust)
         {
-            carry = carryIniziale || alIniziale + 6 > 0xFF;
+            carry = initialCarry || initialAl + 6 > 0xFF;
             al += 6;
             Flags.Adjust = true;
         }
         else Flags.Adjust = false;
 
-        if (alIniziale > 0x99 || carryIniziale)
+        if (initialAl > 0x99 || initialCarry)
         {
             al += 0x60;
             carry = true;
@@ -43,19 +43,19 @@ public sealed partial class Cpu
     private void Das()
     {
         byte al = State.GetReg8(0);
-        byte alIniziale = al;
-        bool carryIniziale = Flags.Carry;
+        byte initialAl = al;
+        bool initialCarry = Flags.Carry;
         bool carry = false;
 
         if ((al & 0x0F) > 9 || Flags.Adjust)
         {
-            carry = carryIniziale || alIniziale < 6;
+            carry = initialCarry || initialAl < 6;
             al -= 6;
             Flags.Adjust = true;
         }
         else Flags.Adjust = false;
 
-        if (alIniziale > 0x99 || carryIniziale)
+        if (initialAl > 0x99 || initialCarry)
         {
             al -= 0x60;
             carry = true;
@@ -78,9 +78,9 @@ public sealed partial class Cpu
             // into AH on top of the fixed increment: with AL = 0xFF, AH grows
             // by two, not one. Easy to miss, and the hardware-generated tests
             // catch it immediately.
-            int somma = al + 6;
-            State.SetReg8(0, (byte)(somma & 0x0F));
-            State.SetReg8(4, (byte)(State.GetReg8(4) + 1 + (somma >> 8)));
+            int sum = al + 6;
+            State.SetReg8(0, (byte)(sum & 0x0F));
+            State.SetReg8(4, (byte)(State.GetReg8(4) + 1 + (sum >> 8)));
             Flags.Adjust = true;
             Flags.Carry = true;
         }
@@ -100,9 +100,9 @@ public sealed partial class Cpu
         {
             // As with AAA, the borrow out of the eight-bit subtraction adds to
             // the fixed decrement of AH.
-            int differenza = al - 6;
-            State.SetReg8(0, (byte)(differenza & 0x0F));
-            State.SetReg8(4, (byte)(State.GetReg8(4) - 1 - ((differenza >> 8) & 1)));
+            int difference = al - 6;
+            State.SetReg8(0, (byte)(difference & 0x0F));
+            State.SetReg8(4, (byte)(State.GetReg8(4) - 1 - ((difference >> 8) & 1)));
             Flags.Adjust = true;
             Flags.Carry = true;
         }

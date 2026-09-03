@@ -413,7 +413,7 @@ public sealed class VideoServices
 
         if (row >= rows)
         {
-            ScrollScreenUp(1, 0x07, SchermoIntero);
+            ScrollScreenUp(1, 0x07, WholeScreen);
             row = rows - 1;
         }
 
@@ -468,7 +468,7 @@ public sealed class VideoServices
         byte lines = cpu.State.GetReg8(0);       // AL, 0 = clear the whole window
         byte attribute = cpu.State.GetReg8(7);   // BH
         if (lines == 0) { ClearRegion(cpu, attribute); return; }
-        var area = LeggiRegione(cpu);
+        var area = ReadRegion(cpu);
         ScrollScreenUp(lines, attribute, area);
     }
 
@@ -477,7 +477,7 @@ public sealed class VideoServices
         byte lines = cpu.State.GetReg8(0);
         byte attribute = cpu.State.GetReg8(7);
         if (lines == 0) { ClearRegion(cpu, attribute); return; }
-        var area = LeggiRegione(cpu);
+        var area = ReadRegion(cpu);
         ScrollScreenDown(lines, attribute, area);
     }
 
@@ -489,13 +489,13 @@ public sealed class VideoServices
     /// The rectangle the scroll functions operate on: top-left corner in CH/CL,
     /// bottom-right corner in DH/DL.
     /// </summary>
-    private readonly record struct Regione(int Left, int Top, int Right, int Bottom);
+    private readonly record struct Region(int Left, int Top, int Right, int Bottom);
 
     /// <summary>The whole screen, used by the teletype scroll.</summary>
-    private Regione SchermoIntero
+    private Region WholeScreen
         => new(0, 0, _registers.TextColumns - 1, _registers.TextRows - 1);
 
-    private Regione LeggiRegione(CpuNs.Cpu cpu)
+    private Region ReadRegion(CpuNs.Cpu cpu)
     {
         // Same 8-bit register ordering trap as everywhere else in INT 10h:
         // 0=AL 1=CL 2=DL 3=BL 4=AH 5=CH 6=DH 7=BH. The right-hand column is DL
@@ -508,7 +508,7 @@ public sealed class VideoServices
 
         right = Math.Min(right, _registers.TextColumns - 1);
         bottom = Math.Min(bottom, _registers.TextRows - 1);
-        return new Regione(left, top, right, bottom);
+        return new Region(left, top, right, bottom);
     }
 
     /// <summary>
@@ -516,55 +516,55 @@ public sealed class VideoServices
     /// moves the contents of a pane without disturbing the frame drawn around
     /// it.
     /// </summary>
-    private void ScrollScreenUp(int lines, byte attribute, Regione area)
+    private void ScrollScreenUp(int lines, byte attribute, Region area)
     {
         int columns = _registers.TextColumns;
-        int altezza = area.Bottom - area.Top + 1;
-        if (altezza <= 0 || area.Right < area.Left) return;
-        if (lines >= altezza) { ClearRegione(area, attribute); return; }
+        int height = area.Bottom - area.Top + 1;
+        if (height <= 0 || area.Right < area.Left) return;
+        if (lines >= height) { ClearRegion(area, attribute); return; }
 
         for (int row = area.Top; row <= area.Bottom - lines; row++)
         for (int column = area.Left; column <= area.Right; column++)
         {
-            uint destinazione = VgaMemory.TextWindowOffset + (uint)((row * columns + column) * 2);
-            uint sorgente = VgaMemory.TextWindowOffset
+            uint destination = VgaMemory.TextWindowOffset + (uint)((row * columns + column) * 2);
+            uint source = VgaMemory.TextWindowOffset
                           + (uint)(((row + lines) * columns + column) * 2);
-            _video[destinazione] = _video[sorgente];
-            _video[destinazione + 1] = _video[sorgente + 1];
+            _video[destination] = _video[source];
+            _video[destination + 1] = _video[source + 1];
         }
 
         for (int row = area.Bottom - lines + 1; row <= area.Bottom; row++)
-            ClearRigaRegione(row, area, attribute);
+            ClearRegionRow(row, area, attribute);
     }
 
-    private void ScrollScreenDown(int lines, byte attribute, Regione area)
+    private void ScrollScreenDown(int lines, byte attribute, Region area)
     {
         int columns = _registers.TextColumns;
-        int altezza = area.Bottom - area.Top + 1;
-        if (altezza <= 0 || area.Right < area.Left) return;
-        if (lines >= altezza) { ClearRegione(area, attribute); return; }
+        int height = area.Bottom - area.Top + 1;
+        if (height <= 0 || area.Right < area.Left) return;
+        if (lines >= height) { ClearRegion(area, attribute); return; }
 
         for (int row = area.Bottom; row >= area.Top + lines; row--)
         for (int column = area.Left; column <= area.Right; column++)
         {
-            uint destinazione = VgaMemory.TextWindowOffset + (uint)((row * columns + column) * 2);
-            uint sorgente = VgaMemory.TextWindowOffset
+            uint destination = VgaMemory.TextWindowOffset + (uint)((row * columns + column) * 2);
+            uint source = VgaMemory.TextWindowOffset
                           + (uint)(((row - lines) * columns + column) * 2);
-            _video[destinazione] = _video[sorgente];
-            _video[destinazione + 1] = _video[sorgente + 1];
+            _video[destination] = _video[source];
+            _video[destination + 1] = _video[source + 1];
         }
 
         for (int row = area.Top; row < area.Top + lines; row++)
-            ClearRigaRegione(row, area, attribute);
+            ClearRegionRow(row, area, attribute);
     }
 
-    private void ClearRegione(Regione area, byte attribute)
+    private void ClearRegion(Region area, byte attribute)
     {
         for (int row = area.Top; row <= area.Bottom; row++)
-            ClearRigaRegione(row, area, attribute);
+            ClearRegionRow(row, area, attribute);
     }
 
-    private void ClearRigaRegione(int row, Regione area, byte attribute)
+    private void ClearRegionRow(int row, Region area, byte attribute)
     {
         int columns = _registers.TextColumns;
         for (int column = area.Left; column <= area.Right; column++)
@@ -656,7 +656,7 @@ public sealed class VideoServices
         if (column >= _registers.TextColumns) { column = 0; row++; }
         if (row >= _registers.TextRows)
         {
-            ScrollScreenUp(1, 0x07, SchermoIntero);
+            ScrollScreenUp(1, 0x07, WholeScreen);
             row = _registers.TextRows - 1;
         }
 

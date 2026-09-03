@@ -7,7 +7,7 @@ public sealed partial class Cpu
     /// before it discovers that the result will not fit, so the #DE handler
     /// finds that state in the flags pushed onto its stack frame.
     /// </summary>
-    private CpuException ErroreDivisione()
+    private CpuException DivideError()
     {
         // Only overflow and zero come out cleared repeatably on real silicon.
         // Carry, parity, auxiliary and sign depend on how many steps of the
@@ -75,12 +75,12 @@ public sealed partial class Cpu
 
             case 6:   // unsigned DIV
             {
-                if (value == 0) throw ErroreDivisione();
+                if (value == 0) throw DivideError();
                 ushort dividend = State.Ax;
                 uint quotient = (uint)(dividend / value);
                 // A quotient that will not fit in 8 bits is a divide error, not
                 // a truncated result: real hardware raises exception 0.
-                if (quotient > 0xFF) throw ErroreDivisione();
+                if (quotient > 0xFF) throw DivideError();
                 State.SetReg8(0, (byte)quotient);            // AL = quotient
                 State.SetReg8(4, (byte)(dividend % value));   // AH = remainder
                 return;
@@ -88,11 +88,11 @@ public sealed partial class Cpu
 
             default:  // signed IDIV
             {
-                if (value == 0) throw ErroreDivisione();
+                if (value == 0) throw DivideError();
                 short dividend = (short)State.Ax;
                 int quotient = dividend / (sbyte)value;
                 if (quotient > sbyte.MaxValue || quotient < sbyte.MinValue)
-                    throw ErroreDivisione();
+                    throw DivideError();
                 State.SetReg8(0, (byte)quotient);
                 State.SetReg8(4, (byte)(dividend % (sbyte)value));
                 return;
@@ -171,12 +171,12 @@ public sealed partial class Cpu
 
             case 6:   // DIV
             {
-                if (value == 0) throw ErroreDivisione();
+                if (value == 0) throw DivideError();
                 if (wide)
                 {
                     ulong dividend = ((ulong)State.Edx << 32) | State.Eax;
                     ulong quotient = dividend / value;
-                    if (quotient > uint.MaxValue) throw ErroreDivisione();
+                    if (quotient > uint.MaxValue) throw DivideError();
                     State.Eax = (uint)quotient;
                     State.Edx = (uint)(dividend % value);
                 }
@@ -184,7 +184,7 @@ public sealed partial class Cpu
                 {
                     uint dividend = ((uint)State.Dx << 16) | State.Ax;
                     uint quotient = dividend / (ushort)value;
-                    if (quotient > 0xFFFF) throw ErroreDivisione();
+                    if (quotient > 0xFFFF) throw DivideError();
                     State.Ax = (ushort)quotient;
                     State.Dx = (ushort)(dividend % (ushort)value);
                 }
@@ -193,13 +193,13 @@ public sealed partial class Cpu
 
             default:  // IDIV
             {
-                if (value == 0) throw ErroreDivisione();
+                if (value == 0) throw DivideError();
                 if (wide)
                 {
                     long dividend = (long)(((ulong)State.Edx << 32) | State.Eax);
                     long quotient = dividend / (int)value;
                     if (quotient > int.MaxValue || quotient < int.MinValue)
-                        throw ErroreDivisione();
+                        throw DivideError();
                     State.Eax = (uint)quotient;
                     State.Edx = (uint)(dividend % (int)value);
                 }
@@ -208,7 +208,7 @@ public sealed partial class Cpu
                     int dividend = (int)(((uint)State.Dx << 16) | State.Ax);
                     int quotient = dividend / (short)value;
                     if (quotient > short.MaxValue || quotient < short.MinValue)
-                        throw ErroreDivisione();
+                        throw DivideError();
                     State.Ax = (ushort)quotient;
                     State.Dx = (ushort)(dividend % (short)value);
                 }
