@@ -87,6 +87,9 @@ public sealed class Machine : IDisposable
     private readonly List<DiskImage> _disks = [];
     private readonly RedirectorInstaller _redirectorInstaller;
 
+    /// <summary>Diagnostics: where DOS keeps its list of lists.</summary>
+    public uint DosListOfLists => _redirectorInstaller.ListOfListsAddress;
+
     public Machine(uint ramSize = 16 * 1024 * 1024)
     {
         Memory = new PhysicalMemoryBus(ramSize);
@@ -820,12 +823,17 @@ public sealed class Machine : IDisposable
     /// installs the redirector at once if DOS is already up.
     ///
     /// The letter is a number with 0 meaning A:, the convention DOS uses
-    /// everywhere below the surface.
+    /// everywhere below the surface. Returns false when DOS is running but
+    /// has no room for that letter, which means LASTDRIVE in CONFIG.SYS is
+    /// too low -- the only symptom otherwise is "invalid drive" with no
+    /// explanation.
     /// </summary>
-    public void MountRedirectedDrive(byte drive, IRedirectedFileSystem fileSystem)
+    public bool MountRedirectedDrive(byte drive, IRedirectedFileSystem fileSystem)
     {
         Redirector.Mount(drive, fileSystem);
         _redirectorInstaller.TryInstall(Redirector);
+
+        return !Redirector.IsInstalled || drive < Redirector.DriveCount;
     }
 
     /// <summary>Hands a drive letter back to DOS.</summary>

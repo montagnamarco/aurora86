@@ -18,10 +18,12 @@ namespace Aurora386.Core.Bios;
 /// the installers and games that check for their own disc, and it is the
 /// interface every one of them was written against.
 ///
-/// What is deliberately not here is the redirector itself -- the part that
-/// makes files on the disc openable with the ordinary DOS calls. That needs
-/// the whole INT 2Fh function 11h protocol, and it belongs in its own piece
-/// of work.
+/// The part that makes files on the disc openable with the ordinary DOS calls
+/// is not here but in <see cref="Dos.RedirectorServices"/>: MSCDEX was two
+/// things at once, an announcement interface for programs that wanted to know
+/// about the drive, and a redirector answering INT 2Fh function 11h for DOS
+/// itself. This class is the first; the second is a general mechanism that
+/// serves a shared host folder just as well.
 /// </summary>
 public sealed class CompactDiscServices(Machine machine)
 {

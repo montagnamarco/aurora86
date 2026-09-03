@@ -179,6 +179,16 @@
           </StackPanel>
         </Button>
 
+        <!-- A folder shared with the guest: the folder with an arrow going
+             into it. -->
+        <Button Classes="tool" Command="{Binding ShareFolderCommand}"
+                ToolTip.Tip="Share a folder of this computer with the guest, as drive E:">
+          <StackPanel>
+            <Path Classes="icon" Data="M 3,6 L 9,6 L 11,9 L 21,9 L 21,19 L 3,19 Z M 12,11 L 12,17 M 9,14 L 12,17 L 15,14" />
+            <TextBlock Classes="toollabel" Text="Share" />
+          </StackPanel>
+        </Button>
+
         <!-- Eject: the triangle-over-bar found on every optical drive. -->
         <Button Classes="tool" ToolTip.Tip="Take out a floppy or the disc">
           <StackPanel>

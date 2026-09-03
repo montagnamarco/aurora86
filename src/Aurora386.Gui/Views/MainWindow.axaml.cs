@@ -80,6 +80,7 @@ public partial class MainWindow : Window
         if (ViewModel is null) return;
 
         ViewModel.PickFileAsync = PickFileAsync;
+        ViewModel.PickFolderAsync = PickFolderAsync;
         ViewModel.SaveScreenshotAsync = SaveScreenshotAsync;
         ViewModel.ShowDebugger = ShowDebugger;
     }
@@ -290,6 +291,20 @@ public partial class MainWindow : Window
     }
 
     // --- platform services the view model asks for --------------------------
+
+    /// <summary>
+    /// Asks the user for a folder, for sharing with the guest.
+    /// </summary>
+    private async Task<string?> PickFolderAsync(string title)
+    {
+        IStorageProvider? storage = StorageProvider;
+        if (storage is null) return null;
+
+        IReadOnlyList<IStorageFolder> chosen = await storage.OpenFolderPickerAsync(
+            new FolderPickerOpenOptions { Title = title, AllowMultiple = false });
+
+        return chosen.Count > 0 ? chosen[0].Path.LocalPath : null;
+    }
 
     private async Task<string?> PickFileAsync(string title, IReadOnlyList<string> extensions)
     {

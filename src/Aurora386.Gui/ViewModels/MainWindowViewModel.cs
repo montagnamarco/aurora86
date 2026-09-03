@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Avalonia.Threading;
 using Aurora386.Core.Bios;
+using Aurora386.Core.Dos;
 using Aurora386.Gui.Emulation;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -54,6 +55,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// testable.
     /// </summary>
     public Func<string, IReadOnlyList<string>, Task<string?>>? PickFileAsync { get; set; }
+
+    /// <summary>
+    /// Asks the user for a folder. Supplied by the window, which is the only
+    /// part that knows how to put a picker on the screen.
+    /// </summary>
+    public Func<string, Task<string?>>? PickFolderAsync { get; set; }
 
     /// <summary>Set by the view to save a screenshot of the current screen.</summary>
     public Func<string, Task>? SaveScreenshotAsync { get; set; }
@@ -335,6 +342,54 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             StatusText = $"Could not read the disc: {ex.Message}";
         }
     }
+
+    /// <summary>
+    /// Shares a folder of the host with the guest, as a drive letter.
+    ///
+    /// This is not a disk image: there is no file system to format and
+    /// nothing is copied. DOS reaches it the way it reached a file server, by
+    /// asking a resident program to answer for that drive -- which is what
+    /// the redirector does. Files put in the folder appear in the guest at
+    /// once, and files the guest writes appear on the host.
+    /// </summary>
+    [RelayCommand]
+    private async Task ShareFolder()
+    {
+        if (PickFolderAsync is null) return;
+
+        string? path = await PickFolderAsync("Choose a folder to share with the guest");
+        if (path is null) return;
+
+        try
+        {
+            bool letterExists = Session.WithMachine(machine =>
+                machine.Redirector.Mount(SharedFolderDrive, new HostDirectoryFileSystem(path)));
+
+            RefreshDriveList();
+
+            char letter = (char)('A' + SharedFolderDrive);
+
+            // DOS decides how many drive letters exist when it starts, from
+            // LASTDRIVE in CONFIG.SYS, and defaults to barely more than the
+            // drives it found. Mounting past that limit fails in the most
+            // unhelpful way possible: the letter reports "invalid drive" and
+            // nothing anywhere says why, so say it here.
+            StatusText = letterExists
+                ? $"{Path.GetFileName(path)} is now drive {letter}:"
+                : $"Shared, but DOS has no drive {letter}: -- add " +
+                  $"LASTDRIVE={letter} to CONFIG.SYS and restart the guest";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not share that folder: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// The letter the shared folder gets. E: keeps clear of the floppies, the
+    /// hard disk and the CD-ROM, which between them can reach D:.
+    /// </summary>
+    private const byte SharedFolderDrive = 4;
 
     /// <summary>
     /// Picks the next free hard disk number. The BIOS numbers hard disks from
