@@ -351,3 +351,73 @@ public class ExtendedKeyTranslationTests
         Assert.Equal(0, machine.Bda.KeyboardFlags & 0x04);
     }
 }
+
+/// <summary>
+/// Port 0x60 is a latch. It holds the byte the controller last put there and
+/// keeps holding it until something replaces it, so reading twice returns the
+/// same byte twice. Only bit 0 of the status port says whether the byte is
+/// new.
+/// </summary>
+public class KeyboardOutputLatchTests
+{
+    private static bool ByteWaiting(Machine machine) => (machine.Io.ReadByte(0x64) & 0x01) != 0;
+
+    [Fact]
+    public void ReadingTwiceReturnsTheSameByte()
+    {
+        // Software that wants to be sure of what it read looks again, and
+        // must see the same thing. Returning zero on the second read would
+        // report a keystroke that never happened -- worse, one whose scancode
+        // means nothing at all.
+        using var machine = new Machine();
+        const byte Escape = 0x01;
+
+        machine.Keyboard.PushScanCode(Escape);
+
+        Assert.True(ByteWaiting(machine));
+        Assert.Equal(Escape, machine.Io.ReadByte(0x60));
+
+        // The byte has been collected, so the status port stops advertising
+        // it -- but the register still holds it.
+        Assert.False(ByteWaiting(machine));
+        Assert.Equal(Escape, machine.Io.ReadByte(0x60));
+        Assert.Equal(Escape, machine.Io.ReadByte(0x60));
+    }
+
+    [Fact]
+    public void TheLatchSurvivesDisablingAndReenablingTheKeyboard()
+    {
+        // This is the sequence QBasic uses for every keystroke: read the
+        // scancode, disable the keyboard so that nothing can arrive
+        // underneath it, read again to confirm, then re-enable. All of it has
+        // to yield the same scancode, or the keystroke is discarded and the
+        // program appears to ignore the keyboard entirely.
+        using var machine = new Machine();
+        const byte Escape = 0x01;
+
+        machine.Keyboard.PushScanCode(Escape);
+        Assert.Equal(Escape, machine.Io.ReadByte(0x60));
+
+        machine.Io.WriteByte(0x64, 0xAD);            // disable keyboard
+        Assert.Equal(Escape, machine.Io.ReadByte(0x60));
+        machine.Io.WriteByte(0x64, 0xAE);            // enable keyboard
+
+        Assert.Equal(Escape, machine.Io.ReadByte(0x60));
+    }
+
+    [Fact]
+    public void ANewKeystrokeReplacesTheLatchedByte()
+    {
+        // The latch is stale data, not a second copy of the keystroke: the
+        // moment a real key arrives it takes the register over.
+        using var machine = new Machine();
+
+        machine.Keyboard.PushScanCode(0x01);
+        Assert.Equal(0x01, machine.Io.ReadByte(0x60));
+
+        machine.Keyboard.PushScanCode(0x1E);
+        Assert.True(ByteWaiting(machine));
+        Assert.Equal(0x1E, machine.Io.ReadByte(0x60));
+        Assert.Equal(0x1E, machine.Io.ReadByte(0x60));
+    }
+}

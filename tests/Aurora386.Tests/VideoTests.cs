@@ -430,3 +430,75 @@ public class CursorPositionRoundTripTests
         Assert.Equal(40, machine.Bda.CursorColumn);
     }
 }
+
+/// <summary>
+/// CP437's upper half carries the accented letters, the currency signs and
+/// the mathematical symbols. Without them an Italian or Spanish DOS prints
+/// its own messages full of holes, so what matters here is that the glyphs
+/// exist and look like letters -- not that any particular pixel is set.
+/// </summary>
+public class HighCharacterGlyphTests
+{
+    private static bool IsBlank(byte code)
+    {
+        foreach (byte row in VgaFont.GetGlyph(code))
+            if (row != 0) return false;
+
+        return true;
+    }
+
+    [Fact]
+    public void TheAccentedLettersAreDrawn()
+    {
+        // The five Italian accented vowels and the capital E acute: between
+        // them they cover every accent that appears in MS-DOS's own Italian
+        // messages.
+        byte[] accented = [0x85, 0x8A, 0x8D, 0x95, 0x97, 0x90];
+
+        foreach (byte code in accented)
+            Assert.False(IsBlank(code), $"CP437 {code:X2} is blank");
+    }
+
+    [Fact]
+    public void OnlyTheNonBreakingSpaceIsBlankInTheUpperHalf()
+    {
+        // 0xFF is a space and belongs blank. Everything else in the upper
+        // half is a printable character, and a blank one would show up as a
+        // hole in the middle of a word.
+        for (int code = 0x80; code < 0xFF; code++)
+            Assert.False(IsBlank((byte)code), $"CP437 {code:X2} is blank");
+
+        Assert.True(IsBlank(0xFF));
+    }
+
+    [Fact]
+    public void AnAccentedLetterKeepsTheShapeOfTheLetterUnderIt()
+    {
+        // An accent is drawn into the top two scanlines and the letter
+        // occupies the rest, so the bottom of "a grave" has to match the
+        // bottom of a plain "a". Get this wrong and the accented text is
+        // legible but visibly a different typeface from the rest of the line.
+        ReadOnlySpan<byte> plain = VgaFont.GetGlyph((byte)'a');
+        ReadOnlySpan<byte> grave = VgaFont.GetGlyph(0x85);
+
+        // The glyphs are doubled to sixteen rows, so the letter's own body
+        // starts a third of the way down.
+        for (int row = 8; row < VgaFont.CharHeight; row++)
+            Assert.Equal(plain[row], grave[row]);
+    }
+
+    [Fact]
+    public void TheAccentSitsAboveTheLetterRatherThanBesideIt()
+    {
+        // A grave accent leans one way and an acute the other: if they came
+        // out identical, something would be copying the wrong bitmap.
+        ReadOnlySpan<byte> grave = VgaFont.GetGlyph(0x8A);   // e grave
+        ReadOnlySpan<byte> acute = VgaFont.GetGlyph(0x82);   // e acute
+
+        Assert.NotEqual(grave[0], acute[0]);
+
+        // Both must actually have something drawn up there.
+        Assert.NotEqual(0, grave[0]);
+        Assert.NotEqual(0, acute[0]);
+    }
+}

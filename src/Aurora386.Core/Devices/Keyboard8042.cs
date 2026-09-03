@@ -53,6 +53,13 @@ public sealed class Keyboard8042 : IIoDevice
     /// </summary>
     private bool _outputIsResponse;
 
+    /// <summary>
+    /// The byte the output register last held. Reading port 0x60 with nothing
+    /// new waiting hands this back, because the register latches its contents
+    /// rather than emptying.
+    /// </summary>
+    private byte _lastOutputByte;
+
     private byte _commandByte = 0x45;   // keyboard interrupts enabled
     private byte _pendingCommand;
     private bool _expectingData;
@@ -232,10 +239,23 @@ public sealed class Keyboard8042 : IIoDevice
             return status;
         }
 
-        // Port 0x60: hand over the byte at the head of the output register.
-        if (_outputBuffer.Count == 0) return 0;
+        // Port 0x60 is a latch, not a queue that empties into nothing.
+        //
+        // Reading it when no new byte has arrived hands back the last byte it
+        // held: the register keeps its contents until something replaces
+        // them. Returning zero instead would be reporting a keystroke that
+        // never happened -- and software does read the port twice.
+        //
+        // QBasic is one such program. It reads the scancode, disables the
+        // keyboard with command 0xAD so that nothing can arrive underneath
+        // it, reads the port again to confirm what it saw, and re-enables
+        // with 0xAE. Handing it a zero on that second read told it the key
+        // had gone away, so it discarded the keystroke -- which is why no
+        // key at all reached QBasic, not even Escape.
+        if (_outputBuffer.Count == 0) return _lastOutputByte;
 
         byte value = _outputBuffer.Dequeue();
+        _lastOutputByte = value;
         if (_outputBuffer.Count == 0) _interrupts.LowerIrq(1);
         // The register is free again, so the next queued key can move up.
         DeliverScanCode();
