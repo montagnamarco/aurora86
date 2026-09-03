@@ -43,6 +43,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _statusText = "Ready";
     [ObservableProperty] private bool _powerLedOn;
     [ObservableProperty] private bool _networkLedOn;
+    [ObservableProperty] private bool _turbo;
 
     /// <summary>Frame counts as of the last refresh, to detect activity.</summary>
     private long _lastFramesSent, _lastFramesReceived;
@@ -211,6 +212,20 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         Session.Start();
         StatusText = "Running";
+    }
+
+    /// <summary>
+    /// Lets the guest run as fast as the host allows, or holds it to the
+    /// speed of the machine it is imitating.
+    /// </summary>
+    [RelayCommand]
+    private void ToggleTurbo()
+    {
+        Turbo = !Turbo;
+        Session.Unthrottled = Turbo;
+        StatusText = Turbo
+            ? "Turbo: running as fast as the host allows"
+            : "Running at 386 speed";
     }
 
     [RelayCommand]

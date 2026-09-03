@@ -47,6 +47,16 @@ public sealed class EmulatorSession : IDisposable
     /// <summary>Activity indicators, decayed by the UI so they blink rather than latch.</summary>
     public DiskActivity Activity { get; } = new();
 
+    /// <summary>
+    /// Run without holding the guest to its nominal speed.
+    ///
+    /// Useful for getting through a long install or a slow boot, but it has a
+    /// real cost: everything the guest paces by the timer -- key repeat,
+    /// animations, anything that measures time by counting ticks -- runs at
+    /// the same multiple. Off by default for that reason.
+    /// </summary>
+    public bool Unthrottled { get; set; }
+
     public EmulatorSession()
     {
         Machine = new Machine();
@@ -124,10 +134,10 @@ public sealed class EmulatorSession : IDisposable
 
     private void RunLoop()
     {
-        // A 386 at 25 MHz retires very roughly this many instructions per
-        // second. Running in batches keeps the lock cheap: taking it once per
-        // instruction would cost more than the instruction itself.
-        const int batchSize = 200_000;
+        // How long a slice of emulated time each pass covers. Small enough
+        // that the guest feels responsive, large enough that the per-batch
+        // overhead stays negligible.
+        TimeSpan slice = TimeSpan.FromMilliseconds(2);
 
         // Sixty repaints a second is as much as any display will show, and as
         // much as an eye will notice.
@@ -139,22 +149,30 @@ public sealed class EmulatorSession : IDisposable
         var lastReportTime = TimeSpan.Zero;
         var lastFrameTime = TimeSpan.Zero;
 
+        // How much guest time has been simulated. Compared against the wall
+        // clock to decide whether to wait.
+        var emulatedTime = TimeSpan.Zero;
+
         while (!_stopRequested)
         {
             if (_paused)
             {
                 Thread.Sleep(10);
-                // Time spent paused must not count as slow emulation.
+                // Time spent paused counts as neither slow emulation nor a
+                // backlog to catch up on.
                 lastReportTime = clock.Elapsed;
                 lastReport = executed;
+                emulatedTime = clock.Elapsed;
                 continue;
             }
 
+            long thisBatch;
             lock (_gate)
             {
+                thisBatch = (long)(Machine.CpuFrequencyHz * slice.TotalSeconds);
                 try
                 {
-                    Machine.RunInstructions(batchSize);
+                    Machine.RunInstructions(thisBatch);
                 }
                 catch (Exception)
                 {
@@ -165,9 +183,31 @@ public sealed class EmulatorSession : IDisposable
                 }
             }
 
-            executed += batchSize;
+            executed += thisBatch;
+            emulatedTime += slice;
 
             TimeSpan now = clock.Elapsed;
+
+            // Hold the guest to the speed of the machine it is pretending to
+            // be.
+            //
+            // Left to run flat out this emulator retires around 58 million
+            // instructions a second -- fifteen times what a 25 MHz 386 managed.
+            // The devices are all clocked off CpuFrequencyHz, so emulated time
+            // then races ahead of real time by the same factor: the timer
+            // interrupt fires fifteen times too often, and anything the guest
+            // paces by it goes haywire. The keyboard's auto-repeat is the most
+            // visible casualty -- hold a key for an instant and DOS receives a
+            // burst of characters, which is what makes the prompt run away.
+            TimeSpan ahead = emulatedTime - now;
+            if (Unthrottled) emulatedTime = now;
+            else if (ahead > TimeSpan.FromMilliseconds(2))
+                Thread.Sleep(ahead - TimeSpan.FromMilliseconds(1));
+            else if (ahead < TimeSpan.FromMilliseconds(-250))
+                // Far behind -- the host was busy elsewhere. Give up on the
+                // lost time rather than sprinting to catch up, which would
+                // produce exactly the burst we are trying to avoid.
+                emulatedTime = now;
 
             // Only ask for a repaint about sixty times a second.
             //

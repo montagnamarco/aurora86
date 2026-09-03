@@ -71,6 +71,9 @@
                 ToolTip.Tip="Pause or resume emulation">Pause</Button>
         <Button Classes="tool" Command="{Binding ResetCommand}"
                 ToolTip.Tip="Cold reset: rebuild the machine and re-insert media">Reset</Button>
+        <ToggleButton Classes="tool" IsChecked="{Binding Turbo}"
+                Command="{Binding ToggleTurboCommand}"
+                ToolTip.Tip="Run as fast as the host allows. Key repeat and anything else the guest times will run fast too.">Turbo</ToggleButton>
 
         <Separator Classes="vertical" />
 
