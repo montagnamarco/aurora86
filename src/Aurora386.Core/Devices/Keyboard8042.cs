@@ -95,15 +95,20 @@ public sealed class Keyboard8042 : IIoDevice
         _pendingScanCodes.Enqueue(scanCode);
         DeliverScanCode();
 
+        // A prefix is not a key. It announces the one that follows, and the
+        // pair repeats together, so remember it and wait for its partner.
+        //
+        // This has to be tested on the raw byte, before bit 7 is stripped:
+        // 0xE0 already has that bit set, so masking it first would turn it
+        // into 0x60 and the prefix would be mistaken for an ordinary key --
+        // one that is never released, since no break code for it ever comes.
+        if (scanCode == 0xE0 || scanCode == 0xE1) { _repeatPrefix = scanCode; return; }
+
         // Track what is being held down, so that the key can start repeating
         // on its own. Bit 7 marks a break code: the release of whatever key
         // its low seven bits name.
         bool release = (scanCode & 0x80) != 0;
         byte code = (byte)(scanCode & 0x7F);
-
-        // A prefix is not a key. It announces the one that follows, and the
-        // pair repeats together, so remember it and wait for its partner.
-        if (code == 0xE0 || code == 0xE1) { _repeatPrefix = scanCode; return; }
 
         if (release)
         {

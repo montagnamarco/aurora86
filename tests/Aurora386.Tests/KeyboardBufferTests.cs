@@ -183,6 +183,67 @@ public class KeyboardRepeatTests
     }
 
     [Fact]
+    public void ArrowKeysRepeatWithTheirPrefix()
+    {
+        // The arrows and the other keys added after the original PC keyboard
+        // are announced by a 0xE0 byte before the code proper. The prefix is
+        // not a key of its own: it must not be mistaken for one, and when the
+        // key repeats the whole pair has to repeat, or the guest sees a bare
+        // 0x48 -- which on the original keyboard means the numeric keypad's 8.
+        using var machine = new Machine();
+        const byte Up = 0x48;
+
+        machine.Keyboard.PushScanCode(0xE0);
+        machine.Keyboard.PushScanCode(Up);
+        Assert.Equal(new byte[] { 0xE0, Up }, Drain(machine));
+
+        machine.Keyboard.Advance(600);
+        Assert.Equal(new byte[] { 0xE0, Up }, Drain(machine));
+    }
+
+    [Fact]
+    public void ReleasingAnArrowKeyStopsItsRepeat()
+    {
+        // The release arrives prefixed too, and has to be recognised as the
+        // release of the key that is repeating.
+        using var machine = new Machine();
+        const byte Up = 0x48;
+
+        machine.Keyboard.PushScanCode(0xE0);
+        machine.Keyboard.PushScanCode(Up);
+        machine.Keyboard.PushScanCode(0xE0);
+        machine.Keyboard.PushScanCode(Up | 0x80);
+        Drain(machine);
+
+        machine.Keyboard.Advance(2000);
+        Assert.Empty(Drain(machine));
+    }
+
+    [Fact]
+    public void ARepeatedArrowIsNeverSentWithoutItsPrefix()
+    {
+        // A bare 0x48 does not mean "up arrow". It is what the original
+        // keyboard sent for the numeric keypad's 8, and that is how software
+        // reads it: with Num Lock on, the digit 8. So a repeat that dropped
+        // the prefix would type digits into the document instead of moving
+        // the cursor -- which is how this showed up in EDIT and QBasic.
+        using var machine = new Machine();
+        const byte Up = 0x48;
+
+        machine.Keyboard.PushScanCode(0xE0);
+        machine.Keyboard.PushScanCode(Up);
+        Drain(machine);
+
+        // Let it repeat several times over; every single repeat must carry
+        // the prefix, not just the first.
+        for (int repeat = 0; repeat < 5; repeat++)
+        {
+            machine.Keyboard.Advance(600);
+            Assert.Equal(new byte[] { 0xE0, Up }, Drain(machine));
+        }
+    }
+
+    [Fact]
     public void LosingFocusStopsTheRepeat()
     {
         // When the window loses focus the release never arrives, so the
