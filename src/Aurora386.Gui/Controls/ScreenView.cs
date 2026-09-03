@@ -140,7 +140,12 @@ public sealed class ScreenView : Control
         _bitmap = new WriteableBitmap(
             new PixelSize(width, height),
             new Vector(96, 96),
-            PixelFormat.Bgra8888,
+            // The renderer packs each pixel as R | G<<8 | B<<16 | A<<24. On a
+            // little-endian machine that lands in memory as R,G,B,A, which is
+            // what Avalonia calls Rgba8888. Declaring Bgra8888 here would make
+            // the display read the red byte as blue: MS-DOS setup's blue
+            // screen comes out red, and nothing else looks obviously wrong.
+            PixelFormat.Rgba8888,
             AlphaFormat.Opaque);
 
         _bitmapWidth = width;

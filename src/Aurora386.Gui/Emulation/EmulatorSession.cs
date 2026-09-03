@@ -129,10 +129,15 @@ public sealed class EmulatorSession : IDisposable
         // instruction would cost more than the instruction itself.
         const int batchSize = 200_000;
 
+        // Sixty repaints a second is as much as any display will show, and as
+        // much as an eye will notice.
+        TimeSpan FrameInterval = TimeSpan.FromMilliseconds(1000.0 / 60);
+
         var clock = Stopwatch.StartNew();
         long executed = 0;
         long lastReport = 0;
         var lastReportTime = TimeSpan.Zero;
+        var lastFrameTime = TimeSpan.Zero;
 
         while (!_stopRequested)
         {
@@ -161,9 +166,22 @@ public sealed class EmulatorSession : IDisposable
             }
 
             executed += batchSize;
-            FrameReady?.Invoke();
 
             TimeSpan now = clock.Elapsed;
+
+            // Only ask for a repaint about sixty times a second.
+            //
+            // A batch takes a few milliseconds, so signalling after every one
+            // would post hundreds of invalidations per second at the UI
+            // thread. The compositor cannot draw that fast, so the queue grows
+            // and the dispatcher spends its time on work it will throw away --
+            // which shows up as the whole emulator feeling sluggish even
+            // though the CPU core itself is running at full speed.
+            if (now - lastFrameTime >= FrameInterval)
+            {
+                lastFrameTime = now;
+                FrameReady?.Invoke();
+            }
             if (now - lastReportTime >= TimeSpan.FromSeconds(1))
             {
                 InstructionsPerSecond =

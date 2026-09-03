@@ -161,3 +161,48 @@ public class ScrollingTests
         Assert.Equal("", lines[24].TrimEnd());
     }
 }
+
+/// <summary>
+/// Tests that pin down how a pixel is laid out in the framebuffer.
+///
+/// This is worth a test of its own because getting it wrong is invisible in
+/// every way except colour: everything renders, nothing crashes, and the only
+/// symptom is that red and blue have swapped places. MS-DOS setup's blue
+/// screen coming out red is exactly that bug.
+/// </summary>
+public class FramebufferFormatTests
+{
+    [Fact]
+    public void PixelsArePackedRedInTheLowByte()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+
+        // Fill the screen with a character whose foreground is colour 4 --
+        // the standard palette's red -- on a black background.
+        for (uint cell = 0; cell < 80 * 25; cell++)
+        {
+            machine.VideoMemory[VgaMemory.TextWindowOffset + cell * 2] = (byte)'#';
+            machine.VideoMemory[VgaMemory.TextWindowOffset + cell * 2 + 1] = 0x04;
+        }
+
+        machine.Video.Render(force: true);
+
+        // Find a lit pixel: the glyph is drawn in the foreground colour.
+        uint lit = 0;
+        foreach (uint pixel in machine.Video.Framebuffer)
+            if ((pixel & 0x00FFFFFF) != 0) { lit = pixel; break; }
+
+        Assert.NotEqual(0u, lit);
+
+        byte low = (byte)lit;
+        byte middle = (byte)(lit >> 8);
+        byte high = (byte)(lit >> 16);
+
+        // Red must dominate the low byte. If the packing were BGR the same
+        // colour would land in the high byte instead, and the display -- which
+        // is told the buffer is RGBA -- would show it as blue.
+        Assert.True(low > high,
+            $"expected red in the low byte, got R={low:X2} G={middle:X2} B={high:X2}");
+    }
+}

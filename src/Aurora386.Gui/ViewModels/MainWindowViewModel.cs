@@ -71,11 +71,57 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _audio = new AudioOutput(Session);
         _audio.Start();
 
+        AttachDefaultHardDisk();
+
         // Four refreshes a second is enough for a human to read, and cheap
         // enough that it never competes with the emulation thread.
         _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _statusTimer.Tick += (_, _) => RefreshStatus();
         _statusTimer.Start();
+    }
+
+    /// <summary>
+    /// Looks for a hard disk image next to the emulator and attaches it, so
+    /// the machine has something to boot from the moment it starts.
+    ///
+    /// Requiring the user to mount a disk before every single run is friction
+    /// with no purpose: the overwhelmingly common case is wanting the same
+    /// disk as last time. A missing file is not an error -- it just means
+    /// there is nothing to attach yet.
+    /// </summary>
+    private void AttachDefaultHardDisk()
+    {
+        foreach (string candidate in DefaultHardDiskPaths())
+        {
+            if (!File.Exists(candidate)) continue;
+
+            try
+            {
+                AttachImage(candidate, 0x80, readOnly: false);
+                RefreshDriveList();
+                StatusText = $"Attached {Path.GetFileName(candidate)}";
+                return;
+            }
+            catch (Exception)
+            {
+                // An image that cannot be opened -- locked by another
+                // emulator, or truncated -- should not stop the window from
+                // appearing. The user can mount a different one.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Where to look for a hard disk, in order of preference: the repository's
+    /// own images directory first, then the working directory.
+    /// </summary>
+    private static IEnumerable<string> DefaultHardDiskPaths()
+    {
+        yield return Path.Combine("images", "hdd.img");
+        yield return "hdd.img";
+
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        yield return Path.Combine(home, "Aurora386", "hdd.img");
     }
 
     private void HookMachineEvents()
@@ -344,6 +390,53 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             if (driveNumber < 0x80)
                 machine.DiskServices.NotifyMediaChanged(driveNumber);
         });
+    }
+
+    /// <summary>
+    /// Ejects the floppy in drive A:, leaving the drive empty.
+    ///
+    /// Ejecting is not the same as swapping. DOS caches the file allocation
+    /// table of whatever it last read, so the change line has to be raised
+    /// either way -- otherwise a later access would happily use the old disk's
+    /// directory to read a drive that is now empty.
+    /// </summary>
+    [RelayCommand]
+    private void EjectFloppyA() => Eject(0x00);
+
+    [RelayCommand]
+    private void EjectFloppyB() => Eject(0x01);
+
+    private void Eject(byte driveNumber)
+    {
+        bool present = Session.WithMachine(
+            machine => machine.DiskServices.GetDrive(driveNumber) is not null);
+
+        if (!present)
+        {
+            StatusText = $"Drive {(driveNumber == 0 ? 'A' : 'B')}: is already empty";
+            return;
+        }
+
+        Session.WithMachine(machine =>
+        {
+            machine.DiskServices.Detach(driveNumber);
+            machine.DiskServices.NotifyMediaChanged(driveNumber);
+        });
+
+        RefreshDriveList();
+        StatusText = $"Ejected drive {(driveNumber == 0 ? 'A' : 'B')}:";
+    }
+
+    /// <summary>Takes the disc out of the CD drive.</summary>
+    [RelayCommand]
+    private void EjectCompactDisc()
+    {
+        bool present = Session.WithMachine(machine => machine.CompactDisc is not null);
+        if (!present) { StatusText = "No disc in the drive"; return; }
+
+        Session.WithMachine(machine => machine.EjectCompactDisc());
+        RefreshDriveList();
+        StatusText = "Ejected the disc";
     }
 
     [RelayCommand]

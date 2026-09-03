@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Aurora386.Gui.Emulation;
@@ -31,6 +32,10 @@ public partial class MainWindow : Window
         PointerPressed += (_, _) => Screen.Focus();
 
         DataContextChanged += OnDataContextChanged;
+
+        // Deactivating the window is the moment the host stops sending us key
+        // events, so anything still down has to be let go now.
+        Deactivated += (_, _) => ReleaseHeldKeys();
     }
 
     private MainWindowViewModel? ViewModel => DataContext as MainWindowViewModel;
@@ -67,16 +72,51 @@ public partial class MainWindow : Window
 
     // --- keyboard -----------------------------------------------------------
 
+    /// <summary>
+    /// Keys the guest currently believes are held down.
+    ///
+    /// The host repeats key-down events while a key is held, but a PC keyboard
+    /// does its own repeating -- the BIOS decides the rate from its own timer.
+    /// Forwarding the host's repeats as well would push a fresh scancode into
+    /// the controller's sixteen-entry buffer many times a second: the buffer
+    /// fills, and DOS is left with a queue of characters it will keep echoing
+    /// long after the key was let go. That is the runaway prompt.
+    /// </summary>
+    private readonly HashSet<Key> _keysHeld = new();
+
     protected override void OnKeyDown(KeyEventArgs e)
     {
+        // A repeat of a key we already told the guest about: swallow it. The
+        // guest's own auto-repeat is what should drive this.
+        if (!_keysHeld.Add(e.Key)) { e.Handled = true; return; }
+
         if (SendKey(e.Key, released: false)) e.Handled = true;
         else base.OnKeyDown(e);
     }
 
     protected override void OnKeyUp(KeyEventArgs e)
     {
+        _keysHeld.Remove(e.Key);
+
         if (SendKey(e.Key, released: true)) e.Handled = true;
         else base.OnKeyUp(e);
+    }
+
+    /// <summary>
+    /// Releases every held key when the window loses focus.
+    ///
+    /// Without this, switching away mid-keystroke leaves the guest convinced
+    /// the key is still down: the host delivers the key-up to whichever window
+    /// took the focus, and ours never hears about it. The guest then repeats
+    /// that character indefinitely, and even Ctrl-C cannot get through because
+    /// the guest thinks a key is already stuck.
+    /// </summary>
+    private void ReleaseHeldKeys()
+    {
+        foreach (Key key in _keysHeld.ToArray())
+            SendKey(key, released: true);
+
+        _keysHeld.Clear();
     }
 
     /// <summary>

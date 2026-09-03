@@ -83,6 +83,17 @@
         <Button Classes="tool" Command="{Binding MountCompactDiscCommand}"
                 ToolTip.Tip="Insert a CD-ROM image (ISO 9660)">CD-ROM…</Button>
 
+        <Button Classes="tool" ToolTip.Tip="Take out a floppy or the disc">
+          Eject ▾
+          <Button.Flyout>
+            <MenuFlyout>
+              <MenuItem Header="Floppy A:" Command="{Binding EjectFloppyACommand}" />
+              <MenuItem Header="Floppy B:" Command="{Binding EjectFloppyBCommand}" />
+              <MenuItem Header="CD-ROM" Command="{Binding EjectCompactDiscCommand}" />
+            </MenuFlyout>
+          </Button.Flyout>
+        </Button>
+
         <Separator Classes="vertical" />
 
         <Button Classes="tool" Command="{Binding OpenDebuggerCommand}"

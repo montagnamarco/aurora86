@@ -21,6 +21,30 @@ public sealed class VideoServices
         _bda = bda;
     }
 
+    /// <summary>
+    /// Address of a text cell, taking the CRTC's start address into account.
+    ///
+    /// The adapter does not necessarily display the first cell of video memory
+    /// at the top left. CRTC registers 0x0C and 0x0D hold a start address, and
+    /// scrolling the screen by bumping that register is far cheaper than
+    /// copying 4000 bytes -- which is exactly what a fast console driver does.
+    ///
+    /// The renderer honours it. The BIOS has to as well, or the two disagree
+    /// about where row zero is: text written through INT 10h lands at a
+    /// different place from where it appears, and the prompt ends up printed
+    /// over lines that were already on the screen.
+    /// </summary>
+    private uint CellAddress(int row, int column)
+    {
+        int columns = _registers.TextColumns;
+        int cell = _registers.StartAddress + row * columns + column;
+        return VgaMemory.TextWindowOffset + (uint)(cell * 2);
+    }
+
+    private uint CellAddress(int linearCell)
+        => VgaMemory.TextWindowOffset
+         + (uint)((_registers.StartAddress + linearCell) * 2);
+
     public void Handle(CpuNs.Cpu cpu)
     {
         byte function = cpu.State.GetReg8(4);   // AH
@@ -401,7 +425,7 @@ public sealed class VideoServices
             case 0x07: break;                                   // bell: no visible effect
             default:
             {
-                uint offset = VgaMemory.TextWindowOffset + (uint)((row * columns + column) * 2);
+                uint offset = CellAddress(row, column);
                 _video[offset] = character;
                 // The existing attribute is left alone: function 0x0E writes
                 // the character but does not change the colors.
@@ -445,7 +469,7 @@ public sealed class VideoServices
 
         for (int i = 0; i < count && position + i < cells; i++)
         {
-            uint offset = VgaMemory.TextWindowOffset + (uint)((position + i) * 2);
+            uint offset = CellAddress(position + i);
             _video[offset] = character;
             if (writeAttribute) _video[offset + 1] = attribute;
         }
@@ -456,8 +480,7 @@ public sealed class VideoServices
     private void ReadCharacterAtCursor(CpuNs.Cpu cpu)
     {
         int columns = _registers.TextColumns;
-        uint offset = VgaMemory.TextWindowOffset
-                    + (uint)((_bda.CursorRow * columns + _bda.CursorColumn) * 2);
+        uint offset = CellAddress(_bda.CursorRow, _bda.CursorColumn);
 
         cpu.State.SetReg8(0, _video[offset]);        // AL: character
         cpu.State.SetReg8(4, _video[offset + 1]);    // AH: attribute
@@ -526,9 +549,8 @@ public sealed class VideoServices
         for (int row = area.Top; row <= area.Bottom - lines; row++)
         for (int column = area.Left; column <= area.Right; column++)
         {
-            uint destination = VgaMemory.TextWindowOffset + (uint)((row * columns + column) * 2);
-            uint source = VgaMemory.TextWindowOffset
-                          + (uint)(((row + lines) * columns + column) * 2);
+            uint destination = CellAddress(row, column);
+            uint source = CellAddress(row + lines, column);
             _video[destination] = _video[source];
             _video[destination + 1] = _video[source + 1];
         }
@@ -547,9 +569,8 @@ public sealed class VideoServices
         for (int row = area.Bottom; row >= area.Top + lines; row--)
         for (int column = area.Left; column <= area.Right; column++)
         {
-            uint destination = VgaMemory.TextWindowOffset + (uint)((row * columns + column) * 2);
-            uint source = VgaMemory.TextWindowOffset
-                          + (uint)(((row - lines) * columns + column) * 2);
+            uint destination = CellAddress(row, column);
+            uint source = CellAddress(row - lines, column);
             _video[destination] = _video[source];
             _video[destination + 1] = _video[source + 1];
         }
@@ -569,7 +590,7 @@ public sealed class VideoServices
         int columns = _registers.TextColumns;
         for (int column = area.Left; column <= area.Right; column++)
         {
-            uint offset = VgaMemory.TextWindowOffset + (uint)((row * columns + column) * 2);
+            uint offset = CellAddress(row, column);
             _video[offset] = (byte)' ';
             _video[offset + 1] = attribute;
         }
@@ -580,7 +601,7 @@ public sealed class VideoServices
         int columns = _registers.TextColumns;
         for (int column = 0; column < columns; column++)
         {
-            uint offset = VgaMemory.TextWindowOffset + (uint)((row * columns + column) * 2);
+            uint offset = CellAddress(row, column);
             _video[offset] = (byte)' ';
             _video[offset + 1] = attribute;
         }
@@ -606,7 +627,7 @@ public sealed class VideoServices
         for (int row = top; row <= bottom; row++)
         for (int column = left; column <= right; column++)
         {
-            uint offset = VgaMemory.TextWindowOffset + (uint)((row * columns + column) * 2);
+            uint offset = CellAddress(row, column);
             _video[offset] = (byte)' ';
             _video[offset + 1] = attribute;
         }
