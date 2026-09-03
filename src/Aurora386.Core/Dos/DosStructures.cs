@@ -114,8 +114,18 @@ public static class DosStructures
     /// <summary>Bit 15 of the CDS flags: this drive is handled by a redirector.</summary>
     public const ushort CdsRedirectedFlag = 0x8000;
 
-    /// <summary>Bit 14: the drive is physical, i.e. a real local disk.</summary>
-    public const ushort CdsPhysicalFlag = 0x4000;
+    /// <summary>
+    /// Bit 14, named "physical drive" in every description of this structure
+    /// but behaving as "this entry describes a usable drive".
+    ///
+    /// The name is a historical accident: when the CDS was designed the only
+    /// usable drives were physical ones. MS-DOS tests this bit when deciding
+    /// whether a letter may be selected at all, before it has looked at bit
+    /// 15 and long before it would consider calling a redirector -- so a
+    /// redirected drive that leaves it clear cannot be switched to, and
+    /// reports "Invalid drive specification" with no further explanation.
+    /// </summary>
+    public const ushort CdsValidFlag = 0x4000;
 
     // --- System File Table -----------------------------------------------------
 

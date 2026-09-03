@@ -198,19 +198,23 @@ public class RedirectorProtocolTests : IDisposable
     }
 
     [Fact]
-    public void MountingADriveClearsThePhysicalDriveBit()
+    public void MountingADriveAlsoSetsTheBitThatMakesTheLetterSelectable()
     {
-        // A drive that claims to be both redirected and physical sends DOS
-        // looking for a drive parameter block that does not exist. Whatever
-        // the letter was used for before, the bit has to go.
-        uint entry = CdsAddress + (uint)(ShareDrive * DosStructures.CdsEntrySize);
-        _machine.Memory.WriteWord(entry + DosStructures.CdsFlags,
-                                  DosStructures.CdsPhysicalFlag);
-
+        // Bit 14, called "physical drive" everywhere it is described, is also
+        // set. That looks wrong -- there is no physical drive -- but MS-DOS
+        // tests it when deciding whether a letter may be selected at all,
+        // before it has looked at bit 15 and long before it would consider
+        // calling a redirector. With bit 15 alone, typing the letter gets
+        // "Invalid drive specification" and not one INT 2Fh call is ever
+        // made, so the redirector looks completely broken while in fact it is
+        // simply never asked.
         MountShare();
 
+        uint entry = CdsAddress + (uint)(ShareDrive * DosStructures.CdsEntrySize);
         ushort flags = _machine.Memory.ReadWord(entry + DosStructures.CdsFlags);
-        Assert.True((flags & DosStructures.CdsPhysicalFlag) == 0);
+
+        Assert.True((flags & DosStructures.CdsValidFlag) != 0);
+        Assert.True((flags & DosStructures.CdsRedirectedFlag) != 0);
     }
 
     [Fact]
@@ -226,6 +230,7 @@ public class RedirectorProtocolTests : IDisposable
         ushort flags = _machine.Memory.ReadWord(entry + DosStructures.CdsFlags);
 
         Assert.True((flags & DosStructures.CdsRedirectedFlag) == 0);
+        Assert.True((flags & DosStructures.CdsValidFlag) == 0);
     }
 
     [Fact]

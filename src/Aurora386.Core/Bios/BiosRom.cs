@@ -45,6 +45,25 @@ public static class BiosRom
         public const ushort KeyboardIrq = 0x10B0;    // INT 09h, IRQ 1
         public const ushort DummyIrq = 0x10C0;       // unhandled IRQs
         public const ushort Multiplex = 0x10D0;      // INT 2Fh
+
+        /// <summary>
+        /// The redirector's own INT 2Fh entry point, which chains.
+        ///
+        /// It has to exist separately from <see cref="Multiplex"/> because
+        /// the two behave differently at the end. The plain multiplex handler
+        /// answers and returns with IRET, which is right while nothing else
+        /// is listening. But DOS installs a multiplex handler of its own
+        /// during startup and takes the vector over, and from then on a
+        /// redirector has to sit in front of DOS's handler and pass on
+        /// everything it does not answer -- exactly as a TSR would, and for
+        /// the same reason: INT 2Fh is a bus, not a service, and a handler
+        /// that swallows what it does not recognise silences everyone behind
+        /// it.
+        ///
+        /// So this entry runs the native handler and then jumps to whatever
+        /// was in the vector before, through a pointer kept in RAM.
+        /// </summary>
+        public const ushort RedirectorMultiplex = 0x1130;
         public const ushort Mouse = 0x10F0;          // INT 33h
         public const ushort MouseIrq = 0x1110;       // INT 74h, IRQ 12
 
@@ -97,6 +116,12 @@ public static class BiosRom
         KeyboardIrq = 0x09,
         DummyIrq = 0xFE,
         Multiplex = 0x2F,
+
+        /// <summary>
+        /// The chaining multiplex handler. It answers if the call is the
+        /// redirector's, and otherwise falls through to the JMP that follows.
+        /// </summary>
+        RedirectorMultiplex = 0x2E,
         Mouse = 0x33,
         MouseIrq = 0x74,
         Xms = 0x43,
@@ -127,6 +152,21 @@ public static class BiosRom
         WriteInterruptEntry(rom, Entry.KeyboardIrq, Handler.KeyboardIrq);
         WriteInterruptEntry(rom, Entry.DummyIrq, Handler.DummyIrq);
         WriteInterruptEntry(rom, Entry.Multiplex, Handler.Multiplex);
+
+        // The chaining redirector entry. It is only three bytes and an IRET,
+        // because the chaining itself is done in C#: when the handler decides
+        // the call is not its own it moves CS:IP straight to the handler DOS
+        // installed, leaving the interrupt frame untouched so that handler's
+        // own IRET returns to the caller. That is what the JMP FAR through a
+        // saved vector at the end of every TSR did, and doing it here saves
+        // the ROM from needing a data pointer it cannot hold.
+        {
+            int entry = Entry.RedirectorMultiplex;
+            rom[entry + 0] = HookByte1;
+            rom[entry + 1] = HookByte2;
+            rom[entry + 2] = (byte)Handler.RedirectorMultiplex;
+            rom[entry + 3] = 0xCF;                       // IRET, when we answered
+        }
         WriteInterruptEntry(rom, Entry.Mouse, Handler.Mouse);
         WriteInterruptEntry(rom, Entry.MouseIrq, Handler.MouseIrq);
 

@@ -56,6 +56,26 @@ public sealed class RedirectorInstaller(Machine machine)
     /// </summary>
     private const uint RoutineAddress = 0x04F0;
 
+    /// <summary>
+    /// The stack the borrowed routine runs on, and it deliberately does not
+    /// grow down from the routine itself.
+    ///
+    /// INT 21h is not a shallow call: DOS pushes a great deal, and the two
+    /// functions used here go several frames deep. A stack placed just below
+    /// the routine would grow straight down through 0400h-04FFh, which is the
+    /// extended BIOS data area -- serial and parallel port addresses, video
+    /// state, the keyboard's own variables. Overwriting them does not fail
+    /// visibly: the machine carries on and then behaves oddly much later,
+    /// which is exactly the kind of damage that takes days to trace back.
+    ///
+    /// So the stack goes at the top of the first 64 KB instead, in the region
+    /// between the interrupt vectors and the first program, and gets a whole
+    /// kilobyte of room. Nothing lives there while DOS is running: the
+    /// resident part of COMMAND.COM and the transient program are both far
+    /// higher up.
+    /// </summary>
+    private const uint StackAddress = 0x7C00;
+
     /// <summary>Offset within the list of lists where the CDS array's address sits.</summary>
     private const uint ListOfListsCdsOffset = 0x16;
 
@@ -66,13 +86,38 @@ public sealed class RedirectorInstaller(Machine machine)
     public uint ListOfListsAddress { get; private set; }
 
     /// <summary>
-    /// Tries to learn the addresses. Returns true when it succeeded, which it
-    /// will not do until DOS is up.
+    /// Learns, or re-learns, where DOS keeps its structures. Returns true when
+    /// the addresses are known.
+    ///
+    /// It has to be able to re-learn, and this is not a nicety. DOS builds a
+    /// small Current Directory Structure array early -- one entry per physical
+    /// drive -- and then throws it away and allocates a bigger one when
+    /// CONFIG.SYS is processed and LASTDRIVE is known. A redirector that asks
+    /// once, during the boot sector's first few seconds, gets the address of
+    /// the array that is about to be discarded, and every flag it sets goes
+    /// into memory DOS has handed to something else. Asking again and
+    /// noticing the array has moved is the only way to be right.
     /// </summary>
-    public bool TryInstall(RedirectorServices redirector)
+    public bool TryInstall(RedirectorServices redirector, bool force = false)
     {
-        if (redirector.IsInstalled) return true;
+        if (redirector.IsInstalled && !force) return true;
         if (!_machine.Booted) return false;
+
+        // DOS is not reentrant, and this is the flag that says so.
+        //
+        // The first two bytes of the Swappable Data Area are the critical
+        // error flag and the InDOS flag: DOS raises InDOS on entry to INT 21h
+        // and lowers it on the way out, and every TSR ever written checked it
+        // before calling DOS from an interrupt. Calling in while it is up
+        // corrupts DOS's own state -- it has one set of internal stacks and
+        // one scratch area, and a second call scribbles over what the first
+        // was using. The symptom is not an error but a machine that stops
+        // partway through booting, with nothing to say why.
+        //
+        // On the first attempt the SDA address is not known yet, so there is
+        // nothing to check; that call happens from the run loop between
+        // instructions, which is as safe a moment as any.
+        if (redirector.SwappableDataArea != 0 && IsDosBusy(redirector)) return false;
 
         // A guest that is not in real mode cannot be interrupted this way:
         // the INT would go through the protected-mode descriptor tables, into
@@ -92,7 +137,21 @@ public sealed class RedirectorInstaller(Machine machine)
             (uint cds, byte driveCount) = CallForCurrentDirectoryStructure();
             if (cds == 0) return false;
 
+            if (sda == redirector.SwappableDataArea
+                && cds == redirector.CurrentDirectoryStructure
+                && driveCount == redirector.DriveCount)
+            {
+                // Nothing moved, but the vector may still have been taken
+                // away from us by something loading later.
+                _machine.HookMultiplexForRedirector();
+                return true;
+            }
+
             redirector.AttachToDos(sda, cds, driveCount);
+
+            // The vector has to be taken over after DOS has installed its own
+            // multiplex handler, not before -- see HookMultiplexForRedirector.
+            _machine.HookMultiplexForRedirector();
             return true;
         }
         finally
@@ -100,6 +159,23 @@ public sealed class RedirectorInstaller(Machine machine)
             WriteRoutineArea(savedMemory);
             RestoreContext(saved);
         }
+    }
+
+    /// <summary>
+    /// True while DOS is inside an INT 21h call of its own.
+    ///
+    /// The critical error flag is checked alongside InDOS because DOS raises
+    /// it while a critical-error handler is running -- a drive not ready, a
+    /// write-protected disk -- and reentering then is worse still: the
+    /// handler is about to make decisions on behalf of a call that is already
+    /// in flight.
+    /// </summary>
+    private bool IsDosBusy(RedirectorServices redirector)
+    {
+        byte criticalError = _machine.Memory.ReadByte(redirector.SwappableDataArea);
+        byte inDos = _machine.Memory.ReadByte(redirector.SwappableDataArea + 1);
+
+        return criticalError != 0 || inDos != 0;
     }
 
     /// <summary>
@@ -159,6 +235,21 @@ public sealed class RedirectorInstaller(Machine machine)
         // guess at an address in the middle of DOS.
         if (driveCount is 0 or > 26) return (0, 0);
 
+        // The list of lists belongs to the DOS kernel, which lives low in
+        // memory -- in the first 64 KB when it loads normally, and in the
+        // high memory area when CONFIG.SYS says DOS=HIGH. An address up in
+        // the hundreds of kilobytes is where loaded drivers and programs sit,
+        // never the kernel.
+        //
+        // This matters because the check above is weak on its own: run the
+        // interrupt before DOS exists and it returns whatever the registers
+        // happened to hold, which can easily point somewhere with a plausible
+        // small number in it. That is exactly what happened -- the redirector
+        // installed itself during the BIOS's own startup, twenty thousand
+        // instructions in, against a byte that read 3.
+        const uint HighestPlausibleKernel = 0x20000;
+        if (listOfLists >= HighestPlausibleKernel && listOfLists < 0xFFFF0) return (0, 0);
+
         return (((uint)segment << 4) + offset, driveCount);
     }
 
@@ -168,8 +259,7 @@ public sealed class RedirectorInstaller(Machine machine)
     /// The stack is moved to a scratch area rather than left where the guest
     /// had it: DOS is entered here at a moment of our choosing, and pushing an
     /// interrupt frame onto whatever stack the guest happened to be using can
-    /// land on data the guest is in the middle of reading. Half a kilobyte
-    /// below the routine is nobody's.
+    /// land on data the guest is in the middle of reading.
     /// </summary>
     private void RunRoutine(byte[] code)
     {
@@ -182,7 +272,7 @@ public sealed class RedirectorInstaller(Machine machine)
         cpu.SetSegment(CpuNs.SegReg.Cs, 0);
         cpu.State.Eip = RoutineAddress;
         cpu.SetSegment(CpuNs.SegReg.Ss, 0);
-        cpu.State.Esp = RoutineAddress - 0x10;
+        cpu.State.Esp = StackAddress;
 
         // A generous but finite budget. DOS's own INT 21h dispatch for these
         // two functions is a few hundred instructions; anything that has not

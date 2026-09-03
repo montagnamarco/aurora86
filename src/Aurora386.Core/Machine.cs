@@ -252,6 +252,7 @@ public sealed class Machine : IDisposable
             case BiosRom.Handler.TimeOfDay: HandleTimeOfDay(cpu); return;
             case BiosRom.Handler.Bootstrap: Boot(cpu); return;
             case BiosRom.Handler.Multiplex: HandleMultiplex(cpu); return;
+            case BiosRom.Handler.RedirectorMultiplex: HandleRedirectorMultiplex(cpu); return;
             case BiosRom.Handler.Xms: Xms.Handle(cpu); return;
             case BiosRom.Handler.Mouse: MouseServices.Handle(cpu); return;
 
@@ -481,6 +482,91 @@ public sealed class Machine : IDisposable
                 // untouched is precisely how INT 2Fh says "nobody answered".
                 return;
         }
+    }
+
+    /// <summary>
+    /// The redirector's own INT 2Fh handler, which sits in front of the one
+    /// DOS installs.
+    ///
+    /// It has to sit in front, and this is the detail that makes or breaks
+    /// the whole feature. The BIOS owns INT 2Fh at power-on, but DOS takes
+    /// the vector over during startup for its own multiplex functions -- and
+    /// once it has, a redirector that is still only reachable through the
+    /// BIOS's handler is never called at all, because DOS does not chain
+    /// outward for function 11h: as far as it is concerned there is no
+    /// redirector to chain to. A real redirector was a TSR that hooked the
+    /// vector after DOS was up, and that is what we imitate.
+    ///
+    /// Sitting in front brings the obligation that goes with it. INT 2Fh is
+    /// a bus rather than a service: dozens of unrelated resident programs
+    /// share it, each answering its own function number and passing on the
+    /// rest. A handler that swallows what it does not recognise silences
+    /// everybody behind it -- which here would mean DOS itself, and the
+    /// symptom would be a machine that boots and then behaves strangely in
+    /// ways that have nothing visibly to do with a shared folder. So anything
+    /// that is not ours is passed on, by rewriting the interrupt frame so
+    /// that our IRET lands in DOS's handler with the caller's registers and
+    /// flags exactly as they arrived.
+    /// </summary>
+    private void HandleRedirectorMultiplex(CpuNs.Cpu cpu)
+    {
+        ushort function = cpu.State.Ax;
+
+        if ((function >> 8) == 0x11 && Redirector.Handle(cpu)) return;
+
+        ChainToPreviousMultiplexHandler(cpu);
+    }
+
+    /// <summary>
+    /// Sends the current INT 2Fh call on to the handler we displaced.
+    ///
+    /// This is a jump, not a return, and the difference is the whole of it.
+    /// The obvious-looking trick -- overwrite the IP and CS in the interrupt
+    /// frame and let our own IRET carry execution into the other handler --
+    /// looks right and is wrong: an IRET pops three words, so by the time the
+    /// displaced handler is running, the frame it needs for its own IRET has
+    /// already been eaten. It then returns to whatever happened to be on the
+    /// stack below, which is somewhere in the middle of the caller.
+    ///
+    /// So execution is moved by setting CS:IP directly and leaving the frame
+    /// untouched, exactly as the JMP FAR through the old vector that every
+    /// TSR ended with would have done. The displaced handler finds the stack
+    /// as the interrupt left it and its own IRET returns to the caller.
+    /// </summary>
+    private void ChainToPreviousMultiplexHandler(CpuNs.Cpu cpu)
+    {
+        if (_previousMultiplexVector == 0) return;
+
+        cpu.SetSegment(CpuNs.SegReg.Cs, (ushort)(_previousMultiplexVector >> 16));
+        cpu.State.Eip = (ushort)_previousMultiplexVector;
+    }
+
+    /// <summary>The INT 2Fh vector the redirector displaced, segment:offset.</summary>
+    private uint _previousMultiplexVector;
+
+    /// <summary>
+    /// Puts the redirector's handler in front of whatever holds INT 2Fh now.
+    ///
+    /// Called once DOS is up and its structures have been found, because
+    /// hooking before then would displace the BIOS's own handler and gain
+    /// nothing: DOS would overwrite the vector a moment later anyway. It is
+    /// public so that a test can hook against a handler it planted itself,
+    /// which is the only way to check the chaining without booting DOS.
+    /// </summary>
+    public void HookMultiplexForRedirector()
+    {
+        ushort offset = Memory.ReadWord(0x2F * 4);
+        ushort segment = Memory.ReadWord(0x2F * 4 + 2);
+
+        uint current = ((uint)segment << 16) | offset;
+        uint ours = ((uint)0xF000 << 16) | BiosRom.Entry.RedirectorMultiplex;
+
+        // Already hooked. Chaining to ourselves would be an infinite loop, so
+        // this test is not an optimisation.
+        if (current == ours) return;
+
+        _previousMultiplexVector = current;
+        SetVector(0x2F, BiosRom.Entry.RedirectorMultiplex);
     }
 
     /// <summary>
@@ -805,17 +891,51 @@ public sealed class Machine : IDisposable
     /// </summary>
     private void TryInstallRedirector()
     {
-        if (Redirector.IsInstalled) return;
         if (!Redirector.MountedDrives.Any()) return;
+        if (_redirectorSettled) return;
 
         if (--_redirectorInstallCountdown > 0) return;
         _redirectorInstallCountdown = RedirectorInstallInterval;
 
-        _redirectorInstaller.TryInstall(Redirector);
-    }
+        uint before = Redirector.CurrentDirectoryStructure;
+        bool known = Redirector.IsInstalled;
 
-    /// <summary>Batches between attempts to find DOS's structures.</summary>
+        _redirectorInstaller.TryInstall(Redirector, force: known);
+
+        // The addresses are re-checked until they stop moving, and then the
+        // machine is left alone.
+        //
+        // Both halves matter. Re-checking is necessary because DOS builds a
+        // small Current Directory Structure array early -- one entry per
+        // physical drive -- and discards it for a bigger one when CONFIG.SYS
+        // names a LASTDRIVE; a redirector that asked once during the boot
+        // sector's first moments is holding the address of memory DOS has
+        // since given to something else. Stopping is equally necessary,
+        // because every check borrows the CPU to make two INT 21h calls in
+        // the guest, and doing that at an arbitrary moment for the rest of
+        // the machine's life eventually catches DOS in the middle of
+        // something of its own.
+        if (!known || Redirector.CurrentDirectoryStructure != before)
+        {
+            _redirectorStableChecks = 0;
+            return;
+        }
+
+        if (++_redirectorStableChecks >= RedirectorStableChecksNeeded)
+            _redirectorSettled = true;
+    }    /// <summary>Batches between attempts to find DOS's structures.</summary>
     private const int RedirectorInstallInterval = 200;
+
+    /// <summary>
+    /// Consecutive unchanged checks after which DOS is considered settled.
+    /// Generous, because the whole point is to still be watching when
+    /// CONFIG.SYS is processed, which is several seconds of emulated time
+    /// after the addresses first become readable.
+    /// </summary>
+    private const int RedirectorStableChecksNeeded = 400;
+
+    private int _redirectorStableChecks;
+    private bool _redirectorSettled;
     private int _redirectorInstallCountdown = 1;
 
     /// <summary>
@@ -831,7 +951,10 @@ public sealed class Machine : IDisposable
     public bool MountRedirectedDrive(byte drive, IRedirectedFileSystem fileSystem)
     {
         Redirector.Mount(drive, fileSystem);
-        _redirectorInstaller.TryInstall(Redirector);
+        // Force the re-check: without it the installer sees that it already
+        // has addresses and returns at once, so a set captured too early --
+        // before DOS existed at all -- would never be replaced.
+        _redirectorInstaller.TryInstall(Redirector, force: true);
 
         return !Redirector.IsInstalled || drive < Redirector.DriveCount;
     }

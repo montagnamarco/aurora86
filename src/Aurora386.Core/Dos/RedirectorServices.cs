@@ -70,6 +70,15 @@ public sealed class RedirectorServices(Machine machine)
     private readonly Dictionary<ushort, ActiveSearch> _searches = [];
     private ushort _nextSearchId = 1;
 
+    /// <summary>
+    /// Diagnostics hook, called for every subfunction with the drive it was
+    /// resolved to. It exists because the single hardest thing to see about
+    /// this interface is whether DOS is routing to it at all: a drive that
+    /// reports "invalid drive" looks identical whether the redirector
+    /// answered badly or was never asked.
+    /// </summary>
+    public Action<byte, byte>? Trace { get; set; }
+
     /// <summary>Address of the Swappable Data Area, learned at installation.</summary>
     public uint SwappableDataArea { get; private set; }
 
@@ -168,13 +177,22 @@ public sealed class RedirectorServices(Machine machine)
     public IEnumerable<byte> MountedDrives => _drives.Keys.Order();
 
     /// <summary>
-    /// Sets bit 15 in the drive's CDS flags, which is the entire act of
-    /// installing a redirector on a letter.
+    /// Marks the drive's CDS entry as one we serve, which is the entire act
+    /// of installing a redirector on a letter.
     ///
-    /// The physical-drive bit is cleared at the same time. DOS uses it to
-    /// decide whether the letter has a real block device behind it, and a
-    /// drive that claims to be both redirected and physical sends DOS looking
-    /// for a drive parameter block that does not exist.
+    /// Both of the top two bits go in, and the second one is not obvious.
+    /// Bit 15 is what diverts file operations to INT 2Fh function 11h, and
+    /// looks like the whole answer. But MS-DOS decides separately whether a
+    /// letter may be selected at all, and that test wants bit 14 -- nominally
+    /// "there is a physical drive here" -- set as well: with bit 15 alone,
+    /// typing the letter gets "Invalid drive specification" and the
+    /// redirector is never consulted about anything, because DOS refuses the
+    /// drive before it gets that far.
+    ///
+    /// Reading bit 14 as literally meaning "a real disk" is what makes this
+    /// surprising, and it is the wrong reading. What DOS actually takes from
+    /// it is "this entry describes a usable drive", and a redirected drive is
+    /// one. MSCDEX set both bits too, which is why a CD could be selected.
     /// </summary>
     private void MarkDriveRedirected(byte drive)
     {
@@ -187,8 +205,7 @@ public sealed class RedirectorServices(Machine machine)
         uint entry = CurrentDirectoryStructure + (uint)(drive * DosStructures.CdsEntrySize);
         ushort flags = _machine.Memory.ReadWord(entry + DosStructures.CdsFlags);
 
-        flags |= DosStructures.CdsRedirectedFlag;
-        flags = (ushort)(flags & ~DosStructures.CdsPhysicalFlag);
+        flags |= DosStructures.CdsRedirectedFlag | DosStructures.CdsValidFlag;
         _machine.Memory.WriteWord(entry + DosStructures.CdsFlags, flags);
 
         // The path has to name the drive we are pretending to be, because DOS
@@ -207,7 +224,7 @@ public sealed class RedirectorServices(Machine machine)
         uint entry = CurrentDirectoryStructure + (uint)(drive * DosStructures.CdsEntrySize);
         ushort flags = _machine.Memory.ReadWord(entry + DosStructures.CdsFlags);
         _machine.Memory.WriteWord(entry + DosStructures.CdsFlags,
-                                  (ushort)(flags & ~DosStructures.CdsRedirectedFlag));
+            (ushort)(flags & ~(DosStructures.CdsRedirectedFlag | DosStructures.CdsValidFlag)));
     }
 
     /// <summary>
@@ -230,6 +247,7 @@ public sealed class RedirectorServices(Machine machine)
     public bool Handle(CpuNs.Cpu cpu)
     {
         byte subfunction = cpu.State.GetReg8(0);   // AL
+        Trace?.Invoke(subfunction, CurrentDrive());
 
         // The installation check is answered whether or not anything is
         // mounted: it says a redirector exists, not that a particular drive
