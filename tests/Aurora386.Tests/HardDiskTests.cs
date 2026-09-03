@@ -21,7 +21,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void LaGeometriaRispettaLaDimensioneRichiesta()
+    public void GeometryMatchesTheRequestedSize()
     {
         // 40 MB: a typical size for a disk of the period.
         HardDiskImage.Geometry g = HardDiskImage.Create(_path, 40 * 1024 * 1024);
@@ -34,7 +34,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void LaGeometriaNonSuperaIlLimiteCrs()
+    public void GeometryStaysWithinTheChsLimits()
     {
         // Beyond 1024 cylinders the BIOS's CHS addressing simply cannot
         // reach: the cylinder field is ten bits wide. Cap the geometry rather
@@ -44,7 +44,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void IlMbrHaLaFirmaEUnaPartizioneAttiva()
+    public void MbrHasTheSignatureAndAnActivePartition()
     {
         HardDiskImage.Create(_path, 20 * 1024 * 1024);
         byte[] mbr = new byte[512];
@@ -66,7 +66,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void LeAltreVociDellaTabellaSonoVuote()
+    public void TheOtherPartitionEntriesAreEmpty()
     {
         HardDiskImage.Create(_path, 20 * 1024 * 1024);
         byte[] mbr = new byte[512];
@@ -78,7 +78,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void LaPartizioneContieneUnBpbFat16Valido()
+    public void PartitionContainsAValidFat16Bpb()
     {
         HardDiskImage.Create(_path, 40 * 1024 * 1024);
 
@@ -106,7 +106,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void LaConversioneChsEReversibile()
+    public void ChsConversionRoundTrips()
     {
         var g = new HardDiskImage.Geometry(100, 16, 63);
 
@@ -119,7 +119,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void IlDiscoCreatoSiApreConLaGeometriaGiusta()
+    public void CreatedImageOpensWithTheRightGeometry()
     {
         HardDiskImage.Geometry expected = HardDiskImage.Create(_path, 30 * 1024 * 1024);
 
@@ -132,7 +132,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void LettureEScrittureSuDiscoFissoFunzionano()
+    public void HardDiskReadsAndWritesRoundTrip()
     {
         using DiskImage disk = DiskImage.CreateHardDisk(_path, 20 * 1024 * 1024);
 
@@ -149,7 +149,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void IlBiosVedeIlDiscoFisso()
+    public void TheBiosSeesTheHardDisk()
     {
         using var machine = new Machine();
         machine.AttachDisk(DiskImage.CreateHardDisk(_path, 20 * 1024 * 1024));
@@ -180,7 +180,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void ILettureBiosDalDiscoFissoConsegnanoIlMbr()
+    public void BiosReadsFromTheHardDiskDeliverTheMbr()
     {
         // Reads the first sector through INT 13h and checks it is the MBR.
         //   B8 00 00  MOV AX,0 ; 8E C0 MOV ES,AX ; BB 00 60 MOV BX,0x6000
@@ -210,7 +210,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void UnImmagineInSolaLetturaPuoEssereApertaPiuVolte()
+    public void ReadOnlyImageCanBeOpenedSeveralTimes()
     {
         // Inspecting the same image with several tools at once is entirely
         // normal, so opening it read-only must not prevent it. With overly
@@ -230,7 +230,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void UnImmagineInScritturaRestaLeggibileDaAltri()
+    public void WritableImageStaysReadableByOthers()
     {
         // A writer excludes other writers but not readers, so an image can be
         // inspected while the emulator is running against it.
@@ -249,7 +249,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void IlMbrTrovaLaPartizioneAttivaECaricaIlSuoSettore()
+    public void MbrFindsTheActivePartitionAndLoadsItsBootSector()
     {
         // The MBR has to relocate itself downwards, find the table entry
         // marked 0x80, read that partition's boot sector to 0x7C00 and jump
@@ -275,7 +275,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void UnDiscoVuotoMostraDiscoNonDiSistema()
+    public void EmptyDiskReportsNonSystemDisk()
     {
         // A disk that is partitioned but carries no operating system has to
         // say so rather than sitting silent: a black screen gives no way to
@@ -293,7 +293,7 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void UnDiscoFissoAvviabileVieneScelto()
+    public void BootableHardDiskIsChosenToBootFrom()
     {
         // With only the hard disk attached, the BIOS must boot from it.
         using var machine = new Machine();

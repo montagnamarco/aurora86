@@ -12,7 +12,7 @@ namespace Aurora386.Tests;
 public class A20Tests
 {
     [Fact]
-    public void ConA20SpentaGliIndirizziAvvolgonoAUnMegabyte()
+    public void WithA20DisabledAddressesWrapAtOneMegabyte()
     {
         using var bus = new PhysicalMemoryBus();
         bus.A20Enabled = false;
@@ -24,7 +24,7 @@ public class A20Tests
     }
 
     [Fact]
-    public void ConA20AccesaGliIndirizziSonoDistinti()
+    public void WithA20EnabledAddressesStayDistinct()
     {
         using var bus = new PhysicalMemoryBus();
         bus.A20Enabled = true;
@@ -37,7 +37,7 @@ public class A20Tests
     }
 
     [Fact]
-    public void IlWrappingValeAncheInScrittura()
+    public void AddressWrappingAppliesToWritesToo()
     {
         // A write above the megabyte with A20 off must land low as well;
         // otherwise reads and writes would disagree about where memory is.
@@ -55,7 +55,7 @@ public class A20Tests
     }
 
     [Fact]
-    public void SoloIlBitVentiVieneEscluso()
+    public void OnlyBitTwentyIsMaskedOff()
     {
         // The wrap clears bit 20; it does not truncate to 20 bits. Memory
         // above 2 MB must stay reachable even with A20 disabled.
@@ -68,7 +68,7 @@ public class A20Tests
     }
 
     [Fact]
-    public void LaProvaDiWrappingUsataDalSoftwareDaLEsitoAtteso()
+    public void TheSoftwareWrapAroundProbeGivesTheExpectedResult()
     {
         // This is the canonical way a program probes A20: write low, then
         // read back one megabyte higher and see whether it aliased.
@@ -86,7 +86,7 @@ public class A20Tests
     }
 
     [Fact]
-    public void AccessoACavalloDelMegabyteConA20Spenta()
+    public void AccessStraddlingTheMegabyteBoundaryWithA20Disabled()
     {
         // Edge case: a 32-bit access starting just below the boundary. Every
         // byte of it has to be masked consistently.
@@ -104,7 +104,7 @@ public class A20Tests
 public class A20HardwareTests
 {
     [Fact]
-    public void LaPortaNoveDueControllaA20()
+    public void Port92ControlsTheA20Line()
     {
         using var machine = new Machine();
         machine.RunInstructions(300);
@@ -118,7 +118,7 @@ public class A20HardwareTests
     }
 
     [Fact]
-    public void LaPortaNoveDueRiportaLoStatoEffettivo()
+    public void Port92ReportsTheActualA20State()
     {
         using var machine = new Machine();
         machine.RunInstructions(300);
@@ -134,7 +134,7 @@ public class A20HardwareTests
     }
 
     [Fact]
-    public void IlControllerDiTastieraControllaA20()
+    public void KeyboardControllerControlsTheA20Line()
     {
         using var machine = new Machine();
         machine.RunInstructions(300);
@@ -150,7 +150,7 @@ public class A20HardwareTests
     }
 
     [Fact]
-    public void LeDueVieDiControlloVedonoLaStessaLinea()
+    public void BothControlPathsSeeTheSameA20Line()
     {
         // The keyboard controller and port 0x92 drive the same physical wire.
         // Keeping two separate states would let them drift apart.
@@ -166,7 +166,7 @@ public class A20HardwareTests
     }
 
     [Fact]
-    public void Int15hFunzione24hGestisceA20()
+    public void Int15hFunction24hManagesA20()
     {
         //   B8 01 24   MOV AX,0x2401  (enable A20)
         //   CD 15      INT 15h
@@ -208,7 +208,7 @@ public class XmsTests
     }
 
     [Fact]
-    public void LaVersioneRiportaLaPresenzaDellaHma()
+    public void VersionQueryReportsThatTheHmaExists()
     {
         using Machine machine = CreateBootedMachine();
         CallXms(machine, 0x00);
@@ -218,7 +218,7 @@ public class XmsTests
     }
 
     [Fact]
-    public void LaRichiestaDellaHmaRiesceEAccendeA20()
+    public void RequestingTheHmaSucceedsAndEnablesA20()
     {
         using Machine machine = CreateBootedMachine();
         machine.Memory.A20Enabled = false;
@@ -232,7 +232,7 @@ public class XmsTests
     }
 
     [Fact]
-    public void LaHmaNonPuoEssereAssegnataDueVolte()
+    public void TheHmaCannotBeAllocatedTwice()
     {
         using Machine machine = CreateBootedMachine();
 
@@ -244,7 +244,7 @@ public class XmsTests
     }
 
     [Fact]
-    public void SpegnereA20ConLaHmaInUsoVieneRifiutato()
+    public void DisablingA20WhileTheHmaIsInUseIsRefused()
     {
         // Turning it off would make the code currently executing up there
         // unreachable. This is a safeguard, not an arbitrary restriction.
@@ -259,7 +259,7 @@ public class XmsTests
     }
 
     [Fact]
-    public void UnaRichiestaTroppoGrandeVieneRifiutata()
+    public void AnOversizedRequestIsRefused()
     {
         using Machine machine = CreateBootedMachine();
         CallXms(machine, 0x01, c => c.State.Dx = 0xFFF1);   // larger than the HMA
@@ -269,7 +269,7 @@ public class XmsTests
     }
 
     [Fact]
-    public void LaMemoriaEstesaDisponibileRispecchiaLaRam()
+    public void AvailableExtendedMemoryMatchesTheInstalledRam()
     {
         using Machine machine = CreateBootedMachine();
         CallXms(machine, 0x08);
@@ -280,7 +280,7 @@ public class XmsTests
     }
 
     [Fact]
-    public void AllocazioneELiberazioneDiUnBlocco()
+    public void AllocatingAndFreeingABlock()
     {
         using Machine machine = CreateBootedMachine();
 
@@ -300,7 +300,7 @@ public class XmsTests
     }
 
     [Fact]
-    public void UnHandleNonValidoVieneRifiutato()
+    public void AnInvalidHandleIsRejected()
     {
         using Machine machine = CreateBootedMachine();
         CallXms(machine, 0x0A, c => c.State.Dx = 999);
@@ -310,7 +310,7 @@ public class XmsTests
     }
 
     [Fact]
-    public void UnBloccoBloccatoNonPuoEssereLiberato()
+    public void ALockedBlockCannotBeFreed()
     {
         using Machine machine = CreateBootedMachine();
 
@@ -330,7 +330,7 @@ public class XmsTests
     }
 
     [Fact]
-    public void CopiaDallaMemoriaConvenzionaleAQuellaEstesa()
+    public void CopyFromConventionalToExtendedMemory()
     {
         using Machine machine = CreateBootedMachine();
 
@@ -363,7 +363,7 @@ public class XmsTests
     }
 
     [Fact]
-    public void UnaLunghezzaDispariVieneRifiutata()
+    public void AnOddLengthIsRejected()
     {
         // The XMS specification requires even transfer lengths.
         using Machine machine = CreateBootedMachine();
@@ -387,7 +387,7 @@ public class XmsTests
 public class MultiplexTests
 {
     [Fact]
-    public void Int2FhAnnunciaIlGestoreXms()
+    public void Int2FhAnnouncesTheXmsHandler()
     {
         //   B8 00 43   MOV AX,0x4300
         //   CD 2F      INT 2Fh
@@ -408,7 +408,7 @@ public class MultiplexTests
     }
 
     [Fact]
-    public void Int2FhFornisceIlPuntoDiIngresso()
+    public void Int2FhProvidesTheXmsEntryPoint()
     {
         //   B8 10 43   MOV AX,0x4310
         //   CD 2F      INT 2Fh

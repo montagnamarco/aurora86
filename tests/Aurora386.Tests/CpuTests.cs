@@ -41,7 +41,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void MovImmediatoInRegistro16Bit()
+    public void MovLoadsAnImmediateIntoA16BitRegister()
     {
         // B8 34 12 = MOV AX, 0x1234
         var cpu = Run(1, 0xB8, 0x34, 0x12);
@@ -50,7 +50,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void MovSuRegistroA8BitNonToccaGliAltriByte()
+    public void MovToAn8BitRegisterLeavesTheOtherBytesAlone()
     {
         // B0 FF = MOV AL, 0xFF -- the upper half of AX must survive untouched
         var (cpu, bus) = Setup(0xB0, 0xFF);
@@ -63,7 +63,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void MovSuRegistroA16BitPreservaLaMetaAlta()
+    public void MovToA16BitRegisterPreservesTheUpperHalf()
     {
         // An important difference from x86-64: writing AX does not zero the
         // upper 16 bits of EAX. Get this wrong and 32-bit code silently loses
@@ -78,7 +78,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void AddConRegistriEFlag()
+    public void AddCombinesRegistersAndSetsFlags()
     {
         // B8 FF FF = MOV AX,0xFFFF ; 05 01 00 = ADD AX,1
         var cpu = Run(2, 0xB8, 0xFF, 0xFF, 0x05, 0x01, 0x00);
@@ -88,7 +88,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void SubImpostaIlCarryComePrestito()
+    public void SubSetsCarryAsABorrow()
     {
         // B8 05 00 = MOV AX,5 ; 2D 0A 00 = SUB AX,10
         var cpu = Run(2, 0xB8, 0x05, 0x00, 0x2D, 0x0A, 0x00);
@@ -98,7 +98,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void CmpNonModificaGliOperandi()
+    public void CmpLeavesTheOperandsUnchanged()
     {
         // B8 05 00 = MOV AX,5 ; 3D 05 00 = CMP AX,5
         var cpu = Run(2, 0xB8, 0x05, 0x00, 0x3D, 0x05, 0x00);
@@ -108,7 +108,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void PushEPopAttraversoLoStack()
+    public void PushAndPopRoundTripThroughTheStack()
     {
         // B8 CD AB = MOV AX,0xABCD ; 50 = PUSH AX ; 5B = POP BX
         var cpu = Run(3, 0xB8, 0xCD, 0xAB, 0x50, 0x5B);
@@ -117,7 +117,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void SaltoCondizionatoPresoENonPreso()
+    public void ConditionalJumpIsTakenAndNotTaken()
     {
         // 31 C0 = XOR AX,AX (ZF=1) ; 74 02 = JZ +2 ; B0 FF = MOV AL,0xFF (skipped)
         var cpu = Run(2, 0x31, 0xC0, 0x74, 0x02, 0xB0, 0xFF);
@@ -132,7 +132,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void CallERetTornanoAlPuntoGiusto()
+    public void CallAndRetReturnToTheRightAddress()
     {
         // E8 01 00 = CALL +1 ; 90 = NOP ; C3 = RET
         var cpu = Run(2, 0xE8, 0x01, 0x00, 0x90, 0xC3);
@@ -143,7 +143,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void IndirizzamentoModRmConSpiazzamento()
+    public void ModRmAddressingWithDisplacementResolves()
     {
         // BB 00 20 = MOV BX,0x2000 ; C7 47 10 CD AB = MOV [BX+0x10],0xABCD
         var (cpu, bus) = Setup(0xBB, 0x00, 0x20, 0xC7, 0x47, 0x10, 0xCD, 0xAB);
@@ -156,7 +156,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void SpiazzamentoA8BitEConSegno()
+    public void EightBitDisplacementIsSignExtended()
     {
         // BB 00 20 = MOV BX,0x2000 ; C7 47 FE CD AB = MOV [BX-2],0xABCD
         var (cpu, bus) = Setup(0xBB, 0x00, 0x20, 0xC7, 0x47, 0xFE, 0xCD, 0xAB);
@@ -169,7 +169,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void PrefissoDiOverrideDelSegmento()
+    public void SegmentOverridePrefixSelectsTheSegment()
     {
         // 26 C7 07 CD AB = MOV ES:[BX],0xABCD; with ES=0x300 that resolves
         // to linear 0x3000+BX rather than DS's segment
@@ -184,7 +184,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void PrefissoDiDimensioneOperandiPassaA32Bit()
+    public void OperandSizePrefixSwitchesTo32Bit()
     {
         // 66 B8 78 56 34 12 = MOV EAX,0x12345678
         var cpu = Run(1, 0x66, 0xB8, 0x78, 0x56, 0x34, 0x12);
@@ -192,7 +192,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void IncEDecPreservanoIlCarryAnchiEseguiti()
+    public void IncAndDecLeaveCarryUntouched()
     {
         // F9 = STC ; 40 = INC AX -- INC and DEC deliberately leave carry
         // alone, which is what makes them usable inside multi-word arithmetic
@@ -202,7 +202,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void InterruzioneSoftwareInRealMode()
+    public void SoftwareInterruptDispatchesInRealMode()
     {
         var (cpu, bus) = Setup(0xCD, 0x21);        // INT 0x21
         using (bus)
@@ -221,7 +221,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void IretRipristinaContestoEFlag()
+    public void IretRestoresTheContextAndFlags()
     {
         // INT 0x21 with an IRET in the handler: execution must resume at
         // exactly the instruction after the INT, with the flags restored.
@@ -243,7 +243,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void LoopDiSommaProduceIlRisultatoAtteso()
+    public void SummationLoopProducesTheExpectedTotal()
     {
         // Sums 1..10 with a real loop, checking that decoding, flags and
         // branches work together rather than only in isolation.
@@ -264,7 +264,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void SaltoLungoAllIndietroUsaSpiazzamentoConSegno()
+    public void NearJumpBackwardUsesASignedDisplacement()
     {
         // E9 with a negative 16-bit displacement: 0xFFFA is -6, not +65530.
         // Without correct sign extension execution shoots off into the weeds
@@ -280,7 +280,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void CallLungaAllIndietroUsaSpiazzamentoConSegno()
+    public void NearCallBackwardUsesASignedDisplacement()
     {
         //   90           NOP
         //   E8 FC FF     CALL -4 -> calls the leading NOP
@@ -296,7 +296,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void SaltoCondizionatoLungoAllIndietro()
+    public void NearConditionalJumpBackwardIsTaken()
     {
         // 0F 84 (near JZ) with a negative displacement.
         //   31 C0        XOR AX,AX     (ZF=1)
@@ -311,7 +311,7 @@ public class CpuTests
     }
 
     [Fact]
-    public void OpcodeNonValidoGeneraEccezione6()
+    public void InvalidOpcodeRaisesException6()
     {
         var (cpu, bus) = Setup(0x0F, 0xFF);        // 0x0F 0xFF is not a 386 opcode
         using (bus)

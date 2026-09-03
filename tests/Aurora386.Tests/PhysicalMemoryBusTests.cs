@@ -26,7 +26,7 @@ public class PhysicalMemoryBusTests
     }
 
     [Fact]
-    public void RamAppenaCreataEAzzerata()
+    public void FreshlyCreatedRamIsZeroed()
     {
         using var bus = new PhysicalMemoryBus();
         Assert.Equal(0, bus.ReadByte(0));
@@ -35,7 +35,7 @@ public class PhysicalMemoryBusTests
     }
 
     [Fact]
-    public void ScritturaELetturaRispettanoLittleEndian()
+    public void ReadsAndWritesAreLittleEndian()
     {
         using var bus = new PhysicalMemoryBus();
         bus.WriteDword(0x1000, 0xDEADBEEF);
@@ -49,7 +49,7 @@ public class PhysicalMemoryBusTests
     }
 
     [Fact]
-    public void AccessoDisallineatoAttraversoConfineDiPaginaFunziona()
+    public void UnalignedAccessAcrossAPageBoundaryWorks()
     {
         using var bus = new PhysicalMemoryBus();
         // The last two bytes of page 0 and the first two of page 1.
@@ -64,7 +64,7 @@ public class PhysicalMemoryBusTests
     }
 
     [Fact]
-    public void ScrittureSuRomVengonoScartateMaLettureFunzionano()
+    public void WritesToRomAreDiscardedButReadsWork()
     {
         using var bus = new PhysicalMemoryBus();
         byte[] rom = [0xAA, 0xBB, 0xCC, 0xDD];
@@ -79,7 +79,7 @@ public class PhysicalMemoryBusTests
     }
 
     [Fact]
-    public void DispositivoMappatoRiceveOffsetRelativo()
+    public void MappedDeviceReceivesARelativeOffset()
     {
         using var bus = new PhysicalMemoryBus();
         var device = new FakeDevice();
@@ -95,7 +95,7 @@ public class PhysicalMemoryBusTests
     }
 
     [Fact]
-    public void LetturaLargaSuMmioUsaUnaSolaChiamata()
+    public void WideMmioReadUsesASingleCall()
     {
         // This matters: registers with side effects on read must not be
         // triggered several times over by one 32-bit access.
@@ -113,7 +113,7 @@ public class PhysicalMemoryBusTests
     }
 
     [Fact]
-    public void MappaturaDispositivoRimpiazzaLaRamEMapRamLaRipristina()
+    public void MappingADeviceReplacesRamAndMapRamRestoresIt()
     {
         using var bus = new PhysicalMemoryBus();
         bus.WriteByte(0xA0000, 0x11);
@@ -128,7 +128,7 @@ public class PhysicalMemoryBusTests
     }
 
     [Fact]
-    public void AccessiOltreLoSpazioIndirizzabileSonoInnocui()
+    public void AccessesBeyondTheAddressSpaceAreHarmless()
     {
         using var bus = new PhysicalMemoryBus();
         Assert.Equal(0xFF, bus.ReadByte(0xFFFFFFFF));
@@ -137,7 +137,7 @@ public class PhysicalMemoryBusTests
     }
 
     [Fact]
-    public void MappaturaDisallineataVieneRifiutata()
+    public void UnalignedMappingIsRejected()
     {
         using var bus = new PhysicalMemoryBus();
         var device = new FakeDevice();

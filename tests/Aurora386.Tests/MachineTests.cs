@@ -30,7 +30,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void AccensioneEseguePostEPreparaLaBda()
+    public void PowerOnRunsPostAndFillsTheBda()
     {
         using var machine = new Machine();
 
@@ -45,7 +45,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void PostInstallaITabellaDeiVettori()
+    public void PostInstallsTheInterruptVectorTable()
     {
         using var machine = new Machine();
         machine.RunInstructions(50);
@@ -59,7 +59,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void SenzaDiscoAvviabileLaMacchinaSiFerma()
+    public void MachineHaltsWithoutABootableDisk()
     {
         using var machine = new Machine();
         machine.RunInstructions(200);
@@ -69,7 +69,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void SettoreSenzaFirmaNonVieneAvviato()
+    public void SectorWithoutTheBootSignatureIsNotBooted()
     {
         using var machine = new Machine();
 
@@ -85,7 +85,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void SettoreDiAvvioVieneCaricatoEdEseguito()
+    public void BootSectorIsLoadedAndExecuted()
     {
         // The sector writes a recognisable value into memory and halts.
         //   B8 34 12    MOV AX,0x1234
@@ -102,7 +102,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void SettoreDiAvvioRiceveLUnitaInDl()
+    public void BootSectorReceivesTheDriveNumberInDl()
     {
         // The sector saves DL, which the BIOS must have loaded with the
         // number of the drive it was read from -- that is how a real boot
@@ -119,7 +119,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void ScritturaSulloSchermoConInt10h()
+    public void Int10hWritesCharactersToTheScreen()
     {
         // Writes "OK" through the teletype function, which is what DOS uses
         // for very nearly all of its output.
@@ -142,7 +142,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void ScritturaDiUnaRigaConRitornoACapo()
+    public void CarriageReturnAndLineFeedMoveTheCursor()
     {
         // "AB" followed by CR LF, then "C": the C must land on the next line.
         var code = new List<byte> { 0xB4, 0x0E };   // MOV AH,0x0E
@@ -163,7 +163,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void LetturaDiSettoriConInt13h()
+    public void Int13hReadsSectorsIntoMemory()
     {
         // Reads the disk's second sector to 0x6000 and halts.
         //   B8 00 00    MOV AX,0
@@ -199,7 +199,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void InterruzioneDelTimerIncrementaIlContatore()
+    public void TimerInterruptIncrementsTheTickCount()
     {
         // The sector enables interrupts and waits.
         //   FB          STI
@@ -221,7 +221,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void PressioneDiUnTastoArrivaAInt16h()
+    public void KeyPressIsDeliveredThroughInt16h()
     {
         // Waits for a keystroke and stores its ASCII code.
         //   B4 00       MOV AH,0
@@ -242,7 +242,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void MemoriaEstesaRiportataDaInt15h()
+    public void Int15hReportsTheExtendedMemorySize()
     {
         //   B4 88       MOV AH,0x88
         //   CD 15       INT 15h
@@ -259,7 +259,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void DimensioneMemoriaConvenzionaleDaInt12h()
+    public void Int12hReportsTheConventionalMemorySize()
     {
         byte[] boot = BuildBootSector(0xCD, 0x12, 0xA3, 0x00, 0x60, 0xF4);
 

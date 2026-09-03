@@ -19,7 +19,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void AddEsaustivoSu8Bit()
+    public void ExhaustiveEightBitAdd()
     {
         var f = new LazyFlags();
         for (uint a = 0; a <= 0xFF; a++)
@@ -43,7 +43,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void SubEsaustivoSu8Bit()
+    public void ExhaustiveEightBitSub()
     {
         var f = new LazyFlags();
         for (uint a = 0; a <= 0xFF; a++)
@@ -65,7 +65,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void AdcEsaustivoSu8BitConEntrambiICarryEntranti()
+    public void ExhaustiveEightBitAdcWithBothIncomingCarries()
     {
         var f = new LazyFlags();
         for (uint carryIn = 0; carryIn <= 1; carryIn++)
@@ -83,7 +83,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void SbbEsaustivoSu8BitConEntrambiIPrestitiEntranti()
+    public void ExhaustiveEightBitSbbWithBothIncomingBorrows()
     {
         var f = new LazyFlags();
         for (uint borrowIn = 0; borrowIn <= 1; borrowIn++)
@@ -99,7 +99,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void IncEDecPreservanoIlCarry()
+    public void IncAndDecPreserveCarry()
     {
         // This is what makes them usable inside multi-precision addition
         // loops: the running carry survives the loop counter's own INC/DEC.
@@ -116,7 +116,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void IncSegnalaOverflowSoloAlLimitePositivo()
+    public void IncSignalsOverflowOnlyAtThePositiveLimit()
     {
         var f = new LazyFlags();
         f.Set(FlagOp.Inc, 0x7F, 1, 0x80, 8);
@@ -128,7 +128,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void DecSegnalaOverflowSoloAlLimiteNegativo()
+    public void DecSignalsOverflowOnlyAtTheNegativeLimit()
     {
         var f = new LazyFlags();
         f.Set(FlagOp.Dec, 0x80, 1, 0x7F, 8);
@@ -137,7 +137,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void LogicAzzeraCarryEOverflow()
+    public void LogicOperationsClearCarryAndOverflow()
     {
         var f = new LazyFlags();
         f.Carry = true;
@@ -151,7 +151,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void ParitaGuardaSoloGliOttoBitBassi()
+    public void ParityLooksOnlyAtTheLowEightBits()
     {
         // True for 16- and 32-bit operands as well: PF is defined over the
         // low byte only, a quirk inherited straight from the 8080.
@@ -164,7 +164,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void FlagDiControlloSonoIndipendentiDaQuelliAritmetici()
+    public void ControlFlagsAreIndependentOfTheArithmeticOnes()
     {
         var f = new LazyFlags();
         f.Interrupt = true;
@@ -178,7 +178,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void SetValueScartaLOperazionePendente()
+    public void SetValueDiscardsThePendingOperation()
     {
         var f = new LazyFlags();
         f.Set(FlagOp.Add, 0xFF, 0xFF, 0xFE, 8);   // would evaluate to carry set
@@ -189,7 +189,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void OperazioniA32BitCalcolanoCarryEOverflow()
+    public void ThirtyTwoBitOperationsComputeCarryAndOverflow()
     {
         var f = new LazyFlags();
         f.Set(FlagOp.Add, 0xFFFFFFFF, 1, 0, 32);
@@ -204,7 +204,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void ShlCalcolaCarryDallUltimoBitUscito()
+    public void ShlTakesCarryFromTheLastBitShiftedOut()
     {
         var f = new LazyFlags();
         f.Set(FlagOp.Shl, 0x80, 1, 0x00, 8);
@@ -217,7 +217,7 @@ public class LazyFlagsTests
     }
 
     [Fact]
-    public void ShrEdSarDifferisconoSulSegno()
+    public void ShrAndSarDifferOnTheSignBit()
     {
         var f = new LazyFlags();
         f.Set(FlagOp.Shr, 0x81, 1, 0x40, 8);

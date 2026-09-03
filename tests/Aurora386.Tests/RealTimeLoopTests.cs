@@ -21,7 +21,7 @@ public class RealTimeLoopTests
     }
 
     [Fact]
-    public void IlTimerScorreAllaFrequenzaDelPc()
+    public void TimerTicksAtThePcFrequency()
     {
         using var machine = new Machine();
         DiskImage disk = DiskImage.CreateInMemory(0x00, 80, 2, 18);
@@ -44,7 +44,7 @@ public class RealTimeLoopTests
     }
 
     [Fact]
-    public void IlRenderNonRidisegnaSenzaCambiamenti()
+    public void RendererDoesNotRedrawWithoutChanges()
     {
         // Redrawing 80x25 cells every frame when nothing has changed is
         // almost entirely wasted work, and dirty row tracking exists precisely
@@ -66,7 +66,7 @@ public class RealTimeLoopTests
     }
 
     [Fact]
-    public void IlRenderRidisegnaQuandoLoSchermoCambia()
+    public void RendererRedrawsWhenTheScreenChanges()
     {
         using var machine = new Machine();
         machine.RunInstructions(500);
@@ -80,7 +80,7 @@ public class RealTimeLoopTests
     }
 
     [Fact]
-    public void IlFramebufferHaLaDimensioneDelModoTesto()
+    public void FramebufferHasTheTextModeSize()
     {
         using var machine = new Machine();
         machine.RunInstructions(500);
@@ -92,7 +92,7 @@ public class RealTimeLoopTests
     }
 
     [Fact]
-    public void LEsecuzioneAvanzaDiUnNumeroCoerenteDiIstruzioni()
+    public void ExecutionAdvancesByAConsistentInstructionCount()
     {
         using var machine = new Machine();
         DiskImage disk = DiskImage.CreateInMemory(0x00, 80, 2, 18);
@@ -118,7 +118,7 @@ public class RealTimeLoopTests
     }
 
     [Fact]
-    public void IlCursoreLampeggiaSenzaToccareLaMemoriaVideo()
+    public void CursorBlinksWithoutTouchingVideoMemory()
     {
         using var machine = new Machine();
         machine.RunInstructions(500);

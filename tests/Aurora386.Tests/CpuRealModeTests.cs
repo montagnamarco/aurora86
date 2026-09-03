@@ -48,7 +48,7 @@ public class CpuRealModeTests
     // --- multiply and divide ---------------------------------------------------
 
     [Fact]
-    public void MulA16BitProduceIlRisultatoInDxAx()
+    public void SixteenBitMulPutsTheResultInDxAx()
     {
         // B8 00 10 = MOV AX,0x1000 ; BB 00 10 = MOV BX,0x1000 ; F7 E3 = MUL BX
         var cpu = Run(3, 0xB8, 0x00, 0x10, 0xBB, 0x00, 0x10, 0xF7, 0xE3);
@@ -59,7 +59,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void MulSenzaOverflowAzzeraCarry()
+    public void MulClearsCarryWhenTheHighHalfIsZero()
     {
         // 2 * 3 fits comfortably in 16 bits
         var cpu = Run(3, 0xB8, 0x02, 0x00, 0xBB, 0x03, 0x00, 0xF7, 0xE3);
@@ -69,7 +69,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void ImulConSegnoGestisceINegativi()
+    public void ImulHandlesNegativeOperands()
     {
         // MOV AX,-2 ; MOV BX,3 ; IMUL BX  ->  -6
         var cpu = Run(3, 0xB8, 0xFE, 0xFF, 0xBB, 0x03, 0x00, 0xF7, 0xEB);
@@ -78,7 +78,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void DivProduceQuozienteEResto()
+    public void DivProducesQuotientAndRemainder()
     {
         // MOV DX,0 ; MOV AX,17 ; MOV BX,5 ; DIV BX
         var cpu = Run(4, 0xBA, 0x00, 0x00, 0xB8, 0x11, 0x00, 0xBB, 0x05, 0x00, 0xF7, 0xF3);
@@ -87,7 +87,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void DivisionePerZeroGeneraEccezione0()
+    public void DivideByZeroRaisesException0()
     {
         var (cpu, bus) = Setup(0xBA, 0x00, 0x00, 0xB8, 0x11, 0x00, 0xBB, 0x00, 0x00, 0xF7, 0xF3);
         using (bus)
@@ -100,7 +100,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void QuozienteTroppoGrandeGeneraEccezione0()
+    public void QuotientOverflowRaisesException0()
     {
         // DX:AX / 1 with DX non-zero yields a quotient too large for 16 bits.
         // On real hardware that is a divide error, not a silent truncation.
@@ -115,7 +115,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void NegImpostaIlCarrySeLOperandoNonEZero()
+    public void NegSetsCarryForANonZeroOperand()
     {
         var cpu = Run(2, 0xB8, 0x05, 0x00, 0xF7, 0xD8);      // MOV AX,5 ; NEG AX
         Assert.Equal(unchecked((ushort)-5), cpu.State.Ax);
@@ -129,7 +129,7 @@ public class CpuRealModeTests
     // --- shifts and rotates ----------------------------------------------------
 
     [Fact]
-    public void ShlSpostaEImpostaIlCarry()
+    public void ShlShiftsLeftAndSetsCarry()
     {
         // MOV AX,0x8001 ; SHL AX,1
         var cpu = Run(2, 0xB8, 0x01, 0x80, 0xD1, 0xE0);
@@ -138,7 +138,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void SarReplicaIlSegno()
+    public void SarReplicatesTheSignBit()
     {
         // MOV AX,0x8000 ; SAR AX,1  ->  0xC000, not 0x4000
         var cpu = Run(2, 0xB8, 0x00, 0x80, 0xD1, 0xF8);
@@ -146,14 +146,14 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void ShrInserisceZeri()
+    public void ShrShiftsInZeros()
     {
         var cpu = Run(2, 0xB8, 0x00, 0x80, 0xD1, 0xE8);      // MOV AX,0x8000 ; SHR AX,1
         Assert.Equal(0x4000, cpu.State.Ax);
     }
 
     [Fact]
-    public void ConteggioDiScorrimentoMascheratoA5Bit()
+    public void ShiftCountIsMaskedToFiveBits()
     {
         // On a 386 the shift count is masked to five bits, so SHL AX,32 is
         // SHL AX,0: no effect at all, not even on the flags. On an 8086 the
@@ -170,7 +170,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void RolRuotaSenzaPerdereBit()
+    public void RolRotatesBitsAroundWithoutLosingThem()
     {
         var cpu = Run(2, 0xB8, 0x01, 0x80, 0xD1, 0xC0);      // MOV AX,0x8001 ; ROL AX,1
         Assert.Equal(0x0003, cpu.State.Ax);                   // bit 15 comes back in at the bottom
@@ -178,7 +178,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void RcrFaPassareIlCarryAttraversoIlValore()
+    public void RcrRotatesCarryThroughTheValue()
     {
         var (cpu, bus) = Setup(0xB8, 0x00, 0x00, 0xD1, 0xD8);   // MOV AX,0 ; RCR AX,1
         using (bus)
@@ -194,7 +194,7 @@ public class CpuRealModeTests
     // --- string operations -----------------------------------------------------
 
     [Fact]
-    public void MovsbCopiaUnByteEAvanza()
+    public void MovsbCopiesAByteAndAdvancesThePointers()
     {
         var (cpu, bus) = Setup(0xA4);       // MOVSB
         using (bus)
@@ -211,7 +211,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void DirectionFlagInvertesLaDirezione()
+    public void DirectionFlagReversesStringDirection()
     {
         var (cpu, bus) = Setup(0xA4);
         using (bus)
@@ -227,7 +227,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void RepMovsbCopiaUnBloccoIntero()
+    public void RepMovsbCopiesAWholeBlock()
     {
         var (cpu, bus) = Setup(0xF3, 0xA4);      // REP MOVSB
         using (bus)
@@ -248,7 +248,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void RepConContatoreZeroNonFaNulla()
+    public void RepWithZeroCountDoesNothing()
     {
         var (cpu, bus) = Setup(0xF3, 0xA4);
         using (bus)
@@ -265,7 +265,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void RepeCmpsbSiFermaAlPrimoByteDiverso()
+    public void RepeCmpsbStopsAtTheFirstDifferingByte()
     {
         var (cpu, bus) = Setup(0xF3, 0xA6);      // REPE CMPSB
         using (bus)
@@ -290,7 +290,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void RepneScasbTrovaIlByteCercato()
+    public void RepneScasbFindsTheSearchedByte()
     {
         var (cpu, bus) = Setup(0xF2, 0xAE);      // REPNE SCASB
         using (bus)
@@ -308,7 +308,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void StosbRiempieUnBlocco()
+    public void StosbFillsABlock()
     {
         var (cpu, bus) = Setup(0xF3, 0xAA);      // REP STOSB
         using (bus)
@@ -334,7 +334,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void InEOutRaggiungonoIlDispositivo()
+    public void InAndOutReachTheIoDevice()
     {
         var io = new IoBus();
         var port = new TestPort();
@@ -353,7 +353,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void PortaNonAssegnataLeggeFf()
+    public void UnassignedPortReadsAsFf()
     {
         // A real PC reading an unpopulated port gets 0xFF back, and that is
         // exactly how period software detects that a card is not fitted.
@@ -364,7 +364,7 @@ public class CpuRealModeTests
     // --- loops -----------------------------------------------------------------
 
     [Fact]
-    public void LoopRipeteFinoAContatoreZero()
+    public void LoopRepeatsUntilTheCountReachesZero()
     {
         //   B9 05 00   MOV CX,5
         //   40         INC AX      <- loop body
@@ -375,7 +375,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void JcxzSaltaSoloSeContatoreEZero()
+    public void JcxzJumpsOnlyWhenCxIsZero()
     {
         var (cpu, bus) = Setup(0xE3, 0x05);      // JCXZ +5
         using (bus)
@@ -397,7 +397,7 @@ public class CpuRealModeTests
     // --- far pointers and indirect calls ---------------------------------------
 
     [Fact]
-    public void LesCaricaOffsetESegmento()
+    public void LesLoadsBothOffsetAndSegment()
     {
         // C4 1E 00 20 = LES BX,[0x2000]
         var (cpu, bus) = Setup(0xC4, 0x1E, 0x00, 0x20);
@@ -414,7 +414,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void CallIndirettaAttraversoRegistro()
+    public void IndirectCallThroughARegister()
     {
         // BB 00 20 = MOV BX,0x2000 ; FF D3 = CALL BX
         var cpu = Run(2, 0xBB, 0x00, 0x20, 0xFF, 0xD3);
@@ -423,7 +423,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void PushDaMemoriaConGruppo5()
+    public void PushFromMemoryThroughGroup5()
     {
         // FF 36 00 20 = PUSH [0x2000]
         var (cpu, bus) = Setup(0xFF, 0x36, 0x00, 0x20);
@@ -438,7 +438,7 @@ public class CpuRealModeTests
     // --- BCD -------------------------------------------------------------------------
 
     [Fact]
-    public void DaaAggiustaDopoSommaBcd()
+    public void DaaAdjustsAfterABcdAddition()
     {
         // MOV AL,0x19 ; ADD AL,0x01 -> 0x1A ; DAA -> 0x20 (19 + 1 = 20 in BCD)
         var cpu = Run(3, 0xB0, 0x19, 0x04, 0x01, 0x27);
@@ -446,7 +446,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void AamSeparaLeCifreDecimali()
+    public void AamSplitsTheDecimalDigits()
     {
         // MOV AL,59 ; AAM -> AH=5, AL=9
         var cpu = Run(2, 0xB0, 59, 0xD4, 0x0A);
@@ -457,7 +457,7 @@ public class CpuRealModeTests
     // --- 386-specific instructions ---------------------------------------------
 
     [Fact]
-    public void MovzxEstendeConZero()
+    public void MovzxZeroExtends()
     {
         // MOV BL,0xFF ; 0F B6 C3 = MOVZX AX,BL
         var cpu = Run(2, 0xB3, 0xFF, 0x0F, 0xB6, 0xC3);
@@ -465,7 +465,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void MovsxEstendeConSegno()
+    public void MovsxSignExtends()
     {
         // MOV BL,0xFF ; 0F BE C3 = MOVSX AX,BL  ->  0xFFFF
         var cpu = Run(2, 0xB3, 0xFF, 0x0F, 0xBE, 0xC3);
@@ -473,7 +473,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void SetccScriveUnoOZero()
+    public void SetccWritesOneOrZero()
     {
         // XOR AX,AX (ZF=1) ; 0F 94 C3 = SETZ BL
         var cpu = Run(2, 0x31, 0xC0, 0x0F, 0x94, 0xC3);
@@ -481,7 +481,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void BsfTrovaIlPrimoBitAcceso()
+    public void BsfFindsTheLowestSetBit()
     {
         // MOV AX,0x0100 ; 0F BC D8 = BSF BX,AX  ->  8
         var cpu = Run(2, 0xB8, 0x00, 0x01, 0x0F, 0xBC, 0xD8);
@@ -490,7 +490,7 @@ public class CpuRealModeTests
     }
 
     [Fact]
-    public void BsfConZeroImpostaZeroFlag()
+    public void BsfOnZeroSetsTheZeroFlag()
     {
         var cpu = Run(2, 0xB8, 0x00, 0x00, 0x0F, 0xBC, 0xD8);
         Assert.True(cpu.Flags.Zero);
@@ -520,7 +520,7 @@ public class CpuIntegrationTests
     }
 
     [Fact]
-    public void StrlenSuStringaTerminataDaZero()
+    public void StrlenOverAZeroTerminatedString()
     {
         // Measures a string's length with REPNE SCASB. After the scan DI
         // points one past the terminator, so the length is DI minus the start
@@ -547,7 +547,7 @@ public class CpuIntegrationTests
     }
 
     [Fact]
-    public void FattorialeConMoltiplicazioneECiclo()
+    public void FactorialWithMultiplicationAndALoop()
     {
         //   B8 01 00     MOV AX,1
         //   B9 05 00     MOV CX,5
@@ -562,7 +562,7 @@ public class CpuIntegrationTests
     }
 
     [Fact]
-    public void ChiamataDiFunzioneConParametriSulloStack()
+    public void FunctionCallWithParametersOnTheStack()
     {
         // A genuine calling convention: arguments pushed on the stack, a BP
         // frame inside the callee, and the caller cleaning up afterwards.
@@ -590,7 +590,7 @@ public class CpuIntegrationTests
     }
 
     [Fact]
-    public void CopiaDiMemoriaConRepMovswEVerifica()
+    public void MemoryCopyWithRepMovswAndVerification()
     {
         // Copies 256 bytes with REP MOVSW and checks them afterwards.
         //   FC           CLD
@@ -614,7 +614,7 @@ public class CpuIntegrationTests
     }
 
     [Fact]
-    public void ConversioneNumeroInStringaDecimale()
+    public void NumberToDecimalStringConversion()
     {
         // Converts 1234 into ASCII digits by repeated division by 10. This is
         // the heart of printf("%d"), and it exercises DIV, string stores and

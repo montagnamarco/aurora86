@@ -6,7 +6,7 @@ namespace Aurora386.Tests;
 public class VgaFontTests
 {
     [Fact]
-    public void OgniCarattereHaSedicRigheDiPixel()
+    public void EveryGlyphIsSixteenPixelRowsTall()
     {
         // The whole font is built on first use, so if the index arithmetic
         // overruns anywhere the failure shows up here rather than in the
@@ -19,7 +19,7 @@ public class VgaFontTests
     }
 
     [Fact]
-    public void CaratteriStampabiliNonSonoVuoti()
+    public void PrintableCharactersAreNotBlank()
     {
         // A letter with no lit pixels means the font never loaded, and the
         // screen would come up blank with no error anywhere to explain it.
@@ -33,14 +33,14 @@ public class VgaFontTests
     }
 
     [Fact]
-    public void SpazioEVuoto()
+    public void TheSpaceGlyphIsBlank()
     {
         foreach (byte row in VgaFont.GetGlyph((byte)' '))
             Assert.Equal(0, row);
     }
 
     [Fact]
-    public void CaratteriSemigraficiSonoDisegnati()
+    public void BoxDrawingCharactersHavePixels()
     {
         // 0xDB is the full block: every scanline must be solid. It is the
         // character DOS draws bars and fills with.
@@ -49,7 +49,7 @@ public class VgaFontTests
     }
 
     [Fact]
-    public void IlRaddoppioVerticaleProduceRigheAppaiate()
+    public void VerticalDoublingProducesPairedScanlines()
     {
         // Each source row occupies two consecutive rows of the cell.
         ReadOnlySpan<byte> glyph = VgaFont.GetGlyph((byte)'A');
@@ -61,7 +61,7 @@ public class VgaFontTests
 public class VgaRendererTests
 {
     [Fact]
-    public void IlTestoScrittoDiventaPixel()
+    public void TextWrittenToVideoMemoryBecomesPixels()
     {
         using var machine = new Machine();
         machine.RunInstructions(200);        // POST
@@ -86,7 +86,7 @@ public class VgaRendererTests
     }
 
     [Fact]
-    public void SenzaModificheIlRenderNonRifaIlLavoro()
+    public void RenderingSkipsUnchangedRows()
     {
         using var machine = new Machine();
         machine.RunInstructions(200);
@@ -104,7 +104,7 @@ public class VgaRendererTests
     }
 
     [Fact]
-    public void LaDimensioneDelFramebufferCorrispondeAlModoTesto()
+    public void FramebufferSizeMatchesTheTextMode()
     {
         using var machine = new Machine();
         machine.RunInstructions(200);
@@ -117,7 +117,7 @@ public class VgaRendererTests
     }
 
     [Fact]
-    public void LaTavolozzaConverteLeComponentiA6BitInRgbPieno()
+    public void PaletteExpandsSixBitComponentsToFullRgb()
     {
         var registers = new VgaRegisters();
 
@@ -138,7 +138,7 @@ public class VgaRendererTests
 public class ScrollingTests
 {
     [Fact]
-    public void IlTestoOltreLUltimaRigaFaScorrereLoSchermo()
+    public void TextPastTheLastRowScrollsTheScreen()
     {
         using var machine = new Machine();
         machine.RunInstructions(200);

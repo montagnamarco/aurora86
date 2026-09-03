@@ -28,7 +28,7 @@ public class BootRegressionTests
     }
 
     [Fact]
-    public void CallFarDirettaImpilaCsEIpESalta()
+    public void DirectFarCallPushesCsAndIpThenJumps()
     {
         // 0x9A: without this instruction DOS cannot make a single
         // inter-segment call, and every attempt was raising an invalid-opcode
@@ -52,7 +52,7 @@ public class BootRegressionTests
     }
 
     [Fact]
-    public void CallFarERetfSonoSimmetriche()
+    public void FarCallAndRetfAreSymmetric()
     {
         // The test that actually matters: out and back must land exactly
         // where execution left off, with the stack balanced.
@@ -74,7 +74,7 @@ public class BootRegressionTests
     }
 
     [Fact]
-    public void XlatTraduceTramiteTabella()
+    public void XlatTranslatesThroughTheTable()
     {
         // 0xD7: DOS executes this millions of times for character
         // translation, so getting it wrong is not subtle.
@@ -94,7 +94,7 @@ public class BootRegressionTests
     }
 
     [Fact]
-    public void XlatRispettaLOverrideDiSegmento()
+    public void XlatHonoursTheSegmentOverride()
     {
         //   2E D7   XLAT with a CS segment override
         var (cpu, bus) = Setup(0x2E, 0xD7);
@@ -114,7 +114,7 @@ public class BootRegressionTests
     }
 
     [Fact]
-    public void NessunVettoreDiInterruzioneRestaAZero()
+    public void NoInterruptVectorIsLeftAtZero()
     {
         // DOS reads words out of the interrupt vector table and uses them as
         // segment values, even for vectors it does not itself handle. A zero
@@ -134,7 +134,7 @@ public class BootRegressionTests
     }
 
     [Fact]
-    public void OgniVettorePuntaACodiceEseguibile()
+    public void EveryVectorPointsAtExecutableCode()
     {
         // Being non-zero is not enough: the vector has to lead to real code.
         using var machine = new Machine();
@@ -156,7 +156,7 @@ public class BootRegressionTests
     }
 
     [Fact]
-    public void Int13hAzzeraAhSuOperazioneRiuscita()
+    public void Int13hClearsAhOnSuccess()
     {
         // AH is the error code on return, so leaving the function number in
         // it convinces DOS that the read failed. With AH=02 ("address mark
@@ -189,7 +189,7 @@ public class BootRegressionTests
     }
 
     [Fact]
-    public void Int13hSuUnitaAssenteAzzeraIRegistri()
+    public void Int13hOnAMissingDriveClearsTheRegisters()
     {
         // A drive that is not there must not leave the count from a previous
         // call sitting in DL: DOS reads that to learn how many drives exist,
@@ -223,7 +223,7 @@ public class BootRegressionTests
     }
 
     [Fact]
-    public void Int13hAh15RiportaIlTipoInAhSenzaCarry()
+    public void Int13hAh15ReportsTheDriveTypeInAhWithoutCarry()
     {
         // For this one function AH is not an error code but the drive type,
         // so clearing it the way the other functions do would make the call
@@ -251,7 +251,7 @@ public class BootRegressionTests
     }
 
     [Fact]
-    public void CaricareSsInibisceLeInterruzioniPerUnIstruzione()
+    public void LoadingSsInhibitsInterruptsForOneInstruction()
     {
         // Switching stacks takes two instructions (MOV SS,.. then MOV SP,..)
         // and in between them SS:SP points at an area that does not exist.
@@ -318,7 +318,7 @@ public class BootRegressionTests
     }
 
     [Fact]
-    public void OpcodeSconosciutoVieneSegnalato()
+    public void UnknownOpcodeIsReported()
     {
         // The diagnostic that led us to the missing XLAT: without it, an
         // unimplemented opcode is indistinguishable from a bad jump.
