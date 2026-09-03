@@ -158,6 +158,18 @@ public sealed class Machine : IDisposable
     /// <summary>Attaches a disk image to a BIOS drive number.</summary>
     public void AttachDisk(DiskImage image)
     {
+        // Replacing the disk in a drive means letting go of the one that was
+        // there. Keeping it would hold its file open for as long as the
+        // machine runs, and every swap during an installation would add
+        // another -- eleven floppies, eleven open files, none of them
+        // reachable.
+        DiskImage? previous = DiskServices.GetDrive(image.DriveNumber);
+        if (previous is not null)
+        {
+            _disks.Remove(previous);
+            previous.Dispose();
+        }
+
         _disks.Add(image);
         DiskServices.Attach(image);
     }

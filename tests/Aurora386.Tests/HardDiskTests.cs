@@ -443,6 +443,71 @@ public class FloppyChangeLineTests
     }
 
     [Fact]
+    public void VerifyingIsRefusedToo()
+    {
+        // Verify is not a harmless question. SMARTDRV uses it to decide
+        // whether the sectors it is holding in memory are still good, so a
+        // verify that succeeds tells it the previous disk's sectors are
+        // valid and it goes on serving them -- and the reads never reach the
+        // new disk at all. That is what let a file appear to copy after a few
+        // tries, and the installation then race to the end having copied
+        // nothing.
+        using Machine machine = WithFloppy();
+        machine.DiskServices.NotifyMediaChanged(0);
+
+        machine.Cpu.State.SetReg8(4, 0x04);   // AH: verify
+        machine.Cpu.State.SetReg8(0, 1);
+        machine.Cpu.State.Cx = 0x0001;
+        machine.Cpu.State.SetReg8(6, 0x00);
+        machine.Cpu.State.SetReg8(2, 0x00);
+        machine.DiskServices.Handle(machine.Cpu);
+
+        Assert.Equal(0x06, machine.Cpu.State.GetReg8(4));
+    }
+
+    [Fact]
+    public void WritingIsRefusedToo()
+    {
+        // Writing to a disk while still holding the previous one's layout
+        // would put the data in whatever the old map says is free -- which on
+        // the new disk is somebody else's file.
+        using Machine machine = WithFloppy();
+        machine.DiskServices.NotifyMediaChanged(0);
+
+        machine.Cpu.State.SetReg8(4, 0x03);   // AH: write
+        machine.Cpu.State.SetReg8(0, 1);
+        machine.Cpu.State.Cx = 0x0001;
+        machine.Cpu.State.SetReg8(6, 0x00);
+        machine.Cpu.State.SetReg8(2, 0x00);
+        machine.Cpu.State.Bx = 0x1000;
+        machine.Cpu.SetSegment(Aurora386.Core.Cpu.SegReg.Es, 0x2000);
+        machine.DiskServices.Handle(machine.Cpu);
+
+        Assert.Equal(0x06, machine.Cpu.State.GetReg8(4));
+    }
+
+    [Fact]
+    public void OneRefusalIsEnoughForAllOfThem()
+    {
+        // The drive is told once, not once per kind of access: after the
+        // refusal DOS has re-read the layout, and a verify following a
+        // refused read must not be refused all over again.
+        using Machine machine = WithFloppy();
+        machine.DiskServices.NotifyMediaChanged(0);
+
+        Assert.False(ReadFirstSector(machine));
+
+        machine.Cpu.State.SetReg8(4, 0x04);
+        machine.Cpu.State.SetReg8(0, 1);
+        machine.Cpu.State.Cx = 0x0001;
+        machine.Cpu.State.SetReg8(6, 0x00);
+        machine.Cpu.State.SetReg8(2, 0x00);
+        machine.DiskServices.Handle(machine.Cpu);
+
+        Assert.Equal(0, machine.Cpu.State.GetReg8(4));
+    }
+
+    [Fact]
     public void EachDriveKeepsItsOwnLine()
     {
         // Swapping the disk in A: says nothing about B:, and a shared flag

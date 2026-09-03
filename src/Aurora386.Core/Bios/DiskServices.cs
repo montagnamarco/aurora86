@@ -61,6 +61,16 @@ public sealed class DiskServices
         {
             case 0x00: Reset(cpu); return;
             case 0x01: GetStatus(cpu); return;
+            // Anything that touches the medium has to be turned away while
+            // the change line is up, not just reading. DOS verifies sectors
+            // as well as reading them, and SMARTDRV uses verify to decide
+            // whether what it has cached is still good -- so a verify that
+            // succeeds tells it the old disk's sectors are still valid, and
+            // it goes on serving them from memory. That is what let a file
+            // "copy" successfully after a few tries: the reads never reached
+            // the new disk at all.
+            case 0x02 or 0x03 or 0x04 when MediaChangedFor(cpu, drive): return;
+
             case 0x02: ReadSectors(cpu, drive); return;
             case 0x03: WriteSectors(cpu, drive); return;
             case 0x04: VerifySectors(cpu, drive); return;
@@ -105,26 +115,6 @@ public sealed class DiskServices
     {
         DiskImage? image = GetDrive(drive);
         if (image is null) { Fail(cpu, 0x80); return; }   // drive not ready
-
-        // The first read after a disk change fails, and has to.
-        //
-        // On real hardware the change line is still raised when that read
-        // arrives, and the controller refuses rather than reading from a disk
-        // whose layout it has not looked at yet. DOS relies on this: the
-        // error is what makes it throw away the file allocation table and the
-        // directory it cached from the previous disk and read them afresh.
-        //
-        // Let the read succeed instead and DOS keeps the old disk's map. It
-        // then looks for the new disk's files in the places the old one's
-        // occupied, finds what it takes to be them, and copies nothing while
-        // believing it copied everything -- which is how installing Windows
-        // reached a hundred per cent with an almost empty directory.
-        if (_mediaChanged.Contains(drive))
-        {
-            _mediaChanged.Remove(drive);
-            Fail(cpu, 0x06);   // media changed
-            return;
-        }
 
         (int cylinder, int head, int sector, int count) = DecodeChs(cpu);
         NoteAccess(drive, write: false);
@@ -305,6 +295,25 @@ public sealed class DiskServices
 
     /// <summary>Signals that the image behind a drive has been replaced.</summary>
     public void NotifyMediaChanged(byte driveNumber) => _mediaChanged.Add(driveNumber);
+
+    /// <summary>
+    /// Refuses an access to a drive whose disk has been swapped and not yet
+    /// looked at, reporting the change to the caller.
+    ///
+    /// The refusal happens once: having been told, DOS re-reads the disk's
+    /// layout and everything after that goes through. It is the telling that
+    /// matters -- the error is what makes DOS discard the file allocation
+    /// table and directory it cached from the previous disk, and what makes
+    /// SMARTDRV drop the sectors it is holding.
+    /// </summary>
+    private bool MediaChangedFor(CpuNs.Cpu cpu, byte drive)
+    {
+        if (GetDrive(drive) is null) return false;
+        if (!_mediaChanged.Remove(drive)) return false;
+
+        Fail(cpu, 0x06);   // media changed
+        return true;
+    }
 
     /// <summary>
     /// Extracts cylinder, head, sector and count from the registers, unpacking
