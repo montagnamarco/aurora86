@@ -115,6 +115,11 @@ public sealed class DiskServices
 
         cpu.State.SetReg8(0, (byte)count);   // AL: sectors actually transferred
         _lastStatus = 0;
+
+        // A successful read is what lowers the change line: the drive has now
+        // seen the new disk, so there is nothing left to report.
+        _mediaChanged.Remove(drive);
+
         Succeed(cpu);
     }
 
@@ -251,7 +256,18 @@ public sealed class DiskServices
         DiskImage? image = GetDrive(drive);
         if (image is null) { Fail(cpu, 0x80); return; }
 
-        if (_mediaChanged.Remove(drive))
+        // The change line stays raised until the drive actually reads
+        // something, which is what clears it on real hardware -- it is a
+        // physical latch tripped by the door, not a message that is consumed
+        // by being read.
+        //
+        // Reporting the change only once looks reasonable and is wrong in a
+        // way that matters: software asks more than once. Windows 3.1's
+        // installer polls the drive several times before it reads, so a
+        // change reported to the first poll alone left it convinced the old
+        // floppy was still in, and it went on asking for a disk that was
+        // already there.
+        if (_mediaChanged.Contains(drive))
         {
             Fail(cpu, 0x06);   // media changed
             return;

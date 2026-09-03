@@ -313,3 +313,108 @@ public class HardDiskTests : IDisposable
         Assert.Equal(0x80, machine.Cpu.State.GetReg8(2));   // DL: the boot drive
     }
 }
+
+/// <summary>
+/// The floppy change line tells software that the disk in the drive is not
+/// the one it last read.
+///
+/// On real hardware it is a latch tripped by the drive door, and it stays
+/// raised until the drive reads something -- it is not a message consumed by
+/// being read once. Software depends on that: it polls, and expects the same
+/// answer each time until it has actually looked at the new disk.
+/// </summary>
+public class FloppyChangeLineTests
+{
+    private static Machine WithFloppy()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(200);
+        machine.AttachDisk(new DiskImage(new MemoryStream(new byte[1440 * 1024]),
+                                         0x00, 80, 2, 18));
+        return machine;
+    }
+
+    /// <summary>Asks INT 13h AH=16 whether the disk has been changed.</summary>
+    private static bool ReportsChange(Machine machine)
+    {
+        machine.Cpu.State.SetReg8(4, 0x16);   // AH
+        machine.Cpu.State.SetReg8(2, 0x00);   // DL: drive A:
+        machine.DiskServices.Handle(machine.Cpu);
+
+        return machine.Cpu.State.GetReg8(4) == 0x06;
+    }
+
+    /// <summary>Reads the first sector, which is what lowers the line.</summary>
+    private static void ReadFirstSector(Machine machine)
+    {
+        machine.Cpu.State.SetReg8(4, 0x02);   // AH: read
+        machine.Cpu.State.SetReg8(0, 1);      // AL: one sector
+        machine.Cpu.State.Cx = 0x0001;        // cylinder 0, sector 1
+        machine.Cpu.State.SetReg8(6, 0x00);   // DH: head 0
+        machine.Cpu.State.SetReg8(2, 0x00);   // DL: drive A:
+        machine.Cpu.State.Bx = 0x1000;
+        machine.Cpu.SetSegment(Aurora386.Core.Cpu.SegReg.Es, 0x2000);
+
+        machine.DiskServices.Handle(machine.Cpu);
+
+        // The test is worthless if the read did not happen.
+        Assert.Equal(0, machine.Cpu.State.GetReg8(4));
+    }
+
+    [Fact]
+    public void NoChangeIsReportedForADiskThatHasNotBeenSwapped()
+    {
+        using Machine machine = WithFloppy();
+
+        Assert.False(ReportsChange(machine));
+    }
+
+    [Fact]
+    public void TheChangeIsStillReportedOnTheSecondAsking()
+    {
+        // Reporting it once and then forgetting looks reasonable and is
+        // wrong: software polls. Windows 3.1's installer asks several times
+        // before it reads, and an answer given only to the first poll left it
+        // convinced the old floppy was still in the drive -- so it went on
+        // asking for a disk the user had already inserted.
+        using Machine machine = WithFloppy();
+        machine.DiskServices.NotifyMediaChanged(0);
+
+        Assert.True(ReportsChange(machine));
+        Assert.True(ReportsChange(machine));
+        Assert.True(ReportsChange(machine));
+    }
+
+    [Fact]
+    public void ReadingTheNewDiskLowersTheLine()
+    {
+        // Once the drive has read the disk there is nothing left to report,
+        // and continuing to report it would send software round the same loop
+        // for ever.
+        using Machine machine = WithFloppy();
+        machine.DiskServices.NotifyMediaChanged(0);
+
+        Assert.True(ReportsChange(machine));
+        ReadFirstSector(machine);
+
+        Assert.False(ReportsChange(machine));
+    }
+
+    [Fact]
+    public void EachDriveKeepsItsOwnLine()
+    {
+        // Swapping the disk in A: says nothing about B:, and a shared flag
+        // would have the second drive claiming a change that never happened.
+        using Machine machine = WithFloppy();
+        machine.AttachDisk(new DiskImage(new MemoryStream(new byte[1440 * 1024]),
+                                         0x01, 80, 2, 18));
+
+        machine.DiskServices.NotifyMediaChanged(0);
+
+        machine.Cpu.State.SetReg8(4, 0x16);
+        machine.Cpu.State.SetReg8(2, 0x01);   // drive B:
+        machine.DiskServices.Handle(machine.Cpu);
+
+        Assert.NotEqual(0x06, machine.Cpu.State.GetReg8(4));
+    }
+}
