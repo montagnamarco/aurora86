@@ -261,8 +261,28 @@ public sealed class Opl3 : IIoDevice
             return;
         }
 
-        int group = register & 0xE0;
-        int index = register & 0x1F;
+        // The register map is not uniform, and the split matters.
+        //
+        // The operator blocks (0x20, 0x40, 0x60, 0x80, 0xE0) each cover 32
+        // addresses, because the 18 operators are laid out with holes. Masking
+        // with 0xE0 and taking five index bits is right for those.
+        //
+        // The voice blocks (0xA0, 0xB0, 0xC0) are only 9 registers each and
+        // sit 16 apart, so bit 4 is part of the block number rather than the
+        // index. Using the operator masks here would fold 0xB0 into 0xA0 and
+        // hand it index 16 -- past the ninth voice, so every key-on would be
+        // silently dropped and the chip would never make a sound.
+        int group, index;
+        if (register >= 0xA0 && register < 0xE0)
+        {
+            group = register & 0xF0;
+            index = register & 0x0F;
+        }
+        else
+        {
+            group = register & 0xE0;
+            index = register & 0x1F;
+        }
 
         switch (group)
         {
