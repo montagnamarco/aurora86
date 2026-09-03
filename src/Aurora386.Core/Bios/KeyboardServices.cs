@@ -35,19 +35,32 @@ public sealed class KeyboardServices
 
         switch (function)
         {
-            case 0x00:
-            case 0x10:   // extended variant: identical on a standard keyboard
-                WaitForKey(cpu);
-                return;
+            // The plain functions and their extended twins differ in what
+            // they are willing to hand back.
+            //
+            // A 101-key keyboard has keys the original had not -- F11, F12,
+            // the cursor block separate from the numeric keypad -- and their
+            // scancodes had to go somewhere. The plain functions predate
+            // them and would return nonsense, so they hide those keystrokes
+            // instead; the extended ones return everything. A program that
+            // asks the old way and is given a new key reads it as whatever
+            // the old keyboard had in that position.
+            case 0x00: WaitForKey(cpu, extended: false); return;
+            case 0x10: WaitForKey(cpu, extended: true); return;
 
-            case 0x01:
-            case 0x11:
-                CheckForKey(cpu);
-                return;
+            case 0x01: CheckForKey(cpu, extended: false); return;
+            case 0x11: CheckForKey(cpu, extended: true); return;
 
             case 0x02:
-            case 0x12:
                 cpu.State.SetReg8(0, _bda.KeyboardFlags);   // AL: modifier state
+                return;
+
+            case 0x12:
+                // The extended call reports two bytes rather than one: the
+                // second says which of the paired modifiers is down, telling
+                // right Alt from left Alt and right Ctrl from left Ctrl.
+                cpu.State.SetReg8(0, _bda.KeyboardFlags);        // AL
+                cpu.State.SetReg8(4, _bda.KeyboardFlags2);      // AH
                 return;
 
             case 0x03:   // set typematic rate: no effect here
@@ -67,11 +80,17 @@ public sealed class KeyboardServices
     /// left waiting by rewinding EIP back to the INT instruction, so the wait
     /// loop stays interruptible and the timer keeps ticking.
     /// </summary>
-    private void WaitForKey(CpuNs.Cpu cpu)
+    private void WaitForKey(CpuNs.Cpu cpu, bool extended)
     {
-        if (TryDequeue(out ushort key))
+        while (TryDequeue(out ushort key))
         {
-            cpu.State.Ax = key;
+            // The plain call discards the keys the original keyboard did not
+            // have rather than returning them: their scancodes mean something
+            // else on that keyboard, so handing one back would have the
+            // caller act on a key the user never pressed.
+            if (!extended && IsExtendedOnly(key)) continue;
+
+            cpu.State.Ax = extended ? key : TranslateForPlainCall(key);
             return;
         }
 
@@ -81,6 +100,30 @@ public sealed class KeyboardServices
     }
 
     /// <summary>
+    /// Whether a keystroke exists only on the 101-key keyboard, and so has to
+    /// stay hidden from the calls that predate it.
+    /// </summary>
+    private static bool IsExtendedOnly(ushort key)
+    {
+        byte scanCode = (byte)(key >> 8);
+
+        // F11 and F12, and the shifted and controlled forms of them.
+        return scanCode is >= 0x85 and <= 0x8C;
+    }
+
+    /// <summary>
+    /// What the plain call reports for a key both keyboards have.
+    ///
+    /// The cursor block of a 101-key keyboard duplicates the numeric keypad,
+    /// and the BIOS marks the duplicates with an ASCII byte of 0xE0. Software
+    /// written for the older keyboard does not expect that byte and treats it
+    /// as a character, so the plain call reports zero instead, which is what
+    /// the older keyboard would have sent.
+    /// </summary>
+    private static ushort TranslateForPlainCall(ushort key)
+        => (key & 0xFF) == 0xE0 ? (ushort)(key & 0xFF00) : key;
+
+    /// <summary>
     /// Function 0x01: peek at a keystroke without removing it. The zero flag
     /// signals an empty buffer, and AX holds the key when there is one.
     ///
@@ -88,11 +131,17 @@ public sealed class KeyboardServices
     /// CPU ones: the entry point ends with IRET, which reloads them from the
     /// stack and would overwrite whatever the handler had set in the register.
     /// </summary>
-    private void CheckForKey(CpuNs.Cpu cpu)
+    private void CheckForKey(CpuNs.Cpu cpu, bool extended)
     {
+        // Discard anything the plain call is not allowed to see, so that a
+        // program polling this way is not told a key is waiting and then
+        // handed nothing when it asks for it.
+        while (!extended && TryPeek(out ushort pending) && IsExtendedOnly(pending))
+            TryDequeue(out _);
+
         if (TryPeek(out ushort key))
         {
-            cpu.State.Ax = key;
+            cpu.State.Ax = extended ? key : TranslateForPlainCall(key);
             SetZeroInStackedFlags(cpu, false);
         }
         else
@@ -295,12 +344,28 @@ public sealed class KeyboardServices
     {
         byte flags = _bda.KeyboardFlags;
 
-        // An extended key produces no character of its own: the arrows and
-        // their neighbours share their scancodes with the numeric keypad,
-        // and it is only the prefix that tells them apart. Translating one
-        // through the character table would turn the up arrow into the digit
-        // 8 -- which is exactly what the keypad key beside it means.
-        if (extended) return (ushort)(code << 8);
+        // An extended key gets an ASCII byte of 0xE0 rather than a character
+        // of its own.
+        //
+        // The cursor block of a 101-key keyboard duplicates the numeric
+        // keypad and shares its scancodes, so the scancode alone cannot say
+        // which was pressed. The BIOS marks the duplicates with 0xE0, and a
+        // program that wants to tell them apart looks at that byte. Passing
+        // an extended key through the character table instead would turn the
+        // up arrow into the digit 8, which is what the keypad key beside it
+        // means.
+        if (extended) return (ushort)((code << 8) | 0xE0);
+
+        // F11 and F12 are reported under scancodes of their own rather than
+        // the ones the keyboard sends.
+        //
+        // The keyboard sends 0x57 and 0x58, which on the original keyboard
+        // were free -- but the BIOS reports 0x85 and 0x86, continuing the
+        // series the other function keys occupy. Software looks for those,
+        // and it is also what lets the plain INT 16h calls recognise the two
+        // keys as ones they must not hand back.
+        if (code == 0x57) return 0x8500;
+        if (code == 0x58) return 0x8600;
         bool shift = (flags & 0x03) != 0;
         bool capsLock = (flags & 0x40) != 0;
         bool ctrl = (flags & 0x04) != 0;

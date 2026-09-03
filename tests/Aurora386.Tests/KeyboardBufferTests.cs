@@ -289,7 +289,7 @@ public class ExtendedKeyTranslationTests
     }
 
     [Fact]
-    public void AnArrowKeyProducesOneKeystrokeWithNoCharacter()
+    public void AnArrowKeyProducesOneKeystrokeMarkedAsExtended()
     {
         using var machine = PoweredOn();
 
@@ -297,10 +297,13 @@ public class ExtendedKeyTranslationTests
 
         Assert.True(machine.KeyboardServices.TryDequeue(out ushort key));
 
-        // Scancode in the high byte, and an ASCII byte of zero: that zero is
-        // how a program knows to look at the scancode instead.
+        // Scancode in the high byte, and 0xE0 in the low one. That byte is
+        // how a program tells the dedicated cursor keys from the numeric
+        // keypad, which shares their scancodes -- INT 16h's plain functions
+        // replace it with zero for software that predates the distinction,
+        // and the extended ones pass it through.
         Assert.Equal(0x48, key >> 8);
-        Assert.Equal(0, key & 0xFF);
+        Assert.Equal(0xE0, key & 0xFF);
 
         // And nothing else: the prefix must not have queued a keystroke of
         // its own.
@@ -419,5 +422,149 @@ public class KeyboardOutputLatchTests
         Assert.True(ByteWaiting(machine));
         Assert.Equal(0x1E, machine.Io.ReadByte(0x60));
         Assert.Equal(0x1E, machine.Io.ReadByte(0x60));
+    }
+}
+
+/// <summary>
+/// A 101-key keyboard has keys the original PC keyboard had not: F11 and F12,
+/// and a cursor block separate from the numeric keypad. Their scancodes had to
+/// go somewhere, and where they went is on top of meanings the older keyboard
+/// already used.
+///
+/// So INT 16h grew a second set of functions. The plain ones behave as they
+/// always did, hiding what the old keyboard could not produce; the extended
+/// ones return everything. Software picks which to call by first asking
+/// whether the enhanced keyboard is there at all.
+/// </summary>
+public class EnhancedKeyboardTests
+{
+    private static Machine PoweredOn()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(200);
+        return machine;
+    }
+
+    private static void Deliver(Machine machine, params byte[] scanCodes)
+    {
+        foreach (byte code in scanCodes)
+        {
+            machine.Keyboard.PushScanCode(code);
+            machine.KeyboardServices.HandleIrq(machine.Cpu);
+        }
+    }
+
+    /// <summary>Calls INT 16h and returns AX.</summary>
+    private static ushort Call(Machine machine, byte function)
+    {
+        machine.Cpu.State.SetReg8(4, function);
+        machine.KeyboardServices.Handle(machine.Cpu);
+
+        return machine.Cpu.State.Ax;
+    }
+
+    [Fact]
+    public void TheEnhancedKeyboardIsDeclaredInTheDataArea()
+    {
+        // Bit 4 of the third status byte. Software reads it to decide whether
+        // the extended functions are worth calling: told nothing, it assumes
+        // the 84-key keyboard and never asks about F11, F12 or the separate
+        // cursor keys, because on that keyboard they do not exist.
+        using Machine machine = PoweredOn();
+
+        Assert.Equal(BiosDataArea.EnhancedKeyboardInstalled,
+                     machine.Bda.KeyboardFlags3 & BiosDataArea.EnhancedKeyboardInstalled);
+    }
+
+    [Fact]
+    public void TheExtendedCallReturnsTheCursorKeysMarker()
+    {
+        // 0xE0 in the low byte is what tells the dedicated up arrow from the
+        // keypad's 8, which sends the same scancode.
+        using Machine machine = PoweredOn();
+        Deliver(machine, 0xE0, 0x48);
+
+        ushort key = Call(machine, 0x10);
+
+        Assert.Equal(0x48, key >> 8);
+        Assert.Equal(0xE0, key & 0xFF);
+    }
+
+    [Fact]
+    public void ThePlainCallHidesTheMarkerInstead()
+    {
+        // A program written before the 101-key keyboard existed reads the low
+        // byte as a character. Handing it 0xE0 would have it print a Greek
+        // alpha every time the user pressed an arrow, so the plain call
+        // reports zero -- which is what the old keyboard sent.
+        using Machine machine = PoweredOn();
+        Deliver(machine, 0xE0, 0x48);
+
+        ushort key = Call(machine, 0x00);
+
+        Assert.Equal(0x48, key >> 8);
+        Assert.Equal(0, key & 0xFF);
+    }
+
+    [Fact]
+    public void ThePlainCallSkipsTheKeysItCannotDescribe()
+    {
+        // F11 has no meaning at all on the older keyboard, so there is
+        // nothing sensible to report: the plain call passes over it and
+        // returns whatever was typed next.
+        using Machine machine = PoweredOn();
+
+        Deliver(machine, 0x57);         // F11
+        Deliver(machine, 0x1E);         // A
+
+        ushort key = Call(machine, 0x00);
+
+        Assert.Equal((int)'a', key & 0xFF);
+    }
+
+    [Fact]
+    public void TheExtendedCallReturnsF11()
+    {
+        using Machine machine = PoweredOn();
+        Deliver(machine, 0x57);
+
+        ushort key = Call(machine, 0x10);
+
+        Assert.Equal(0x85, key >> 8);
+    }
+
+    [Fact]
+    public void PollingWithThePlainCallDoesNotPromiseAKeyItWillNotGive()
+    {
+        // The check and the read have to agree. Told a key is waiting and
+        // then handed nothing, a program that loops on the pair spins for
+        // ever -- and it is a loop DOS itself runs.
+        using Machine machine = PoweredOn();
+
+        Deliver(machine, 0x57);   // F11: invisible to the plain call
+
+        machine.Cpu.State.SetReg8(4, 0x01);
+        machine.KeyboardServices.Handle(machine.Cpu);
+
+        // Nothing the plain call can report, so it must say the buffer is
+        // empty rather than pointing at a key it would then skip.
+        Assert.False(machine.KeyboardServices.TryPeek(out _));
+    }
+
+    [Fact]
+    public void TheExtendedStatusCallReportsBothBytes()
+    {
+        // The second byte distinguishes right Alt from left Alt and right
+        // Ctrl from left Ctrl, which the single-byte call cannot express.
+        using Machine machine = PoweredOn();
+
+        machine.Bda.KeyboardFlags = 0x0F;
+        machine.Bda.KeyboardFlags2 = 0x0A;
+
+        machine.Cpu.State.SetReg8(4, 0x12);
+        machine.KeyboardServices.Handle(machine.Cpu);
+
+        Assert.Equal(0x0F, machine.Cpu.State.GetReg8(0));   // AL
+        Assert.Equal(0x0A, machine.Cpu.State.GetReg8(4));   // AH
     }
 }

@@ -41,6 +41,21 @@ public sealed class BiosDataArea
     public byte KeyboardFlags2 { get => ReadByte(0x18); set => WriteByte(0x18, value); }
 
     /// <summary>
+    /// The third keyboard status byte, at 0x496.
+    ///
+    /// Bit 4 is the one that matters: it declares that a 101-key keyboard is
+    /// installed, and software reads it to decide whether the extended INT
+    /// 16h functions are worth calling. Without it a program assumes the
+    /// original 84-key keyboard, and then never asks about F11, F12 or the
+    /// separate cursor keys -- it cannot, because on that keyboard they do
+    /// not exist.
+    /// </summary>
+    public byte KeyboardFlags3 { get => ReadByte(0x96); set => WriteByte(0x96, value); }
+
+    /// <summary>Bit 4 of the third status byte: a 101-key keyboard is present.</summary>
+    public const byte EnhancedKeyboardInstalled = 0x10;
+
+    /// <summary>
     /// Keyboard circular buffer (0x41E-0x43D): 16 two-byte entries, each an
     /// ASCII code paired with its scancode. Head and tail live at 0x41A and
     /// 0x41C.
@@ -147,16 +162,27 @@ public sealed class BiosDataArea
     /// </summary>
     public void Initialize(ushort conventionalMemoryKb, int hardDisks)
     {
-        Com1Port = 0;
+        // COM1's I/O address. A serial mouse driver does not probe the
+        // hardware to find the port -- it reads this word, which is where the
+        // BIOS publishes what it found during POST. Leave it zero, as it was
+        // when no serial port was fitted, and the driver concludes there is no
+        // COM1 at all and never touches 0x3F8.
+        Com1Port = Devices.SerialMouse.BasePort;
 
         // Bit 0: a floppy drive is present. Bits 4-5: 10 = 80-column color
-        // video. Bits 6-7: number of floppy drives minus one.
-        EquipmentWord = 0b0000_0000_0010_0001;
+        // video. Bits 6-7: number of floppy drives minus one. Bits 9-11 count
+        // the serial ports, and there is now one -- the mouse's.
+        EquipmentWord = 0b0000_0010_0010_0001;
 
         MemorySizeKb = conventionalMemoryKb;
 
         KeyboardFlags = 0;
         KeyboardFlags2 = 0;
+
+        // Declare the 101-key keyboard. Everything since the PC/AT has one,
+        // and software that is not told assumes the older 84-key layout and
+        // stops asking about the keys that arrived with it.
+        KeyboardFlags3 = EnhancedKeyboardInstalled;
         // Head and tail are offsets within segment 0x40, not absolute
         // addresses: software that reads the buffer on its own computes
         // 0040:[041A], so an absolute value would send it 0x400 bytes too far.
