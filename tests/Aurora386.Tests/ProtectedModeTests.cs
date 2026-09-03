@@ -329,4 +329,194 @@ public class ProtectedModeTests
         Assert.Equal(0x12340u, machine.Cpu.State.Es.Base);
         Assert.Equal(0xFFFFu, machine.Cpu.State.Es.Limit);
     }
+
+    // --- task state segment and privilege changes ---------------------------
+
+    /// <summary>
+    /// Runs one instruction from the flat code segment, at a fixed address
+    /// well clear of the descriptor tables.
+    /// </summary>
+    private static void RunInstruction(Machine machine, params byte[] instruction)
+    {
+        const uint CodeAddress = 0x1000;
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x08);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x10);
+        machine.Cpu.State.Esp = 0x8000;
+        machine.Cpu.State.Eip = CodeAddress;
+
+        for (int i = 0; i < instruction.Length; i++)
+            machine.Memory.WriteByte(CodeAddress + (uint)i, instruction[i]);
+
+        machine.Cpu.Step();
+    }
+
+    private const uint TssBase = 0x4000;
+    private const uint KernelStackTop = 0x8000;
+
+    /// <summary>
+    /// Adds a task state segment holding a ring 0 stack, and the ring 3 code
+    /// and data segments to go with it.
+    ///
+    /// Selector 0x18 is the TSS, 0x23 ring 3 code, 0x2B ring 3 data. The low
+    /// two bits of the last two are the privilege the selector is used at,
+    /// which is why they are not round numbers.
+    /// </summary>
+    private static void AddUserModeAndTss(Machine machine)
+    {
+        // 0x89: present, 32-bit task state segment, available.
+        WriteDescriptor(machine, GdtBase, 3, TssBase, 0x67, 0x89, 0x00);
+
+        // 0xFA and 0xF2 are the ring 3 versions of the flat code and data
+        // descriptors: same as ring 0's but with the privilege bits set.
+        WriteDescriptor(machine, GdtBase, 4, 0, 0xFFFFF, 0xFA, 0xC0);
+        WriteDescriptor(machine, GdtBase, 5, 0, 0xFFFFF, 0xF2, 0xC0);
+
+        machine.Cpu.State.GdtLimit = 0x2F;
+
+        // The ring 0 stack lives at offset 4 (ESP) and 8 (SS) of the TSS.
+        machine.Memory.WriteDword(TssBase + 4, KernelStackTop);
+        machine.Memory.WriteDword(TssBase + 8, 0x10);
+
+        machine.Cpu.State.TaskRegister = 0x18;
+    }
+
+    [Fact]
+    public void AnInterruptFromUserCodeSwitchesToTheKernelStack()
+    {
+        // Leaving the kernel on a stack the user controls would let user code
+        // read what the kernel pushes, or move the stack pointer somewhere
+        // harmful and wait for the kernel to write through it. The task state
+        // segment exists almost entirely to prevent this.
+        using Machine machine = BuildProtectedMachine();
+        AddUserModeAndTss(machine);
+        WriteGate(machine, IdtBase, 0x40, 0x08, 0x7000, type: 0x0E, dpl: 3);
+
+        // Pretend we were running user code on a user stack.
+        machine.Cpu.SetSegment(SegReg.Ss, 0x2B);
+        machine.Cpu.State.Esp = 0x3000;
+        machine.Cpu.State.Cpl = 3;
+
+        machine.Cpu.RaiseInterruptForTest(0x40);
+
+        // The handler is on the kernel's stack, not the user's.
+        Assert.Equal((ushort)0x10, machine.Cpu.State.Ss.Selector);
+        Assert.Equal(0, (int)machine.Cpu.State.Cpl);
+        Assert.True(machine.Cpu.State.Esp <= KernelStackTop);
+        Assert.True(machine.Cpu.State.Esp > KernelStackTop - 0x100);
+    }
+
+    [Fact]
+    public void TheUsersStackIsPushedSoIretCanRestoreIt()
+    {
+        // The interrupted stack has to be recorded somewhere, and the only
+        // place is the new stack, underneath the rest of the frame.
+        using Machine machine = BuildProtectedMachine();
+        AddUserModeAndTss(machine);
+        WriteGate(machine, IdtBase, 0x40, 0x08, 0x7000, type: 0x0E, dpl: 3);
+
+        const uint UserEsp = 0x3000;
+        machine.Cpu.SetSegment(SegReg.Ss, 0x2B);
+        machine.Cpu.State.Esp = UserEsp;
+        machine.Cpu.State.Cpl = 3;
+
+        machine.Cpu.RaiseInterruptForTest(0x40);
+
+        // Frame from the top down: SS, ESP, EFLAGS, CS, EIP. The outermost
+        // two are the user's stack, at the highest addresses.
+        Assert.Equal(0x2Bu, machine.Memory.ReadDword(KernelStackTop - 4));
+        Assert.Equal(UserEsp, machine.Memory.ReadDword(KernelStackTop - 8));
+    }
+
+    [Fact]
+    public void AnInterruptWithinTheKernelKeepsTheStackItIsOn()
+    {
+        // No privilege change means no switch: the kernel interrupting itself
+        // simply pushes onto the stack it is already using, and IRET must not
+        // then try to pop a stack that was never pushed.
+        using Machine machine = BuildProtectedMachine();
+        AddUserModeAndTss(machine);
+        WriteGate(machine, IdtBase, 0x40, 0x08, 0x7000, type: 0x0E);
+
+        machine.Cpu.SetSegment(SegReg.Ss, 0x10);
+        machine.Cpu.State.Esp = 0x6000;
+        machine.Cpu.State.Cpl = 0;
+
+        machine.Cpu.RaiseInterruptForTest(0x40);
+
+        Assert.Equal((ushort)0x10, machine.Cpu.State.Ss.Selector);
+
+        // Three dwords for EFLAGS, CS and EIP, and nothing more.
+        Assert.Equal(0x6000u - 12, machine.Cpu.State.Esp);
+    }
+
+    [Fact]
+    public void RaisingPrivilegeWithoutATaskStateSegmentFaults()
+    {
+        // Without a TSS there is no kernel stack to switch to. Guessing one
+        // would be worse than faulting: the processor would be writing the
+        // interrupt frame to an address nobody chose.
+        using Machine machine = BuildProtectedMachine();
+        AddUserModeAndTss(machine);
+        WriteGate(machine, IdtBase, 0x40, 0x08, 0x7000, type: 0x0E, dpl: 3);
+
+        machine.Cpu.State.TaskRegister = 0;   // no task state segment loaded
+
+        machine.Cpu.SetSegment(SegReg.Ss, 0x2B);
+        machine.Cpu.State.Esp = 0x3000;
+        machine.Cpu.State.Cpl = 3;
+
+        var fault = Assert.Throws<CpuException>(() => machine.Cpu.RaiseInterruptForTest(0x40));
+        Assert.Equal(10, (int)fault.Vector);   // #TS, invalid task state segment
+    }
+
+    [Fact]
+    public void TheTaskRegisterCanBeLoadedAndReadBack()
+    {
+        // LTR installs the task state segment and STR reads it back. An
+        // operating system does the first once at startup; the second exists
+        // so that it can find out what it did.
+        using Machine machine = BuildProtectedMachine();
+        AddUserModeAndTss(machine);
+
+        machine.Cpu.State.TaskRegister = 0;
+
+        // 0F 00 /3 with mod=11 and rm=0: LTR AX.
+        machine.Cpu.State.Ax = 0x18;
+        RunInstruction(machine, 0x0F, 0x00, 0xD8);
+
+        Assert.Equal((ushort)0x18, machine.Cpu.State.TaskRegister);
+    }
+
+    [Fact]
+    public void VerrReportsWhetherASegmentCouldBeRead()
+    {
+        // VERR asks the question without taking the fault, which is what a
+        // kernel needs when a program hands it a selector: finding out the
+        // hard way would mean faulting inside its own code.
+        using Machine machine = BuildProtectedMachine();
+
+        // The flat data segment at 0x10 is readable.
+        machine.Cpu.State.Ax = 0x10;
+        RunInstruction(machine, 0x0F, 0x00, 0xE0);   // VERR AX
+        Assert.True(machine.Cpu.Flags.Zero);
+
+        // The null selector is not.
+        machine.Cpu.State.Ax = 0x00;
+        RunInstruction(machine, 0x0F, 0x00, 0xE0);
+        Assert.False(machine.Cpu.Flags.Zero);
+    }
+
+    [Fact]
+    public void VerwRefusesACodeSegment()
+    {
+        // Code is never writable, whatever its descriptor says about being
+        // readable.
+        using Machine machine = BuildProtectedMachine();
+
+        machine.Cpu.State.Ax = 0x08;                 // the flat code segment
+        RunInstruction(machine, 0x0F, 0x00, 0xE8);   // VERW AX
+
+        Assert.False(machine.Cpu.Flags.Zero);
+    }
 }

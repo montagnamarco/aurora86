@@ -59,6 +59,60 @@ public sealed partial class Cpu
             // Needed by anything that prepares the switch into protected mode.
             // HIMEM.SYS already uses it while still in real mode: without this
             // group, loading DOS stops dead.
+            // The descriptor-table group. LLDT and LTR install the local
+            // descriptor table and the task state segment, which is how an
+            // operating system arranges for privilege changes to have
+            // somewhere to go: without a task state segment the processor has
+            // no kernel stack to switch to.
+            case 0x00:
+            {
+                var m = DecodeModRm();
+                switch (m.Reg)
+                {
+                    case 0:   // SLDT: read back the local descriptor table selector
+                        if (m.IsRegister) State.SetReg32(m.Register, State.Ldtr);
+                        else WriteMem16(m.Segment, m.Offset, State.Ldtr);
+                        return;
+
+                    case 1:   // STR: read back the task register
+                        if (m.IsRegister) State.SetReg32(m.Register, State.TaskRegister);
+                        else WriteMem16(m.Segment, m.Offset, State.TaskRegister);
+                        return;
+
+                    case 2:   // LLDT
+                        RequireProtectedMode();
+                        State.Ldtr = m.IsRegister
+                            ? (ushort)State.GetReg32(m.Register)
+                            : ReadMem16(m.Segment, m.Offset);
+                        return;
+
+                    case 3:   // LTR
+                        RequireProtectedMode();
+                        State.TaskRegister = m.IsRegister
+                            ? (ushort)State.GetReg32(m.Register)
+                            : ReadMem16(m.Segment, m.Offset);
+                        return;
+
+                    // VERR and VERW ask whether a segment could be read or
+                    // written from here, without the trouble of loading it
+                    // and catching the fault. The answer goes in the zero
+                    // flag.
+                    case 4:
+                    case 5:
+                    {
+                        RequireProtectedMode();
+                        ushort selector = m.IsRegister
+                            ? (ushort)State.GetReg32(m.Register)
+                            : ReadMem16(m.Segment, m.Offset);
+                        Flags.Zero = CanAccessSegment(selector, forWrite: m.Reg == 5);
+                        return;
+                    }
+
+                    default:
+                        throw new CpuException(6);
+                }
+            }
+
             case 0x01:
             {
                 var m = DecodeModRm();
@@ -350,6 +404,59 @@ public sealed partial class Cpu
     /// taking PE from 0 to 1 *is* the switch into protected mode, the one
     /// Windows 3.1 performs as it starts up.
     /// </summary>
+    /// <summary>
+    /// These instructions exist only under protection: in real mode there are
+    /// no descriptors for them to name, and the processor rejects them.
+    /// </summary>
+    private void RequireProtectedMode()
+    {
+        if (!State.ProtectedMode) throw new CpuException(6);
+    }
+
+    /// <summary>
+    /// Whether a segment could be read from, or written to, at the current
+    /// privilege level -- the question VERR and VERW answer.
+    ///
+    /// The point of asking is to avoid the fault: a kernel handed a selector
+    /// by a program has to know whether it can use it before it tries, since
+    /// finding out the hard way would mean taking a fault in the middle of
+    /// its own code.
+    /// </summary>
+    private bool CanAccessSegment(ushort selector, bool forWrite)
+    {
+        if ((selector & 0xFFFC) == 0) return false;
+
+        ulong descriptor;
+        try { descriptor = ReadDescriptor(selector); }
+        catch (CpuException) { return false; }
+
+        byte access = (byte)(descriptor >> 40);
+
+        // Bit 4 clear marks a system descriptor -- a gate or a task state
+        // segment -- and those are never readable or writable as data.
+        if ((access & 0x10) == 0) return false;
+
+        bool isCode = (access & 0x08) != 0;
+        bool readableOrWritable = (access & 0x02) != 0;
+
+        // Code segments can never be written, and can only be read when the
+        // descriptor says so. Data segments can always be read.
+        if (forWrite && isCode) return false;
+        if (!readableOrWritable && (forWrite || isCode)) return false;
+
+        // The privilege check: a conforming code segment may be read from
+        // anywhere, but everything else has to be at least as privileged as
+        // the caller and the selector it arrived in.
+        byte descriptorPrivilege = (byte)((descriptor >> 45) & 3);
+        bool conforming = isCode && (access & 0x04) != 0;
+        if (conforming) return true;
+
+        byte requestorPrivilege = (byte)(selector & 3);
+        byte effective = Math.Max(State.Cpl, requestorPrivilege);
+
+        return descriptorPrivilege >= effective;
+    }
+
     private void WriteCr0(uint value)
     {
         // Turning paging on or off changes what every linear address means,

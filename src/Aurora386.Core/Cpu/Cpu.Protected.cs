@@ -173,13 +173,24 @@ public sealed partial class Cpu
         // (Our INT instruction path is the only caller that can be user code,
         // and in real terms everything we run is at ring 0 today -- but the
         // check belongs here so it is right when that changes.)
-        byte currentPrivilege = (byte)(State.Cs.Selector & 3);
+        // The privilege we are running at. CPL is the authority rather than
+        // the selector's low bits: in virtual 8086 mode the code is ring 3
+        // however its selector reads, and the two must not disagree.
+        byte currentPrivilege = State.Cpl;
         if (gateDpl < currentPrivilege)
             throw new CpuException(13, (uint)(vector * 8 + 2));
 
         uint savedFlags = Flags.Value;
         ushort savedCs = State.Cs.Selector;
         uint savedEip = State.Eip;
+        ushort savedSs = State.Ss.Selector;
+        uint savedEsp = State.Esp;
+
+        // Where the handler will run. The descriptor's low two bits are the
+        // privilege it runs at, and an interrupt that raises the privilege
+        // has to move to a stack belonging to that level.
+        byte targetPrivilege = (byte)(ReadDescriptorPrivilege(selector));
+        bool changingPrivilege = targetPrivilege < currentPrivilege;
 
         // Load the handler's code segment first: if the selector is bad we
         // want to fault before anything has been pushed, so the frame the
@@ -189,10 +200,38 @@ public sealed partial class Cpu
         if (handlerOffset > State.Cs.Limit)
             throw new CpuException(13, 0);
 
+        // Moving to a more privileged level means moving to that level's
+        // stack, taken from the task state segment.
+        //
+        // This is not a detail: leaving the kernel to run on a stack the user
+        // controls would let user code read whatever the kernel pushes, or
+        // move the stack pointer somewhere harmful and wait for the kernel to
+        // write through it. The TSS exists almost entirely to hold these
+        // stack pointers, one per privilege level, out of the reach of the
+        // code being protected against.
+        if (changingPrivilege)
+        {
+            (ushort newSs, uint newEsp) = ReadStackFromTss(targetPrivilege);
+
+            LoadSegmentProtected(SegReg.Ss, newSs);
+            State.Esp = newEsp;
+            State.Cpl = targetPrivilege;
+        }
+
         // The stack frame. Order matters: the handler's IRET pops it in
         // reverse, so flags must go on first and the return address last.
+        //
+        // When the privilege changed, the interrupted code's stack goes on
+        // first of all, underneath everything else: IRET pops it back and
+        // returns the processor to the stack it came from.
         if (is32Bit)
         {
+            if (changingPrivilege)
+            {
+                Push32(savedSs);
+                Push32(savedEsp);
+            }
+
             Push32(savedFlags);
             Push32(savedCs);
             Push32(savedEip);
@@ -200,6 +239,12 @@ public sealed partial class Cpu
         }
         else
         {
+            if (changingPrivilege)
+            {
+                Push16(savedSs);
+                Push16((ushort)savedEsp);
+            }
+
             Push16((ushort)savedFlags);
             Push16(savedCs);
             Push16((ushort)savedEip);
@@ -213,6 +258,57 @@ public sealed partial class Cpu
         // handler as well as the code being debugged.
         if (!isTrapGate) Flags.Interrupt = false;
         Flags.Trap = false;
+    }
+
+    /// <summary>
+    /// The privilege level a code segment runs at, from its descriptor.
+    /// </summary>
+    private byte ReadDescriptorPrivilege(ushort selector)
+    {
+        ulong descriptor = ReadDescriptor(selector);
+        return (byte)((descriptor >> 45) & 3);
+    }
+
+    /// <summary>
+    /// Fetches the stack for a privilege level out of the task state segment.
+    ///
+    /// A 32-bit TSS holds three of these pairs, at fixed offsets: ring 0's at
+    /// 4, ring 1's at 12, ring 2's at 20. There is no entry for ring 3,
+    /// because nothing is ever less privileged than ring 3 and so nothing
+    /// ever switches *to* it this way.
+    ///
+    /// The task register has to have been loaded first, with LTR. An
+    /// operating system that raises privilege without a TSS in place is
+    /// asking for a stack that does not exist, and the processor faults
+    /// rather than guessing.
+    /// </summary>
+    private (ushort Selector, uint StackPointer) ReadStackFromTss(byte privilege)
+    {
+        if ((State.TaskRegister & 0xFFFC) == 0)
+            throw new CpuException(10, State.TaskRegister);   // #TS: no task state segment
+
+        ulong descriptor = ReadDescriptor(State.TaskRegister);
+
+        uint tssBase = (uint)(((descriptor >> 16) & 0xFFFFFF)
+                            | ((descriptor >> 32) & 0xFF000000));
+        uint tssLimit = (uint)((descriptor & 0xFFFF)
+                             | ((descriptor >> 32) & 0x0F0000));
+
+        // Offsets 4, 12, 20 for rings 0, 1 and 2: each entry is ESP followed
+        // by SS, and SS occupies a whole dword even though only its low half
+        // means anything.
+        uint offset = 4u + privilege * 8u;
+
+        // The pair must lie inside the segment. A TSS too short to hold the
+        // entry is a corrupt one, and reading past it would hand the kernel a
+        // stack pointer made of whatever happened to follow in memory.
+        if (offset + 6 > tssLimit)
+            throw new CpuException(10, State.TaskRegister);
+
+        uint stackPointer = _memory.ReadDword(TranslateLinear(tssBase + offset, false));
+        ushort selector = (ushort)_memory.ReadDword(TranslateLinear(tssBase + offset + 4, false));
+
+        return (selector, stackPointer);
     }
 
     /// <summary>
