@@ -282,3 +282,88 @@ public class PreserveScreenTests
         Assert.Equal((byte)' ', machine.VideoMemory[VgaMemory.TextWindowOffset]);
     }
 }
+
+/// <summary>
+/// Tests for how the teletype function wraps at the right margin.
+///
+/// The timing of the wrap is the whole point. Getting it wrong is invisible
+/// on short lines and only shows up once something fills a row exactly.
+/// </summary>
+public class TeletypeWrapTests
+{
+    private static Machine BootedMachine()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(200);
+        machine.VideoServices.SetVideoMode(0x03);
+        return machine;
+    }
+
+    private static void Write(Machine machine, string text)
+    {
+        foreach (char c in text) machine.VideoServices.TeletypeOutput((byte)c, 0);
+    }
+
+    [Fact]
+    public void FillingTheLastColumnLeavesTheCursorPastIt()
+    {
+        using Machine machine = BootedMachine();
+
+        Write(machine, new string('x', 80));
+
+        // A real BIOS parks the cursor beyond the last column and only wraps
+        // when the next character arrives. Wrapping straight away would make
+        // the carriage return and line feed that follow move the cursor a
+        // second time.
+        Assert.Equal(0, machine.Bda.CursorRow);
+        Assert.Equal(80, machine.Bda.CursorColumn);
+    }
+
+    [Fact]
+    public void AFullLineFollowedByCarriageReturnAndLineFeedAdvancesOneRow()
+    {
+        using Machine machine = BootedMachine();
+
+        Write(machine, new string('x', 80) + "\r\n");
+
+        // This is the case that matters: DOS ends every line this way. Two
+        // advances instead of one leave a blank row between every pair of
+        // printed lines, and text marches down the screen twice as fast as it
+        // should.
+        Assert.Equal(1, machine.Bda.CursorRow);
+        Assert.Equal(0, machine.Bda.CursorColumn);
+    }
+
+    [Fact]
+    public void TheCharacterAfterAFullLineLandsOnTheNextRow()
+    {
+        using Machine machine = BootedMachine();
+
+        Write(machine, new string('x', 80) + "Z");
+
+        Assert.Equal((byte)'Z', machine.VideoMemory[VgaMemory.TextWindowOffset + 80 * 2]);
+        Assert.Equal(1, machine.Bda.CursorRow);
+        Assert.Equal(1, machine.Bda.CursorColumn);
+    }
+
+    [Fact]
+    public void ShortLinesAdvanceOneRowEach()
+    {
+        using Machine machine = BootedMachine();
+
+        Write(machine, "one\r\ntwo\r\nthree\r\n");
+
+        Assert.Equal(3, machine.Bda.CursorRow);
+    }
+
+    [Fact]
+    public void CarriageReturnAloneReturnsToTheStartOfTheSameRow()
+    {
+        using Machine machine = BootedMachine();
+
+        Write(machine, "hello\r");
+
+        Assert.Equal(0, machine.Bda.CursorRow);
+        Assert.Equal(0, machine.Bda.CursorColumn);
+    }
+}

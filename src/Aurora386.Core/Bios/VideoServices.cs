@@ -431,6 +431,24 @@ public sealed class VideoServices
         int columns = _registers.TextColumns;
         int rows = _registers.TextRows;
 
+        // A character that arrives with the cursor already past the last
+        // column wraps to the next line first.
+        //
+        // The wrap has to happen on the *next* character rather than
+        // immediately after filling the last column, and the difference
+        // matters more than it looks. Software almost always ends a line with
+        // a carriage return and a line feed. If filling column 79 had already
+        // moved to the next row, the line feed would move again -- so every
+        // full-width line would leave a blank one behind it, and text would
+        // march down the screen twice as fast as it should. That is what left
+        // the DOS boot messages spread across rows 0, 3, 5 and 7 with gaps
+        // between them, and the prompt later landing in the gaps.
+        if (column >= columns && character is not (0x0D or 0x0A or 0x08 or 0x07))
+        {
+            column = 0;
+            row++;
+        }
+
         switch (character)
         {
             case 0x0D: column = 0; break;                       // carriage return
@@ -444,7 +462,6 @@ public sealed class VideoServices
                 // The existing attribute is left alone: function 0x0E writes
                 // the character but does not change the colors.
                 column++;
-                if (column >= columns) { column = 0; row++; }
                 break;
             }
         }
