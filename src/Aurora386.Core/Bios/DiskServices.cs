@@ -82,7 +82,15 @@ public sealed class DiskServices
 
     private void Reset(CpuNs.Cpu cpu)
     {
-        // There is no controller hardware to reset, so just report success.
+        // There is no controller hardware to reset, so nothing to do but say
+        // it went well.
+        //
+        // The change line is deliberately left alone. Resetting the
+        // controller is what DOS does after being told the disk changed, and
+        // it is not the same as having looked at the new disk: clearing the
+        // line here would let the read that follows through with the old
+        // disk's layout still cached, which is the very thing the refusal
+        // exists to prevent.
         _lastStatus = 0;
         Succeed(cpu);
     }
@@ -97,6 +105,26 @@ public sealed class DiskServices
     {
         DiskImage? image = GetDrive(drive);
         if (image is null) { Fail(cpu, 0x80); return; }   // drive not ready
+
+        // The first read after a disk change fails, and has to.
+        //
+        // On real hardware the change line is still raised when that read
+        // arrives, and the controller refuses rather than reading from a disk
+        // whose layout it has not looked at yet. DOS relies on this: the
+        // error is what makes it throw away the file allocation table and the
+        // directory it cached from the previous disk and read them afresh.
+        //
+        // Let the read succeed instead and DOS keeps the old disk's map. It
+        // then looks for the new disk's files in the places the old one's
+        // occupied, finds what it takes to be them, and copies nothing while
+        // believing it copied everything -- which is how installing Windows
+        // reached a hundred per cent with an almost empty directory.
+        if (_mediaChanged.Contains(drive))
+        {
+            _mediaChanged.Remove(drive);
+            Fail(cpu, 0x06);   // media changed
+            return;
+        }
 
         (int cylinder, int head, int sector, int count) = DecodeChs(cpu);
         NoteAccess(drive, write: false);
@@ -115,11 +143,6 @@ public sealed class DiskServices
 
         cpu.State.SetReg8(0, (byte)count);   // AL: sectors actually transferred
         _lastStatus = 0;
-
-        // A successful read is what lowers the change line: the drive has now
-        // seen the new disk, so there is nothing left to report.
-        _mediaChanged.Remove(drive);
-
         Succeed(cpu);
     }
 

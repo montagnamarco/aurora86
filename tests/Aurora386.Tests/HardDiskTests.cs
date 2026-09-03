@@ -344,8 +344,8 @@ public class FloppyChangeLineTests
         return machine.Cpu.State.GetReg8(4) == 0x06;
     }
 
-    /// <summary>Reads the first sector, which is what lowers the line.</summary>
-    private static void ReadFirstSector(Machine machine)
+    /// <summary>Reads the first sector and reports whether it succeeded.</summary>
+    private static bool ReadFirstSector(Machine machine)
     {
         machine.Cpu.State.SetReg8(4, 0x02);   // AH: read
         machine.Cpu.State.SetReg8(0, 1);      // AL: one sector
@@ -357,8 +357,7 @@ public class FloppyChangeLineTests
 
         machine.DiskServices.Handle(machine.Cpu);
 
-        // The test is worthless if the read did not happen.
-        Assert.Equal(0, machine.Cpu.State.GetReg8(4));
+        return machine.Cpu.State.GetReg8(4) == 0;
     }
 
     [Fact]
@@ -386,17 +385,60 @@ public class FloppyChangeLineTests
     }
 
     [Fact]
-    public void ReadingTheNewDiskLowersTheLine()
+    public void TheFirstReadAfterAChangeIsRefused()
     {
-        // Once the drive has read the disk there is nothing left to report,
-        // and continuing to report it would send software round the same loop
-        // for ever.
+        // The change line is still raised when that read arrives, and the
+        // controller refuses rather than reading a disk whose layout it has
+        // not looked at yet. DOS depends on the error: it is what makes it
+        // throw away the file allocation table and directory it cached from
+        // the previous disk.
+        //
+        // Letting the read succeed leaves DOS using the old disk's map. It
+        // then finds the new disk's files where the old one's were, copies
+        // nothing, and believes it copied everything -- which is how
+        // installing Windows reached a hundred per cent with an almost empty
+        // directory.
+        using Machine machine = WithFloppy();
+        machine.DiskServices.NotifyMediaChanged(0);
+
+        Assert.False(ReadFirstSector(machine));
+    }
+
+    [Fact]
+    public void TheReadAfterThatSucceeds()
+    {
+        // One refusal, not a drive that has stopped working. Having been told
+        // once, DOS re-reads the disk's layout and carries on.
+        using Machine machine = WithFloppy();
+        machine.DiskServices.NotifyMediaChanged(0);
+
+        Assert.False(ReadFirstSector(machine));
+        Assert.True(ReadFirstSector(machine));
+        Assert.False(ReportsChange(machine));
+    }
+
+    [Fact]
+    public void TheWholeSequenceDosPerformsOnASwapWorks()
+    {
+        // What DOS actually does, in order, when the user swaps a disk: ask
+        // whether it changed, try to read, get refused, reset the controller,
+        // read again. Every step has to answer the way the hardware does, or
+        // the installer that depends on it goes wrong in some way that is
+        // hard to trace back here.
         using Machine machine = WithFloppy();
         machine.DiskServices.NotifyMediaChanged(0);
 
         Assert.True(ReportsChange(machine));
-        ReadFirstSector(machine);
+        Assert.False(ReadFirstSector(machine));
 
+        // Resetting the controller is not the same as having looked at the
+        // new disk, so it must not clear anything by itself.
+        machine.Cpu.State.SetReg8(4, 0x00);
+        machine.Cpu.State.SetReg8(2, 0x00);
+        machine.DiskServices.Handle(machine.Cpu);
+        Assert.Equal(0, machine.Cpu.State.GetReg8(4));
+
+        Assert.True(ReadFirstSector(machine));
         Assert.False(ReportsChange(machine));
     }
 
