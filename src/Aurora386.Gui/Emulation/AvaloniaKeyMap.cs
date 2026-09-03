@@ -94,6 +94,16 @@ public static class AvaloniaKeyMap
             case Key.RightShift: return 0x36;
             case Key.Multiply: return 0x37;
             case Key.LeftAlt: return 0x38;
+
+            // The Command keys stand in for Alt as well.
+            //
+            // On a Mac, Option is a character composer: the system swallows
+            // many Option combinations to produce accented letters, so
+            // Alt+F -- the way every DOS program opens its File menu --
+            // frequently never reaches us at all. Command is passed through
+            // far more readily, and it sits where a PC keyboard has Alt, so
+            // it is both the reliable choice and the one under the thumb.
+            case Key.LWin: return 0x38;
             case Key.Space: return 0x39;
             case Key.CapsLock: return 0x3A;
 
@@ -146,6 +156,7 @@ public static class AvaloniaKeyMap
             case Key.Delete: extended = true; return 0x53;
             case Key.RightCtrl: extended = true; return 0x1D;
             case Key.RightAlt: extended = true; return 0x38;
+            case Key.RWin: extended = true; return 0x38;
             case Key.Divide: extended = true; return 0x35;
 
             default: return 0;

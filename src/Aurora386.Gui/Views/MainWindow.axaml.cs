@@ -31,6 +31,16 @@ public partial class MainWindow : Window
         Opened += (_, _) => Screen.Focus();
         PointerPressed += (_, _) => Screen.Focus();
 
+        // Give the guest the keyboard back after any toolbar command.
+        //
+        // Clicking a button moves the focus to that button, and it stays
+        // there: the next thing typed goes to the toolbar, not the machine,
+        // and pressing space would helpfully press the button again. This is
+        // what a virtual machine does -- the moment the machine is running,
+        // the keyboard belongs to it -- so the focus is handed back once the
+        // click has been dealt with.
+        AddHandler(Button.ClickEvent, (_, _) => ReturnFocusToGuest(), handledEventsToo: true);
+
         DataContextChanged += OnDataContextChanged;
 
         // Deactivating the window is the moment the host stops sending us key
@@ -39,6 +49,24 @@ public partial class MainWindow : Window
     }
 
     private MainWindowViewModel? ViewModel => DataContext as MainWindowViewModel;
+
+    /// <summary>
+    /// Hands the keyboard back to the emulated machine, after whatever piece
+    /// of the interface the user just used has finished with it.
+    ///
+    /// The focus is restored on the dispatcher rather than immediately: a
+    /// button that opens a menu or a file picker is still settling its own
+    /// focus when the click is reported, and taking it away in the middle of
+    /// that would either be undone a moment later or close the menu that was
+    /// just opened.
+    /// </summary>
+    private void ReturnFocusToGuest() =>
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            // A dialog or a flyout is on screen and is entitled to the keys.
+            if (!IsActive) return;
+            Screen.Focus();
+        }, Avalonia.Threading.DispatcherPriority.Background);
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
@@ -87,11 +115,23 @@ public partial class MainWindow : Window
     protected override void OnKeyDown(KeyEventArgs e)
     {
         // A repeat of a key we already told the guest about: swallow it. The
-        // guest's own auto-repeat is what should drive this.
+        // emulated keyboard generates its own repeats, on its own clock, the
+        // way the hardware does -- letting the host's repeats through as well
+        // would give the guest two of them at two different rates.
         if (!_keysHeld.Add(e.Key)) { e.Handled = true; return; }
 
-        if (SendKey(e.Key, released: false)) e.Handled = true;
-        else base.OnKeyDown(e);
+        if (SendKey(e.Key, released: false))
+        {
+            _lastKeyWasMapped = true;
+            e.Handled = true;
+        }
+        else
+        {
+            // Not a key position we know. Leave the event alone so that the
+            // text input that follows can be handled by character instead.
+            _lastKeyWasMapped = false;
+            base.OnKeyDown(e);
+        }
     }
 
     protected override void OnKeyUp(KeyEventArgs e)
@@ -117,7 +157,87 @@ public partial class MainWindow : Window
             SendKey(key, released: true);
 
         _keysHeld.Clear();
+
+        // Tell the keyboard itself to let go too. It repeats the held key on
+        // its own clock, and it has no other way of learning that the key is
+        // no longer down.
+        ViewModel?.Session.WithMachine(machine => machine.Keyboard.ClearHeldKeys());
     }
+
+    /// <summary>
+    /// Types a character the host produced but whose physical key we cannot
+    /// place, by pressing whichever PC keys would have produced it.
+    ///
+    /// Scancodes name key positions, not characters, and that is normally the
+    /// right thing: the guest's own keyboard layout decides what each position
+    /// means. It breaks down when the host layout puts a character somewhere
+    /// the PC keyboard has no key at all. On an Italian Mac the backslash is
+    /// one of these -- it is typed with Alt+Shift+/ , a combination the guest
+    /// would read as three unrelated keypresses -- so `cd \` could not be
+    /// typed at all.
+    ///
+    /// For those few characters we go the other way round and send the key
+    /// position that produces the character on the guest's US layout.
+    /// </summary>
+    private bool SendCharacter(char character)
+    {
+        (byte code, bool shift) = character switch
+        {
+            '\\' => ((byte)0x2B, false),
+            '|' => ((byte)0x2B, true),
+            '`' => ((byte)0x29, false),
+            '~' => ((byte)0x29, true),
+            '{' => ((byte)0x1A, true),
+            '}' => ((byte)0x1B, true),
+            '[' => ((byte)0x1A, false),
+            ']' => ((byte)0x1B, false),
+            '@' => ((byte)0x03, true),
+            '#' => ((byte)0x04, true),
+            _ => ((byte)0, false),
+        };
+
+        if (code == 0) return false;
+
+        MainWindowViewModel? model = ViewModel;
+        if (model is null) return false;
+
+        model.Session.WithMachine(machine =>
+        {
+            const byte LeftShift = 0x2A;
+            if (shift) machine.Keyboard.PushScanCode(LeftShift);
+            machine.Keyboard.PushScanCode(code);
+            machine.Keyboard.PushScanCode((byte)(code | 0x80));
+            if (shift) machine.Keyboard.PushScanCode(LeftShift | 0x80);
+        });
+
+        return true;
+    }
+
+    /// <summary>
+    /// Last resort for characters no key position of ours produced: the host
+    /// tells us what was typed, and we type it into the guest.
+    /// </summary>
+    protected override void OnTextInput(TextInputEventArgs e)
+    {
+        if (_lastKeyWasMapped || string.IsNullOrEmpty(e.Text))
+        {
+            base.OnTextInput(e);
+            return;
+        }
+
+        bool sent = false;
+        foreach (char character in e.Text) sent |= SendCharacter(character);
+
+        if (sent) e.Handled = true;
+        else base.OnTextInput(e);
+    }
+
+    /// <summary>
+    /// Whether the last key press was one we recognised by position. When it
+    /// was, the text event that follows is the same keystroke arriving a
+    /// second time and must be ignored.
+    /// </summary>
+    private bool _lastKeyWasMapped;
 
     /// <summary>
     /// Pushes a key into the emulated keyboard controller.
