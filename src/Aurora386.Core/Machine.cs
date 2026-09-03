@@ -56,6 +56,8 @@ public sealed class Machine : IDisposable
     /// <summary>True once the boot sector has been loaded and given control.</summary>
     public bool Booted { get; private set; }
 
+    public Action<string> Int10Trace;
+
     private readonly List<DiskImage> _disks = [];
 
     public Machine(uint ramSize = 16 * 1024 * 1024)
@@ -167,7 +169,16 @@ public sealed class Machine : IDisposable
         switch ((BiosRom.Handler)handlerId)
         {
             case BiosRom.Handler.Post: RunPost(); return;
-            case BiosRom.Handler.Video: VideoServices.Handle(cpu); return;
+            case BiosRom.Handler.Video:
+                if (Int10Trace is not null)
+                {
+                    var st = cpu.State;
+                    Int10Trace($"AH={st.GetReg8(4):X2} AL={st.GetReg8(0):X2} BX={st.Bx:X4} CX={st.Cx:X4} DX={st.Dx:X4} | pre row={Bda.CursorRow} col={Bda.CursorColumn}");
+                    VideoServices.Handle(cpu);
+                    Int10Trace($"   -> DX={cpu.State.Dx:X4} post row={Bda.CursorRow} col={Bda.CursorColumn}");
+                    return;
+                }
+                VideoServices.Handle(cpu); return;
             case BiosRom.Handler.Disk: DiskServices.Handle(cpu); return;
             case BiosRom.Handler.Keyboard: KeyboardServices.Handle(cpu); return;
             case BiosRom.Handler.KeyboardIrq: KeyboardServices.HandleIrq(cpu); return;
@@ -629,6 +640,10 @@ public sealed class Machine : IDisposable
         // The sound card is driven from the same clock: microseconds of
         // emulated time, converted from the instructions just executed.
         SoundBlaster.Advance((double)instructions * 1_000_000.0 / CpuFrequencyHz);
+
+        // The keyboard has a clock of its own: it is what makes a held key
+        // repeat, without the guest having to ask for anything.
+        Keyboard.Advance((double)instructions * 1000.0 / CpuFrequencyHz);
 
         // Collect anything that arrived on the wire. A real card would act the
         // instant a frame appeared; polling here is close enough, because the

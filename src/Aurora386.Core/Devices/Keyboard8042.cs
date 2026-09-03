@@ -94,7 +94,96 @@ public sealed class Keyboard8042 : IIoDevice
         if (_pendingScanCodes.Count >= 16) return;       // buffer full, just like real hardware
         _pendingScanCodes.Enqueue(scanCode);
         DeliverScanCode();
+
+        // Track what is being held down, so that the key can start repeating
+        // on its own. Bit 7 marks a break code: the release of whatever key
+        // its low seven bits name.
+        bool release = (scanCode & 0x80) != 0;
+        byte code = (byte)(scanCode & 0x7F);
+
+        // A prefix is not a key. It announces the one that follows, and the
+        // pair repeats together, so remember it and wait for its partner.
+        if (code == 0xE0 || code == 0xE1) { _repeatPrefix = scanCode; return; }
+
+        if (release)
+        {
+            // Only the key that is actually repeating stops the repeat:
+            // letting go of a modifier pressed afterwards must not cancel it.
+            if (_repeatingCode == code) _repeatingCode = 0;
+        }
+        else if (!IsModifier(code))
+        {
+            // The newest key wins. Hold A, then press B without letting go of
+            // A, and a real keyboard repeats B -- typists rely on this when
+            // they roll from one key onto the next.
+            _repeatingCode = code;
+            _repeatingPrefix = _repeatPrefix;
+            _repeatCountdownMs = RepeatDelayMs;
+        }
+
+        _repeatPrefix = 0;
     }
+
+    /// <summary>
+    /// Modifiers do not repeat: holding Shift must not flood the machine with
+    /// shift presses. The keyboard knows which codes these are and simply
+    /// leaves them out of the repeat logic.
+    /// </summary>
+    private static bool IsModifier(byte code) => code is
+        0x2A or 0x36 or   // left and right shift
+        0x1D or           // control (either, the right one behind an E0 prefix)
+        0x38 or           // alt
+        0x3A or           // caps lock
+        0x45 or 0x46;     // num lock and scroll lock
+
+    // --- typematic repeat -----------------------------------------------------
+    //
+    // Repeat belongs to the keyboard, not to the operating system: hold a key
+    // and the keyboard itself keeps sending the make code, roughly half a
+    // second later and then about ten times a second. DOS has no timer of its
+    // own for this -- it simply reads whatever keystrokes arrive -- so a
+    // keyboard that does not repeat leaves the guest unable to repeat a
+    // character at all, however long the key is held.
+    //
+    // These are the power-on defaults of the AT keyboard. Software can change
+    // them with command 0xF3; nothing we run does, so far.
+    private const double RepeatDelayMs = 500;
+    private const double RepeatIntervalMs = 100;
+
+    private byte _repeatingCode;
+    private byte _repeatingPrefix;
+    private byte _repeatPrefix;
+    private double _repeatCountdownMs;
+
+    /// <summary>
+    /// Advances the keyboard's own clock, re-sending the held key once the
+    /// initial delay has passed and then at the repeat rate.
+    /// </summary>
+    public void Advance(double milliseconds)
+    {
+        if (_repeatingCode == 0) return;
+
+        _repeatCountdownMs -= milliseconds;
+        if (_repeatCountdownMs > 0) return;
+
+        // Don't pile repeats onto a queue the guest has stopped draining: a
+        // machine busy with something else should find one pending keystroke
+        // when it looks again, not a hundred.
+        if (_pendingScanCodes.Count == 0)
+        {
+            if (_repeatingPrefix != 0) _pendingScanCodes.Enqueue(_repeatingPrefix);
+            _pendingScanCodes.Enqueue(_repeatingCode);
+            DeliverScanCode();
+        }
+
+        _repeatCountdownMs = RepeatIntervalMs;
+    }
+
+    /// <summary>
+    /// Forgets any held key. The frontend calls this when the window loses
+    /// focus, where the release event for a held key never arrives.
+    /// </summary>
+    public void ClearHeldKeys() => _repeatingCode = 0;
 
     /// <summary>
     /// Moves the next scancode into the output register, if the keyboard is

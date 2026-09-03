@@ -94,3 +94,106 @@ public class KeyboardBufferTests
         Assert.False(keyboard.TryDequeue(out _));
     }
 }
+
+/// <summary>
+/// A held key repeats by itself, because on a real PC the keyboard is what
+/// repeats it: it waits about half a second and then re-sends the make code
+/// roughly ten times a second. DOS has no timer for this of its own, so a
+/// keyboard that does not repeat leaves a held key producing one character
+/// however long it is held.
+/// </summary>
+public class KeyboardRepeatTests
+{
+    private const byte D = 0x20;          // the 'D' key
+    private const byte LeftShift = 0x2A;
+
+    /// <summary>Reads out every scancode the controller has ready.</summary>
+    private static List<byte> Drain(Machine machine)
+    {
+        var codes = new List<byte>();
+
+        // Bit 0 of the status port reports a byte waiting in the output
+        // register; reading port 0x60 takes it and lets the next one through.
+        while ((machine.Io.ReadByte(0x64) & 0x01) != 0)
+            codes.Add(machine.Io.ReadByte(0x60));
+
+        return codes;
+    }
+
+    [Fact]
+    public void AHeldKeyRepeatsAfterTheInitialDelay()
+    {
+        using var machine = new Machine();
+        machine.Keyboard.PushScanCode(D);
+        Assert.Equal(new byte[] { D }, Drain(machine));
+
+        // Well short of the half-second delay: still nothing.
+        machine.Keyboard.Advance(300);
+        Assert.Empty(Drain(machine));
+
+        // Past it: the key starts repeating.
+        machine.Keyboard.Advance(300);
+        Assert.Equal(new byte[] { D }, Drain(machine));
+
+        // And keeps going, about ten times a second.
+        machine.Keyboard.Advance(120);
+        Assert.Equal(new byte[] { D }, Drain(machine));
+    }
+
+    [Fact]
+    public void ReleasingTheKeyStopsTheRepeat()
+    {
+        using var machine = new Machine();
+        machine.Keyboard.PushScanCode(D);
+        machine.Keyboard.PushScanCode(D | 0x80);
+        Drain(machine);
+
+        machine.Keyboard.Advance(2000);
+        Assert.Empty(Drain(machine));
+    }
+
+    [Fact]
+    public void ModifiersDoNotRepeat()
+    {
+        // Holding Shift must not flood the guest with shift presses: it would
+        // do nothing useful and would crowd out the key being shifted.
+        using var machine = new Machine();
+        machine.Keyboard.PushScanCode(LeftShift);
+        Drain(machine);
+
+        machine.Keyboard.Advance(2000);
+        Assert.Empty(Drain(machine));
+    }
+
+    [Fact]
+    public void TheMostRecentKeyIsTheOneThatRepeats()
+    {
+        // Rolling from one key onto the next without letting the first go is
+        // ordinary typing, and a real keyboard repeats whichever key was
+        // pressed last.
+        using var machine = new Machine();
+        const byte K = 0x25;
+
+        machine.Keyboard.PushScanCode(D);
+        machine.Keyboard.PushScanCode(K);
+        Drain(machine);
+
+        machine.Keyboard.Advance(600);
+        Assert.Equal(new byte[] { K }, Drain(machine));
+    }
+
+    [Fact]
+    public void LosingFocusStopsTheRepeat()
+    {
+        // When the window loses focus the release never arrives, so the
+        // frontend says so explicitly. Without this the guest would be left
+        // with a key held down forever.
+        using var machine = new Machine();
+        machine.Keyboard.PushScanCode(D);
+        Drain(machine);
+
+        machine.Keyboard.ClearHeldKeys();
+        machine.Keyboard.Advance(2000);
+        Assert.Empty(Drain(machine));
+    }
+}

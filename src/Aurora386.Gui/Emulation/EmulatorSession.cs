@@ -139,6 +139,9 @@ public sealed class EmulatorSession : IDisposable
         // overhead stays negligible.
         TimeSpan slice = TimeSpan.FromMilliseconds(2);
 
+        // Half a second lit, half a second dark.
+        const double CursorBlinkMs = 500;
+
         // Sixty repaints a second is as much as any display will show, and as
         // much as an eye will notice.
         TimeSpan FrameInterval = TimeSpan.FromMilliseconds(1000.0 / 60);
@@ -220,6 +223,19 @@ public sealed class EmulatorSession : IDisposable
             if (now - lastFrameTime >= FrameInterval)
             {
                 lastFrameTime = now;
+
+                // The text cursor blinks about twice a second, which is what
+                // the hardware does: the CRT controller counts frames and
+                // inverts the cursor cell every sixteen of them. Nobody would
+                // notice the exact rate, but a cursor that does not blink at
+                // all reads as a frozen machine.
+                //
+                // It is driven from real time rather than emulated time so
+                // that it keeps a steady rhythm in Turbo, where emulated time
+                // races ahead and the cursor would otherwise flicker.
+                bool blink = (long)(now.TotalMilliseconds / CursorBlinkMs) % 2 == 0;
+                lock (_gate) Machine.Video.CursorBlinkOn = blink;
+
                 FrameReady?.Invoke();
             }
             if (now - lastReportTime >= TimeSpan.FromSeconds(1))
