@@ -4,18 +4,20 @@ using Aurora386.Gui.Emulation;
 namespace Aurora386.Tests;
 
 /// <summary>
-/// Typing a character has to produce that character in the guest, whatever
-/// keyboard the user is sitting at.
+/// The fallback that types a character on a guest using the US layout.
 ///
-/// Scancodes name key positions, not characters, and the guest decides what a
-/// position means using the layout it has loaded -- the American one, unless
-/// something changed it. So on any other layout the position the user pressed
-/// and the character they meant come apart: an Italian keyboard puts the colon
-/// on the full stop's key, which the guest reads with shift as a greater-than
-/// sign. Typing "C:" produced "C&gt;".
+/// Scancodes name key positions, and what a position means is decided by the
+/// guest, using whatever keyboard layout it has loaded. These tests cover the
+/// case where it has loaded none, so the BIOS's built-in US layout applies --
+/// which is what the machine looks like before AUTOEXEC.BAT runs, and what it
+/// stays like on an English system.
 ///
-/// These tests go the whole way round: character in, scancodes through the
-/// keyboard controller and the BIOS, character out.
+/// This path is deliberately not what an ordinary keypress takes. When the
+/// guest has loaded a layout of its own, as an Italian MS-DOS does with KEYB,
+/// it translates positions itself and the frontend must send the position and
+/// keep out of the way -- translating to US first would have the character
+/// translated twice. So this covers the keys a PC keyboard has no position
+/// for, not everyday typing.
 /// </summary>
 public class KeyboardLayoutTests
 {

@@ -120,31 +120,23 @@ public partial class MainWindow : Window
         // would give the guest two of them at two different rates.
         if (!_keysHeld.Add(e.Key)) { e.Handled = true; return; }
 
-        byte code = AvaloniaKeyMap.ToScanCode(e.Key, out _);
-
-        // A key that produces a character is decided by the text event that
-        // follows, not here.
+        // Send the key position, and let the guest decide what it means.
         //
-        // Marking the event handled would stop that text event from ever
-        // being generated, and then a keyboard whose layout differs from the
-        // guest's could never be corrected: the position would always win,
-        // which is exactly how "C:" came out as something else. So the
-        // printable keys are deliberately left to fall through, and only the
-        // ones that produce no character at all -- Enter, the arrows, the
-        // function keys, the modifiers -- are settled by position.
-        if (code != 0 && !ProducesCharacter(e.Key))
+        // This is what a real keyboard does, and it is right whenever the two
+        // machines agree about the layout -- including the case that matters
+        // most here, where they agree because both are Italian: MS-DOS loads
+        // KEYB from AUTOEXEC.BAT and translates the positions itself. Sending
+        // a character translated to a US layout would then be translated a
+        // second time, which is how a comma came out as an at sign.
+        if (SendKey(e.Key, released: false))
         {
-            SendKey(e.Key, released: false);
-            _lastPositionalCode = 0;
             e.Handled = true;
             return;
         }
 
-        // Remember the position, so the text event can compare it against
-        // what the host says was typed.
-        _lastPositionalCode = code;
-        _lastPositionalKey = e.Key;
-
+        // No position we know. The text event that follows can still salvage
+        // it by character -- this is the path for keys the host has but a PC
+        // keyboard does not.
         base.OnKeyDown(e);
     }
 
@@ -222,72 +214,30 @@ public partial class MainWindow : Window
     /// </summary>
     protected override void OnTextInput(TextInputEventArgs e)
     {
+        // Only reached when the key had no position we recognised, since a
+        // recognised one marks the event handled. So this is the last resort:
+        // ask which key of the guest's own layout would produce the character
+        // the host says was typed.
+        //
+        // It is worth being clear about when this helps and when it cannot.
+        // If the guest has loaded a keyboard layout of its own -- KEYB IT,
+        // say -- then positions are already being translated there and this
+        // path should stay out of the way, which it does by never being
+        // reached for an ordinary key. It earns its keep for the keys a PC
+        // keyboard simply does not have.
         if (string.IsNullOrEmpty(e.Text))
         {
             base.OnTextInput(e);
             return;
         }
 
-        // The character the host says was typed is the authority here. It
-        // knows the user's keyboard layout; we know only which key moved, and
-        // the two disagree on every layout that is not American -- an Italian
-        // keyboard puts the colon on the full stop's key, which the guest
-        // reads as a greater-than sign.
-        //
-        // So the key is sent as whatever position produces this character on
-        // the guest's own layout, and the position the user physically
-        // pressed is not used at all.
         bool sent = false;
         foreach (char character in e.Text) sent |= SendCharacter(character);
 
-        if (sent)
-        {
-            e.Handled = true;
-            _lastPositionalCode = 0;
-            return;
-        }
-
-        // No key position produces it -- an accented letter, say, which the
-        // guest's layout has no way of typing. Fall back to the position that
-        // was actually pressed, which at least gives the guest something.
-        if (_lastPositionalCode != 0)
-        {
-            SendKey(_lastPositionalKey, released: false);
-            e.Handled = true;
-            return;
-        }
-
-        base.OnTextInput(e);
+        if (sent) e.Handled = true;
+        else base.OnTextInput(e);
     }
 
-
-
-    private byte _lastPositionalCode;
-    private Key _lastPositionalKey;
-
-    /// <summary>
-    /// Whether a key is one that types a character, as opposed to one that
-    /// commands something.
-    ///
-    /// The distinction decides who settles the keystroke. A character key is
-    /// settled by the character the host says it produced, because the host
-    /// knows the user's layout and we do not. Everything else has no
-    /// character to go by and is settled by its position, which is the same
-    /// on every keyboard.
-    /// </summary>
-    private static bool ProducesCharacter(Key key) => key switch
-    {
-        >= Key.A and <= Key.Z => true,
-        >= Key.D0 and <= Key.D9 => true,
-        >= Key.NumPad0 and <= Key.NumPad9 => true,
-        Key.Space => true,
-        Key.OemPlus or Key.OemComma or Key.OemMinus or Key.OemPeriod => true,
-        Key.OemQuestion or Key.OemSemicolon or Key.OemQuotes or Key.OemTilde => true,
-        Key.OemOpenBrackets or Key.OemCloseBrackets => true,
-        Key.OemBackslash or Key.OemPipe => true,
-        Key.Add or Key.Subtract or Key.Multiply or Key.Divide or Key.Decimal => true,
-        _ => false,
-    };
 
 
     /// <summary>
