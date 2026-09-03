@@ -43,6 +43,9 @@ public sealed class Machine : IDisposable
     public VideoServices VideoServices { get; }
     public DiskServices DiskServices { get; }
     public KeyboardServices KeyboardServices { get; }
+
+    /// <summary>The MSCDEX interface, through which DOS reaches the CD-ROM.</summary>
+    public CompactDiscServices CompactDiscServices { get; }
     public XmsManager Xms { get; }
 
     /// <summary>
@@ -109,6 +112,7 @@ public sealed class Machine : IDisposable
         VideoServices = new VideoServices(VideoMemory, VideoRegisters, Bda);
         DiskServices = new DiskServices(Bda);
         KeyboardServices = new KeyboardServices(Bda, Memory, Keyboard);
+        CompactDiscServices = new CompactDiscServices(this);
         Xms = new XmsManager(Memory);
 
         InstallBios();
@@ -362,6 +366,9 @@ public sealed class Machine : IDisposable
                 return;
 
             default:
+                // Function 15h is MSCDEX, which answers for the CD-ROM.
+                if ((function >> 8) == 0x15 && CompactDiscServices.Handle(cpu)) return;
+
                 // No other resident service is installed. Leaving AX
                 // untouched is precisely how INT 2Fh says "nobody answered".
                 return;
