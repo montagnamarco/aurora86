@@ -4,7 +4,9 @@ using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using Avalonia.Input;
 using Avalonia.Threading;
+using Aurora386.Core.Devices;
 using Aurora386.Gui.Emulation;
 
 namespace Aurora386.Gui.Controls;
@@ -60,6 +62,141 @@ public sealed class ScreenView : Control
         // up to a modern display turns sharp character edges into mush.
         RenderOptions.SetBitmapInterpolationMode(this, BitmapInterpolationMode.None);
         Focusable = true;
+
+        // Pointer events only reach a control the hit test finds, and the hit
+        // test asks the control to draw itself. This one paints its whole
+        // bounds on every frame -- the letterbox bars included -- so it is
+        // found anywhere inside itself, and no backing rectangle is needed to
+        // make the mouse work.
+    }
+
+    // --- mouse --------------------------------------------------------------
+    //
+    // The guest's mouse is a relative device: it counts how far it moved,
+    // never where it is. So what the host reports as a position has to be
+    // turned back into a movement, by subtracting the previous one.
+    //
+    // That conversion is lossy in one direction that matters. The host
+    // pointer stops at the edge of the window, and once it has stopped there
+    // are no more position changes to subtract -- the guest pointer freezes
+    // short of the edge of the emulated screen even though the user is still
+    // pushing. Capturing the pointer while a button is held mitigates it, and
+    // properly fixing it needs the pointer to be hidden and warped back to
+    // the centre on every move, which needs platform support Avalonia does
+    // not offer portably.
+
+    /// <summary>
+    /// Where the host pointer was last seen, in this control's coordinates.
+    /// Null when the pointer has not been inside the control yet, which is
+    /// the case that must not produce a movement: the first position is a
+    /// reference point, not a delta from the origin.
+    /// </summary>
+    private Point? _lastPointerPosition;
+
+    /// <summary>
+    /// How many mouse counts one pixel of host movement is worth.
+    ///
+    /// The emulated screen is far smaller than the window it is drawn in --
+    /// 640 pixels stretched across perhaps 1400 -- so host pixels have to be
+    /// scaled back down or the guest pointer moves at twice the speed of the
+    /// real one. The scale comes from the drawn rectangle rather than being a
+    /// constant, so it stays right when the window is resized.
+    /// </summary>
+    private double _mouseScaleX = 1, _mouseScaleY = 1;
+
+    protected override void OnPointerMoved(PointerEventArgs e)
+    {
+        base.OnPointerMoved(e);
+
+        Point position = e.GetPosition(this);
+
+        if (_lastPointerPosition is not { } previous)
+        {
+            _lastPointerPosition = position;
+            return;
+        }
+
+        _lastPointerPosition = position;
+
+        // Round rather than truncate, and accumulate what rounding drops.
+        // A slow drag produces sub-pixel movements every frame; truncating
+        // each one to zero means a mouse moved slowly does not move the guest
+        // pointer at all, however far it travels.
+        double deltaX = (position.X - previous.X) * _mouseScaleX + _residualX;
+        double deltaY = (position.Y - previous.Y) * _mouseScaleY + _residualY;
+
+        int countsX = (int)Math.Round(deltaX);
+        int countsY = (int)Math.Round(deltaY);
+
+        _residualX = deltaX - countsX;
+        _residualY = deltaY - countsY;
+
+        if (countsX == 0 && countsY == 0) return;
+
+        _session?.WithMachine(machine => machine.MoveMouse(countsX, countsY));
+    }
+
+    private double _residualX, _residualY;
+
+    protected override void OnPointerExited(PointerEventArgs e)
+    {
+        base.OnPointerExited(e);
+
+        // Forget where the pointer was. It will come back somewhere else
+        // entirely, and treating the re-entry point as a continuation of the
+        // exit point would fling the guest pointer across the screen.
+        _lastPointerPosition = null;
+    }
+
+    protected override void OnPointerPressed(PointerPressedEventArgs e)
+    {
+        base.OnPointerPressed(e);
+
+        Focus();
+
+        PointerPointProperties properties = e.GetCurrentPoint(this).Properties;
+        SetButtons(properties);
+
+        // Hold on to the pointer for the duration of the drag, so that a drag
+        // that wanders out of the window still reports movement and, above
+        // all, so the release is delivered here. Without it a button released
+        // outside stays down as far as the guest is concerned -- the classic
+        // stuck-mouse-button bug.
+        e.Pointer.Capture(this);
+    }
+
+    protected override void OnPointerReleased(PointerReleasedEventArgs e)
+    {
+        base.OnPointerReleased(e);
+
+        SetButtons(e.GetCurrentPoint(this).Properties);
+
+        if (!AnyButtonDown(e.GetCurrentPoint(this).Properties))
+            e.Pointer.Capture(null);
+    }
+
+    private static bool AnyButtonDown(PointerPointProperties properties)
+        => properties.IsLeftButtonPressed
+        || properties.IsRightButtonPressed
+        || properties.IsMiddleButtonPressed;
+
+    /// <summary>
+    /// Sends the whole button state rather than just the one that changed.
+    ///
+    /// Avalonia reports which buttons are down at the moment of the event, so
+    /// setting all three from that is both simpler and more robust than
+    /// tracking transitions: a button whose release was missed -- because the
+    /// window lost focus, say -- is corrected on the very next event instead
+    /// of staying stuck down forever.
+    /// </summary>
+    private void SetButtons(PointerPointProperties properties)
+    {
+        _session?.WithMachine(machine =>
+        {
+            machine.SetMouseButton(MouseButtons.Left, properties.IsLeftButtonPressed);
+            machine.SetMouseButton(MouseButtons.Right, properties.IsRightButtonPressed);
+            machine.SetMouseButton(MouseButtons.Middle, properties.IsMiddleButtonPressed);
+        });
     }
 
     private void OnFrameReady()
@@ -101,6 +238,15 @@ public sealed class ScreenView : Control
         }
 
         Rect target = FitToMonitorAspect(Bounds.Size);
+
+        // The picture is letterboxed and scaled, so a host pixel is worth
+        // less than a guest one. Recording the ratio here keeps it in step
+        // with whatever is actually on screen, resizes included.
+        if (target.Width > 0 && target.Height > 0)
+        {
+            _mouseScaleX = width / target.Width;
+            _mouseScaleY = height / target.Height;
+        }
 
         // Letterbox the rest: black bars look like a real monitor, whereas
         // stretching to fill would distort the picture.

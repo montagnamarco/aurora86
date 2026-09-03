@@ -3,6 +3,7 @@ using Aurora386.Core.Devices;
 using Aurora386.Core.Devices.Network;
 using Aurora386.Core.Devices.Audio;
 using Aurora386.Core.Devices.Video;
+using Aurora386.Core.Dos;
 using Aurora386.Core.IO;
 using Aurora386.Core.Memory;
 using CpuNs = Aurora386.Core.Cpu;
@@ -27,6 +28,20 @@ public sealed class Machine : IDisposable
     public SystemPort61 SystemPort { get; }
     public Cmos Cmos { get; }
 
+    /// <summary>
+    /// The mouse itself: one physical device, read by three different
+    /// interfaces. Which of them the guest listens to depends entirely on
+    /// what driver it loaded, so all three are fitted and the host's
+    /// movements go to whichever asks.
+    /// </summary>
+    public MouseState Mouse { get; }
+
+    /// <summary>The mouse on the 8042's auxiliary port, interrupting on IRQ 12.</summary>
+    public Ps2Mouse Ps2Mouse { get; }
+
+    /// <summary>A Microsoft serial mouse on COM1, for drivers that expect one there.</summary>
+    public SerialMouse SerialMouse { get; }
+
     public VgaRegisters VideoRegisters { get; }
     public VgaMemory VideoMemory { get; }
     public VgaRenderer Video { get; }
@@ -46,6 +61,15 @@ public sealed class Machine : IDisposable
 
     /// <summary>The MSCDEX interface, through which DOS reaches the CD-ROM.</summary>
     public CompactDiscServices CompactDiscServices { get; }
+
+    /// <summary>
+    /// The DOS network redirector: what makes a host folder or a CD appear as
+    /// a drive letter whose files can be opened with ordinary DOS calls.
+    /// </summary>
+    public RedirectorServices Redirector { get; }
+
+    /// <summary>INT 33h, the mouse driver interface DOS programs and Windows use.</summary>
+    public MouseServices MouseServices { get; }
     public XmsManager Xms { get; }
 
     /// <summary>
@@ -61,6 +85,7 @@ public sealed class Machine : IDisposable
 
 
     private readonly List<DiskImage> _disks = [];
+    private readonly RedirectorInstaller _redirectorInstaller;
 
     public Machine(uint ramSize = 16 * 1024 * 1024)
     {
@@ -84,6 +109,13 @@ public sealed class Machine : IDisposable
 
         Cmos = new Cmos(ramSize);
         Cmos.Register(Io);
+
+        Mouse = new MouseState();
+        Ps2Mouse = new Ps2Mouse(Mouse);
+        Keyboard.AttachMouse(Ps2Mouse);
+
+        SerialMouse = new SerialMouse(Mouse, Interrupts);
+        SerialMouse.Register(Io);
 
         VideoRegisters = new VgaRegisters();
         VideoRegisters.Register(Io);
@@ -113,6 +145,9 @@ public sealed class Machine : IDisposable
         DiskServices = new DiskServices(Bda);
         KeyboardServices = new KeyboardServices(Bda, Memory, Keyboard);
         CompactDiscServices = new CompactDiscServices(this);
+        Redirector = new RedirectorServices(this);
+        _redirectorInstaller = new RedirectorInstaller(this);
+        MouseServices = new MouseServices(this, Mouse);
         Xms = new XmsManager(Memory);
 
         InstallBios();
@@ -141,16 +176,30 @@ public sealed class Machine : IDisposable
     /// </summary>
     public IsoImage? CompactDisc { get; private set; }
 
-    /// <summary>Inserts a disc, replacing whatever was in the drive.</summary>
+    /// <summary>
+    /// Inserts a disc, replacing whatever was in the drive, and gives it a
+    /// drive letter through the redirector.
+    ///
+    /// The two halves are both necessary and do different jobs. Attaching the
+    /// image is what lets a program read raw sectors through MSCDEX's device
+    /// request interface, which is how copy protection and CD audio worked.
+    /// Mounting it on the redirector is what makes "DIR D:" list the disc --
+    /// two entirely separate paths through DOS that happen to reach the same
+    /// piece of plastic.
+    /// </summary>
     public void AttachCompactDisc(IsoImage disc)
     {
         CompactDisc?.Dispose();
         CompactDisc = disc;
+
+        MountRedirectedDrive(CompactDiscServices.DriveLetter, new IsoFileSystem(disc));
     }
 
     /// <summary>Ejects the disc, leaving the drive empty.</summary>
     public void EjectCompactDisc()
     {
+        UnmountRedirectedDrive(CompactDiscServices.DriveLetter);
+
         CompactDisc?.Dispose();
         CompactDisc = null;
     }
@@ -201,6 +250,19 @@ public sealed class Machine : IDisposable
             case BiosRom.Handler.Bootstrap: Boot(cpu); return;
             case BiosRom.Handler.Multiplex: HandleMultiplex(cpu); return;
             case BiosRom.Handler.Xms: Xms.Handle(cpu); return;
+            case BiosRom.Handler.Mouse: MouseServices.Handle(cpu); return;
+
+            case BiosRom.Handler.MouseIrq:
+                // IRQ 12. A guest with its own PS/2 driver hooks this vector
+                // and we never see it; this stub is for the case where
+                // nothing has, and its whole job is to drain the packet the
+                // mouse just delivered. Leaving the byte in the output
+                // register would block the keyboard behind it, so an
+                // unclaimed mouse would stop the machine accepting input.
+                cpu.Io.ReadByte(0x60);
+                cpu.Io.WriteByte(0xA0, 0x20);
+                cpu.Io.WriteByte(0x20, 0x20);
+                return;
 
             case BiosRom.Handler.Serial: HandleSerial(cpu); return;
             case BiosRom.Handler.Printer: HandlePrinter(cpu); return;
@@ -286,6 +348,16 @@ public sealed class Machine : IDisposable
         WriteDiskParameterTable(18);
         SetVector(0x2F, BiosRom.Entry.Multiplex);
 
+        // INT 33h is not a BIOS service at all -- it belongs to MOUSE.COM,
+        // which is why a real machine has this vector pointing at nothing
+        // until a driver is loaded. Providing it here gives the guest a
+        // working mouse with no driver, which is the whole point.
+        SetVector(0x33, BiosRom.Entry.Mouse);
+
+        // IRQ 12's vector, so that a mouse packet nobody claimed still gets
+        // read out of the controller rather than jamming it.
+        SetVector(0x74, BiosRom.Entry.MouseIrq);
+
         // IRQs 2-7 and 8-15 with no handler of their own point at a stub that
         // does nothing but acknowledge the interrupt.
         for (byte vector = 0x0A; vector <= 0x0F; vector++)
@@ -321,7 +393,11 @@ public sealed class Machine : IDisposable
         Io.WriteByte(0xA1, 0x70);
         Io.WriteByte(0xA1, 0x02);
         Io.WriteByte(0xA1, 0x01);
-        Io.WriteByte(0xA1, 0xFF);   // all masked: nothing is wired to the slave
+        // IRQ 12 is the mouse and is the one slave line that is wired up, so
+        // it is the one bit left clear. IRQ 2 on the master is already open,
+        // which it must be: the slave reaches the CPU only through it, and a
+        // masked cascade silently swallows every interrupt from 8 to 15.
+        Io.WriteByte(0xA1, 0xEF);
     }
 
     private void ClearScreen()
@@ -390,6 +466,11 @@ public sealed class Machine : IDisposable
                 return;
 
             default:
+                // Function 11h is the network redirector, which answers for
+                // every drive letter that has no FAT behind it -- a folder on
+                // the host, or a CD.
+                if ((function >> 8) == 0x11 && Redirector.Handle(cpu)) return;
+
                 // Function 15h is MSCDEX, which answers for the CD-ROM.
                 if ((function >> 8) == 0x15 && CompactDiscServices.Handle(cpu)) return;
 
@@ -411,11 +492,38 @@ public sealed class Machine : IDisposable
     /// </summary>
     private void HandleSerial(CpuNs.Cpu cpu)
     {
-        // AH = line status, AL = modem status. Bit 5 of AH (transmit holding
-        // register empty) and bit 6 (transmitter empty) stay clear, so nothing
-        // can ever be sent. No error bits are set either: this is not a fault,
-        // there is simply nothing connected.
-        cpu.State.Ax = 0x0000;
+        // COM1 has a mouse on it; the other three ports have nothing.
+        //
+        // The distinction has to be made, because the BIOS data area now
+        // declares COM1 at 0x3F8 and software believes it. Answering "nothing
+        // connected" for a port the machine says exists is a contradiction a
+        // driver can act on: it reads the data area, finds the port, asks the
+        // BIOS about it, and concludes the hardware is broken.
+        //
+        // What the mouse driver actually does is talk to the port registers
+        // directly -- serial mice are timing-sensitive enough that going
+        // through the BIOS was never fast enough -- so this exists to be
+        // consistent rather than to carry data.
+        bool com1 = cpu.State.Dx == 0;
+
+        if (!com1)
+        {
+            // AH = line status, AL = modem status. With everything clear
+            // nothing can be sent and no error is claimed: there is simply
+            // nothing there.
+            cpu.State.Ax = 0x0000;
+            return;
+        }
+
+        // Bit 5: the transmit register is empty, so a byte may be written.
+        // Bit 6: the transmitter itself is idle. Together they say the port
+        // is present and ready.
+        cpu.State.SetReg8(4, 0x60);                      // AH: line status
+
+        // Clear to send, data set ready and carrier detect, which is what the
+        // mouse's own wiring loops back to whoever raises DTR and RTS.
+        const byte Ready = 0x10 | 0x20 | 0x80;
+        cpu.State.SetReg8(0, Ready);                     // AL: modem status
     }
 
     /// <summary>
@@ -638,6 +746,8 @@ public sealed class Machine : IDisposable
 
             executed += steps;
             AdvanceDevices(steps);
+            TryInstallRedirector();
+            DispatchMouseEvent();
 
             if (Keyboard.ResetRequested || SystemControl.ResetRequested)
             {
@@ -647,6 +757,79 @@ public sealed class Machine : IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// Calls the guest's INT 33h event handler when the mouse has done
+    /// something it asked to hear about.
+    ///
+    /// It happens here, between batches, and not from inside the mouse code,
+    /// because this is a far call <b>into</b> guest code: it pushes a return
+    /// address and redirects execution. That is only safe at an instruction
+    /// boundary with the guest's own stack in hand -- doing it while we are
+    /// partway through servicing one of our own interrupt handlers would
+    /// build the call on top of that handler's stack frame and return into
+    /// the middle of it.
+    /// </summary>
+    private void DispatchMouseEvent()
+    {
+        // Not while the CPU is halted: HLT is waiting for an interrupt, and
+        // redirecting execution into a handler would resume the guest at a
+        // point it never asked to run from.
+        if (Cpu.State.Halted) return;
+
+        // Only in real mode. A protected-mode guest's handler lives behind a
+        // selector, and pushing a real-mode segment value at it would send
+        // execution to whatever descriptor happens to have that index.
+        if (Cpu.State.ProtectedMode) return;
+
+        MouseServices.TryDispatchEvent(Cpu);
+    }
+
+    /// <summary>
+    /// Asks DOS where it keeps its structures, once it is up and only if
+    /// something is actually mounted.
+    ///
+    /// The attempt cannot be made at any fixed moment, because there is no
+    /// event that says "DOS has finished loading": the boot sector, IO.SYS
+    /// and COMMAND.COM hand off to one another without telling the hardware
+    /// anything. So it is retried between batches of instructions until it
+    /// works, which costs nothing once it has -- and nothing at all on a
+    /// machine with no shared folder and no disc.
+    ///
+    /// The retry is throttled because each failed attempt runs code in the
+    /// guest, and doing that every two thousand instructions on a machine
+    /// that will never have DOS on it would be pure waste.
+    /// </summary>
+    private void TryInstallRedirector()
+    {
+        if (Redirector.IsInstalled) return;
+        if (!Redirector.MountedDrives.Any()) return;
+
+        if (--_redirectorInstallCountdown > 0) return;
+        _redirectorInstallCountdown = RedirectorInstallInterval;
+
+        _redirectorInstaller.TryInstall(Redirector);
+    }
+
+    /// <summary>Batches between attempts to find DOS's structures.</summary>
+    private const int RedirectorInstallInterval = 200;
+    private int _redirectorInstallCountdown = 1;
+
+    /// <summary>
+    /// Attaches a filesystem to a drive letter through the redirector, and
+    /// installs the redirector at once if DOS is already up.
+    ///
+    /// The letter is a number with 0 meaning A:, the convention DOS uses
+    /// everywhere below the surface.
+    /// </summary>
+    public void MountRedirectedDrive(byte drive, IRedirectedFileSystem fileSystem)
+    {
+        Redirector.Mount(drive, fileSystem);
+        _redirectorInstaller.TryInstall(Redirector);
+    }
+
+    /// <summary>Hands a drive letter back to DOS.</summary>
+    public void UnmountRedirectedDrive(byte drive) => Redirector.Unmount(drive);
 
     /// <summary>
     /// Advances the devices by the time the executed instructions represent.
@@ -671,6 +854,13 @@ public sealed class Machine : IDisposable
         // guest cannot observe the difference -- it only ever learns about a
         // frame through the interrupt the card raises when it files one.
         Network.Poll();
+
+        // The two mouse ports, which push rather than being polled by the
+        // guest: each turns whatever movement has accumulated into a packet
+        // and interrupts. Only the one the guest's driver is listening to
+        // will be read, but neither knows which that is.
+        Keyboard.PollMouse();
+        SerialMouse.Poll();
     }
 
     /// <summary>
@@ -722,6 +912,21 @@ public sealed class Machine : IDisposable
         Memory.WriteWord((uint)(vector * 4), offset);
         Memory.WriteWord((uint)(vector * 4 + 2), segment);
     }
+
+    /// <summary>
+    /// Reports mouse movement, in the units the hardware counts: how far it
+    /// moved since last time, with Y positive downwards.
+    ///
+    /// This is relative and not a position on purpose. A mouse does not know
+    /// where the pointer is -- the guest's driver owns that, and applies its
+    /// own sensitivity and its own limits to decide. Handing it an absolute
+    /// position would fight whatever the guest believes.
+    /// </summary>
+    public void MoveMouse(int deltaX, int deltaY) => Mouse.Move(deltaX, deltaY);
+
+    /// <summary>Presses or releases a mouse button.</summary>
+    public void SetMouseButton(MouseButtons button, bool pressed)
+        => Mouse.SetButton(button, pressed);
 
     /// <summary>Tells the machine a key has been pressed.</summary>
     public void PressKey(byte scanCode) => Keyboard.PushScanCode(scanCode);

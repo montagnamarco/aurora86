@@ -44,7 +44,28 @@ public sealed class Keyboard8042 : IIoDevice
     private readonly Queue<byte> _pendingScanCodes = new();
 
     /// <summary>
-    /// True when the byte waiting in the output register is a command
+    /// The mouse on the auxiliary port, if one is fitted.
+    ///
+    /// It lives behind the same controller because that is how the hardware
+    /// is built: one chip, one data port, one output register, and a single
+    /// status bit to say which of the two devices the byte in that register
+    /// came from. Everything awkward about PS/2 mice follows from that
+    /// sharing.
+    /// </summary>
+    public Ps2Mouse? Mouse { get; private set; }
+
+    /// <summary>
+    /// True when the byte currently in the output register came from the
+    /// mouse rather than the keyboard. The guest reads it as bit 5 of the
+    /// status register, and it is the <b>only</b> thing distinguishing a
+    /// movement packet from a scancode: a driver that finds this bit clear
+    /// hands the byte to the keyboard handler, so getting it wrong turns
+    /// mouse movement into a stream of phantom keystrokes.
+    /// </summary>
+    private bool _outputIsFromMouse;
+
+    /// <summary>
+    /// True when the byte currently in the output register is a command
     /// response rather than a keystroke. Since there is only one register,
     /// something has to give when a new byte arrives, and this flag decides
     /// what is expendable: a stale response may be dropped, a real keystroke
@@ -90,6 +111,68 @@ public sealed class Keyboard8042 : IIoDevice
     {
         io.Register(0x60, this);
         io.Register(0x64, this);
+    }
+
+    /// <summary>
+    /// Plugs a mouse into the auxiliary port and arranges for its packets to
+    /// be delivered as they are produced.
+    /// </summary>
+    public void AttachMouse(Ps2Mouse mouse)
+    {
+        Mouse = mouse;
+    }
+
+    /// <summary>
+    /// Offers the guest whatever the mouse has to say, building a movement
+    /// packet first if one is due.
+    ///
+    /// The machine calls this as it advances the devices rather than the
+    /// mouse pushing directly, because a packet must not be assembled in the
+    /// middle of the guest reading the previous one, and the controller is
+    /// the only thing that knows whether that is happening.
+    /// </summary>
+    public void PollMouse()
+    {
+        if (Mouse is null) return;
+
+        if (Mouse.PendingCount == 0) Mouse.TryBuildPacket();
+        DeliverMouseByte();
+    }
+
+    /// <summary>
+    /// Moves one byte from the mouse into the output register and raises
+    /// IRQ 12.
+    ///
+    /// Two gates stand in front of it. Bit 5 of the command byte disables the
+    /// auxiliary port entirely -- system software sets it while it
+    /// interrogates the controller, exactly as it does with the keyboard --
+    /// and the output register has to be free, since there is only one and a
+    /// byte already in it has a reader waiting for it.
+    /// </summary>
+    private void DeliverMouseByte()
+    {
+        if (Mouse is null) return;
+
+        bool auxDisabled = (_commandByte & 0x20) != 0;
+        if (auxDisabled) return;
+
+        // Anything already in the register wins, whatever it is. A scancode
+        // is owed to the software; a command response is being waited for;
+        // and an earlier mouse byte is part of a packet that must not be
+        // interleaved with anything.
+        if (_outputBuffer.Count > 0) return;
+
+        if (!Mouse.TryDequeue(out byte value)) return;
+
+        _outputBuffer.Enqueue(value);
+        _outputIsResponse = false;
+        _outputIsFromMouse = true;
+
+        // Bit 1 of the command byte is the auxiliary interrupt enable, the
+        // mouse's counterpart to bit 0. A driver that polls leaves it clear,
+        // and an IRQ 12 it never asked for would send it into an interrupt
+        // handler it has not installed.
+        if ((_commandByte & 0x02) != 0) _interrupts.RaiseIrq(12);
     }
 
     /// <summary>
@@ -220,6 +303,7 @@ public sealed class Keyboard8042 : IIoDevice
 
         _outputBuffer.Enqueue(_pendingScanCodes.Dequeue());
         _outputIsResponse = false;
+        _outputIsFromMouse = false;
         // Bit 0 of the command byte is the keyboard interrupt enable.
         if ((_commandByte & 0x01) != 0) _interrupts.RaiseIrq(1);
     }
@@ -236,6 +320,13 @@ public sealed class Keyboard8042 : IIoDevice
             // added only when there really is a byte waiting.
             byte status = 0x1C;
             if (_outputBuffer.Count > 0) status |= 0x01;
+
+            // Bit 5: the waiting byte came from the auxiliary port. On a real
+            // AT this bit meant "transmit timeout"; the PS/2 redefined it,
+            // and every mouse driver since has used it to decide whether the
+            // byte it is about to read is a movement packet or a keystroke.
+            if (_outputBuffer.Count > 0 && _outputIsFromMouse) status |= 0x20;
+
             return status;
         }
 
@@ -256,9 +347,28 @@ public sealed class Keyboard8042 : IIoDevice
 
         byte value = _outputBuffer.Dequeue();
         _lastOutputByte = value;
-        if (_outputBuffer.Count == 0) _interrupts.LowerIrq(1);
-        // The register is free again, so the next queued key can move up.
-        DeliverScanCode();
+        bool wasFromMouse = _outputIsFromMouse;
+
+        if (_outputBuffer.Count == 0)
+        {
+            _interrupts.LowerIrq(wasFromMouse ? 12 : 1);
+            _outputIsFromMouse = false;
+        }
+
+        // The register is free again, so the next queued byte can move up.
+        //
+        // The mouse goes first when it is partway through a packet. Its three
+        // bytes carry no framing, so a scancode allowed in between them would
+        // be counted as one of the packet's own and the driver would be
+        // permanently out of step -- reading buttons where the Y count should
+        // be, for the rest of the session.
+        if (wasFromMouse && Mouse is { PendingCount: > 0 }) DeliverMouseByte();
+        else
+        {
+            DeliverScanCode();
+            if (_outputBuffer.Count == 0) DeliverMouseByte();
+        }
+
         return value;
     }
 
@@ -286,7 +396,37 @@ public sealed class Keyboard8042 : IIoDevice
                     SignalIfEnabled();
                     break;
 
-                case 0x60: _commandByte = value; DeliverScanCode(); break;
+                case 0x60:
+                    _commandByte = value;
+                    DeliverScanCode();
+                    // Enabling either port with this write may release bytes
+                    // that were held back while it was disabled. The mouse
+                    // half matters in practice: a driver's usual opening move
+                    // is to enable the auxiliary interrupt here, and anything
+                    // the mouse queued beforehand would otherwise sit there
+                    // unseen until the user happened to move it again.
+                    if (_outputBuffer.Count == 0) DeliverMouseByte();
+                    break;
+
+                case 0xD4:
+                    // Write to the auxiliary port: the byte is a command for
+                    // the mouse, not for the keyboard. Everything a driver
+                    // says to the mouse arrives this way, which is why a
+                    // controller that ignores 0xD4 makes the mouse look
+                    // absent -- the enable command never reaches it and it
+                    // never sends a packet.
+                    if (Mouse is null)
+                    {
+                        // No mouse fitted. The controller answers for it with
+                        // a resend, so the driver gets a definite answer
+                        // rather than a timeout.
+                        EnqueueResponse(0xFE);
+                        SignalIfEnabled();
+                        break;
+                    }
+                    Mouse.Command(value);
+                    EnqueueMouseResponse();
+                    break;
                 case 0xD1:
                     // Write output port: bit 1 is the A20 line, and driving
                     // bit 0 low pulses the CPU's reset pin.
@@ -365,6 +505,25 @@ public sealed class Keyboard8042 : IIoDevice
     {
         _outputBuffer.Enqueue(value);
         _outputIsResponse = true;
+        _outputIsFromMouse = false;
+    }
+
+    /// <summary>
+    /// Places a byte the <b>mouse</b> produced in the output register, in
+    /// answer to a command the guest sent it.
+    ///
+    /// This is separate from <see cref="EnqueueResponse"/> for one reason
+    /// that matters enormously: the acknowledgement to a mouse command comes
+    /// back flagged as auxiliary data and raises IRQ 12, because the driver
+    /// that sent the command is waiting on the mouse interrupt for its reply.
+    /// Delivering it as a keyboard byte would send the acknowledgement to the
+    /// keyboard handler, and the mouse driver would time out waiting for a
+    /// reply that had already been eaten by something else.
+    /// </summary>
+    private void EnqueueMouseResponse()
+    {
+        if (_outputBuffer.Count > 0) return;
+        DeliverMouseByte();
     }
 
     /// <summary>
@@ -417,11 +576,18 @@ public sealed class Keyboard8042 : IIoDevice
                 break;
             case 0x60:   // write the command byte: the data follows on 0x60
             case 0xD1:   // write the output port
+            case 0xD4:   // send the following byte to the auxiliary port
                 _pendingCommand = command;
                 _expectingData = true;
                 break;
             case 0xA7: _commandByte |= 0x20; break;    // disable the auxiliary (mouse) port
-            case 0xA8: _commandByte &= 0xDF; break;    // enable the auxiliary (mouse) port
+            case 0xA8:                                  // enable the auxiliary (mouse) port
+                _commandByte &= 0xDF;
+                // Anything the mouse queued while the port was shut can go
+                // out now, the same way enabling the keyboard releases the
+                // scancodes it was holding.
+                if (_outputBuffer.Count == 0) DeliverMouseByte();
+                break;
             case 0xAA:                                  // controller self-test
                 EnqueueResponse(0x55);            // passed
                 break;
@@ -431,8 +597,14 @@ public sealed class Keyboard8042 : IIoDevice
                 // keyboard at all, and it stops reading the port entirely.
                 EnqueueResponse(0x00);
                 break;
-            case 0xA9:                                  // auxiliary port test
-                EnqueueResponse(0x00);
+            case 0xA9:
+                // Auxiliary port test. Zero means the clock and data lines
+                // are healthy; 0x02 means the clock line is stuck low, which
+                // is how a controller with nothing plugged into that port
+                // reports itself. Some BIOSes stop looking for a mouse
+                // entirely on anything but zero, so this has to follow
+                // whether a mouse is actually attached.
+                EnqueueResponse(Mouse is null ? (byte)0x02 : (byte)0x00);
                 break;
             case 0xA1:                                  // controller firmware version
                 EnqueueResponse(0x00);

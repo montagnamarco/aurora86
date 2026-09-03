@@ -45,6 +45,19 @@ public static class BiosRom
         public const ushort KeyboardIrq = 0x10B0;    // INT 09h, IRQ 1
         public const ushort DummyIrq = 0x10C0;       // unhandled IRQs
         public const ushort Multiplex = 0x10D0;      // INT 2Fh
+        public const ushort Mouse = 0x10F0;          // INT 33h
+        public const ushort MouseIrq = 0x1110;       // INT 74h, IRQ 12
+
+        /// <summary>
+        /// Where an INT 33h event handler returns to.
+        ///
+        /// A mouse event handler is entered with a far CALL and leaves with
+        /// RETF, so it needs a return address to pop. It cannot be given the
+        /// address the guest was interrupted at directly -- that would have
+        /// the RETF land mid-instruction -- so it returns here instead, to a
+        /// lone RETF that unwinds onto the real one.
+        /// </summary>
+        public const ushort MouseCallbackReturn = 0x1120;
 
         /// <summary>
         /// The diskette parameter table, which INT 1Eh points at rather than
@@ -84,6 +97,8 @@ public static class BiosRom
         KeyboardIrq = 0x09,
         DummyIrq = 0xFE,
         Multiplex = 0x2F,
+        Mouse = 0x33,
+        MouseIrq = 0x74,
         Xms = 0x43,
         Post = 0xFF,
     }
@@ -112,6 +127,14 @@ public static class BiosRom
         WriteInterruptEntry(rom, Entry.KeyboardIrq, Handler.KeyboardIrq);
         WriteInterruptEntry(rom, Entry.DummyIrq, Handler.DummyIrq);
         WriteInterruptEntry(rom, Entry.Multiplex, Handler.Multiplex);
+        WriteInterruptEntry(rom, Entry.Mouse, Handler.Mouse);
+        WriteInterruptEntry(rom, Entry.MouseIrq, Handler.MouseIrq);
+
+        // The landing pad a mouse event handler returns through. It is a bare
+        // RETF: the far CALL that entered the handler pushed this address, so
+        // returning here pops the address the guest was really at and carries
+        // on as though nothing had happened.
+        rom[Entry.MouseCallbackReturn] = 0xCB;   // RETF
 
         // The XMS entry point is not an interrupt handler: programs reach it
         // through a far CALL, so it has to return with RETF rather than IRET.
