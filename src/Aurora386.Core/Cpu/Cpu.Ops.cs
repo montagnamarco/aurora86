@@ -421,6 +421,22 @@ public sealed partial class Cpu
     {
         if (segment == SegReg.Ss) _interruptShadow = true;
 
+        // Virtual 8086 mode loads segments the real-mode way -- base is the
+        // selector times sixteen, limit is 64 KB -- because that is the whole
+        // point of it: an unmodified DOS program has to compute the addresses
+        // it has always computed. What differs is everything around it. The
+        // address it arrives at is linear, not physical, so paging can put
+        // each task's first megabyte somewhere else entirely, and privileged
+        // instructions still trap to the monitor.
+        if (State.Virtual8086Mode)
+        {
+            // The reset variant: a task is confined to the first megabyte and
+            // must not be able to widen a segment past 64 KB, which the
+            // ordinary real-mode load would allow by leaving the limit alone.
+            State.LoadSegmentRealModeReset(segment, selector);
+            return;
+        }
+
         if (!State.ProtectedMode)
         {
             State.LoadSegmentRealMode(segment, selector);
@@ -476,7 +492,7 @@ public sealed partial class Cpu
     {
         if (State.ProtectedMode)
         {
-            EnterInterruptProtected(vector, errorCode);
+            EnterInterruptProtected(vector, errorCode, isSoftware);
             return;
         }
 
@@ -541,12 +557,14 @@ public sealed partial class Cpu
 
     private void ReadPortToAccumulator(ushort port)
     {
+        RequireIoPrivilege();
         if (OperandSize32) State.Eax = _io.ReadDword(port);
         else State.Ax = _io.ReadWord(port);
     }
 
     private void WriteAccumulatorToPort(ushort port)
     {
+        RequireIoPrivilege();
         if (OperandSize32) _io.WriteDword(port, State.Eax);
         else _io.WriteWord(port, State.Ax);
     }
@@ -699,5 +717,25 @@ public sealed partial class Cpu
         sbyte offset = (sbyte)FetchByte();
         uint count = AddressSize32 ? State.Ecx : State.Cx;
         if (count == 0) JumpRelative(offset);
+    }
+
+    /// <summary>
+    /// Refuses an instruction that touches the outside world when the code
+    /// running is not privileged enough to be trusted with it.
+    ///
+    /// The I/O privilege level in EFLAGS names the least privileged ring
+    /// allowed to use the I/O instructions and to change the interrupt flag.
+    /// A monitor sets it below 3 precisely so that these instructions trap:
+    /// it can then look at what the task was trying to do and decide. That is
+    /// how EMM386 lets a DOS program believe it is programming the hardware
+    /// while the monitor quietly does something else, and how Windows keeps
+    /// one DOS box from disabling interrupts for the whole machine.
+    /// </summary>
+    private void RequireIoPrivilege()
+    {
+        if (!State.ProtectedMode) return;
+
+        byte iopl = (byte)((Flags.Value >> 12) & 3);
+        if (State.Cpl > iopl) throw new CpuException(13, 0);
     }
 }

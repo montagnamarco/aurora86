@@ -125,7 +125,7 @@ public sealed partial class Cpu
     /// debugger's breakpoint handler wants: the machine must keep servicing
     /// the clock and the keyboard while a human stares at the screen.
     /// </summary>
-    private void EnterInterruptProtected(byte vector, uint errorCode)
+    private void EnterInterruptProtected(byte vector, uint errorCode, bool isSoftware = false)
     {
         // Each IDT entry is eight bytes, exactly like a GDT descriptor, so the
         // same limit check applies: an entry that does not fit inside the
@@ -167,24 +167,37 @@ public sealed partial class Cpu
             ? (low & 0xFFFF) | (high & 0xFFFF0000)
             : low & 0xFFFF;
 
-        // The privilege check applies only to software interrupts. Hardware
-        // must always get through: a device does not have a privilege level,
-        // and a timer that user code could block would be no timer at all.
-        // (Our INT instruction path is the only caller that can be user code,
-        // and in real terms everything we run is at ring 0 today -- but the
-        // check belongs here so it is right when that changes.)
         // The privilege we are running at. CPL is the authority rather than
         // the selector's low bits: in virtual 8086 mode the code is ring 3
         // however its selector reads, and the two must not disagree.
         byte currentPrivilege = State.Cpl;
-        if (gateDpl < currentPrivilege)
+
+        // The gate's privilege is checked only for interrupts the running
+        // code asked for with an INT instruction. It says who is allowed to
+        // *call* the handler deliberately, which is why a monitor can keep a
+        // task from invoking its private services.
+        //
+        // Hardware interrupts and exceptions are not subject to it. A device
+        // has no privilege level, and a timer that user code could block
+        // would be no timer at all; and an exception is precisely the case
+        // where unprivileged code has done something that must reach the
+        // handler -- checking here would turn every fault in a V86 task into
+        // a second fault, and then a third.
+        if (isSoftware && gateDpl < currentPrivilege)
             throw new CpuException(13, (uint)(vector * 8 + 2));
 
+        // The VM flag lives outside EFLAGS in our state, so it has to be put
+        // back into the value that goes on the stack: it is what tells the
+        // monitor's IRET to return into virtual 8086 mode rather than to
+        // ordinary protected-mode code.
         uint savedFlags = Flags.Value;
+        if (State.Virtual8086Mode) savedFlags |= VirtualModeFlag;
+
         ushort savedCs = State.Cs.Selector;
         uint savedEip = State.Eip;
         ushort savedSs = State.Ss.Selector;
         uint savedEsp = State.Esp;
+        ushort savedEs = 0, savedDs = 0, savedFs = 0, savedGs = 0;
 
         // Where the handler will run. The descriptor's low two bits are the
         // privilege it runs at, and an interrupt that raises the privilege
@@ -209,13 +222,39 @@ public sealed partial class Cpu
         // write through it. The TSS exists almost entirely to hold these
         // stack pointers, one per privilege level, out of the reach of the
         // code being protected against.
-        if (changingPrivilege)
-        {
-            (ushort newSs, uint newEsp) = ReadStackFromTss(targetPrivilege);
+        // Leaving virtual 8086 mode is always a privilege change: the task
+        // runs at ring 3 and the monitor that handles its interrupts is at
+        // ring 0.
+        bool leavingVirtualMode = State.Virtual8086Mode;
 
+        if (changingPrivilege || leavingVirtualMode)
+        {
+            (ushort newSs, uint newEsp) = ReadStackFromTss(0);
+
+            // The task's segments have to be captured before the switch, and
+            // cleared afterwards: they hold real-mode values that mean
+            // nothing under protection, and leaving them loaded would let the
+            // monitor dereference them by accident.
+            if (leavingVirtualMode)
+            {
+                savedEs = State.Es.Selector;
+                savedDs = State.Ds.Selector;
+                savedFs = State.Fs.Selector;
+                savedGs = State.Gs.Selector;
+            }
+
+            State.Virtual8086Mode = false;
             LoadSegmentProtected(SegReg.Ss, newSs);
             State.Esp = newEsp;
-            State.Cpl = targetPrivilege;
+            State.Cpl = leavingVirtualMode ? (byte)0 : targetPrivilege;
+
+            if (leavingVirtualMode)
+            {
+                State.LoadSegmentRealModeReset(SegReg.Es, 0);
+                State.LoadSegmentRealModeReset(SegReg.Ds, 0);
+                State.LoadSegmentRealModeReset(SegReg.Fs, 0);
+                State.LoadSegmentRealModeReset(SegReg.Gs, 0);
+            }
         }
 
         // The stack frame. Order matters: the handler's IRET pops it in
@@ -226,7 +265,19 @@ public sealed partial class Cpu
         // returns the processor to the stack it came from.
         if (is32Bit)
         {
-            if (changingPrivilege)
+            // From a V86 task the frame carries the four data segments as
+            // well, at the very bottom. The monitor reads them to find out
+            // what the task had loaded, and IRET puts them back on the way
+            // in.
+            if (leavingVirtualMode)
+            {
+                Push32(savedGs);
+                Push32(savedFs);
+                Push32(savedDs);
+                Push32(savedEs);
+            }
+
+            if (changingPrivilege || leavingVirtualMode)
             {
                 Push32(savedSs);
                 Push32(savedEsp);
@@ -258,6 +309,55 @@ public sealed partial class Cpu
         // handler as well as the code being debugged.
         if (!isTrapGate) Flags.Interrupt = false;
         Flags.Trap = false;
+    }
+
+    /// <summary>Bit 17 of EFLAGS: the processor is in virtual 8086 mode.</summary>
+    private const uint VirtualModeFlag = 1u << 17;
+
+    /// <summary>
+    /// Enters virtual 8086 mode from an IRET frame.
+    ///
+    /// The frame is larger than an ordinary one: on top of EIP, CS and
+    /// EFLAGS come ESP and SS, then the four remaining segment registers.
+    /// The processor pops the lot, because a task entering V86 arrives with
+    /// no usable segment state of its own.
+    ///
+    /// Everything lands through the real-mode rules, so the task sees the
+    /// flat 8086 world it expects while the monitor keeps protection,
+    /// paging and the interrupt vectors under its own control.
+    /// </summary>
+    private void EnterVirtual8086(uint returnEip, ushort returnCs, uint returnFlags)
+    {
+        uint newEsp = Pop32();
+        ushort newSs = (ushort)Pop32();
+        ushort newEs = (ushort)Pop32();
+        ushort newDs = (ushort)Pop32();
+        ushort newFs = (ushort)Pop32();
+        ushort newGs = (ushort)Pop32();
+
+        // The mode has to be set before the segments are loaded: it is what
+        // decides that they load the real-mode way.
+        State.Virtual8086Mode = true;
+        Flags.SetValue(returnFlags);
+
+        // The reset variant, because entering the mode must impose the 64 KB
+        // limit rather than inherit whatever was there. The ordinary
+        // real-mode load deliberately leaves the limit alone -- that is what
+        // makes unreal mode work -- and a task that kept a four-gigabyte
+        // limit could reach straight out of the megabyte it is confined to.
+        State.LoadSegmentRealModeReset(SegReg.Cs, returnCs);
+        State.LoadSegmentRealModeReset(SegReg.Ss, newSs);
+        State.LoadSegmentRealModeReset(SegReg.Es, newEs);
+        State.LoadSegmentRealModeReset(SegReg.Ds, newDs);
+        State.LoadSegmentRealModeReset(SegReg.Fs, newFs);
+        State.LoadSegmentRealModeReset(SegReg.Gs, newGs);
+
+        State.Eip = returnEip & 0xFFFF;
+        State.Esp = newEsp;
+
+        // A V86 task runs at ring 3 whatever its selectors say. That is what
+        // makes every privileged instruction trap to the monitor.
+        State.Cpl = 3;
     }
 
     /// <summary>
@@ -351,12 +451,23 @@ public sealed partial class Cpu
                 returnFlags = (Flags.Value & 0xFFFF0000) | Pop16();
             }
 
-            // Returning into virtual 8086 mode is a different sequence again:
-            // the processor pops all six segment registers. Nothing we run
-            // does this yet, so refuse clearly rather than half-doing it.
-            if ((returnFlags & 0x00020000) != 0)
-                throw new NotImplementedException(
-                    "IRET into virtual 8086 mode is not implemented.");
+            // Returning into virtual 8086 mode is a different sequence again.
+            //
+            // This is how a monitor starts a DOS task: it builds a stack frame
+            // describing where the task should begin, with the VM flag set in
+            // the saved EFLAGS, and executes IRET. The processor then pops all
+            // six segment registers rather than just CS, because a V86 task
+            // needs its own DS, ES, FS and GS as well, and there is no
+            // descriptor table to fetch them from.
+            //
+            // Only ring 0 may do this. Anywhere else the VM bit in the popped
+            // flags is simply ignored, which is what stops a task from
+            // promoting itself.
+            if ((returnFlags & VirtualModeFlag) != 0 && State.Cpl == 0)
+            {
+                EnterVirtual8086(returnEip, returnCs, returnFlags);
+                return;
+            }
 
             byte currentPrivilege = (byte)(State.Cs.Selector & 3);
             byte returnPrivilege = (byte)(returnCs & 3);

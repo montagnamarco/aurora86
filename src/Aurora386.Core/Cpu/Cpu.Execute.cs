@@ -277,13 +277,13 @@ public sealed partial class Cpu
                 return;
 
             // --- I/O ports ---------------------------------------------------
-            case 0xE4: State.SetReg8(0, _io.ReadByte(FetchByte())); return;
+            case 0xE4: RequireIoPrivilege(); State.SetReg8(0, _io.ReadByte(FetchByte())); return;
             case 0xE5: ReadPortToAccumulator(FetchByte()); return;
-            case 0xE6: _io.WriteByte(FetchByte(), State.GetReg8(0)); return;
+            case 0xE6: RequireIoPrivilege(); _io.WriteByte(FetchByte(), State.GetReg8(0)); return;
             case 0xE7: WriteAccumulatorToPort(FetchByte()); return;
-            case 0xEC: State.SetReg8(0, _io.ReadByte(State.Dx)); return;
+            case 0xEC: RequireIoPrivilege(); State.SetReg8(0, _io.ReadByte(State.Dx)); return;
             case 0xED: ReadPortToAccumulator(State.Dx); return;
-            case 0xEE: _io.WriteByte(State.Dx, State.GetReg8(0)); return;
+            case 0xEE: RequireIoPrivilege(); _io.WriteByte(State.Dx, State.GetReg8(0)); return;
             case 0xEF: WriteAccumulatorToPort(State.Dx); return;
 
             // --- shifts and rotates -------------------------------------------
@@ -505,12 +505,19 @@ public sealed partial class Cpu
             case 0xEA: JumpFar(); return;
             case 0xEB: { sbyte offset = (sbyte)FetchByte(); JumpRelative(offset); return; }
 
-            case 0xF4: State.Halted = true; return;
+            case 0xF4:
+                // A V86 task must never stop the machine: it believes it owns
+                // the computer, but it is one task among several and the
+                // monitor has to stay alive to schedule the rest.
+                if (State.Virtual8086Mode) throw new CpuException(13, 0);
+                State.Halted = true;
+                return;
             case 0xF5: Flags.Carry = !Flags.Carry; return;
             case 0xF8: Flags.Carry = false; return;
             case 0xF9: Flags.Carry = true; return;
-            case 0xFA: Flags.Interrupt = false; return;
+            case 0xFA: RequireIoPrivilege(); Flags.Interrupt = false; return;
             case 0xFB:
+                RequireIoPrivilege();
                 // Enabling takes effect only after the next instruction, not
                 // immediately: see _interruptShadow.
                 Flags.Interrupt = true;
