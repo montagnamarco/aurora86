@@ -87,7 +87,7 @@ public class KeyboardEndToEndTests : IClassFixture<HeadlessApp>
     /// lets the next one through, which is what the guest's own interrupt
     /// handler does.
     /// </summary>
-    private List<byte> Press(MainWindow window, Machine machine, Key key,
+    private List<byte> Press(MainWindow window, Machine machine, PhysicalKey key,
                              KeyModifiers modifiers = KeyModifiers.None) => _app.Invoke(() =>
     {
         Drain(machine);
@@ -95,7 +95,7 @@ public class KeyboardEndToEndTests : IClassFixture<HeadlessApp>
         window.RaiseEvent(new KeyEventArgs
         {
             RoutedEvent = InputElement.KeyDownEvent,
-            Key = key,
+            PhysicalKey = key,
             KeyModifiers = modifiers,
         });
 
@@ -120,7 +120,7 @@ public class KeyboardEndToEndTests : IClassFixture<HeadlessApp>
         // 0x2E is where C sits on every PC keyboard. What the guest makes of
         // that position is the guest's business: with an Italian layout
         // loaded it is still C, because the letters do not move.
-        Assert.Contains((byte)0x2E, Press(window, machine, Key.C));
+        Assert.Contains((byte)0x2E, Press(window, machine, PhysicalKey.C));
     }
 
     [Fact]
@@ -131,7 +131,7 @@ public class KeyboardEndToEndTests : IClassFixture<HeadlessApp>
         // That is how pressing Escape came out as a backslash.
         (MainWindow window, Machine machine) = Open();
 
-        Assert.Contains((byte)0x01, Press(window, machine, Key.Escape));
+        Assert.Contains((byte)0x01, Press(window, machine, PhysicalKey.Escape));
     }
 
     [Fact]
@@ -145,7 +145,7 @@ public class KeyboardEndToEndTests : IClassFixture<HeadlessApp>
         // it a second time.
         (MainWindow window, Machine machine) = Open();
 
-        Assert.Contains((byte)0x33, Press(window, machine, Key.OemComma));
+        Assert.Contains((byte)0x33, Press(window, machine, PhysicalKey.Comma));
     }
 
     [Fact]
@@ -156,10 +156,10 @@ public class KeyboardEndToEndTests : IClassFixture<HeadlessApp>
         // travel untouched.
         (MainWindow window, Machine machine) = Open();
 
-        Assert.Contains((byte)0x34, Press(window, machine, Key.OemPeriod));
-        Assert.Contains((byte)0x27, Press(window, machine, Key.OemSemicolon));
-        Assert.Contains((byte)0x2B, Press(window, machine, Key.OemBackslash));
-        Assert.Contains((byte)0x35, Press(window, machine, Key.OemQuestion));
+        Assert.Contains((byte)0x34, Press(window, machine, PhysicalKey.Period));
+        Assert.Contains((byte)0x27, Press(window, machine, PhysicalKey.Semicolon));
+        Assert.Contains((byte)0x2B, Press(window, machine, PhysicalKey.Backslash));
+        Assert.Contains((byte)0x35, Press(window, machine, PhysicalKey.Slash));
     }
 
     [Fact]
@@ -168,7 +168,7 @@ public class KeyboardEndToEndTests : IClassFixture<HeadlessApp>
         // The one key without which nothing can be done at all.
         (MainWindow window, Machine machine) = Open();
 
-        Assert.Contains((byte)0x1C, Press(window, machine, Key.Enter));
+        Assert.Contains((byte)0x1C, Press(window, machine, PhysicalKey.Enter));
     }
 
     [Fact]
@@ -179,11 +179,58 @@ public class KeyboardEndToEndTests : IClassFixture<HeadlessApp>
         // keypad's 8, which is a digit rather than a movement.
         (MainWindow window, Machine machine) = Open();
 
-        List<byte> codes = Press(window, machine, Key.Up);
+        List<byte> codes = Press(window, machine, PhysicalKey.ArrowUp);
 
         int prefix = codes.IndexOf(0xE0);
         Assert.True(prefix >= 0, "the extended prefix never reached the guest");
         Assert.Equal(0x48, codes[prefix + 1]);
+    }
+
+    [Fact]
+    public void TheHostsIdeaOfWhatAKeyMeansIsIgnored()
+    {
+        // This is the case that broke, and the reason the whole path had to
+        // change. On an Italian keyboard the key where an American one has
+        // the semicolon carries an o-grave, so the host reports it as
+        // something other than a semicolon. Reading the host's interpretation
+        // therefore found the wrong entry, or none at all.
+        //
+        // The position is what a scancode names, so the position is what gets
+        // sent -- and here the host's interpretation is deliberately set to
+        // disagree with it, to prove it is not being consulted.
+        (MainWindow window, Machine machine) = Open();
+
+        List<byte> codes = _app.Invoke(() =>
+        {
+            Drain(machine);
+
+            window.RaiseEvent(new KeyEventArgs
+            {
+                RoutedEvent = InputElement.KeyDownEvent,
+                PhysicalKey = PhysicalKey.Semicolon,
+
+                // What an Italian layout makes of that position: not a
+                // semicolon at all, and nothing our map would recognise.
+                Key = Key.None,
+                KeySymbol = "\u00F2",
+            });
+
+            return Drain(machine);
+        });
+
+        Assert.Contains((byte)0x27, codes);
+    }
+
+    [Fact]
+    public void TheKeyEuropeanKeyboardsHaveAndAmericanOnesDoNot()
+    {
+        // The extra key beside the left shift, which an Italian keyboard uses
+        // for the angle brackets. A PC keyboard has it too, at 0x56, and an
+        // American one simply leaves the position empty -- so a map built
+        // around American keys had nowhere to put it.
+        (MainWindow window, Machine machine) = Open();
+
+        Assert.Contains((byte)0x56, Press(window, machine, PhysicalKey.IntlBackslash));
     }
 
     [Fact]
@@ -193,7 +240,7 @@ public class KeyboardEndToEndTests : IClassFixture<HeadlessApp>
         // the keyboard's own repeat starts filling the buffer with it.
         (MainWindow window, Machine machine) = Open();
 
-        Press(window, machine, Key.A);
+        Press(window, machine, PhysicalKey.A);
 
         List<byte> codes = _app.Invoke(() =>
         {
@@ -202,7 +249,7 @@ public class KeyboardEndToEndTests : IClassFixture<HeadlessApp>
             window.RaiseEvent(new KeyEventArgs
             {
                 RoutedEvent = InputElement.KeyUpEvent,
-                Key = Key.A,
+                PhysicalKey = PhysicalKey.A,
                 KeyModifiers = KeyModifiers.None,
             });
 

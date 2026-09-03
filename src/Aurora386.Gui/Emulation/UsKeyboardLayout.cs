@@ -5,7 +5,7 @@ namespace Aurora386.Gui.Emulation;
 /// <summary>
 /// Which key of the guest's keyboard produces a given character.
 ///
-/// This is the reverse of <see cref="AvaloniaKeyMap"/>, and it exists because
+/// This is the reverse of <see cref="PhysicalKeyMap"/>, and it exists because
 /// the two keyboards need not agree. Scancodes name key positions, and the
 /// guest decides what each position means using the layout it has loaded --
 /// which is the American one unless something changed it. The host, meanwhile,

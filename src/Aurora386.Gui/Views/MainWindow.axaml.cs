@@ -51,6 +51,13 @@ public partial class MainWindow : Window
     private MainWindowViewModel? ViewModel => DataContext as MainWindowViewModel;
 
     /// <summary>
+    /// Whether to print every key the host reports, for diagnosing a keyboard
+    /// layout that behaves differently from the one the developer has.
+    /// </summary>
+    private static readonly bool KeyLogging =
+        Environment.GetEnvironmentVariable("AURORA_KEYLOG") is not null;
+
+    /// <summary>
     /// Hands the keyboard back to the emulated machine, after whatever piece
     /// of the interface the user just used has finished with it.
     ///
@@ -110,7 +117,7 @@ public partial class MainWindow : Window
     /// fills, and DOS is left with a queue of characters it will keep echoing
     /// long after the key was let go. That is the runaway prompt.
     /// </summary>
-    private readonly HashSet<Key> _keysHeld = new();
+    private readonly HashSet<PhysicalKey> _keysHeld = new();
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -118,7 +125,22 @@ public partial class MainWindow : Window
         // emulated keyboard generates its own repeats, on its own clock, the
         // way the hardware does -- letting the host's repeats through as well
         // would give the guest two of them at two different rates.
-        if (!_keysHeld.Add(e.Key)) { e.Handled = true; return; }
+        if (!_keysHeld.Add(e.PhysicalKey)) { e.Handled = true; return; }
+
+        // Set AURORA_KEYLOG=1 to print what the host reports for each key.
+        //
+        // This is the one link a test cannot check: what macOS hands Avalonia
+        // before any of our code sees it. When typing goes wrong on a layout
+        // nobody here can reproduce, this is what settles it.
+        if (KeyLogging)
+        {
+            byte mapped = PhysicalKeyMap.ToScanCode(e.PhysicalKey, out bool ext);
+            Console.WriteLine(
+                $"[tasto] Key={e.Key} PhysicalKey={e.PhysicalKey} " +
+                $"KeySymbol='{e.KeySymbol}' modificatori={e.KeyModifiers} " +
+                $"-> scancode={mapped:X2}{(ext ? " (esteso)" : "")}" +
+                (mapped == 0 ? "  NESSUNA POSIZIONE" : ""));
+        }
 
         // Send the key position, and let the guest decide what it means.
         //
@@ -128,7 +150,7 @@ public partial class MainWindow : Window
         // KEYB from AUTOEXEC.BAT and translates the positions itself. Sending
         // a character translated to a US layout would then be translated a
         // second time, which is how a comma came out as an at sign.
-        if (SendKey(e.Key, released: false))
+        if (SendKey(e.PhysicalKey, released: false))
         {
             e.Handled = true;
             return;
@@ -142,9 +164,9 @@ public partial class MainWindow : Window
 
     protected override void OnKeyUp(KeyEventArgs e)
     {
-        _keysHeld.Remove(e.Key);
+        _keysHeld.Remove(e.PhysicalKey);
 
-        if (SendKey(e.Key, released: true)) e.Handled = true;
+        if (SendKey(e.PhysicalKey, released: true)) e.Handled = true;
         else base.OnKeyUp(e);
     }
 
@@ -159,7 +181,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void ReleaseHeldKeys()
     {
-        foreach (Key key in _keysHeld.ToArray())
+        foreach (PhysicalKey key in _keysHeld.ToArray())
             SendKey(key, released: true);
 
         _keysHeld.Clear();
@@ -247,12 +269,12 @@ public partial class MainWindow : Window
     /// the same scancode with bit 7 set. Software needs both, because that is
     /// how it tracks whether Shift is being held.
     /// </summary>
-    private bool SendKey(Key key, bool released)
+    private bool SendKey(PhysicalKey key, bool released)
     {
         MainWindowViewModel? model = ViewModel;
         if (model is null) return false;
 
-        byte code = AvaloniaKeyMap.ToScanCode(key, out bool extended);
+        byte code = PhysicalKeyMap.ToScanCode(key, out bool extended);
         if (code == 0) return false;
 
         model.Session.WithMachine(machine =>
