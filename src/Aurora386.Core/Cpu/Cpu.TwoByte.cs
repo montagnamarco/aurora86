@@ -183,7 +183,13 @@ public sealed partial class Cpu
                 {
                     case 0: WriteCr0(value); break;
                     case 2: State.Cr2 = value; break;
-                    case 3: State.Cr3 = value; break;
+                    case 3:
+                        // Loading CR3 points the processor at a different set
+                        // of page tables, so every cached translation is now
+                        // about the wrong address space.
+                        State.Cr3 = value;
+                        FlushTlb();
+                        break;
                 }
                 return;
             }
@@ -346,6 +352,11 @@ public sealed partial class Cpu
     /// </summary>
     private void WriteCr0(uint value)
     {
+        // Turning paging on or off changes what every linear address means,
+        // so nothing cached under the old arrangement is still true.
+        const uint Paging = 1u << 31;
+        if (((State.Cr0 ^ value) & Paging) != 0) FlushTlb();
+
         State.Cr0 = value;
     }
 }

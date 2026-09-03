@@ -24,7 +24,7 @@ public sealed partial class Cpu
             // has brought the page in, so EIP is rewound to where it began.
             State.Eip = _instructionStart;
             State.Cr2 = fault.LinearAddress;
-            RaiseException(14, errorCode: (uint)((fault.Present ? 1 : 0) | (fault.Write ? 2 : 0)));
+            RaiseException(14, fault.ErrorCode);
         }
         catch (CpuException ex)
         {
