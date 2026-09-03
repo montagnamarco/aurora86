@@ -508,6 +508,49 @@ public class FloppyChangeLineTests
     }
 
     [Fact]
+    public void TheDriveTypeSaysWhatTheDriveCanTake()
+    {
+        // BL names the kind of drive, which is not the same question as what
+        // is in it: a 2.88 MB drive accepts a 1.44 MB disk, a 1.44 MB drive
+        // does not accept a 2.88 MB one. Software reads it to find out what
+        // the hardware is capable of.
+        //
+        // Leaving it unset handed back whatever the caller happened to have
+        // in BL, so a program could conclude the drive was too small for the
+        // disk sitting in it and stop partway through.
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+
+        // A 2.88 MB floppy: 36 sectors per track rather than 18.
+        machine.AttachDisk(new DiskImage(new MemoryStream(new byte[2880 * 1024]),
+                                         0x00, 80, 2, 36));
+
+        machine.Cpu.State.SetReg8(4, 0x08);   // AH: get drive parameters
+        machine.Cpu.State.SetReg8(2, 0x00);   // DL: drive A:
+        machine.Cpu.State.SetReg8(3, 0xFF);   // BL: deliberate rubbish
+        machine.DiskServices.Handle(machine.Cpu);
+
+        Assert.Equal(0x06, machine.Cpu.State.GetReg8(3));   // BL: 2.88 MB
+        Assert.Equal(36, machine.Cpu.State.GetReg8(1) & 0x3F);
+    }
+
+    [Fact]
+    public void AnOrdinaryFloppyIsReportedAsOne()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+        machine.AttachDisk(new DiskImage(new MemoryStream(new byte[1440 * 1024]),
+                                         0x00, 80, 2, 18));
+
+        machine.Cpu.State.SetReg8(4, 0x08);
+        machine.Cpu.State.SetReg8(2, 0x00);
+        machine.Cpu.State.SetReg8(3, 0xFF);
+        machine.DiskServices.Handle(machine.Cpu);
+
+        Assert.Equal(0x04, machine.Cpu.State.GetReg8(3));   // BL: 1.44 MB
+    }
+
+    [Fact]
     public void EachDriveKeepsItsOwnLine()
     {
         // Swapping the disk in A: says nothing about B:, and a shared flag

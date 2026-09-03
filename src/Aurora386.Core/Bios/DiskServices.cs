@@ -214,6 +214,30 @@ public sealed class DiskServices
         int sameKind = _drives.Keys.Count(d => (d >= 0x80) == wantHardDisks);
         cpu.State.SetReg8(2, (byte)sameKind);                  // DL
 
+        // BL names the kind of drive, and only floppies have one. Software
+        // reads it to find out what the drive is capable of, as opposed to
+        // what happens to be in it at the moment: a 2.88 MB drive will take a
+        // 1.44 MB disk, but a 1.44 MB drive will not take a 2.88 MB one.
+        //
+        // Leaving it unset handed back whatever the caller had in BL, and a
+        // program that believed the drive too small for the disk in it would
+        // stop partway through -- which is what installing Windows from 2.88
+        // MB images did, always on the same file.
+        if (!wantHardDisks)
+        {
+            byte driveType = image.SectorsPerTrack switch
+            {
+                9 when image.Cylinders == 40 => 0x01,   // 360 KB
+                15 => 0x02,                             // 1.2 MB
+                9 => 0x03,                              // 720 KB
+                18 => 0x04,                             // 1.44 MB
+                36 => 0x06,                             // 2.88 MB
+                _ => 0x04,                              // anything else: treat as 1.44 MB
+            };
+
+            cpu.State.SetReg8(3, driveType);                   // BL
+        }
+
         Succeed(cpu);
     }
 
