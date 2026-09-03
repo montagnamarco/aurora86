@@ -502,3 +502,142 @@ public class HighCharacterGlyphTests
         Assert.NotEqual(0, acute[0]);
     }
 }
+
+/// <summary>
+/// The VGA's character generator is RAM, and software may fill it with a font
+/// of its own. DOS does so for every code page but the American one, which is
+/// how an Italian or Spanish system gets its accented letters, so a machine
+/// that ignores the load draws those words out of whatever the ROM font
+/// happens to hold.
+/// </summary>
+public class UserFontTests
+{
+    private static Machine PoweredOn()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(200);
+        return machine;
+    }
+
+    /// <summary>
+    /// Calls INT 10h AH=11 AL=00 with a font laid out in guest memory, the
+    /// way MODE does when it installs a code page.
+    /// </summary>
+    private static void LoadFont(Machine machine, int height, int firstCharacter,
+                                 byte[] glyphs, ushort segment = 0x3000, ushort offset = 0x100)
+    {
+        uint address = (uint)(segment << 4) + offset;
+        for (int i = 0; i < glyphs.Length; i++)
+            machine.Memory.WriteByte(address + (uint)i, glyphs[i]);
+
+        machine.Cpu.State.SetReg8(4, 0x11);              // AH: character generator
+        machine.Cpu.State.SetReg8(0, 0x00);              // AL: load user font
+        machine.Cpu.State.SetReg8(7, (byte)height);      // BH: bytes per character
+        machine.Cpu.State.Cx = (ushort)(height > 0 ? glyphs.Length / height : 1);
+        machine.Cpu.State.Dx = (ushort)firstCharacter;
+        machine.Cpu.SetSegment(Aurora386.Core.Cpu.SegReg.Es, segment);
+        machine.Cpu.State.Bp = offset;
+
+        machine.VideoServices.Handle(machine.Cpu);
+    }
+
+    [Fact]
+    public void AFontTheGuestLoadsReplacesTheOneInRom()
+    {
+        using var machine = PoweredOn();
+
+        // One character, 16 rows, every row solid.
+        var solid = new byte[16];
+        Array.Fill(solid, (byte)0xFF);
+        LoadFont(machine, 16, 0x41, solid);   // 'A'
+
+        Assert.NotNull(machine.VideoRegisters.UserFont);
+        Assert.Equal(16, machine.VideoRegisters.UserFontHeight);
+
+        ReadOnlySpan<byte> loaded = machine.VideoRegisters.UserFont.AsSpan(0x41 * 16, 16);
+        foreach (byte row in loaded) Assert.Equal(0xFF, row);
+    }
+
+    [Fact]
+    public void CharactersOutsideTheLoadedRangeKeepTheirRomShapes()
+    {
+        // Software usually loads only the half it cares about: DOS replaces
+        // the accented letters and leaves ASCII alone. Blanking the rest
+        // would wipe out the alphabet.
+        using var machine = PoweredOn();
+
+        ReadOnlySpan<byte> romB = VgaFont.GetGlyph((byte)'B');
+        byte[] expected = romB.ToArray();
+
+        var solid = new byte[16];
+        Array.Fill(solid, (byte)0xFF);
+        LoadFont(machine, 16, 0x41, solid);   // only 'A'
+
+        ReadOnlySpan<byte> b = machine.VideoRegisters.UserFont.AsSpan((byte)'B' * 16, 16);
+        Assert.True(b.SequenceEqual(expected));
+    }
+
+    [Fact]
+    public void ARangeOfCharactersLoadsInOrder()
+    {
+        // DOS hands over a run of characters in one call, and each glyph has
+        // to land under its own code rather than all at the first one.
+        using var machine = PoweredOn();
+
+        const int height = 16;
+        const int first = 0x80;
+        const int count = 4;
+
+        var glyphs = new byte[count * height];
+        for (int i = 0; i < count; i++)
+            for (int row = 0; row < height; row++)
+                glyphs[i * height + row] = (byte)(i + 1);
+
+        LoadFont(machine, height, first, glyphs);
+
+        for (int i = 0; i < count; i++)
+        {
+            ReadOnlySpan<byte> glyph =
+                machine.VideoRegisters.UserFont.AsSpan((first + i) * height, height);
+
+            foreach (byte row in glyph)
+                Assert.Equal((byte)(i + 1), row);
+        }
+    }
+
+    [Fact]
+    public void AnImpossibleCellHeightIsRefused()
+    {
+        // A height of zero would mean glyphs of no size at all, and the
+        // arithmetic downstream divides by it. A guest is free to pass
+        // nonsense, so the BIOS has to turn it away rather than fault.
+        using var machine = PoweredOn();
+
+        LoadFont(machine, 0, 0x41, new byte[16]);
+
+        Assert.Null(machine.VideoRegisters.UserFont);
+    }
+
+    [Fact]
+    public void AFontThatRunsPastTheEndOfMemoryIsTruncatedRatherThanFaulting()
+    {
+        // A count far larger than the glyphs actually supplied must not walk
+        // off the end of the buffer: the guest's numbers are not to be
+        // trusted, and a fault here would take the whole machine down.
+        using var machine = PoweredOn();
+
+        machine.Cpu.State.SetReg8(4, 0x11);
+        machine.Cpu.State.SetReg8(0, 0x00);
+        machine.Cpu.State.SetReg8(7, 16);
+        machine.Cpu.State.Cx = 300;              // more characters than exist
+        machine.Cpu.State.Dx = 0;
+        machine.Cpu.SetSegment(Aurora386.Core.Cpu.SegReg.Es, 0x3000);
+        machine.Cpu.State.Bp = 0x100;
+
+        machine.VideoServices.Handle(machine.Cpu);
+
+        // Whatever it did, it kept to a font of the right size.
+        Assert.NotNull(machine.VideoRegisters.UserFont);
+        Assert.Equal(256 * 16, machine.VideoRegisters.UserFont.Length);
+    }
+}

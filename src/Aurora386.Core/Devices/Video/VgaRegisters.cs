@@ -112,6 +112,82 @@ public sealed class VgaRegisters : IIoDevice
     /// </summary>
     public int CharacterHeight { get; set; } = 16;
 
+    /// <summary>
+    /// A font the guest has loaded into the character generator, replacing
+    /// the one in ROM, or null while the ROM font is in use.
+    ///
+    /// The VGA's character generator is RAM, not ROM: the BIOS copies one of
+    /// its built-in fonts into it at mode-set time, and software is free to
+    /// copy something else. DOS does exactly that for every code page other
+    /// than the American one -- MODE CON CP PREPARE loads a font in which the
+    /// upper half carries that country's accented letters -- so a machine
+    /// that ignores the load draws those letters from whatever the ROM font
+    /// happens to have there.
+    ///
+    /// Stored as 256 glyphs of <see cref="UserFontHeight"/> scanlines each.
+    /// </summary>
+    public byte[]? UserFont { get; private set; }
+
+    /// <summary>Cell height of <see cref="UserFont"/>, in scanlines.</summary>
+    public int UserFontHeight { get; private set; }
+
+    /// <summary>
+    /// Installs a font the guest has supplied. Only the characters it covers
+    /// are replaced: software often loads just the upper half, leaving the
+    /// ASCII range as the ROM drew it.
+    /// </summary>
+    public void LoadUserFont(int height, int firstCharacter, int count, ReadOnlySpan<byte> glyphs)
+    {
+        if (height is < 1 or > 32) return;
+
+        // A different cell height means the previous font's glyphs no longer
+        // describe anything, so start again rather than mixing two shapes.
+        if (UserFont is null || UserFontHeight != height)
+        {
+            UserFont = BuildRomFontCopy(height);
+            UserFontHeight = height;
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            int character = firstCharacter + i;
+            if (character is < 0 or > 255) continue;
+
+            int source = i * height;
+            if (source + height > glyphs.Length) break;
+
+            glyphs.Slice(source, height).CopyTo(UserFont.AsSpan(character * height, height));
+        }
+
+        ModeChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Starts a user font off as a copy of the ROM one, so that characters
+    /// the guest does not supply keep their usual shapes instead of turning
+    /// blank.
+    /// </summary>
+    private static byte[] BuildRomFontCopy(int height)
+    {
+        var font = new byte[256 * height];
+
+        for (int ch = 0; ch < 256; ch++)
+        {
+            ReadOnlySpan<byte> glyph = VgaFonts.GetGlyph((byte)ch, height);
+            int rows = Math.Min(height, glyph.Length);
+            glyph[..rows].CopyTo(font.AsSpan(ch * height, rows));
+        }
+
+        return font;
+    }
+
+    /// <summary>Goes back to the ROM font, as a mode set does.</summary>
+    public void ClearUserFont()
+    {
+        UserFont = null;
+        UserFontHeight = 0;
+    }
+
     /// <summary>Raised on a mode change, so the renderer can resize and redraw everything.</summary>
     public event Action? ModeChanged;
 

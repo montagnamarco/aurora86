@@ -159,7 +159,12 @@ public sealed class VgaRenderer
     private void DrawGlyph(int column, int row, int charHeight, byte character,
                            int foreground, int background, bool drawCursor)
     {
-        ReadOnlySpan<byte> glyph = VgaFonts.GetGlyph(character, charHeight);
+        // A font the guest loaded into the character generator wins over the
+        // one in ROM: that is the whole point of the generator being RAM.
+        ReadOnlySpan<byte> glyph =
+            _registers.UserFont is { } userFont && _registers.UserFontHeight == charHeight
+                ? userFont.AsSpan(character * charHeight, charHeight)
+                : VgaFonts.GetGlyph(character, charHeight);
         uint foregroundColor = ToRgba(_registers.GetPaletteColor(foreground));
         uint backgroundColor = ToRgba(_registers.GetPaletteColor(background));
 

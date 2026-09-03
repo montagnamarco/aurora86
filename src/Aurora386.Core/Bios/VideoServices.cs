@@ -378,12 +378,50 @@ public sealed class VideoServices
 
         switch (subfunction)
         {
+            // Load a font the caller supplies. This is how DOS installs a
+            // code page: MODE CON CP PREPARE reads a font out of
+            // EGA.CPI whose upper half carries the country's accented
+            // letters, and hands it to the character generator. Ignoring it
+            // leaves every accented word drawn from whatever the ROM font
+            // has in those positions.
+            case 0x00 or 0x10: LoadUserFont(cpu); return;
+
             case 0x01 or 0x11: LoadFont(14); return;   // 8x14, giving 28 rows
             case 0x02 or 0x12: LoadFont(8); return;    // 8x8, giving 50 rows
             case 0x04 or 0x14: LoadFont(16); return;   // 8x16, the default 25 rows
             case 0x30: GetFontPointer(cpu); return;
             default: return;
         }
+    }
+
+    /// <summary>
+    /// Subfunctions 00 and 10: copy a caller-supplied font into the character
+    /// generator.
+    ///
+    /// ES:BP points at the glyphs, BH gives the cell height, CX how many
+    /// characters follow and DX the first character's code. Software usually
+    /// supplies only the range it cares about -- DOS loads the upper half and
+    /// leaves ASCII alone -- so the rest must keep the shapes it already had.
+    /// </summary>
+    private void LoadUserFont(CpuNs.Cpu cpu)
+    {
+        int height = cpu.State.GetReg8(7);        // BH
+        int count = cpu.State.Cx;
+        int firstCharacter = cpu.State.Dx;
+
+        if (height is < 1 or > 32 || count <= 0) return;
+
+        // ES:BP addresses the glyph table. BP rather than the usual BX: this
+        // call predates the PC/AT and the register choice has been carried
+        // along ever since.
+        uint offset = cpu.State.Bp;
+
+        int wanted = count * height;
+        var glyphs = new byte[wanted];
+        for (int i = 0; i < wanted; i++)
+            glyphs[i] = cpu.ReadMemoryByte(SegReg.Es, offset + (uint)i);
+
+        _registers.LoadUserFont(height, firstCharacter, count, glyphs);
     }
 
     private void LoadFont(int characterHeight)
