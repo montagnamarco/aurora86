@@ -172,6 +172,11 @@ public sealed class Machine : IDisposable
 
         _disks.Add(image);
         DiskServices.Attach(image);
+
+        // The parameter table describes whichever floppy is in drive A:, so
+        // it has to follow the disk that is actually there.
+        if (image.DriveNumber == 0x00)
+            WriteDiskParameterTable(image.SectorsPerTrack);
     }
 
     /// <summary>
@@ -272,6 +277,13 @@ public sealed class Machine : IDisposable
         SetVector(0x17, BiosRom.Entry.Printer);
         SetVector(0x19, BiosRom.Entry.Bootstrap);
         SetVector(0x1A, BiosRom.Entry.TimeOfDay);
+
+        // INT 1Eh is a pointer, not a handler: it addresses eleven bytes
+        // describing the floppy drive. DOS reads it to find out the geometry,
+        // above all the sectors per track, which is what tells a 1.44 MB
+        // floppy from a 2.88 MB one.
+        SetVectorFar(0x1E, DiskParameterSegment, DiskParameterOffset);
+        WriteDiskParameterTable(18);
         SetVector(0x2F, BiosRom.Entry.Multiplex);
 
         // IRQs 2-7 and 8-15 with no handler of their own point at a stub that
@@ -659,6 +671,56 @@ public sealed class Machine : IDisposable
         // guest cannot observe the difference -- it only ever learns about a
         // frame through the interrupt the card raises when it files one.
         Network.Poll();
+    }
+
+    /// <summary>
+    /// Fills in the diskette parameter table that INT 1Eh points at.
+    ///
+    /// Most of the eleven bytes are timings for a drive we do not simulate --
+    /// how long the head takes to settle, how long the motor needs to come up
+    /// to speed. The one that matters is the sectors per track, which is how
+    /// DOS knows where one track ends and the next begins. Give it 18 for a
+    /// disk that has 36 and it reads half of every track, finds half a
+    /// directory, and goes looking for the rest where a smaller disk would
+    /// have kept it.
+    /// </summary>
+    private void WriteDiskParameterTable(int sectorsPerTrack)
+    {
+        uint address = ((uint)DiskParameterSegment << 4) + DiskParameterOffset;
+
+        // The values a PC/AT BIOS publishes, with the gap lengths that suit
+        // the density: a 2.88 MB disk packs its sectors more tightly.
+        bool dense = sectorsPerTrack >= 36;
+
+        Memory.WriteByte(address + 0, 0xAF);   // step rate and head unload time
+        Memory.WriteByte(address + 1, 0x02);   // head load time; DMA in use
+        Memory.WriteByte(address + 2, 0x25);   // ticks before the motor stops
+        Memory.WriteByte(address + 3, 0x02);   // 512 bytes a sector
+        Memory.WriteByte(address + 4, (byte)sectorsPerTrack);
+        Memory.WriteByte(address + 5, dense ? (byte)0x1B : (byte)0x1B);   // gap length
+        Memory.WriteByte(address + 6, 0xFF);   // data length, unused at 512 bytes
+        Memory.WriteByte(address + 7, dense ? (byte)0x54 : (byte)0x6C);   // format gap
+        Memory.WriteByte(address + 8, 0xF6);   // the byte a format writes
+        Memory.WriteByte(address + 9, 0x0F);   // head settle time
+        Memory.WriteByte(address + 10, 0x08);  // motor start time
+    }
+
+    /// <summary>
+    /// Where the diskette parameter table lives.
+    ///
+    /// It has to be in RAM, not in the ROM: the values change with the disk
+    /// that is in the drive, and DOS itself may write to it -- some versions
+    /// point the vector at a copy of their own. It sits just above the BIOS
+    /// data area, in the space the interrupt vectors leave free.
+    /// </summary>
+    private const ushort DiskParameterSegment = 0x0000;
+    private const ushort DiskParameterOffset = 0x0522;
+
+    /// <summary>Writes a vector that points at data rather than at code.</summary>
+    private void SetVectorFar(byte vector, ushort segment, ushort offset)
+    {
+        Memory.WriteWord((uint)(vector * 4), offset);
+        Memory.WriteWord((uint)(vector * 4 + 2), segment);
     }
 
     /// <summary>Tells the machine a key has been pressed.</summary>

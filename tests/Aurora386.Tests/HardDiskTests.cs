@@ -566,6 +566,54 @@ public class FloppyChangeLineTests
     }
 
     [Fact]
+    public void TheParameterTableFollowsTheDiskInTheDrive()
+    {
+        // INT 1Eh points at eleven bytes describing the drive, and DOS reads
+        // them to find out where one track ends and the next begins. Tell it
+        // 18 sectors when the disk has 36 and it reads half of every track:
+        // it finds half a directory and goes looking for the rest where a
+        // smaller disk would have kept it, which is why a 2.88 MB disk listed
+        // as though it were a 1.44 MB one.
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+
+        Assert.Equal(18, SectorsPerTrackInTable(machine));
+
+        machine.AttachDisk(new DiskImage(new MemoryStream(new byte[2880 * 1024]),
+                                         0x00, 80, 2, 36));
+
+        Assert.Equal(36, SectorsPerTrackInTable(machine));
+    }
+
+    [Fact]
+    public void TheParameterTableIsInMemoryThatCanBeWritten()
+    {
+        // It cannot live in the ROM. The values change with the disk, and DOS
+        // itself writes there -- some versions point the vector at a copy of
+        // their own. Put it in ROM and the writes are silently dropped, which
+        // leaves whatever byte of BIOS code happens to sit at that address
+        // being read as a sector count.
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+
+        uint address = TableAddress(machine);
+
+        machine.Memory.WriteByte(address + 4, 99);
+        Assert.Equal(99, machine.Memory.ReadByte(address + 4));
+    }
+
+    private static uint TableAddress(Machine machine)
+    {
+        ushort offset = machine.Memory.ReadWord(0x1E * 4);
+        ushort segment = machine.Memory.ReadWord(0x1E * 4 + 2);
+
+        return (uint)(segment << 4) + offset;
+    }
+
+    private static byte SectorsPerTrackInTable(Machine machine)
+        => machine.Memory.ReadByte(TableAddress(machine) + 4);
+
+    [Fact]
     public void EachDriveKeepsItsOwnLine()
     {
         // Swapping the disk in A: says nothing about B:, and a shared flag

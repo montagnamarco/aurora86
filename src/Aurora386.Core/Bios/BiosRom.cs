@@ -45,6 +45,20 @@ public static class BiosRom
         public const ushort KeyboardIrq = 0x10B0;    // INT 09h, IRQ 1
         public const ushort DummyIrq = 0x10C0;       // unhandled IRQs
         public const ushort Multiplex = 0x10D0;      // INT 2Fh
+
+        /// <summary>
+        /// The diskette parameter table, which INT 1Eh points at rather than
+        /// calls: it is eleven bytes of data, not code.
+        ///
+        /// DOS reads it to find out how the drive is laid out -- most of all
+        /// how many sectors there are per track, which is the difference
+        /// between a 1.44 MB floppy and a 2.88 MB one. Leave the vector unset
+        /// and DOS follows it to whatever happens to be in memory there, and
+        /// reads the disk with the wrong geometry: on a 2.88 MB disk it finds
+        /// half a directory, because it looks for the second half in the
+        /// place a 1.44 MB disk would have kept it.
+        /// </summary>
+        public const ushort DiskParameters = 0x10E0;
         public const ushort XmsEntry = 0x10E0;       // XMS entry point
         public const ushort Reset = 0xFFF0;          // power-on entry point
         public const ushort PostEntry = 0x1100;      // initialization

@@ -137,11 +137,21 @@ public class BootRegressionTests
     public void EveryVectorPointsAtExecutableCode()
     {
         // Being non-zero is not enough: the vector has to lead to real code.
+        //
+        // Three of them lead to data instead, and always have: the PC
+        // architecture reuses the vector table as a directory of tables.
+        // 1Eh addresses the diskette parameters, 1Fh the upper half of the
+        // graphics font, 43h the font a program has loaded. Nothing ever
+        // calls them -- software follows the pointer and reads.
+        int[] pointToData = [0x1E, 0x1F, 0x43];
+
         using var machine = new Machine();
         machine.RunInstructions(300);
 
         for (int vector = 0; vector < 256; vector++)
         {
+            if (pointToData.Contains(vector)) continue;
+
             ushort offset = machine.Memory.ReadWord((uint)vector * 4);
             ushort segment = machine.Memory.ReadWord((uint)vector * 4 + 2);
             uint linear = (uint)segment * 16 + offset;
