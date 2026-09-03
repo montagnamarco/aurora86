@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Aurora386.Core\Aurora386.Core.csproj" />
+    <ProjectReference Include="..\..\src\Aurora386.Gui\Aurora386.Gui.csproj" />
   </ItemGroup>
 
 </Project>
