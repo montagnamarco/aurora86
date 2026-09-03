@@ -170,13 +170,28 @@ public sealed class KeyboardServices
         return true;
     }
 
-    /// <summary>Advances a pointer within the circular buffer, wrapping around.</summary>
-    private static ushort Advance(ushort pointer)
+    /// <summary>
+    /// Advances a pointer within the circular buffer, wrapping around.
+    ///
+    /// The bounds come from 0x480 and 0x482 rather than from constants,
+    /// because those two words are what defines the buffer: software is
+    /// allowed to move it somewhere roomier, and a wrap computed against the
+    /// old address would then walk straight off the end. Should they be
+    /// unset, fall back to the buffer's traditional home so that a pointer
+    /// still wraps somewhere sane instead of climbing forever.
+    /// </summary>
+    private ushort Advance(ushort pointer)
     {
+        ushort start = _bda.KeyboardBufferStartPointer;
+        ushort end = _bda.KeyboardBufferEndPointer;
+        if (end <= start)
+        {
+            start = (ushort)BiosDataArea.KeyboardBufferStart;
+            end = (ushort)BiosDataArea.KeyboardBufferEnd;
+        }
+
         ushort next = (ushort)(pointer + 2);
-        return next >= BiosDataArea.KeyboardBufferEnd
-            ? (ushort)BiosDataArea.KeyboardBufferStart
-            : next;
+        return next >= end ? start : next;
     }
 
     /// <summary>

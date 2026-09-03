@@ -71,6 +71,32 @@ public sealed class BiosDataArea
     public const uint KeyboardBufferStart = 0x1E;
     public const uint KeyboardBufferEnd = 0x3E;
 
+    /// <summary>
+    /// Where the keyboard buffer begins and ends, at 0x480 and 0x482.
+    ///
+    /// The buffer's location is not fixed by the architecture: these two words
+    /// declare it, and software is entitled to point them somewhere larger.
+    /// The AT BIOS introduced them precisely so that a program could enlarge
+    /// the sixteen-keystroke buffer.
+    ///
+    /// They must be filled in even when the buffer stays where it has always
+    /// been, because software reads them rather than assuming: DOS walks the
+    /// buffer itself in places, and a pair of zeroes here sends it to the very
+    /// bottom of the BIOS data area, where it corrupts whatever it finds and
+    /// then loops on the garbage it wrote.
+    /// </summary>
+    public ushort KeyboardBufferStartPointer
+    {
+        get => ReadWord(0x80);
+        set => WriteWord(0x80, value);
+    }
+
+    public ushort KeyboardBufferEndPointer
+    {
+        get => ReadWord(0x82);
+        set => WriteWord(0x82, value);
+    }
+
     /// <summary>Current video mode (0x449).</summary>
     public byte VideoMode { get => ReadByte(0x49); set => WriteByte(0x49, value); }
 
@@ -137,6 +163,8 @@ public sealed class BiosDataArea
         // This is the PC convention, not something we get to pick.
         KeyboardBufferHead = (ushort)KeyboardBufferStart;
         KeyboardBufferTail = (ushort)KeyboardBufferStart;
+        KeyboardBufferStartPointer = (ushort)KeyboardBufferStart;
+        KeyboardBufferEndPointer = (ushort)KeyboardBufferEnd;
 
         VideoMode = 0x03;              // 80x25 color text
         VideoColumns = 80;
