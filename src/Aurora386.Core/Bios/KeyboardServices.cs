@@ -66,6 +66,26 @@ public sealed class KeyboardServices
             case 0x03:   // set typematic rate: no effect here
                 return;
 
+            case 0x09:
+                // Which of the extended functions this BIOS supports, as a
+                // bitmap in AL. Software asks before using them, and a BIOS
+                // that does not answer is taken for one too old to have them
+                // -- KEYB asks exactly this, and on getting no answer decides
+                // it is dealing with an 84-key keyboard.
+                //
+                // Bits 0-3: functions 10h, 11h, 12h and the typematic call
+                // 0305h are all present. Bits 4-5 cover the keyboard ID and
+                // the 122-key industrial keyboard, which we do not have.
+                cpu.State.SetReg8(0, 0x0F);   // AL
+                return;
+
+            case 0x0A:
+                // The keyboard's own two-byte identifier, which software may
+                // read to tell the models apart. 0xAB41 is the 101-key
+                // keyboard every PC has had since the AT.
+                cpu.State.Bx = 0xAB41;
+                return;
+
             case 0x05:   // push a keystroke into the buffer
                 Enqueue(cpu.State.Cx);
                 return;

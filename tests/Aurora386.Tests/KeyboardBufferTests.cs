@@ -552,6 +552,37 @@ public class EnhancedKeyboardTests
     }
 
     [Fact]
+    public void TheBiosSaysWhichExtendedFunctionsItHas()
+    {
+        // Software asks before using them, and a BIOS that does not answer is
+        // taken for one too old to have them. KEYB asks exactly this: getting
+        // no answer it decides it is dealing with an 84-key keyboard, and
+        // then wipes the byte that said otherwise.
+        using Machine machine = PoweredOn();
+
+        machine.Cpu.State.SetReg8(4, 0x09);
+        machine.KeyboardServices.Handle(machine.Cpu);
+
+        byte supported = machine.Cpu.State.GetReg8(0);
+
+        // Bits 0-3: functions 10h, 11h, 12h and the typematic call.
+        Assert.Equal(0x0F, supported & 0x0F);
+    }
+
+    [Fact]
+    public void TheKeyboardIdentifiesItselfAsTheHundredAndOneKeyModel()
+    {
+        // 0xAB41 is what every PC keyboard since the AT reports. Software
+        // reads it to tell the models apart.
+        using Machine machine = PoweredOn();
+
+        machine.Cpu.State.SetReg8(4, 0x0A);
+        machine.KeyboardServices.Handle(machine.Cpu);
+
+        Assert.Equal(0xAB41, machine.Cpu.State.Bx);
+    }
+
+    [Fact]
     public void TheExtendedStatusCallReportsBothBytes()
     {
         // The second byte distinguishes right Alt from left Alt and right
