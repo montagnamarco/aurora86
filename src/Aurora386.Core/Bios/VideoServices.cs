@@ -132,8 +132,21 @@ public sealed class VideoServices
         _bda.VideoColumns = (ushort)info.TextColumns;
         _bda.VideoPageSize = (ushort)(info.TextColumns * info.TextRows * 2);
         _bda.VideoRowsMinusOne = (byte)(info.TextRows - 1);
-        _bda.CursorColumn = 0;
-        _bda.CursorRow = 0;
+
+        // Homing the cursor and clearing the screen go together. Asking to
+        // keep the screen (bit 7) and then moving the cursor to the top left
+        // anyway is the worst of both: the old text stays, and whatever is
+        // printed next lands on top of it.
+        //
+        // This is what makes DOS's prompt overwrite lines that are already on
+        // screen. MODE re-selects the current text mode to load a code page,
+        // asking for the contents to be preserved -- and the cursor jumped
+        // back to row zero while eight rows of boot messages stayed put.
+        if (!preserveScreen)
+        {
+            _bda.CursorColumn = 0;
+            _bda.CursorRow = 0;
+        }
 
         // The BIOS reloads the DAC on every mode set, which is why a program
         // that changed the palette and then switched modes gets the standard
@@ -142,7 +155,8 @@ public sealed class VideoServices
 
         if (!preserveScreen) ClearScreen(info);
 
-        _registers.SetCursorPosition(0, 0);
+        // Keep the hardware cursor in step with the BDA, wherever it now is.
+        _registers.SetCursorPosition(_bda.CursorColumn, _bda.CursorRow);
         _registers.NotifyModeChanged();
     }
 

@@ -206,3 +206,79 @@ public class FramebufferFormatTests
             $"expected red in the low byte, got R={low:X2} G={middle:X2} B={high:X2}");
     }
 }
+
+/// <summary>
+/// Tests for the "preserve screen" bit of INT 10h AH=00.
+///
+/// Bit 7 of the mode number asks the BIOS to leave video memory alone. It is
+/// used by anything that re-selects the current mode for a side effect --
+/// loading a code page, changing the font -- and would rather not lose what
+/// is on screen.
+/// </summary>
+public class PreserveScreenTests
+{
+    private static Machine BootedMachine()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(200);
+        return machine;
+    }
+
+    [Fact]
+    public void PreservingTheScreenAlsoPreservesTheCursor()
+    {
+        using Machine machine = BootedMachine();
+
+        machine.VideoServices.SetVideoMode(0x03);
+        machine.Bda.CursorRow = 8;
+        machine.Bda.CursorColumn = 12;
+
+        machine.VideoServices.SetVideoMode(0x83);   // mode 3, keep the screen
+
+        // Homing the cursor while leaving the text in place is the worst of
+        // both: the next thing printed lands on top of what is already there,
+        // which is what made the DOS prompt overwrite its own boot messages.
+        Assert.Equal(8, machine.Bda.CursorRow);
+        Assert.Equal(12, machine.Bda.CursorColumn);
+    }
+
+    [Fact]
+    public void ClearingTheScreenHomesTheCursor()
+    {
+        using Machine machine = BootedMachine();
+
+        machine.Bda.CursorRow = 8;
+        machine.Bda.CursorColumn = 12;
+
+        machine.VideoServices.SetVideoMode(0x03);   // no bit 7: clear
+
+        Assert.Equal(0, machine.Bda.CursorRow);
+        Assert.Equal(0, machine.Bda.CursorColumn);
+    }
+
+    [Fact]
+    public void PreservingTheScreenLeavesTheTextAlone()
+    {
+        using Machine machine = BootedMachine();
+        machine.VideoServices.SetVideoMode(0x03);
+
+        machine.VideoMemory[VgaMemory.TextWindowOffset] = (byte)'X';
+
+        machine.VideoServices.SetVideoMode(0x83);
+
+        Assert.Equal((byte)'X', machine.VideoMemory[VgaMemory.TextWindowOffset]);
+    }
+
+    [Fact]
+    public void ClearingTheScreenBlanksTheText()
+    {
+        using Machine machine = BootedMachine();
+        machine.VideoServices.SetVideoMode(0x03);
+
+        machine.VideoMemory[VgaMemory.TextWindowOffset] = (byte)'X';
+
+        machine.VideoServices.SetVideoMode(0x03);
+
+        Assert.Equal((byte)' ', machine.VideoMemory[VgaMemory.TextWindowOffset]);
+    }
+}
