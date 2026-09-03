@@ -123,6 +123,12 @@ public partial class MainWindow : Window
         if (SendKey(e.Key, released: false))
         {
             _lastKeyWasMapped = true;
+
+            // Remember what was sent, so that the text event arriving next
+            // can tell whether it means the same thing.
+            _lastPositionalCode = AvaloniaKeyMap.ToScanCode(e.Key, out _);
+            _lastPositionalShift = (e.KeyModifiers & KeyModifiers.Shift) != 0;
+
             e.Handled = true;
         }
         else
@@ -181,20 +187,7 @@ public partial class MainWindow : Window
     /// </summary>
     private bool SendCharacter(char character)
     {
-        (byte code, bool shift) = character switch
-        {
-            '\\' => ((byte)0x2B, false),
-            '|' => ((byte)0x2B, true),
-            '`' => ((byte)0x29, false),
-            '~' => ((byte)0x29, true),
-            '{' => ((byte)0x1A, true),
-            '}' => ((byte)0x1B, true),
-            '[' => ((byte)0x1A, false),
-            ']' => ((byte)0x1B, false),
-            '@' => ((byte)0x03, true),
-            '#' => ((byte)0x04, true),
-            _ => ((byte)0, false),
-        };
+        (byte code, bool shift) = UsKeyForCharacter(character);
 
         if (code == 0) return false;
 
@@ -214,23 +207,161 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// The key position, and whether shift is held, that produces a character
+    /// on the guest's US keyboard layout.
+    ///
+    /// Every printable ASCII character is here rather than a chosen few. The
+    /// selection used to be a handful of symbols that had come up in
+    /// practice, and the trouble with that is the ones nobody thought of: a
+    /// colon on an Italian Mac is Shift and a key the guest reads as
+    /// something else entirely, so typing "C:" produced "C@" -- and every
+    /// layout in the world has its own version of that surprise. Covering the
+    /// whole printable range costs a table and removes the category.
+    /// </summary>
+    private static (byte Code, bool Shift) UsKeyForCharacter(char character) => character switch
+    {
+        // Digits and the symbols above them.
+        '1' => (0x02, false), '!' => (0x02, true),
+        '2' => (0x03, false), '@' => (0x03, true),
+        '3' => (0x04, false), '#' => (0x04, true),
+        '4' => (0x05, false), '$' => (0x05, true),
+        '5' => (0x06, false), '%' => (0x06, true),
+        '6' => (0x07, false), '^' => (0x07, true),
+        '7' => (0x08, false), '&' => (0x08, true),
+        '8' => (0x09, false), '*' => (0x09, true),
+        '9' => (0x0A, false), '(' => (0x0A, true),
+        '0' => (0x0B, false), ')' => (0x0B, true),
+        '-' => (0x0C, false), '_' => (0x0C, true),
+        '=' => (0x0D, false), '+' => (0x0D, true),
+
+        // The punctuation keys, each with its shifted twin.
+        '[' => (0x1A, false), '{' => (0x1A, true),
+        ']' => (0x1B, false), '}' => (0x1B, true),
+        ';' => (0x27, false), ':' => (0x27, true),
+        '\'' => (0x28, false), '"' => (0x28, true),
+        '`' => (0x29, false), '~' => (0x29, true),
+        '\\' => (0x2B, false), '|' => (0x2B, true),
+        ',' => (0x33, false), '<' => (0x33, true),
+        '.' => (0x34, false), '>' => (0x34, true),
+        '/' => (0x35, false), '?' => (0x35, true),
+
+        // Letters. Upper case is the same key with shift, which is also what
+        // makes a capital arrive correctly when the host produced it with
+        // caps lock rather than with the shift key.
+        >= 'a' and <= 'z' => (LetterKey(character), false),
+        >= 'A' and <= 'Z' => (LetterKey(char.ToLowerInvariant(character)), true),
+
+        ' ' => (0x39, false),
+
+        _ => (0, false),
+    };
+
+    /// <summary>
+    /// The key position of a lower-case letter. The letters are not in
+    /// alphabetical order on a keyboard, so this is a lookup rather than
+    /// arithmetic -- the rows are QWERTYUIOP, ASDFGHJKL, ZXCVBNM.
+    /// </summary>
+    private static byte LetterKey(char letter)
+    {
+        const string Order = "qwertyuiopasdfghjklzxcvbnm";
+        byte[] codes =
+        [
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,   // q-p
+            0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,         // a-l
+            0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32,                     // z-m
+        ];
+
+        int index = Order.IndexOf(letter);
+        return index < 0 ? (byte)0 : codes[index];
+    }
+
+    /// <summary>
     /// Last resort for characters no key position of ours produced: the host
     /// tells us what was typed, and we type it into the guest.
     /// </summary>
     protected override void OnTextInput(TextInputEventArgs e)
     {
-        if (_lastKeyWasMapped || string.IsNullOrEmpty(e.Text))
+        if (string.IsNullOrEmpty(e.Text))
         {
             base.OnTextInput(e);
             return;
         }
 
+        // If the key position we already sent produces this very character on
+        // the guest's layout, we are done: the ordinary path handled it.
+        if (_lastKeyWasMapped && PositionAlreadyProduced(e.Text))
+        {
+            base.OnTextInput(e);
+            return;
+        }
+
+        // Otherwise the host and the guest disagree about what that key
+        // means, and the character is the thing to trust.
+        //
+        // The two layouts only have to differ slightly for this to matter. On
+        // an Italian keyboard the colon shares a key with the full stop; the
+        // guest, reading a US layout, takes that same position with shift to
+        // mean ">". Typing "C:" therefore produced something else entirely,
+        // and no amount of correctness in the position mapping would fix it,
+        // because the position is not what the user meant -- the character
+        // is.
         bool sent = false;
         foreach (char character in e.Text) sent |= SendCharacter(character);
 
-        if (sent) e.Handled = true;
-        else base.OnTextInput(e);
+        if (sent)
+        {
+            e.Handled = true;
+
+            // Take back the keypress the position mapping already sent, or
+            // the guest sees both.
+            ReleaseLastPositionalKey();
+        }
+        else
+        {
+            base.OnTextInput(e);
+        }
     }
+
+    /// <summary>
+    /// Whether the key position just sent produces exactly this text on the
+    /// guest's own layout, in which case there is nothing more to do.
+    /// </summary>
+    private bool PositionAlreadyProduced(string text)
+    {
+        if (text.Length != 1) return false;
+
+        (byte code, bool shift) = UsKeyForCharacter(text[0]);
+        if (code == 0) return false;
+
+        return code == _lastPositionalCode && shift == _lastPositionalShift;
+    }
+
+    /// <summary>
+    /// Undoes a keypress sent by position when the character turned out to
+    /// mean something else.
+    ///
+    /// The make code has already reached the guest, so the break code has to
+    /// follow it: a key that is pressed and never released would repeat for
+    /// ever. The keystroke itself is harmless -- DOS reads characters from
+    /// the BIOS buffer, and the one this produced is replaced by the correct
+    /// one arriving immediately after.
+    /// </summary>
+    private void ReleaseLastPositionalKey()
+    {
+        if (_lastPositionalCode == 0) return;
+
+        byte code = _lastPositionalCode;
+        _lastPositionalCode = 0;
+
+        ViewModel?.Session.WithMachine(machine =>
+        {
+            machine.Keyboard.PushScanCode((byte)(code | 0x80));
+            machine.Keyboard.ClearHeldKeys();
+        });
+    }
+
+    private byte _lastPositionalCode;
+    private bool _lastPositionalShift;
 
     /// <summary>
     /// Whether the last key press was one we recognised by position. When it
