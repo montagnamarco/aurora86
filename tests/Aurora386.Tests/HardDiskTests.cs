@@ -405,14 +405,21 @@ public class FloppyChangeLineTests
     }
 
     [Fact]
-    public void TheReadAfterThatSucceeds()
+    public void ResettingTheControllerClearsTheChange()
     {
-        // One refusal, not a drive that has stopped working. Having been told
-        // once, DOS re-reads the disk's layout and carries on.
+        // Resetting is what lowers the line, because it recalibrates the
+        // drive -- it seeks back to track zero, which is a real look at the
+        // disk now in there. It is also exactly what software does when told
+        // the disk changed, so the sequence keeps moving.
         using Machine machine = WithFloppy();
         machine.DiskServices.NotifyMediaChanged(0);
 
         Assert.False(ReadFirstSector(machine));
+
+        machine.Cpu.State.SetReg8(4, 0x00);   // AH: reset
+        machine.Cpu.State.SetReg8(2, 0x00);
+        machine.DiskServices.Handle(machine.Cpu);
+
         Assert.True(ReadFirstSector(machine));
         Assert.False(ReportsChange(machine));
     }
@@ -487,24 +494,32 @@ public class FloppyChangeLineTests
     }
 
     [Fact]
-    public void OneRefusalIsEnoughForAllOfThem()
+    public void EveryoneWhoAsksIsToldAboutTheSwap()
     {
-        // The drive is told once, not once per kind of access: after the
-        // refusal DOS has re-read the layout, and a verify following a
-        // refused read must not be refused all over again.
+        // More than one piece of software has to hear about it. DOS caches
+        // the file allocation table and the directory; SMARTDRV caches the
+        // sectors themselves; they ask independently and neither knows about
+        // the other.
+        //
+        // Clearing the line on the first refusal told whichever asked first
+        // and left the other holding the previous disk -- so the installer
+        // read a directory belonging to one floppy while the sectors came
+        // from another, and went round asking for disk after disk without
+        // ever getting past.
         using Machine machine = WithFloppy();
         machine.DiskServices.NotifyMediaChanged(0);
 
-        Assert.False(ReadFirstSector(machine));
-
+        // SMARTDRV gets there first, with a verify.
         machine.Cpu.State.SetReg8(4, 0x04);
         machine.Cpu.State.SetReg8(0, 1);
         machine.Cpu.State.Cx = 0x0001;
         machine.Cpu.State.SetReg8(6, 0x00);
         machine.Cpu.State.SetReg8(2, 0x00);
         machine.DiskServices.Handle(machine.Cpu);
+        Assert.Equal(0x06, machine.Cpu.State.GetReg8(4));
 
-        Assert.Equal(0, machine.Cpu.State.GetReg8(4));
+        // DOS asks afterwards, and must be told as well.
+        Assert.False(ReadFirstSector(machine));
     }
 
     [Fact]

@@ -92,15 +92,24 @@ public sealed class DiskServices
 
     private void Reset(CpuNs.Cpu cpu)
     {
-        // There is no controller hardware to reset, so nothing to do but say
-        // it went well.
+        // Resetting the controller is what lowers the change line.
         //
-        // The change line is deliberately left alone. Resetting the
-        // controller is what DOS does after being told the disk changed, and
-        // it is not the same as having looked at the new disk: clearing the
-        // line here would let the read that follows through with the old
-        // disk's layout still cached, which is the very thing the refusal
-        // exists to prevent.
+        // This is the step that recalibrates the drive -- it seeks back to
+        // track zero, which is a real look at the disk that is now in there.
+        // It is also exactly what software does when told the disk changed:
+        // the error comes back, it resets the drive, and it reads again. So
+        // the reset is both the natural place to clear the line and the one
+        // that keeps the sequence moving.
+        //
+        // Clearing it on the refusal instead would let only the first asker
+        // hear about the swap. DOS and SMARTDRV cache different things and
+        // ask separately, so whichever got there first would learn of the new
+        // disk while the other went on serving the old one -- a directory
+        // from one floppy and sectors from another, which is how the
+        // installer ended up asking for disk after disk and getting nowhere.
+        byte drive = cpu.State.GetReg8(2);   // DL
+        _mediaChanged.Remove(drive);
+
         _lastStatus = 0;
         Succeed(cpu);
     }
@@ -333,11 +342,28 @@ public sealed class DiskServices
     private bool MediaChangedFor(CpuNs.Cpu cpu, byte drive)
     {
         if (GetDrive(drive) is null) return false;
-        if (!_mediaChanged.Remove(drive)) return false;
+        if (!_mediaChanged.Contains(drive)) return false;
 
         Fail(cpu, 0x06);   // media changed
         return true;
     }
+
+    /// <summary>
+    /// Lowers the change line, which only a completed read does.
+    ///
+    /// It is deliberately not lowered by the refusal itself. More than one
+    /// piece of software has to hear about the swap: DOS keeps a cached file
+    /// allocation table and directory, SMARTDRV keeps the sectors themselves,
+    /// and they ask independently. Clearing the line on the first refusal
+    /// tells whichever of them happened to ask first and leaves the other
+    /// still holding the previous disk -- so the installer would read a
+    /// directory belonging to one floppy while the sectors came from another,
+    /// and go round asking for disk after disk without ever getting past.
+    ///
+    /// A completed read means the drive really has looked at the new disk,
+    /// and that is the point at which there is nothing left to report.
+    /// </summary>
+    private void ClearMediaChanged(byte drive) => _mediaChanged.Remove(drive);
 
     /// <summary>
     /// Extracts cylinder, head, sector and count from the registers, unpacking
