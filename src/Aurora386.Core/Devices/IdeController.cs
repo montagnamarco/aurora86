@@ -539,7 +539,32 @@ public sealed class IdeController : IIoDevice
                  | ((long)packet[4] << 8) | packet[5];
         int count = (packet[7] << 8) | packet[8];
 
-        if (count == 0) { Succeed(); return; }
+        // A request for no blocks is a question, not a mistake.
+        //
+        // MSCDEX asks for zero blocks before every real read, and what it
+        // wants back is the address registers: how much the drive would hand
+        // over if asked. The command transfers nothing, which is why the
+        // standard allows it, but the answer still has to describe the read
+        // that would have happened.
+        //
+        // Reporting nothing looks harmless and is not. Traced against the
+        // real MSCDEX, every read arrives twice -- once for zero blocks, once
+        // for one -- except the root directory, which was asked for with zero
+        // and then never read at all. It had been told the drive had nothing
+        // to give, so it fell back to the path table, read that instead,
+        // found no directory to enter, and went round again. From the outside
+        // that is a "cd" that appears to work and then puts you back where
+        // you started.
+        if (count == 0)
+        {
+            uint available = IsoImage.SectorSize;
+
+            _lbaMid = (byte)available;
+            _lbaHigh = (byte)(available >> 8);
+
+            Succeed();
+            return;
+        }
 
         IsoImage disc = _machine.CompactDisc!;
 
