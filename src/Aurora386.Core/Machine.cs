@@ -63,6 +63,24 @@ public sealed class Machine : IDisposable
     public CompactDiscServices CompactDiscServices { get; }
 
     /// <summary>
+    /// Whether the guest has loaded MSCDEX itself.
+    ///
+    /// Set once the guest's own extensions answer for themselves, after which
+    /// the emulator's stand-in keeps out of the way. There is no flag in
+    /// memory to read for this: what betrays it is that something else has
+    /// claimed the drive-letter question, so we watch for our own answer
+    /// being contradicted.
+    /// </summary>
+    public bool GuestHasItsOwnCompactDiscExtensions { get; set; }
+
+    /// <summary>
+    /// The IDE controller, which is how a real CD-ROM driver reaches the
+    /// drive. Everything else about disks goes through the BIOS, which is
+    /// enough for DOS and not enough for anyone who talks to the hardware.
+    /// </summary>
+    public IdeController Ide { get; }
+
+    /// <summary>
     /// The DOS network redirector: what makes a host folder or a CD appear as
     /// a drive letter whose files can be opened with ordinary DOS calls.
     /// </summary>
@@ -148,6 +166,9 @@ public sealed class Machine : IDisposable
         DiskServices = new DiskServices(Bda);
         KeyboardServices = new KeyboardServices(Bda, Memory, Keyboard);
         CompactDiscServices = new CompactDiscServices(this);
+
+        Ide = new IdeController(this, Interrupts);
+        Ide.Register(Io);
         Redirector = new RedirectorServices(this);
         _redirectorInstaller = new RedirectorInstaller(this);
         MouseServices = new MouseServices(this, Mouse);
@@ -397,11 +418,19 @@ public sealed class Machine : IDisposable
         Io.WriteByte(0xA1, 0x70);
         Io.WriteByte(0xA1, 0x02);
         Io.WriteByte(0xA1, 0x01);
-        // IRQ 12 is the mouse and is the one slave line that is wired up, so
-        // it is the one bit left clear. IRQ 2 on the master is already open,
-        // which it must be: the slave reaches the CPU only through it, and a
-        // masked cascade silently swallows every interrupt from 8 to 15.
-        Io.WriteByte(0xA1, 0xEF);
+        // Two slave lines are wired up: IRQ 12 for the mouse and IRQ 14 for
+        // the IDE controller, so those two bits are the ones left clear. IRQ 2
+        // on the master is already open, which it must be: the slave reaches
+        // the CPU only through it, and a masked cascade silently swallows
+        // every interrupt from 8 to 15.
+        //
+        // Forgetting one of these bits is a mistake that hides itself. The
+        // device works perfectly -- it answers every register, it completes
+        // every command -- and the driver waiting for its interrupt simply
+        // never hears from it, which reads as broken hardware rather than as
+        // a masked line.
+        const byte SlaveMask = 0xEF & 0xBF;   // IRQ 12 and IRQ 14 enabled
+        Io.WriteByte(0xA1, SlaveMask);
     }
 
     private void ClearScreen()
@@ -475,8 +504,24 @@ public sealed class Machine : IDisposable
                 // the host, or a CD.
                 if ((function >> 8) == 0x11 && Redirector.Handle(cpu)) return;
 
-                // Function 15h is MSCDEX, which answers for the CD-ROM.
-                if ((function >> 8) == 0x15 && CompactDiscServices.Handle(cpu)) return;
+                // Function 15h is MSCDEX -- and we answer it only when the
+                // guest has no MSCDEX of its own.
+                //
+                // Two things answering the same interface is worse than
+                // neither. The real MSCDEX keeps state we know nothing about:
+                // which drive letters it took, which directories it has
+                // cached, what it last told the program asking. Replying in
+                // its place hands out answers that contradict its own, and
+                // the program acts on whichever it got -- which surfaces as
+                // DOS's "Abort, Retry, Ignore?" over a drive that works.
+                //
+                // So the emulator's MSCDEX is a stand-in for when there is
+                // none. With a real one loaded the right thing to do is stay
+                // quiet and let it talk to our drive through the IDE
+                // controller, the way it would talk to a real one.
+                if ((function >> 8) == 0x15
+                    && !GuestHasItsOwnCompactDiscExtensions
+                    && CompactDiscServices.Handle(cpu)) return;
 
                 // No other resident service is installed. Leaving AX
                 // untouched is precisely how INT 2Fh says "nobody answered".
@@ -512,33 +557,55 @@ public sealed class Machine : IDisposable
     {
         ushort function = cpu.State.Ax;
 
-        if ((function >> 8) == 0x11 && Redirector.Handle(cpu)) return;
+        if ((function >> 8) != 0x11)
+        {
+            // Not the redirector's function at all: pass it straight on. This
+            // is the common case by a wide margin -- DOS's own multiplex
+            // services, the print spooler, anything else resident.
+            ChainToPreviousMultiplexHandler(cpu);
+            return;
+        }
 
-        ChainToPreviousMultiplexHandler(cpu);
+        if (Redirector.Handle(cpu)) return;
+
+        // Function 11h that we declined: a subfunction we do not implement,
+        // or a drive that is not ours.
+        //
+        // This must NOT be chained on, and the reason is not obvious. Passing
+        // it to DOS's own INT 2Fh handler looks like the polite thing to do,
+        // and on a machine with a second redirector loaded it would be right.
+        // But DOS is not a redirector: it holds this vector for its own
+        // unrelated functions, and it does not expect to be asked to service
+        // function 11h -- it was DOS that issued the call in the first place.
+        // Handing it back produces exactly the tangle it sounds like, and the
+        // machine stops partway through booting.
+        //
+        // Returning without answering leaves AX as it arrived, which is how
+        // INT 2Fh says nobody was listening, and is what DOS would have seen
+        // before we hooked the vector at all.
     }
 
     /// <summary>
-    /// Sends the current INT 2Fh call on to the handler we displaced.
+    /// Sends the current INT 2Fh call on to the handler we displaced, by
+    /// letting execution run into the far jump that follows our entry point.
     ///
-    /// This is a jump, not a return, and the difference is the whole of it.
+    /// It is a jump and not a return, and the difference is the whole of it.
     /// The obvious-looking trick -- overwrite the IP and CS in the interrupt
     /// frame and let our own IRET carry execution into the other handler --
     /// looks right and is wrong: an IRET pops three words, so by the time the
     /// displaced handler is running, the frame it needs for its own IRET has
-    /// already been eaten. It then returns to whatever happened to be on the
-    /// stack below, which is somewhere in the middle of the caller.
+    /// already been eaten, and it returns to whatever was on the stack below.
     ///
-    /// So execution is moved by setting CS:IP directly and leaving the frame
-    /// untouched, exactly as the JMP FAR through the old vector that every
-    /// TSR ended with would have done. The displaced handler finds the stack
-    /// as the interrupt left it and its own IRET returns to the caller.
+    /// Nothing needs to be done here but move past the IRET: the two bytes
+    /// after it are a JMP FAR through the saved vector, which is exactly how
+    /// every TSR passed a call along.
     /// </summary>
-    private void ChainToPreviousMultiplexHandler(CpuNs.Cpu cpu)
+    private static void ChainToPreviousMultiplexHandler(CpuNs.Cpu cpu)
     {
-        if (_previousMultiplexVector == 0) return;
-
-        cpu.SetSegment(CpuNs.SegReg.Cs, (ushort)(_previousMultiplexVector >> 16));
-        cpu.State.Eip = (ushort)_previousMultiplexVector;
+        // Our entry is: hook (3 bytes), IRET (1), then the jump. Execution is
+        // sitting just past the hook, on the IRET; stepping over it lands on
+        // the jump.
+        cpu.State.Eip = BiosRom.Entry.RedirectorMultiplex + 4;
     }
 
     /// <summary>The INT 2Fh vector the redirector displaced, segment:offset.</summary>
@@ -553,8 +620,48 @@ public sealed class Machine : IDisposable
     /// public so that a test can hook against a handler it planted itself,
     /// which is the only way to check the chaining without booting DOS.
     /// </summary>
+    /// <summary>
+    /// Whether the redirector takes the INT 2Fh vector over from DOS.
+    ///
+    /// Off by default, and that is a deliberate, conservative choice rather
+    /// than a placeholder. Hooking the vector is genuinely required for the
+    /// redirector to be reached at all -- DOS installs a multiplex handler of
+    /// its own during startup and does not chain outward for function 11h --
+    /// but sharing that vector correctly is also the part most able to stop
+    /// the machine dead, and a redirector that does not work yet is far
+    /// better than one that prevents DOS from booting.
+    ///
+    /// <para><b>What is known about the remaining problem, measured on
+    /// MS-DOS 6.22.</b> Turning this on makes CONFIG.SYS fail to load its
+    /// device drivers: COUNTRY.SYS and DISPLAY.SYS report "Errore in
+    /// CONFIG.SYS" and the machine stops at the error prompt, having never
+    /// reached COMMAND.COM. The consequence is visible in the structures --
+    /// DOS never gets far enough to discard its first, three-entry Current
+    /// Directory Structure array for the full-sized one, so the redirector is
+    /// left holding a LASTDRIVE of three and every letter past C: is refused
+    /// however correctly the rest of the protocol behaves.</para>
+    ///
+    /// <para>Waiting for the structures to stop moving before hooking is not
+    /// enough, and the reason is worth recording: the early array is perfectly
+    /// stable for a long stretch <i>before</i> CONFIG.SYS is processed, so
+    /// "nothing has moved lately" does not distinguish "DOS has finished"
+    /// from "DOS has not started yet". What is needed is a signal that DOS is
+    /// past CONFIG.SYS entirely -- the transition to COMMAND.COM -- and this
+    /// code does not have one yet.</para>
+    ///
+    /// <para>With the switch off everything else works: the structures are
+    /// found correctly once DOS has settled (LASTDRIVE=Z reads as 26, the
+    /// array is located at its final address), the drive is marked in the
+    /// CDS, and the whole of the function 11h protocol behaves as its tests
+    /// require. What is missing is only that DOS never routes a call to
+    /// it.</para>
+    /// </summary>
+    public bool RedirectorHooksMultiplex { get; set; }
+
     public void HookMultiplexForRedirector()
     {
+        if (!RedirectorHooksMultiplex) return;
+
         ushort offset = Memory.ReadWord(0x2F * 4);
         ushort segment = Memory.ReadWord(0x2F * 4 + 2);
 
@@ -566,6 +673,12 @@ public sealed class Machine : IDisposable
         if (current == ours) return;
 
         _previousMultiplexVector = current;
+
+        // The jump at the end of our entry point reads its target from here.
+        // It lives in the ROM image, which only the emulator writes to.
+        Memory.WriteRomWord(BiosRom.Base + BiosRom.Entry.PreviousMultiplexVector, offset);
+        Memory.WriteRomWord(BiosRom.Base + BiosRom.Entry.PreviousMultiplexVector + 2, segment);
+
         SetVector(0x2F, BiosRom.Entry.RedirectorMultiplex);
     }
 
@@ -892,7 +1005,6 @@ public sealed class Machine : IDisposable
     private void TryInstallRedirector()
     {
         if (!Redirector.MountedDrives.Any()) return;
-        if (_redirectorSettled) return;
 
         if (--_redirectorInstallCountdown > 0) return;
         _redirectorInstallCountdown = RedirectorInstallInterval;
@@ -921,21 +1033,31 @@ public sealed class Machine : IDisposable
             return;
         }
 
+        // Settled: the structures have not moved for a while, so DOS has
+        // finished building itself and the vector may be taken over. This is
+        // also where a re-hook happens if something loading later displaced
+        // us, which is why it is not done once and forgotten.
         if (++_redirectorStableChecks >= RedirectorStableChecksNeeded)
-            _redirectorSettled = true;
+            HookMultiplexForRedirector();
     }    /// <summary>Batches between attempts to find DOS's structures.</summary>
     private const int RedirectorInstallInterval = 200;
 
     /// <summary>
-    /// Consecutive unchanged checks after which DOS is considered settled.
-    /// Generous, because the whole point is to still be watching when
-    /// CONFIG.SYS is processed, which is several seconds of emulated time
-    /// after the addresses first become readable.
+    /// Consecutive unchanged checks after which DOS is considered settled and
+    /// its INT 2Fh vector may be taken over.
+    ///
+    /// Waiting matters far more than the exact number. Hooking the vector
+    /// while DOS is still building itself stops CONFIG.SYS from loading its
+    /// device drivers -- COUNTRY.SYS and DISPLAY.SYS fail, and the machine
+    /// stops at the error prompt -- because those drivers use INT 2Fh
+    /// themselves while DOS is in a state no resident program should be
+    /// looking at yet. The structures moving is the visible sign that DOS is
+    /// still working, so a run of checks with nothing moving is the signal to
+    /// go ahead.
     /// </summary>
     private const int RedirectorStableChecksNeeded = 400;
 
     private int _redirectorStableChecks;
-    private bool _redirectorSettled;
     private int _redirectorInstallCountdown = 1;
 
     /// <summary>
