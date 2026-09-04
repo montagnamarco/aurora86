@@ -48,6 +48,22 @@ public sealed class HeadlessApp : IDisposable
 }
 
 /// <summary>
+/// Ties every test class that drives the window to one shared application.
+///
+/// Avalonia allows exactly one <c>Setup</c> per process and throws on the
+/// second, so a per-class fixture works only while there is a single class
+/// using it -- the moment a second one appears the whole test host crashes,
+/// taking the run down with it rather than failing a test. A collection
+/// fixture is shared across every class in the collection, which is the only
+/// arrangement that scales past one.
+/// </summary>
+[CollectionDefinition(Name)]
+public sealed class HeadlessAppCollection : ICollectionFixture<HeadlessApp>
+{
+    public const string Name = "headless application";
+}
+
+/// <summary>
 /// The whole keyboard path, driven the way a user drives it.
 ///
 /// Every other keyboard test in this project starts partway along: it pushes
@@ -59,7 +75,8 @@ public sealed class HeadlessApp : IDisposable
 /// So these press keys on the real window and read what the guest received.
 /// It is the only arrangement that could have caught what was wrong.
 /// </summary>
-public class KeyboardEndToEndTests : IClassFixture<HeadlessApp>
+[Collection(HeadlessAppCollection.Name)]
+public class KeyboardEndToEndTests
 {
     private readonly HeadlessApp _app;
 

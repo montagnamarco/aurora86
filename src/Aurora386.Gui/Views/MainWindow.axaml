@@ -93,6 +93,10 @@
       <Setter Property="VerticalAlignment" Value="Center" />
       <Setter Property="FontSize" Value="11" />
     </Style>
+    <Style Selector="TextBlock.status.captured">
+      <Setter Property="Foreground" Value="#FFB340" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
     <Style Selector="Separator.vertical">
       <Setter Property="Width" Value="1" />
       <Setter Property="Margin" Value="6,4" />
@@ -206,6 +210,29 @@
 
         <Separator Classes="vertical" />
 
+        <!-- A mouse seen from above: the body, and the split between the two
+             buttons. Which port it is plugged into is the guest's business,
+             not a preference, so the choices are exclusive and shown ticked. -->
+        <Button Classes="tool"
+                ToolTip.Tip="Which port the mouse is plugged into. Software of the period looks for one specific port, so this decides whether a given program finds a mouse at all.">
+          <StackPanel>
+            <Path Classes="icon" Data="M 12,3 A 6,6 0 0 1 18,9 L 18,15 A 6,6 0 0 1 6,15 L 6,9 A 6,6 0 0 1 12,3 Z M 12,3 L 12,10 M 6,10 L 18,10" />
+            <TextBlock Classes="toollabel" Text="Mouse ▾" />
+          </StackPanel>
+          <Button.Flyout>
+            <MenuFlyout>
+              <MenuItem Header="PS/2 port" ToggleType="Radio"
+                        IsChecked="{Binding MouseIsPs2, Mode=TwoWay}" />
+              <MenuItem Header="Serial, on COM1" ToggleType="Radio"
+                        IsChecked="{Binding MouseIsSerial, Mode=TwoWay}" />
+              <MenuItem Header="No mouse" ToggleType="Radio"
+                        IsChecked="{Binding MouseIsDisconnected, Mode=TwoWay}" />
+            </MenuFlyout>
+          </Button.Flyout>
+        </Button>
+
+        <Separator Classes="vertical" />
+
         <!-- A bug, for the debugger: body, legs and antennae. -->
         <Button Classes="tool" Command="{Binding OpenDebuggerCommand}"
                 ToolTip.Tip="Open the debugger: registers, disassembly, memory, breakpoints">
@@ -281,6 +308,12 @@
             <Ellipse Classes="led activity" Classes.on="{Binding NetworkLedOn}" />
             <TextBlock Classes="status" Text="NET" />
           </StackPanel>
+          <!-- Shown only while the guest has the pointer. It is the only
+               thing on screen that explains where the cursor went, so it is
+               tinted rather than left to blend into the other messages. -->
+          <TextBlock Classes="status captured"
+                     Text="{Binding MouseCaptureText}"
+                     IsVisible="{Binding MouseCaptured}" />
           <TextBlock Classes="status" Text="{Binding SpeedText}" />
           <TextBlock Classes="status" Text="{Binding StatusText}" />
         </StackPanel>

@@ -234,6 +234,44 @@ public class RedirectorProtocolTests : IDisposable
     }
 
     [Fact]
+    public void LearningTheAddressesAgainMovesTheMountsToTheNewArray()
+    {
+        // The trap that made a shared folder on E: report "invalid drive"
+        // however correct everything else was.
+        //
+        // DOS builds a small Current Directory Structure array early -- one
+        // entry per physical drive, so three on a machine with two floppies
+        // and a disk -- and then discards it and allocates a bigger one when
+        // CONFIG.SYS is read and LASTDRIVE is known. A redirector that asked
+        // once during the first moments of boot ends up holding the address
+        // of memory DOS has since given to something else, and a LASTDRIVE
+        // count of three: every letter past C is refused, and the flags it
+        // set are sitting in the middle of some other structure.
+        //
+        // So learning the addresses a second time has to move the mounts
+        // across, not merely record the new numbers.
+        var machine = new Machine();
+        using (machine)
+        {
+            const uint firstCds = CdsAddress;
+            uint secondCds = CdsAddress + 0x4000;
+
+            // What DOS looks like early on: three drives, small array.
+            machine.Redirector.AttachToDos(SdaAddress, firstCds, driveCount: 3);
+            Assert.False(machine.Redirector.Mount(4, new HostDirectoryFileSystem(_root)));
+
+            // ...and after CONFIG.SYS, with LASTDRIVE=Z.
+            machine.Redirector.AttachToDos(SdaAddress, secondCds, driveCount: 26);
+
+            uint entry = secondCds + (uint)(4 * DosStructures.CdsEntrySize);
+            ushort flags = machine.Memory.ReadWord(entry + DosStructures.CdsFlags);
+
+            Assert.True((flags & DosStructures.CdsRedirectedFlag) != 0);
+            Assert.True((flags & DosStructures.CdsValidFlag) != 0);
+        }
+    }
+
+    [Fact]
     public void ALetterPastLastDriveIsRefusedInsteadOfWrittenOver()
     {
         // The CDS array is exactly LASTDRIVE entries long and is followed

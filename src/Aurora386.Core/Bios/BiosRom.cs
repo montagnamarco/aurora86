@@ -64,6 +64,18 @@ public static class BiosRom
         /// was in the vector before, through a pointer kept in RAM.
         /// </summary>
         public const ushort RedirectorMultiplex = 0x1130;
+
+        /// <summary>
+        /// Where the far jump at the end of the redirector's entry reads its
+        /// target from: the INT 2Fh vector that was displaced.
+        ///
+        /// It sits in the ROM image, which the emulator writes to directly --
+        /// the guest cannot, but the guest has no business changing it. Put
+        /// it in RAM instead and the jump would need a DS it cannot safely
+        /// load, since the handler runs with whatever segment registers the
+        /// interrupted program happened to have.
+        /// </summary>
+        public const ushort PreviousMultiplexVector = 0x1140;
         public const ushort Mouse = 0x10F0;          // INT 33h
         public const ushort MouseIrq = 0x1110;       // INT 74h, IRQ 12
 
@@ -91,6 +103,31 @@ public static class BiosRom
         /// place a 1.44 MB disk would have kept it.
         /// </summary>
         public const ushort DiskParameters = 0x10E0;
+
+        /// <summary>
+        /// The CD-ROM device driver's header, and the two entry points behind
+        /// it.
+        ///
+        /// MSCDEX does not talk to a CD. It talks to a device driver, through
+        /// the same interface DOS uses for every driver it loads: a header
+        /// naming the device, a "strategy" routine that receives a request,
+        /// and an "interrupt" routine that carries it out. The driver that
+        /// came with the drive spoke to the hardware; ours answers out of the
+        /// image the emulator has mounted.
+        ///
+        /// This is worth doing rather than answering MSCDEX's own INT 2Fh
+        /// calls directly, because it puts the emulator underneath the real
+        /// MSCDEX instead of in place of it. MSCDEX then does the hard part
+        /// -- the redirector, the drive letter, the ISO 9660 directories --
+        /// exactly as it did on the machines this software was written for.
+        /// </summary>
+        public const ushort CompactDiscDriver = 0x1150;
+
+        /// <summary>The driver's strategy routine: stores the request and returns.</summary>
+        public const ushort CompactDiscStrategy = 0x1170;
+
+        /// <summary>The driver's interrupt routine: acts on the stored request.</summary>
+        public const ushort CompactDiscInterrupt = 0x1180;
         public const ushort XmsEntry = 0x10E0;       // XMS entry point
         public const ushort Reset = 0xFFF0;          // power-on entry point
         public const ushort PostEntry = 0x1100;      // initialization
@@ -122,6 +159,11 @@ public static class BiosRom
         /// redirector's, and otherwise falls through to the JMP that follows.
         /// </summary>
         RedirectorMultiplex = 0x2E,
+
+        /// <summary>The CD-ROM driver's two routines, told apart by this id.</summary>
+        CompactDiscStrategy = 0xFC,
+        CompactDiscInterrupt = 0xFD,
+
         Mouse = 0x33,
         MouseIrq = 0x74,
         Xms = 0x43,
@@ -166,7 +208,22 @@ public static class BiosRom
             rom[entry + 1] = HookByte2;
             rom[entry + 2] = (byte)Handler.RedirectorMultiplex;
             rom[entry + 3] = 0xCF;                       // IRET, when we answered
+
+            // ...and when we did not, the handler points execution here
+            // instead, at a far jump through the vector we displaced.
+            //
+            // The jump reads its target from a pointer in the ROM's own
+            // segment, which is what the CS: prefix is for: the handler that
+            // runs here has whatever DS the interrupted program had, and
+            // there is no safe moment to load one.
+            //   2E FF 2E <disp16>   JMP FAR [CS:disp16]
+            rom[entry + 4] = 0x2E;                       // CS segment override
+            rom[entry + 5] = 0xFF;                       // group 5
+            rom[entry + 6] = 0x2E;                       // /5, disp16 addressing
+            rom[entry + 7] = unchecked((byte)Entry.PreviousMultiplexVector);
+            rom[entry + 8] = unchecked((byte)(Entry.PreviousMultiplexVector >> 8));
         }
+        WriteCompactDiscDriver(rom);
         WriteInterruptEntry(rom, Entry.Mouse, Handler.Mouse);
         WriteInterruptEntry(rom, Entry.MouseIrq, Handler.MouseIrq);
 
@@ -213,6 +270,55 @@ public static class BiosRom
         rom[0xFFFE] = 0xFC;
 
         return rom;
+    }
+
+    /// <summary>
+    /// Lays out the CD-ROM device driver: an eighteen-byte header followed by
+    /// the two routines it names.
+    ///
+    /// The header is the shape DOS has expected of a driver since version 2,
+    /// and MSCDEX checks it before believing there is a drive there:
+    ///
+    ///   +0  pointer to the next driver in the chain (FFFF:FFFF = last)
+    ///   +4  attribute word
+    ///   +6  offset of the strategy routine
+    ///   +8  offset of the interrupt routine
+    ///   +10 eight bytes of name
+    ///
+    /// For a block driver those eight bytes are not a name at all: the first
+    /// says how many units the driver serves, and the rest is signature. A
+    /// CD-ROM driver puts 1 there and then "MSCD001", which is the name
+    /// MSCDEX looks for on the command line -- /D:MSCD001 in AUTOEXEC.BAT is
+    /// asking for exactly this driver.
+    /// </summary>
+    private static void WriteCompactDiscDriver(byte[] rom)
+    {
+        int header = Entry.CompactDiscDriver;
+
+        // No driver after this one.
+        rom[header + 0] = 0xFF; rom[header + 1] = 0xFF;
+        rom[header + 2] = 0xFF; rom[header + 3] = 0xFF;
+
+        // Attributes. Bit 15 marks a character device, which is what a
+        // CD-ROM driver is as far as DOS is concerned -- the blocks are
+        // MSCDEX's business, not DOS's. Bit 14 says the driver understands
+        // the IOCTL calls, and bit 11 that it can tell when the disc has been
+        // changed, which is how MSCDEX knows to re-read a directory.
+        const ushort Attributes = 0xC800;
+        rom[header + 4] = unchecked((byte)Attributes);
+        rom[header + 5] = (byte)(Attributes >> 8);
+
+        rom[header + 6] = unchecked((byte)Entry.CompactDiscStrategy);
+        rom[header + 7] = (byte)(Entry.CompactDiscStrategy >> 8);
+        rom[header + 8] = unchecked((byte)Entry.CompactDiscInterrupt);
+        rom[header + 9] = (byte)(Entry.CompactDiscInterrupt >> 8);
+
+        // One unit, then the signature MSCDEX is told to look for.
+        rom[header + 10] = 1;
+        "MSCD001"u8.CopyTo(rom.AsSpan(header + 11, 7));
+
+        WriteInterruptEntry(rom, Entry.CompactDiscStrategy, Handler.CompactDiscStrategy);
+        WriteInterruptEntry(rom, Entry.CompactDiscInterrupt, Handler.CompactDiscInterrupt);
     }
 
     private static void WriteInterruptEntry(byte[] rom, ushort offset, Handler handler)

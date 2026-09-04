@@ -176,6 +176,27 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     }
 
     /// <summary>
+    /// Writes a word into a mapped ROM, bypassing the read-only marking.
+    ///
+    /// The guest cannot do this and must not be able to: a ROM that the
+    /// running program can change is not a ROM. But the emulator is standing
+    /// in for the machine's manufacturer, and there are a few bytes in the
+    /// BIOS image that a real board would have had in a socket or a latch
+    /// rather than in mask ROM -- a vector a resident service needs to reach,
+    /// a value fixed when the board was built. Writing them from outside is
+    /// the honest way to model that, and much simpler than mapping a second
+    /// device for eight bytes.
+    /// </summary>
+    public void WriteRomWord(uint address, ushort value)
+    {
+        if (address + 2 > _ramSize)
+            throw new ArgumentOutOfRangeException(nameof(address));
+
+        _ram[address] = (byte)value;
+        _ram[address + 1] = (byte)(value >> 8);
+    }
+
+    /// <summary>
     /// Makes addresses from <paramref name="aliasStart"/> to the top of the
     /// 32-bit space be served starting at <paramref name="target"/>. This is
     /// what puts the ROM under the 386's reset vector.

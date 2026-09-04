@@ -68,6 +68,68 @@ public class RedirectorChainingTests
 
         machine.Memory.WriteWord(0x2F * 4, 0x0000);
         machine.Memory.WriteWord(0x2F * 4 + 2, 0x0100);
+
+        // Taking the vector over is off by default, because getting it wrong
+        // stops the machine from booting at all. These tests are precisely
+        // about that mechanism, so they turn it on.
+        machine.RedirectorHooksMultiplex = true;
+    }
+
+    [Fact]
+    public void WithTheSwitchOffTheVectorIsLeftExactlyAsItWas()
+    {
+        // The guarantee that protects the boot. Taking INT 2Fh over while DOS
+        // is still starting up stops CONFIG.SYS from loading its device
+        // drivers -- COUNTRY.SYS and DISPLAY.SYS fail and the machine sits at
+        // an error prompt -- so hooking is off unless something deliberately
+        // asks for it. A regression here does not fail loudly: the machine
+        // simply stops booting, which is why it is pinned down separately
+        // from everything the hook does once it is on.
+        using var machine = new Machine();
+        InstallFakeDosMultiplexHandler(machine, 0xBEEF);
+        machine.RedirectorHooksMultiplex = false;
+
+        machine.HookMultiplexForRedirector();
+
+        Assert.Equal(0x0100, machine.Memory.ReadWord(0x2F * 4 + 2));
+        Assert.Equal(0x0000, machine.Memory.ReadWord(0x2F * 4));
+
+        // And the displaced-handler path is genuinely untouched, not merely
+        // left pointing somewhere plausible.
+        Assert.Equal(0xBEEF, CallMultiplex(machine, 0x1200));
+    }
+
+    [Fact]
+    public void TheSavedPointerIsInPlaceBeforeTheVectorIsTakenOver()
+    {
+        // Order matters, and getting it backwards is fatal rather than
+        // untidy. The moment the vector names our entry point, the very next
+        // INT 2Fh the guest makes runs the far jump at the end of it -- and
+        // DOS makes a great many during startup. If the pointer that jump
+        // reads has not been filled in yet, it reads zero, execution goes to
+        // 0000:0000 and the machine dies without printing anything.
+        //
+        // The test reaches the pointer through the far jump rather than by
+        // reading the ROM, because that is the path that actually matters:
+        // a pointer written to the wrong place would look fine in memory and
+        // still send the guest to nowhere.
+        using var machine = new Machine();
+        InstallFakeDosMultiplexHandler(machine, 0xBEEF);
+        machine.RedirectorHooksMultiplex = true;
+
+        // Zero the pointer first, so a hook that fails to write it leaves a
+        // jump to 0000:0000 exactly as the broken ordering would.
+        machine.Memory.WriteRomWord(BiosRom.Base + BiosRom.Entry.PreviousMultiplexVector, 0);
+        machine.Memory.WriteRomWord(BiosRom.Base + BiosRom.Entry.PreviousMultiplexVector + 2, 0);
+
+        machine.HookMultiplexForRedirector();
+
+        ushort offset = machine.Memory.ReadWord(BiosRom.Base + BiosRom.Entry.PreviousMultiplexVector);
+        ushort segment = machine.Memory.ReadWord(BiosRom.Base + BiosRom.Entry.PreviousMultiplexVector + 2);
+
+        Assert.Equal(0x0100, segment);
+        Assert.Equal(0x0000, offset);
+        Assert.NotEqual(0u, ((uint)segment << 16) | offset);
     }
 
     [Fact]
@@ -111,18 +173,24 @@ public class RedirectorChainingTests
     }
 
     [Fact]
-    public void ARedirectorSubfunctionWeDeclineIsStillPassedOn()
+    public void ARedirectorSubfunctionWeDeclineIsNotPassedOnToDos()
     {
-        // Declining is not the same as answering. A subfunction inside
-        // function 11h that we do not implement must go to whoever is behind
-        // us, because another redirector may well handle it -- that is how
-        // two of them coexisted on the same machine.
+        // The opposite of what politeness suggests, and getting it wrong
+        // stops the machine partway through booting.
+        //
+        // Handing an unanswered function 11h to the handler behind us would
+        // be right if that handler were another redirector. It is DOS, which
+        // holds this vector for its own unrelated services and which issued
+        // the call in the first place -- so giving it back is asking DOS to
+        // service a request it made itself. Leaving AX alone is what DOS
+        // would have seen before the vector was hooked, and is the answer
+        // that means "nobody was listening".
         using var machine = new Machine();
         InstallFakeDosMultiplexHandler(machine, 0xBEEF);
         machine.HookMultiplexForRedirector();
 
         // 110Ah is lock-region, which we do not implement.
-        Assert.Equal(0xBEEF, CallMultiplex(machine, 0x110A));
+        Assert.NotEqual(0xBEEF, CallMultiplex(machine, 0x110A));
     }
 
     [Fact]
@@ -156,6 +224,7 @@ public class RedirectorChainingTests
         machine.Memory.WriteByte(HandlerAddress + 2, 0xCF);
         machine.Memory.WriteWord(0x2F * 4, 0x0000);
         machine.Memory.WriteWord(0x2F * 4 + 2, 0x0100);
+        machine.RedirectorHooksMultiplex = true;
 
         machine.HookMultiplexForRedirector();
 

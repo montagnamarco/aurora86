@@ -153,6 +153,18 @@ public sealed class KeyboardServices
     /// </summary>
     private void CheckForKey(CpuNs.Cpu cpu, bool extended)
     {
+        // Count the polls, not the waits.
+        //
+        // A command prompt does not block on a key: it asks whether one is
+        // ready, does whatever else it has to do -- blink the cursor, check
+        // the clock -- and asks again. Measured on a real boot, MS-DOS
+        // reaches its prompt without ever once calling the blocking function,
+        // so counting those found nothing at all. This is the call that says
+        // somebody is idle and listening, and an idle guest is one that has
+        // finished starting.
+        _bda.KeyboardPollCount++;
+
+
         // Discard anything the plain call is not allowed to see, so that a
         // program polling this way is not told a key is waiting and then
         // handed nothing when it asks for it.

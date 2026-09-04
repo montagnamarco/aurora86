@@ -15,6 +15,13 @@
     <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
 
+  <!-- The tests drive the real window, so they need the few seams that exist
+       only for them: swapping the platform's pointer lock for a fake, so a
+       test run does not hide the cursor of whoever started it. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Aurora386.Tests" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Aurora386.Core\Aurora386.Core.csproj" />
   </ItemGroup>

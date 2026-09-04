@@ -15,6 +15,31 @@ public enum MouseButtons
 }
 
 /// <summary>
+/// Which port the mouse is plugged into, as far as the guest can tell.
+///
+/// A real PC of this era had one mouse on one port, and software found it by
+/// looking for that port: a driver written for a serial mouse pokes COM1 and
+/// concludes there is no mouse if nothing answers. So the choice is not a
+/// preference, it is part of the hardware the guest is being shown, and it
+/// changes what the guest can detect.
+///
+/// <see cref="None"/> is not a nicety either. Some period software probes the
+/// PS/2 port during startup and hangs if it finds a mouse it does not expect,
+/// and unplugging the thing is the only way past that.
+/// </summary>
+public enum MouseInterface
+{
+    /// <summary>No mouse is plugged in; the guest sees empty ports.</summary>
+    None,
+
+    /// <summary>On the 8042's auxiliary port, interrupting on IRQ 12.</summary>
+    Ps2,
+
+    /// <summary>A Microsoft serial mouse on COM1.</summary>
+    Serial,
+}
+
+/// <summary>
 /// The physical mouse, shared by everything that wants to hear from it.
 ///
 /// A real PC has one mouse plugged into one port, but the emulator has to
@@ -29,6 +54,11 @@ public enum MouseButtons
 /// separate. Share one and whichever consumer reads first eats the motion,
 /// and the other sees a mouse that only moves every other time -- which is
 /// exactly how a mouse that "works but is jerky" comes about.
+///
+/// Which of the two <i>ports</i> is fed is decided by
+/// <see cref="ConnectedInterface"/>, because a machine has one mouse and it
+/// is plugged into one socket. INT 33h is fed regardless, since it is a
+/// driver rather than a socket.
 ///
 /// Motion is accumulated rather than delivered as a position because that is
 /// what the hardware reports. A mouse has no idea where the pointer is on
@@ -63,14 +93,48 @@ public sealed class MouseState
     public event Action? Moved;
 
     /// <summary>
+    /// Which port the mouse is currently plugged into. Defaults to PS/2,
+    /// which is what a 386 of the later years shipped with.
+    ///
+    /// Changing this is meant to be possible while the machine runs, because
+    /// that is the only way to find out which port a given piece of software
+    /// wants: you try one, the pointer does not move, you try the other. The
+    /// alternative -- restarting the guest for each attempt -- makes the
+    /// experiment cost a minute of DOS booting every time.
+    ///
+    /// Unplugging does not retract what the guest has already been told. A
+    /// driver that has already found a PS/2 mouse goes on believing in it;
+    /// it simply stops receiving packets, exactly as it would if the cable
+    /// were pulled out of the back of a running machine.
+    /// </summary>
+    public MouseInterface ConnectedInterface { get; set; } = MouseInterface.Ps2;
+
+    /// <summary>
     /// Reports movement since the last report, in mickeys.
     /// </summary>
     public void Move(int deltaX, int deltaY)
     {
         if (deltaX == 0 && deltaY == 0) return;
+        if (ConnectedInterface == MouseInterface.None) return;
 
-        _ps2DeltaX += deltaX; _ps2DeltaY += deltaY;
-        _serialDeltaX += deltaX; _serialDeltaY += deltaY;
+        // Only the port the mouse is actually plugged into accumulates. The
+        // tempting simplification is to fill all three and let the unselected
+        // ports simply not be read, but that is wrong in a way that surfaces
+        // later: switch from serial to PS/2 after a minute of movement and
+        // the PS/2 port immediately flushes that whole minute, sending the
+        // pointer to a corner. What a port did not receive, it never had.
+        if (ConnectedInterface == MouseInterface.Ps2)
+        {
+            _ps2DeltaX += deltaX; _ps2DeltaY += deltaY;
+        }
+        else
+        {
+            _serialDeltaX += deltaX; _serialDeltaY += deltaY;
+        }
+
+        // INT 33h is fed whichever port is fitted, because it is a driver and
+        // not a port: a program calling it does not care how the mouse is
+        // wired, only that there is one.
         _driverDeltaX += deltaX; _driverDeltaY += deltaY;
 
         Moved?.Invoke();
@@ -118,6 +182,13 @@ public sealed class MouseState
     /// <summary>Presses or releases a button.</summary>
     public void SetButton(MouseButtons button, bool pressed)
     {
+        // A mouse that is not plugged in has no buttons to press. Letting
+        // clicks through while blocking motion would give the guest a mouse
+        // that cannot move but can still click, which is worse than no mouse
+        // at all: a program would see the click at whatever stale position
+        // it last knew about.
+        if (ConnectedInterface == MouseInterface.None) return;
+
         MouseButtons updated = pressed ? Buttons | button : Buttons & ~button;
         if (updated == Buttons) return;
 

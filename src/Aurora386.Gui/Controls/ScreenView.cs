@@ -73,17 +73,30 @@ public sealed class ScreenView : Control
     // --- mouse --------------------------------------------------------------
     //
     // The guest's mouse is a relative device: it counts how far it moved,
-    // never where it is. So what the host reports as a position has to be
-    // turned back into a movement, by subtracting the previous one.
+    // never where it is. So the host's movements have to reach it as
+    // distances, and there are two quite different ways of obtaining one.
     //
-    // That conversion is lossy in one direction that matters. The host
-    // pointer stops at the edge of the window, and once it has stopped there
-    // are no more position changes to subtract -- the guest pointer freezes
-    // short of the edge of the emulated screen even though the user is still
-    // pushing. Capturing the pointer while a button is held mitigates it, and
-    // properly fixing it needs the pointer to be hidden and warped back to
-    // the centre on every move, which needs platform support Avalonia does
-    // not offer portably.
+    // Uncaptured, the host reports a position and we subtract the previous
+    // one. That is lossy in the direction that matters: the host pointer
+    // stops at the edge of the window, and once it has stopped there are no
+    // more position changes to subtract -- the guest pointer freezes short of
+    // the edge of the emulated screen even though the user is still pushing.
+    // It is good enough for pointing at things inside the window, which is
+    // why it remains the default: a user who only wants to click a button
+    // should not have to capture anything first.
+    //
+    // Captured, the host pointer is unhooked from the mouse entirely and the
+    // platform hands us the real movement. There is no edge any more, so the
+    // guest pointer can be pushed as far as the guest's own driver allows.
+    // See MouseCapture and IPointerLock.
+
+    /// <summary>
+    /// Whether the guest owns the pointer, and the rules for taking and
+    /// giving it back. Created here rather than injected because the control
+    /// is the only thing that can act on it; the rules themselves live in
+    /// <see cref="MouseCapture"/> where they can be tested without a screen.
+    /// </summary>
+    public MouseCapture Capture { get; } = new(PointerLockFactory.Create());
 
     /// <summary>
     /// Where the host pointer was last seen, in this control's coordinates.
@@ -108,22 +121,14 @@ public sealed class ScreenView : Control
     {
         base.OnPointerMoved(e);
 
-        Point position = e.GetPosition(this);
-
-        if (_lastPointerPosition is not { } previous)
-        {
-            _lastPointerPosition = position;
-            return;
-        }
-
-        _lastPointerPosition = position;
+        if (!TryReadMovement(e, out double hostX, out double hostY)) return;
 
         // Round rather than truncate, and accumulate what rounding drops.
         // A slow drag produces sub-pixel movements every frame; truncating
         // each one to zero means a mouse moved slowly does not move the guest
         // pointer at all, however far it travels.
-        double deltaX = (position.X - previous.X) * _mouseScaleX + _residualX;
-        double deltaY = (position.Y - previous.Y) * _mouseScaleY + _residualY;
+        double deltaX = hostX * _mouseScaleX + _residualX;
+        double deltaY = hostY * _mouseScaleY + _residualY;
 
         int countsX = (int)Math.Round(deltaX);
         int countsY = (int)Math.Round(deltaY);
@@ -134,6 +139,42 @@ public sealed class ScreenView : Control
         if (countsX == 0 && countsY == 0) return;
 
         _session?.WithMachine(machine => machine.MoveMouse(countsX, countsY));
+    }
+
+    /// <summary>
+    /// Works out how far the mouse moved, from whichever source is telling
+    /// the truth right now.
+    ///
+    /// Once captured the reported position is frozen -- it belongs to a
+    /// pointer that is no longer following the mouse -- so subtracting
+    /// positions would read zero forever and capture would look like it had
+    /// broken the mouse. The platform's own delta is the only honest answer
+    /// then, and the remembered position is thrown away so that the first
+    /// move after release is a reference point rather than a leap across the
+    /// screen.
+    /// </summary>
+    private bool TryReadMovement(PointerEventArgs e, out double x, out double y)
+    {
+        if (Capture.IsCaptured && Capture.IsUnbounded)
+        {
+            _lastPointerPosition = null;
+            (x, y) = Capture.TakeMotion();
+            return x != 0 || y != 0;
+        }
+
+        Point position = e.GetPosition(this);
+        x = y = 0;
+
+        if (_lastPointerPosition is not { } previous)
+        {
+            _lastPointerPosition = position;
+            return false;
+        }
+
+        _lastPointerPosition = position;
+        x = position.X - previous.X;
+        y = position.Y - previous.Y;
+        return true;
     }
 
     private double _residualX, _residualY;
@@ -153,6 +194,13 @@ public sealed class ScreenView : Control
         base.OnPointerPressed(e);
 
         Focus();
+
+        // Clicking the emulated screen is the gesture that hands the pointer
+        // to the guest, the way it is in every virtual machine. The click
+        // itself is still delivered: the user meant to click something in
+        // there, and swallowing the first click of every capture would be a
+        // small but permanent annoyance.
+        Capture.Capture();
 
         PointerPointProperties properties = e.GetCurrentPoint(this).Properties;
         SetButtons(properties);

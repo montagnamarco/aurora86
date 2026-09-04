@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Avalonia.Threading;
 using Aurora386.Core.Bios;
+using Aurora386.Core.Devices;
 using Aurora386.Core.Dos;
 using Aurora386.Gui.Emulation;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -45,6 +46,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _powerLedOn;
     [ObservableProperty] private bool _networkLedOn;
     [ObservableProperty] private bool _turbo;
+
+    /// <summary>
+    /// Whether the guest currently owns the host pointer. Bound to a notice
+    /// in the status bar, which is the only thing that tells the user what
+    /// happened: the cursor has simply disappeared, and without a message
+    /// saying which key brings it back the only way out is to guess.
+    /// </summary>
+    [ObservableProperty] private bool _mouseCaptured;
+
+    /// <summary>What that notice says. See <see cref="ReportMouseCapture"/>.</summary>
+    [ObservableProperty] private string _mouseCaptureText = "";
 
     /// <summary>Frame counts as of the last refresh, to detect activity.</summary>
     private long _lastFramesSent, _lastFramesReceived;
@@ -212,6 +224,93 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (disc is not null) Drives.Add(new DriveIndicator(disc));
     }
 
+    // --- the mouse ----------------------------------------------------------
+
+    /// <summary>
+    /// Which port the mouse is plugged into.
+    ///
+    /// This is a property rather than three commands because the three
+    /// choices are exclusive and the interface shows them as such -- a menu
+    /// with a tick beside the current one. Setting it reaches the running
+    /// machine straight away, which is the point: finding out which port a
+    /// given program expects means trying one and then the other, and having
+    /// to reboot DOS between attempts turns a five-second experiment into a
+    /// two-minute one.
+    /// </summary>
+    public MouseInterface MouseInterface
+    {
+        get => _mouseInterface;
+        set
+        {
+            if (!SetProperty(ref _mouseInterface, value)) return;
+
+            Session.WithMachine(machine => machine.MouseInterface = value);
+
+            // The three "is this the one" properties the menu ticks are
+            // derived from this one, so they have to be announced by hand.
+            OnPropertyChanged(nameof(MouseIsPs2));
+            OnPropertyChanged(nameof(MouseIsSerial));
+            OnPropertyChanged(nameof(MouseIsDisconnected));
+
+            StatusText = value switch
+            {
+                MouseInterface.Ps2 => "Mouse on the PS/2 port",
+                MouseInterface.Serial => "Mouse on COM1, as a Microsoft serial mouse",
+                _ => "Mouse unplugged",
+            };
+        }
+    }
+
+    private MouseInterface _mouseInterface = MouseInterface.Ps2;
+
+    // A menu item binds its tick to a boolean, so each choice needs one. They
+    // are settable because a RadioButton-style MenuItem writes back when it
+    // is chosen, and writing false -- which happens as the previous choice is
+    // cleared -- must not turn the mouse off.
+    public bool MouseIsPs2
+    {
+        get => MouseInterface == MouseInterface.Ps2;
+        set { if (value) MouseInterface = MouseInterface.Ps2; }
+    }
+
+    public bool MouseIsSerial
+    {
+        get => MouseInterface == MouseInterface.Serial;
+        set { if (value) MouseInterface = MouseInterface.Serial; }
+    }
+
+    public bool MouseIsDisconnected
+    {
+        get => MouseInterface == MouseInterface.None;
+        set { if (value) MouseInterface = MouseInterface.None; }
+    }
+
+    /// <summary>
+    /// Called by the window when the guest takes or gives back the pointer.
+    ///
+    /// The wording has to distinguish two genuinely different situations,
+    /// because the user can tell them apart in a second and would otherwise
+    /// think the emulator was broken. Where the host can unhook its pointer
+    /// the guest gets unlimited movement; where it cannot, the pointer is
+    /// still bounded by the window and saying nothing about it would leave
+    /// the user pushing at an edge and wondering why.
+    /// </summary>
+    public void ReportMouseCapture(bool captured, bool unbounded)
+    {
+        MouseCaptured = captured;
+
+        if (!captured)
+        {
+            MouseCaptureText = "";
+            StatusText = "Pointer released";
+            return;
+        }
+
+        MouseCaptureText = unbounded
+            ? $"Mouse captured — press {Emulation.MouseCapture.ReleaseKeyName} to release"
+            : $"Mouse captured (bounded by the window) — press {Emulation.MouseCapture.ReleaseKeyName} to release";
+    }
+
     // --- toolbar commands ---------------------------------------------------
 
     [RelayCommand]
@@ -260,6 +359,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Session.Stop();
         Session.Reset();
         HookMachineEvents();
+
+        // A reset builds a brand-new machine, which comes up with the default
+        // mouse port. The user's choice belongs to the emulator's settings
+        // rather than to the machine, so it is reapplied -- otherwise the
+        // serial mouse someone chose because their program needed it quietly
+        // becomes a PS/2 one the moment they press Reset.
+        Session.WithMachine(machine => machine.MouseInterface = MouseInterface);
 
         foreach ((string path, byte drive, bool readOnly) in media)
             AttachImage(path, drive, readOnly);

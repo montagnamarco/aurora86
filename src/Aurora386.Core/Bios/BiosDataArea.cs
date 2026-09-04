@@ -56,6 +56,60 @@ public sealed class BiosDataArea
     public const byte EnhancedKeyboardInstalled = 0x10;
 
     /// <summary>
+    /// Whether anything has ever taken a keystroke out of the buffer.
+    ///
+    /// The head pointer only moves when software reads a key, so a head that
+    /// has left its starting position is proof that somebody asked. It is a
+    /// cheap way to tell that the guest has reached a prompt: during startup
+    /// DOS writes and loads but never waits for the user.
+    /// </summary>
+    public bool HasReadKeyboard => KeyboardBufferHead != (ushort)KeyboardBufferStart;
+
+    /// <summary>
+    /// Whether the guest is sitting at a prompt waiting for someone to type.
+    ///
+    /// The BIOS's keyboard buffer is empty and its pointers have settled: the
+    /// head has caught up with the tail, which happens when software has
+    /// taken every keystroke there was. During startup DOS never waits -- it
+    /// loads, writes and moves on -- so a buffer that has been drained and
+    /// left alone means the machine has finished starting and is asking the
+    /// user what to do next.
+    ///
+    /// This is what tells an emulator when it is safe to call into DOS. Doing
+    /// it earlier reaches a system still relocating itself, which treats the
+    /// confusion as a critical error and stops with nothing to explain it.
+    /// </summary>
+    public bool WaitingAtPrompt => KeyboardPollCount >= PollsThatMeanIdle;
+
+    /// <summary>
+    /// How many polls in a row mean the guest is genuinely idle rather than
+    /// merely passing through.
+    ///
+    /// A few polls happen during startup -- DOS checks whether a key is down
+    /// to see if the user wants to skip the configuration files. A prompt
+    /// polls thousands of times a second, so a generous threshold tells the
+    /// two apart without needing to know anything else about the guest.
+    /// </summary>
+    private const int PollsThatMeanIdle = 5000;
+
+    /// <summary>
+    /// How many times software has asked the BIOS for a keystroke.
+    ///
+    /// Nothing in the architecture counts this -- it is the emulator's own
+    /// tally, kept because it answers a question the guest cannot be asked
+    /// directly: has the system finished starting?
+    ///
+    /// During startup DOS never waits for the user. It loads drivers, reads
+    /// its configuration files and relocates itself, and none of that
+    /// involves the keyboard. The first request for a key comes from the
+    /// command interpreter, once everything else is in place and it is ready
+    /// to be told what to do. So the first wait is the signal, and it arrives
+    /// whether or not anybody actually types: the guest asks, finds the
+    /// buffer empty, and asks again.
+    /// </summary>
+    public int KeyboardPollCount { get; set; }
+
+    /// <summary>
     /// Keyboard circular buffer (0x41E-0x43D): 16 two-byte entries, each an
     /// ASCII code paired with its scancode. Head and tail live at 0x41A and
     /// 0x41C.

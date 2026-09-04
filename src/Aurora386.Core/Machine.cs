@@ -31,8 +31,9 @@ public sealed class Machine : IDisposable
     /// <summary>
     /// The mouse itself: one physical device, read by three different
     /// interfaces. Which of them the guest listens to depends entirely on
-    /// what driver it loaded, so all three are fitted and the host's
-    /// movements go to whichever asks.
+    /// what driver it loaded, so both ports are fitted and INT 33h is
+    /// provided on top of whichever one the mouse is plugged into --
+    /// see <see cref="MouseInterface"/>.
     /// </summary>
     public MouseState Mouse { get; }
 
@@ -1176,6 +1177,21 @@ public sealed class Machine : IDisposable
     /// position would fight whatever the guest believes.
     /// </summary>
     public void MoveMouse(int deltaX, int deltaY) => Mouse.Move(deltaX, deltaY);
+
+    /// <summary>
+    /// Which port the mouse is plugged into, or none at all.
+    ///
+    /// Both ports stay fitted whatever this says -- the 8042 keeps its
+    /// auxiliary port and COM1 keeps its UART, because a guest that has
+    /// already probed them must not have them vanish underneath it. What
+    /// changes is which one the movements are delivered to, which is the
+    /// same thing the user would achieve by moving the plug.
+    /// </summary>
+    public MouseInterface MouseInterface
+    {
+        get => Mouse.ConnectedInterface;
+        set => Mouse.ConnectedInterface = value;
+    }
 
     /// <summary>Presses or releases a mouse button.</summary>
     public void SetMouseButton(MouseButtons button, bool pressed)

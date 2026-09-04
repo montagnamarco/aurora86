@@ -44,8 +44,28 @@ public partial class MainWindow : Window
         DataContextChanged += OnDataContextChanged;
 
         // Deactivating the window is the moment the host stops sending us key
-        // events, so anything still down has to be let go now.
-        Deactivated += (_, _) => ReleaseHeldKeys();
+        // events, so anything still down has to be let go now -- the pointer
+        // included. A hidden cursor that survives the switch to another
+        // application is the worst thing this feature can do to a user: the
+        // key that would release it now goes to somebody else's window.
+        Deactivated += (_, _) =>
+        {
+            ReleaseHeldKeys();
+            Screen.Capture.Release();
+        };
+
+        // The status bar has to say when the guest has the pointer, and by
+        // which key to get it back, because there is no other clue: the
+        // cursor has vanished and nothing on screen has changed.
+        Screen.Capture.CapturedChanged += captured =>
+            ViewModel?.ReportMouseCapture(captured, Screen.Capture.IsUnbounded);
+
+        // Closing the window while the guest holds the pointer would leave
+        // the cursor hidden after the process is gone -- hidden for the whole
+        // desktop, not just for us, because the platform call underneath is
+        // system-wide and counts its hides. Nothing would then bring it back
+        // short of logging out.
+        Closed += (_, _) => Screen.Capture.Release();
     }
 
     private MainWindowViewModel? ViewModel => DataContext as MainWindowViewModel;
@@ -128,6 +148,12 @@ public partial class MainWindow : Window
         // would give the guest two of them at two different rates.
         if (!_keysHeld.Add(e.PhysicalKey)) { e.Handled = true; return; }
 
+        // Watch for the release gesture. This only observes -- the key still
+        // travels to the guest below, because a Control the guest never saw
+        // pressed is a Control it will never see released either, and it
+        // would go on believing the modifier is held.
+        Screen.Capture.NotifyKeyDown(e.PhysicalKey);
+
         // Set AURORA_KEYLOG=1 to print what the host reports for each key.
         //
         // This is the one link a test cannot check: what macOS hands Avalonia
@@ -166,6 +192,14 @@ public partial class MainWindow : Window
     protected override void OnKeyUp(KeyEventArgs e)
     {
         _keysHeld.Remove(e.PhysicalKey);
+
+        // The release gesture is recognised on the way up rather than the way
+        // down, which is what lets the same key serve two masters: Ctrl-C is
+        // a combination and reaches the guest untouched, while a Control
+        // tapped on its own gives the pointer back. Either way the guest gets
+        // the key -- the gesture is read from the traffic, not taken out of
+        // it.
+        Screen.Capture.NotifyKeyUp(e.PhysicalKey);
 
         if (SendKey(e.PhysicalKey, released: true)) e.Handled = true;
         else base.OnKeyUp(e);

@@ -24,6 +24,12 @@ public class SerialMouseTests
 
         public Rig()
         {
+            // This rig is a machine with the mouse plugged into COM1, which
+            // has to be said out loud: the shared state feeds whichever port
+            // the mouse is actually in, and it defaults to PS/2 because that
+            // is what a late 386 shipped with.
+            State.ConnectedInterface = MouseInterface.Serial;
+
             Mouse = new SerialMouse(State, Interrupts);
             Mouse.Register(Io);
             Interrupts.Register(Io);
