@@ -8,7 +8,12 @@ obj/
 images/*.img
 images/**/*.img
 images/**/*.iso
+images/**/*.IMA
 *.vhd
+
+# Contents unpacked from a disc image. Large, and reproducible from the image
+# it came out of.
+images/**/ISO/
 
 # macOS
 .DS_Store
