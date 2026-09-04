@@ -16,6 +16,7 @@ if (args.Length < 2)
           aurora-fat put    <image> <file> [name-on-disk]
           aurora-fat get    <image> <name-on-disk> [destination]
           aurora-fat append <image> <name-on-disk> <line>
+          aurora-fat rmdir  <image> <directory>
 
         Examples:
           aurora-fat list hdd.img
@@ -96,6 +97,21 @@ try
             File.WriteAllBytes(destination, contents);
 
             Console.WriteLine($"Wrote {destination} ({contents.Length} bytes)");
+            return 0;
+        }
+
+        case "rmdir":
+        {
+            if (args.Length < 3) { Console.Error.WriteLine("rmdir needs a name."); return 1; }
+
+            if (!volume.RemoveDirectory(args[2]))
+            {
+                Console.Error.WriteLine($"{args[2]} is not in the image.");
+                return 1;
+            }
+
+            volume.Save(imagePath);
+            Console.WriteLine($"Removed {args[2]} and everything in it");
             return 0;
         }
 

@@ -303,6 +303,75 @@ public sealed class FatVolume
         }
     }
 
+    /// <summary>
+    /// Removes a directory in the root, and everything inside it.
+    ///
+    /// This exists for one situation, which comes up often enough to be worth
+    /// the code: an installer that stopped halfway leaves a directory holding
+    /// some of what it meant to write, and running it again is not the same
+    /// as running it on a clean disk -- it may find its own half-finished
+    /// work and take it for a previous version, or for a newer one. Clearing
+    /// the directory out is what makes the second attempt equivalent to the
+    /// first.
+    /// </summary>
+    public bool RemoveDirectory(string name)
+    {
+        (string stem, string extension) = SplitShortName(name);
+        int entry = FindEntry(stem, extension);
+        if (entry < 0) return false;
+
+        uint offset = EntryOffset(entry);
+        if ((_image[offset + 11] & 0x10) == 0)
+            throw new IOException($"{name} is a file, not a directory.");
+
+        uint firstCluster = ReadWord(offset + 26);
+        if (firstCluster >= 2) ReleaseDirectoryTree(firstCluster);
+
+        // 0xE5 in the first byte is how FAT marks an entry deleted: the name
+        // is gone but the slot stays where it is, so nothing after it has to
+        // move.
+        _image[offset] = 0xE5;
+        return true;
+    }
+
+    /// <summary>
+    /// Frees a directory's clusters, and those of everything it contains.
+    ///
+    /// The two entries every directory begins with -- itself and its parent --
+    /// are skipped deliberately: following the second one walks back up the
+    /// tree, and following the first one never ends.
+    /// </summary>
+    private void ReleaseDirectoryTree(uint firstCluster)
+    {
+        uint clusterBytes = (uint)_sectorsPerCluster * _bytesPerSector;
+        uint cluster = firstCluster;
+
+        while (cluster >= 2 && cluster < EndOfChain)
+        {
+            uint offset = ClusterOffset(cluster);
+
+            for (uint i = 0; i < clusterBytes; i += 32)
+            {
+                byte first = _image[offset + i];
+                if (first == 0x00) break;
+                if (first == 0xE5 || first == (byte)'.') continue;
+
+                byte attributes = _image[offset + i + 11];
+                if ((attributes & 0x08) != 0) continue;   // volume label
+
+                uint child = ReadWord(offset + i + 26);
+                if (child < 2) continue;
+
+                if ((attributes & 0x10) != 0) ReleaseDirectoryTree(child);
+                else ReleaseChain(child);
+            }
+
+            cluster = ReadFat(cluster);
+        }
+
+        ReleaseChain(firstCluster);
+    }
+
     private uint EntryOffset(int index) => _rootDirectoryOffset + (uint)index * 32;
 
     private int FindEntry(string stem, string extension)
