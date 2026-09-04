@@ -842,6 +842,25 @@ public sealed class IdeController : IIoDevice
         _error = 0;
         _status = StatusReady | StatusSeekComplete;
 
+        // Say that the command is over, and not that a packet is awaited.
+        //
+        // The interrupt reason register is left holding whatever the last
+        // step put there, and the last step for a command that returns no
+        // data is BeginPacket, which set it to 1 -- "send me a command". A
+        // driver reading that after its command has finished is being told
+        // the drive is still waiting to be given one.
+        //
+        // Traced against the real MSCDEX: for a read that returns data it
+        // reads the byte-count registers and collects the bytes; for one that
+        // does not, it reads this register three times, sees 1 each time, and
+        // asks nothing further. That is why the root directory was requested
+        // and then never read, and why "cd" into a directory on the disc put
+        // you straight back where you started.
+        //
+        // Bit 0 set with bit 1 set means: this is a completion, travelling
+        // from the drive to the host.
+        _sectorCount = 0x03;
+
         RaiseInterrupt();
     }
 

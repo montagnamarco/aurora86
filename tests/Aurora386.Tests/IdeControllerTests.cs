@@ -252,6 +252,33 @@ public class IdeControllerTests
     }
 
     [Fact]
+    public void ACommandThatReturnsNoDataStillSaysItIsFinished()
+    {
+        // The interrupt reason register tells the driver where in the
+        // conversation it is, and a command that returns nothing has to say
+        // it is over -- not that it is still waiting to be given a command,
+        // which is what the register holds from the moment the drive asks for
+        // a packet.
+        //
+        // Traced against the real MSCDEX: for a read that returns data it
+        // reads the byte counts and collects the bytes; for one that returns
+        // none it reads this register three times, sees "send me a command"
+        // each time, and asks nothing further. That is why a directory on the
+        // disc could be requested and then never read, and why "cd" into one
+        // put the user straight back where they started.
+        using Machine machine = WithDisc();
+
+        // A read of zero blocks: a legal request that transfers nothing.
+        SendPacket(machine, 0x28, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x00, 0x00);
+
+        byte reason = machine.Io.ReadByte(0x1F2);
+
+        // Bit 0: this is a command phase rather than data. Bit 1: from the
+        // drive to the host. Together they mean the command has completed.
+        Assert.Equal(0x03, reason & 0x03);
+    }
+
+    [Fact]
     public void ReadSubChannelIsAnsweredEvenOnADataDisc()
     {
         // This is a command about audio playback, and MSCDEX asks it about a
