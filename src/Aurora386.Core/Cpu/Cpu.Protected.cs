@@ -752,9 +752,26 @@ public sealed partial class Cpu
         uint tssLimit = (uint)((descriptor & 0xFFFF)
                              | ((descriptor >> 32) & 0x0F0000));
 
-        // Offsets 4, 12, 20 for rings 0, 1 and 2: each entry is ESP followed
-        // by SS, and SS occupies a whole dword even though only its low half
-        // means anything.
+        // A 286 task state segment (types 1 and 3) keeps SP and SS as words
+        // at offsets 2 and 4 for ring 0, 6 and 8 for ring 1, 10 and 12 for
+        // ring 2. Windows' standard-mode DOS extender still uses one, and
+        // reading it with the 386 layout hands the kernel a stack made of
+        // the wrong fields: the first fault into ring 0 then faults again on
+        // its own stack, and the machine triple-faults.
+        int type = (int)((descriptor >> 40) & 0x1F);
+        if (type is 0x01 or 0x03)
+        {
+            uint offset16 = 2u + privilege * 4u;
+            if (offset16 + 4 > tssLimit)
+                throw new CpuException(10, State.TaskRegister);
+            ushort sp = _memory.ReadWord(TranslateLinear(tssBase + offset16, false));
+            ushort ss = _memory.ReadWord(TranslateLinear(tssBase + offset16 + 2, false));
+            return (ss, sp);
+        }
+
+        // The 386 layout: offsets 4, 12, 20 for rings 0, 1 and 2, each entry
+        // ESP followed by SS, and SS occupies a whole dword even though only
+        // its low half means anything.
         uint offset = 4u + privilege * 8u;
 
         // The pair must lie inside the segment. A TSS too short to hold the

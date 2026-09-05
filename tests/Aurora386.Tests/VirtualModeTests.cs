@@ -583,6 +583,31 @@ public class VirtualModeTests
         Assert.Equal(before - 16, machine.Cpu.State.Esp);
         Assert.Equal(0x20u, machine.Memory.ReadDword(machine.Cpu.State.Ss.Base + machine.Cpu.State.Esp));
     }
+
+    [Fact]
+    public void ATrapIntoTheMonitorReadsAStackFromA286TaskStateSegment()
+    {
+        using Machine machine = BuildMonitor();
+        machine.Cpu.State.Eip = 0x1000;
+        WriteGate(machine, 6, 0x08, 0x6000, type: 0x0E, dpl: 0);
+
+        // Replace the 386 TSS with a 286 one: type 1, SP0 at +2 and SS0 at +4.
+        WriteDescriptor(machine, 3, TssBase, 0x2B, 0x81, 0x00);
+        machine.Memory.WriteWord(TssBase + 2, 0x7F00);
+        machine.Memory.WriteWord(TssBase + 4, 0x0010);
+        machine.Memory.WriteDword(TssBase + 8, 0xDEADBEEF);   // where the 386 layout would look for SS0
+
+        EnterTask(machine, cs: 0x0800, eip: 0x0100, eflags: 0x00023202);
+        machine.Memory.WriteByte(0x8000 + 0x0100, 0x63);   // ARPL: #UD in a task
+        machine.Memory.WriteByte(0x8000 + 0x0101, 0x00);
+        machine.Cpu.Step();
+
+        Assert.False(machine.Cpu.State.Virtual8086Mode);
+        Assert.Equal(0x6000u, machine.Cpu.State.Eip);
+        Assert.Equal(0x0010, machine.Cpu.State.Ss.Selector);
+        // The V86 frame is nine dwords below SP0 (GS, FS, DS, ES, SS, ESP, EFLAGS, CS, EIP).
+        Assert.Equal(0x7F00u - 36, machine.Cpu.State.Esp);
+    }
 }
 
 
