@@ -129,13 +129,31 @@ public sealed partial class Cpu
     private void CheckLimit(SegReg segment, uint offset, uint size)
     {
         ref SegmentCache seg = ref State.Segments[(int)segment];
+
+        // An expand-down segment turns the test inside out. These describe a
+        // stack, which grows towards lower addresses, and the limit marks the
+        // bottom of the valid range rather than the top: what is addressable
+        // runs from limit+1 up to the segment's maximum offset, and the
+        // untouchable hole is *below* the limit. Growing such a stack means
+        // lowering its limit, which is why the encoding exists at all.
+        //
+        // The maximum offset is 0xFFFF or 0xFFFFFFFF according to the
+        // descriptor's B bit, and not the limit -- reading it from the limit
+        // would collapse the whole range to nothing.
+        if (seg.ExpandDown)
+        {
+            ulong last = (ulong)offset + size - 1;
+            uint ceiling = seg.Big ? 0xFFFFFFFF : 0xFFFF;
+
+            if (offset > seg.Limit && last <= ceiling) return;
+        }
         // The sum is deliberately computed in 64 bits. Done in 32 bits it
         // would wrap: an offset near 0xFFFFFFFF plus a size of 4 comes back
         // around to a small number, which compares below any plausible limit,
         // so an access far past the end of the segment would sail through as
         // valid. Widening to ulong is the cheapest way to make the overflow
         // impossible rather than merely unlikely.
-        if ((ulong)offset + size - 1 <= seg.Limit) return;
+        else if ((ulong)offset + size - 1 <= seg.Limit) return;
 
         // Running off the end of the stack is its own condition: the processor
         // reports it with #SS rather than a general protection fault, so that

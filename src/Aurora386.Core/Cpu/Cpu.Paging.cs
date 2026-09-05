@@ -91,11 +91,15 @@ public sealed partial class Cpu
             throw new PageFaultException(linear, write, present: true, user: true);
 
         // Read-only pages cannot be written from user code. Supervisor code
-        // may write them on a 386 whatever the bit says: the write-protect
-        // bit in CR0 that changes this arrived with the 486, and software
-        // written for the 386 relies on being able to do it.
-        if (write && !writable && userMode)
-            throw new PageFaultException(linear, write, present: true, user: true);
+        // may write them on a 386 whatever the bit says -- the 386 has no
+        // write-protect control at all. The 486 added one, CR0.WP (bit 16),
+        // and with it set the kernel is held to the same rule as everyone
+        // else. Honouring the bit costs nothing when it is clear, which is how
+        // every 386-era system leaves it, and it is what the hardware suite
+        // this processor is checked against expects.
+        bool writeProtect = (State.Cr0 & (1u << 16)) != 0;
+        if (write && !writable && (userMode || writeProtect))
+            throw new PageFaultException(linear, write, present: true, user: userMode);
     }
 
     private void MarkDirty(uint tableEntryAddress)

@@ -519,4 +519,503 @@ public class ProtectedModeTests
 
         Assert.False(machine.Cpu.Flags.Zero);
     }
+
+    // ---- LAR and LSL -------------------------------------------------------
+    //
+    // Windows leans on these two constantly: every selector handed across an
+    // API boundary is vetted with them before it is trusted. Both answer in
+    // the zero flag, and -- the part that is easy to get wrong -- both must
+    // leave the destination register alone when the answer is no.
+
+    [Fact]
+    public void LarReadsTheAccessRightsOfADescriptor()
+    {
+        using Machine machine = BuildProtectedMachine();
+        WriteDescriptor(machine, GdtBase, 3, 0, 0xFFFFF, 0x92, 0xC0);
+        machine.Cpu.State.GdtLimit = 0x1F;
+        machine.Cpu.State.Eax = 0x18;
+
+        // 0F 02 D8: LAR EBX, EAX
+        RunInstruction(machine, 0x0F, 0x02, 0xD8);
+
+        Assert.True(machine.Cpu.Flags.Zero);
+
+        // The access byte sits in bits 8..15, and the granularity nibble that
+        // LAR also reports in bits 20..23. The limit is none of its business.
+        Assert.Equal(0x92u, (machine.Cpu.State.Ebx >> 8) & 0xFF);
+        Assert.Equal(0u, machine.Cpu.State.Ebx & 0xFF);
+    }
+
+    [Fact]
+    public void LslReadsTheLimitOfADescriptor()
+    {
+        using Machine machine = BuildProtectedMachine();
+        WriteDescriptor(machine, GdtBase, 3, 0, 0x01234, 0x92, 0x40);
+        machine.Cpu.State.GdtLimit = 0x1F;
+        machine.Cpu.State.Eax = 0x18;
+
+        // 0F 03 D8: LSL EBX, EAX
+        RunInstruction(machine, 0x0F, 0x03, 0xD8);
+
+        Assert.True(machine.Cpu.Flags.Zero);
+        Assert.Equal(0x01234u, machine.Cpu.State.Ebx);
+    }
+
+    [Fact]
+    public void LslScalesTheLimitWhenTheGranularityBitIsSet()
+    {
+        using Machine machine = BuildProtectedMachine();
+        WriteDescriptor(machine, GdtBase, 3, 0, 0x00010, 0x92, 0xC0);
+        machine.Cpu.State.GdtLimit = 0x1F;
+        machine.Cpu.State.Eax = 0x18;
+
+        RunInstruction(machine, 0x0F, 0x03, 0xD8);
+
+        Assert.True(machine.Cpu.Flags.Zero);
+
+        // Sixteen pages, and the last page counts to its final byte.
+        Assert.Equal(0x00010FFFu, machine.Cpu.State.Ebx);
+    }
+
+    /// <summary>
+    /// A descriptor that is not present is still readable by LAR.
+    ///
+    /// This test asserted the opposite until the SingleStepTests suite --
+    /// captured from a real 386 -- showed the hardware succeeding here. The
+    /// reason is that LAR reports what a descriptor says rather than whether
+    /// its segment is in memory, and a virtual memory system depends on that:
+    /// it has to read the type and privilege of a segment it has paged out in
+    /// order to decide whether bringing it back is permitted at all. Only a
+    /// genuine segment load requires the present bit.
+    /// </summary>
+    [Fact]
+    public void LarReadsADescriptorEvenWhenItsSegmentIsNotPresent()
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        // 0x12: the same data descriptor with the present bit clear.
+        WriteDescriptor(machine, GdtBase, 3, 0, 0xFFFFF, 0x12, 0xC0);
+        machine.Cpu.State.GdtLimit = 0x1F;
+        machine.Cpu.State.Eax = 0x18;
+
+        RunInstruction(machine, 0x0F, 0x02, 0xD8);
+
+        Assert.True(machine.Cpu.Flags.Zero);
+        Assert.Equal(0x12u, (machine.Cpu.State.Ebx >> 8) & 0xFF);
+    }
+
+    [Fact]
+    public void LslLeavesTheDestinationAloneForTheNullSelector()
+    {
+        using Machine machine = BuildProtectedMachine();
+        machine.Cpu.State.Eax = 0;
+        machine.Cpu.State.Ebx = 0xDEADBEEF;
+
+        RunInstruction(machine, 0x0F, 0x03, 0xD8);
+
+        Assert.False(machine.Cpu.Flags.Zero);
+        Assert.Equal(0xDEADBEEFu, machine.Cpu.State.Ebx);
+    }
+
+    [Fact]
+    public void LarRefusesADescriptorThatIsLessPrivilegedThanTheSelectorAsksFor()
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        // A ring 0 data segment, queried through a selector requesting ring 3.
+        WriteDescriptor(machine, GdtBase, 3, 0, 0xFFFFF, 0x92, 0xC0);
+        machine.Cpu.State.GdtLimit = 0x1F;
+        machine.Cpu.State.Eax = 0x18 | 3;
+        machine.Cpu.State.Ebx = 0xDEADBEEF;
+
+        RunInstruction(machine, 0x0F, 0x02, 0xD8);
+
+        Assert.False(machine.Cpu.Flags.Zero);
+        Assert.Equal(0xDEADBEEFu, machine.Cpu.State.Ebx);
+    }
+
+    [Fact]
+    public void LarAcceptsAConformingCodeSegmentFromAnyPrivilege()
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        // 0x9C: present, code, conforming. A conforming segment answers to
+        // anyone, which is the whole point of the conforming bit.
+        WriteDescriptor(machine, GdtBase, 3, 0, 0xFFFFF, 0x9C, 0xC0);
+        machine.Cpu.State.GdtLimit = 0x1F;
+        machine.Cpu.State.Eax = 0x18 | 3;
+
+        RunInstruction(machine, 0x0F, 0x02, 0xD8);
+
+        Assert.True(machine.Cpu.Flags.Zero);
+        Assert.Equal(0x9Cu, (machine.Cpu.State.Ebx >> 8) & 0xFF);
+    }
+
+    // ---- the instructions a 386 has that this machine was missing ----------
+
+    [Theory]
+    [InlineData(0xD8)] [InlineData(0xD9)] [InlineData(0xDA)] [InlineData(0xDB)]
+    [InlineData(0xDC)] [InlineData(0xDD)] [InlineData(0xDE)] [InlineData(0xDF)]
+    public void AFloatingPointEscapeAsksForVectorSevenRatherThanRefusingToDecode(int opcode)
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        // Vector 7 needs somewhere to go: without a gate the fault escalates
+        // and the test would be measuring the escalation, not the escape.
+        WriteGate(machine, IdtBase, 7, 0x08, 0x3000, type: 0x0E);
+
+        byte vector = 0;
+        machine.Cpu.ProcessorException += (v, _, _, _) => vector = v;
+
+        RunInstruction(machine, (byte)opcode, 0xC0);
+
+        // 7 is "device not available": there is no coprocessor, and an emulator
+        // library on that vector is expected to finish the work. 6 -- invalid
+        // opcode -- would leave software with nothing to recover to.
+        Assert.Equal(7, vector);
+    }
+
+    [Fact]
+    public void ThePostReportsThatNoCoprocessorIsFitted()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+
+        // CR0.EM is how the processor is told to trap floating point rather
+        // than attempt it against hardware that is not there.
+        Assert.Equal(CpuState.Cr0Emulation,
+                     machine.Cpu.State.Cr0 & CpuState.Cr0Emulation);
+    }
+
+    [Fact]
+    public void TheTestRegistersHoldWhatWasWrittenToThem()
+    {
+        using Machine machine = BuildProtectedMachine();
+        machine.Cpu.State.Eax = 0x12345678;
+
+        // 0F 26 F0: MOV TR6, EAX
+        RunInstruction(machine, 0x0F, 0x26, 0xF0);
+        // 0F 24 F3: MOV EBX, TR6
+        RunInstruction(machine, 0x0F, 0x24, 0xF3);
+
+        Assert.Equal(0x12345678u, machine.Cpu.State.Ebx);
+    }
+
+    [Fact]
+    public void TheTestRegistersAreSeparateFromOneAnother()
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        machine.Cpu.State.Eax = 0xAAAAAAAA;
+        RunInstruction(machine, 0x0F, 0x26, 0xF0);   // TR6 = EAX
+        machine.Cpu.State.Eax = 0xBBBBBBBB;
+        RunInstruction(machine, 0x0F, 0x26, 0xF8);   // TR7 = EAX
+
+        RunInstruction(machine, 0x0F, 0x24, 0xF3);   // EBX = TR6
+        Assert.Equal(0xAAAAAAAAu, machine.Cpu.State.Ebx);
+
+        RunInstruction(machine, 0x0F, 0x24, 0xFB);   // EBX = TR7
+        Assert.Equal(0xBBBBBBBBu, machine.Cpu.State.Ebx);
+    }
+
+    // ---- expand-down segments ----------------------------------------------
+    //
+    // These describe a stack. The limit marks the *bottom* of what is valid
+    // rather than the top, so the addressable range runs from limit+1 up to
+    // the segment's maximum offset and the hole is underneath. Growing such a
+    // stack means lowering its limit, which is the whole reason the encoding
+    // exists -- and a limit check that ignores the direction bit rejects every
+    // ordinary stack access while admitting the ones that should fault.
+
+    [Fact]
+    public void AnExpandDownSegmentAcceptsOffsetsAboveItsLimit()
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        // 0x96: present, data, writable, expand-down. Limit 0x7FFF with byte
+        // granularity: valid from 0x8000 up to 0xFFFF.
+        WriteDescriptor(machine, GdtBase, 3, 0, 0x7FFF, 0x96, 0x00);
+        machine.Cpu.State.GdtLimit = 0x1F;
+
+        machine.Cpu.SetSegment(SegReg.Es, 0x18);
+
+        // Writing at 0x9000 is inside the valid range and must not fault.
+        machine.Cpu.WriteMemoryWord(SegReg.Es, 0x9000, 0x1234);
+        Assert.Equal(0x1234, machine.Cpu.ReadMemoryWord(SegReg.Es, 0x9000));
+    }
+
+    [Fact]
+    public void AnExpandDownSegmentRejectsOffsetsBelowItsLimit()
+    {
+        using Machine machine = BuildProtectedMachine();
+        WriteDescriptor(machine, GdtBase, 3, 0, 0x7FFF, 0x96, 0x00);
+        machine.Cpu.State.GdtLimit = 0x1F;
+
+        machine.Cpu.SetSegment(SegReg.Es, 0x18);
+
+        // 0x1000 is in the hole below the limit: this is the access the
+        // direction bit exists to forbid.
+        CpuException fault = Assert.Throws<CpuException>(
+            () => machine.Cpu.WriteMemoryWord(SegReg.Es, 0x1000, 0x1234));
+
+        Assert.Equal(13, fault.Vector);
+    }
+
+    [Fact]
+    public void AnExpandDownSegmentStopsAtItsMaximumOffset()
+    {
+        using Machine machine = BuildProtectedMachine();
+        WriteDescriptor(machine, GdtBase, 3, 0, 0x7FFF, 0x96, 0x00);
+        machine.Cpu.State.GdtLimit = 0x1F;
+
+        machine.Cpu.SetSegment(SegReg.Es, 0x18);
+
+        // The B bit is clear, so the ceiling is 0xFFFF; a word at 0xFFFF would
+        // run one byte past it. The ceiling comes from that bit and not from
+        // the limit, which is what keeps the range from collapsing to nothing.
+        Assert.Throws<CpuException>(
+            () => machine.Cpu.WriteMemoryWord(SegReg.Es, 0xFFFF, 0x1234));
+    }
+
+    [Fact]
+    public void AnOrdinarySegmentIsUnaffectedByTheDirectionBit()
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        // 0x92 is the same descriptor without the expand-down bit: now the
+        // limit means what it usually does.
+        WriteDescriptor(machine, GdtBase, 3, 0, 0x7FFF, 0x92, 0x00);
+        machine.Cpu.State.GdtLimit = 0x1F;
+
+        machine.Cpu.SetSegment(SegReg.Es, 0x18);
+
+        machine.Cpu.WriteMemoryWord(SegReg.Es, 0x1000, 0x5678);
+        Assert.Equal(0x5678, machine.Cpu.ReadMemoryWord(SegReg.Es, 0x1000));
+
+        Assert.Throws<CpuException>(
+            () => machine.Cpu.WriteMemoryWord(SegReg.Es, 0x9000, 0x1234));
+    }
+
+    // ---- far transfers between segments of different width -----------------
+    //
+    // A far JMP or CALL takes its operand size from the segment it leaves, not
+    // the one it enters. The distinction only shows when the two differ -- and
+    // they differ in exactly the sequence every DOS extender uses to return to
+    // real mode, which is a 32-bit segment jumping to a 16-bit one. Reading the
+    // size after CS has moved keeps sixteen bits that should have been dropped,
+    // and control lands somewhere nothing put it.
+
+    [Fact]
+    public void AFarJumpFromAWideSegmentToANarrowOneKeepsTheWholeOffset()
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        // Selector 8 is the 32-bit code segment the machine boots into; add a
+        // 16-bit one at 0x18 for it to jump to.
+        WriteDescriptor(machine, GdtBase, 3, 0, 0xFFFFF, 0x9A, 0x80);   // B clear
+        machine.Cpu.State.GdtLimit = 0x1F;
+
+        // EA 78 56 34 12 18 00 : JMP FAR 0018:12345678
+        RunInstruction(machine, 0xEA, 0x78, 0x56, 0x34, 0x12, 0x18, 0x00);
+
+        Assert.Equal(0x18, machine.Cpu.State.Cs.Selector);
+
+        // The offset was fetched as 32 bits because the *source* was 32-bit.
+        // Masking it to 16 here -- asking the destination instead -- would
+        // leave 0x5678 and send control four gigabytes away from the target.
+        Assert.Equal(0x12345678u, machine.Cpu.State.Eip);
+    }
+
+    [Fact]
+    public void AFarCallFromAWideSegmentToANarrowOneKeepsTheWholeOffset()
+    {
+        using Machine machine = BuildProtectedMachine();
+        WriteDescriptor(machine, GdtBase, 3, 0, 0xFFFFF, 0x9A, 0x80);
+        machine.Cpu.State.GdtLimit = 0x1F;
+
+        // 9A 78 56 34 12 18 00 : CALL FAR 0018:12345678
+        RunInstruction(machine, 0x9A, 0x78, 0x56, 0x34, 0x12, 0x18, 0x00);
+
+        Assert.Equal(0x18, machine.Cpu.State.Cs.Selector);
+        Assert.Equal(0x12345678u, machine.Cpu.State.Eip);
+    }
+
+    [Fact]
+    public void AFarJumpBetweenTwoWideSegmentsIsUnchanged()
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        // Both 32-bit: the fix must not disturb the ordinary case.
+        WriteDescriptor(machine, GdtBase, 3, 0, 0xFFFFF, 0x9A, 0xC0);
+        machine.Cpu.State.GdtLimit = 0x1F;
+
+        RunInstruction(machine, 0xEA, 0x78, 0x56, 0x34, 0x12, 0x18, 0x00);
+
+        Assert.Equal(0x12345678u, machine.Cpu.State.Eip);
+    }
+
+    // ---- privileged instructions -------------------------------------------
+    //
+    // HLT, CLTS, LGDT, LIDT, LMSW and the control-register moves are reserved
+    // to ring 0: an application that could execute them would be able to stop
+    // the processor or describe memory to itself however it liked, and the
+    // privilege rings would stop meaning anything. Windows runs applications
+    // at ring 3 for exactly this protection.
+    //
+    // The ring 3 cases are covered by the SingleStepTests suite captured from
+    // real hardware (HLT_R3, CLTS_R3, CALL_PRIV), which exercises them far
+    // more thoroughly than a hand-built descriptor table here could. What is
+    // worth asserting in this file is the other half: that the check does not
+    // refuse the kernel as well.
+
+    [Fact]
+    public void TheKernelMayStillExecutePrivilegedInstructions()
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        machine.Cpu.State.Cr0 |= CpuState.Cr0TaskSwitched;
+        RunInstruction(machine, 0x0F, 0x06);       // CLTS
+
+        Assert.Equal(0u, machine.Cpu.State.Cr0 & CpuState.Cr0TaskSwitched);
+    }
+
+    [Fact]
+    public void TheKernelMayStillLoadTheDescriptorTable()
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        // A six-byte pseudo-descriptor: limit 0x3F, base 0x9000.
+        machine.Memory.WriteWord(0x5000, 0x3F);
+        machine.Memory.WriteDword(0x5002, 0x9000);
+
+        // 0F 01 /2 with a 32-bit displacement: LGDT [0x5000].
+        RunInstruction(machine, 0x0F, 0x01, 0x15, 0x00, 0x50, 0x00, 0x00);
+
+        Assert.Equal(0x9000u, machine.Cpu.State.GdtBase);
+        Assert.Equal(0x3F, machine.Cpu.State.GdtLimit);
+    }
+
+    /// <summary>
+    /// The indirect form of the far jump, through a pointer in memory. This is
+    /// the instruction with which WIN386 enters its 32-bit kernel: a 16-bit
+    /// segment, a 66h prefix, and a six-byte pointer whose offset lies above
+    /// 0x80000000. Reading the operand size after CS had already moved to the
+    /// 32-bit destination truncated that offset to sixteen bits, and Windows
+    /// jumped into DOS's data instead of into itself.
+    /// </summary>
+    [Fact]
+    public void AnIndirectFarJumpFromANarrowSegmentKeepsAWideOffset()
+    {
+        using Machine machine = BuildProtectedMachine();
+
+        // Selector 0x18: a 16-bit code segment to jump from. Selector 0x20: a
+        // 32-bit flat one to land in.
+        WriteDescriptor(machine, GdtBase, 3, 0, 0xFFFFF, 0x9A, 0x80);   // B clear
+        WriteDescriptor(machine, GdtBase, 4, 0, 0xFFFFF, 0x9A, 0xC0);   // B set
+        machine.Cpu.State.GdtLimit = 0x27;
+
+        // The six-byte pointer at 0x6000: offset 0x8028242C, selector 0x20.
+        machine.Memory.WriteDword(0x6000, 0x8028242C);
+        machine.Memory.WriteWord(0x6004, 0x0020);
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x18);
+        machine.Cpu.SetSegment(SegReg.Ds, 0x10);
+        machine.Cpu.State.Eip = 0x1000;
+
+        // 66 FF 2E 00 60 : JMP FAR dword ptr [0x6000], 16-bit addressing.
+        byte[] code = { 0x66, 0xFF, 0x2E, 0x00, 0x60 };
+        for (int i = 0; i < code.Length; i++) machine.Memory.WriteByte(0x1000 + (uint)i, code[i]);
+
+        machine.Cpu.Step();
+
+        Assert.Equal(0x20, machine.Cpu.State.Cs.Selector);
+        Assert.Equal(0x8028242Cu, machine.Cpu.State.Eip);
+    }
+
+    /// <summary>
+    /// A far return to a less privileged caller: the caller's stack pointer
+    /// follows the return address on the kernel stack, the privilege level
+    /// changes, and any data segment the kernel left in a register that the
+    /// caller may not touch is dropped. This is how KRNL386 hands control back
+    /// to an application after a call through a gate, and the hardware suite
+    /// has no case for it -- its far returns are all same-privilege.
+    /// </summary>
+    [Fact]
+    public void AFarReturnToALessPrivilegedCallerSwitchesStackAndDropsTheKernelsDataSegments()
+    {
+        using Machine machine = BuildProtectedMachine();
+        AddUserModeAndTss(machine);
+
+        // The frame the gate entry left: EIP, CS, then the caller's ESP and
+        // SS, each a dword because the kernel segment is 32-bit.
+        machine.Memory.WriteDword(0x8000, 0x1200);
+        machine.Memory.WriteDword(0x8004, 0x23);      // ring 3 code
+        machine.Memory.WriteDword(0x8008, 0x7000);
+        machine.Memory.WriteDword(0x800C, 0x2B);      // ring 3 data
+
+        machine.Cpu.SetSegment(SegReg.Ds, 0x10);      // the kernel's own data segment
+
+        RunInstruction(machine, 0xCB);                // RETF
+
+        Assert.Equal(3, machine.Cpu.State.Cpl);
+        Assert.Equal(0x23, machine.Cpu.State.Cs.Selector);
+        Assert.Equal(0x1200u, machine.Cpu.State.Eip);
+        Assert.Equal(0x2B, machine.Cpu.State.Ss.Selector);
+        Assert.Equal(0x7000u, machine.Cpu.State.Esp);
+        Assert.Equal(0, machine.Cpu.State.Ds.Selector);   // DPL 0: not for an application
+    }
+
+    // ---- faults during delivery ----------------------------------------------
+    //
+    // Reaching a handler can itself fault. The architecture has an answer for
+    // every case, and an emulator that lets the second fault escape as a host
+    // exception dies on conditions a real machine survives -- which is what
+    // Windows' VMM did to this one, through a vector whose gate was not
+    // present.
+
+    [Fact]
+    public void ABenignFaultDuringDeliveryIsDeliveredInstead()
+    {
+        using Machine machine = BuildProtectedMachine();
+        WriteGate(machine, IdtBase, 11, 0x08, 0x6000, type: 0x0E);    // #NP is served
+
+        // INT 40h: its gate is absent, so delivering it raises #NP. A software
+        // interrupt is benign, and the #NP is simply what arrives.
+        RunInstruction(machine, 0xCD, 0x40);
+
+        Assert.Equal(0x6000u, machine.Cpu.State.Eip);
+        Assert.Equal(0x40u * 8 + 2, machine.Memory.ReadDword(machine.Cpu.State.Esp));   // IDT bit, no EXT
+    }
+
+    [Fact]
+    public void AContributoryFaultWhoseGateIsMissingBecomesADoubleFault()
+    {
+        using Machine machine = BuildProtectedMachine();
+        WriteGate(machine, IdtBase, 8, 0x08, 0x5000, type: 0x0E);     // #DF is served, #GP is not
+
+        // MOV DS,AX with a selector past the table: #GP. Delivering it finds
+        // no gate: #NP. Two contributory faults in a row are a double fault.
+        machine.Cpu.State.Eax = 0x40;
+        RunInstruction(machine, 0x8E, 0xD8);
+
+        Assert.Equal(0x5000u, machine.Cpu.State.Eip);
+        Assert.Equal(0x08, machine.Cpu.State.Cs.Selector);
+        Assert.Equal(0u, machine.Memory.ReadDword(machine.Cpu.State.Esp));   // #DF always pushes zero
+    }
+
+    [Fact]
+    public void AFaultWhoseDoubleFaultGateIsAlsoMissingResetsTheProcessor()
+    {
+        using Machine machine = BuildProtectedMachine();
+        (byte first, byte second) seen = (0, 0);
+        machine.Cpu.TripleFault += (a, b) => seen = (a, b);
+
+        machine.Cpu.State.Eax = 0x40;
+        RunInstruction(machine, 0x8E, 0xD8);          // #GP, no gate for it, none for #DF either
+
+        Assert.Equal(((byte)13, (byte)11), seen);
+        // Back at the reset vector, the way a real machine comes back from a shutdown.
+        Assert.Equal(0xF000, machine.Cpu.State.Cs.Selector);
+        Assert.Equal(0xFFF0u, machine.Cpu.State.Eip);
+    }
 }

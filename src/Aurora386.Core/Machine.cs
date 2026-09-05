@@ -92,6 +92,12 @@ public sealed class Machine : IDisposable
     public XmsManager Xms { get; }
 
     /// <summary>
+    /// The software coprocessor. This machine has no 80387, so floating-point
+    /// instructions fault to vector 7 and are finished here instead.
+    /// </summary>
+    public FpuEmulator Fpu { get; } = new();
+
+    /// <summary>
     /// The clock speed the emulated CPU claims to run at. It does not control
     /// how fast we actually execute; it is the ratio used to convert executed
     /// instructions into device time, so it sets how fast the guest perceives
@@ -274,51 +280,19 @@ public sealed class Machine : IDisposable
             case BiosRom.Handler.TimeOfDay: HandleTimeOfDay(cpu); return;
             case BiosRom.Handler.Bootstrap: Boot(cpu); return;
             case BiosRom.Handler.Multiplex: HandleMultiplex(cpu); return;
+            case BiosRom.Handler.Coprocessor: Fpu.Handle(cpu); return;
             case BiosRom.Handler.RedirectorMultiplex: HandleRedirectorMultiplex(cpu); return;
             case BiosRom.Handler.Xms: Xms.Handle(cpu); return;
             case BiosRom.Handler.Mouse: MouseServices.Handle(cpu); return;
 
-            case BiosRom.Handler.MouseIrq:
-                // IRQ 12. A guest with its own PS/2 driver hooks this vector
-                // and we never see it; this stub is for the case where
-                // nothing has, and its whole job is to drain the packet the
-                // mouse just delivered. Leaving the byte in the output
-                // register would block the keyboard behind it, so an
-                // unclaimed mouse would stop the machine accepting input.
-                cpu.Io.ReadByte(0x60);
-                cpu.Io.WriteByte(0xA0, 0x20);
-                cpu.Io.WriteByte(0x20, 0x20);
-                return;
+            // The ROM entry reads the byte and acknowledges both controllers.
+            case BiosRom.Handler.MouseIrq: return;
 
             case BiosRom.Handler.Serial: HandleSerial(cpu); return;
             case BiosRom.Handler.Printer: HandlePrinter(cpu); return;
 
-            case BiosRom.Handler.DummyIrq:
-                // The catch-all handler, which serves two quite different
-                // purposes: it backs hardware IRQs that have no handler of
-                // their own, and it fills the vectors nobody ever uses.
-                //
-                // In the first case the interrupt must be acknowledged, or the
-                // PIC stays stuck with a line in service and never delivers
-                // another interrupt again. In the second it must NOT be, since
-                // an unsolicited EOI would close some other, genuinely active
-                // interrupt. The handler itself cannot tell which case it is
-                // in, so we ask the controller whether anything is really in
-                // service.
-                if (Interrupts.Master.HasInterruptInService)
-                {
-                    // An interrupt that came in via the slave controller has
-                    // to be closed on BOTH chips. Sending the EOI only to the
-                    // master is the classic mistake: the slave goes on
-                    // believing its line is still being serviced, its priority
-                    // logic blocks everything at or below that level, and
-                    // every IRQ from 8 to 15 silently stops arriving forever
-                    // after -- with the master looking perfectly healthy.
-                    if (Interrupts.Slave.HasInterruptInService)
-                        cpu.Io.WriteByte(0xA0, 0x20);
-                    cpu.Io.WriteByte(0x20, 0x20);
-                }
-                return;
+            // The ROM entry acknowledges both controllers.
+            case BiosRom.Handler.DummyIrq: return;
         }
     }
 
@@ -328,9 +302,21 @@ public sealed class Machine : IDisposable
     /// </summary>
     private void RunPost()
     {
+        // The extended memory count comes first, as on a real board, and it
+        // leaves nothing behind above the first megabyte.
+        Memory.ClearExtendedMemory();
+
         Bda.Initialize(640, DiskServices.HardDiskCount);
         InstallInterruptVectors();
         InitializeInterruptController();
+
+        // There is no coprocessor in this machine -- the equipment word says so
+        // -- and CR0's emulation bit is how the processor is told. With it set,
+        // a floating-point instruction faults to vector 7 and a software
+        // emulator can finish the work; with it clear the instruction would be
+        // attempted against a coprocessor that is not there. A real BIOS sets
+        // this during POST after failing to find an 80387.
+        Cpu.State.Cr0 |= Aurora386.Core.Cpu.CpuState.Cr0Emulation;
 
         // 80x25 text mode, which is how a PC presents itself at power-on.
         VideoRegisters.VideoMode = 0x03;
@@ -383,6 +369,12 @@ public sealed class Machine : IDisposable
         // IRQ 12's vector, so that a mouse packet nobody claimed still gets
         // read out of the controller rather than jamming it.
         SetVector(0x74, BiosRom.Entry.MouseIrq);
+
+        // Vector 7 is where a floating-point instruction lands when there is
+        // no coprocessor. Without a handler there the fault would return to
+        // the very instruction that raised it and the machine would make no
+        // further progress.
+        SetVector(0x07, BiosRom.Entry.Coprocessor);
 
         // IRQs 2-7 and 8-15 with no handler of their own point at a stub that
         // does nothing but acknowledge the interrupt.
@@ -460,8 +452,7 @@ public sealed class Machine : IDisposable
             Bda.MidnightFlag = 1;
         }
         Bda.TimerTicks = ticks;
-
-        cpu.Io.WriteByte(0x20, 0x20);   // end of interrupt
+        // The ROM entry goes on to call INT 1Ch and acknowledge the controller.
     }
 
     /// <summary>
@@ -489,6 +480,51 @@ public sealed class Machine : IDisposable
             case 0x4300:
                 // "XMS is installed": the expected answer is 0x80 in AL.
                 cpu.State.SetReg8(0, 0x80);
+                return;
+
+            // --- the Windows interface, INT 2Fh AX=16xx --------------------
+            //
+            // This is how Windows and DOS negotiate with each other, and how a
+            // resident program learns that Windows is starting so it can make
+            // itself safe first. Windows broadcasts the start and end of each
+            // session and of each virtual machine within it; a DOS that never
+            // answers 1600h is one Windows takes to be pre-3.0, and enhanced
+            // mode expects the broadcasts to reach someone.
+            //
+            // The answers here are the ones a plain DOS gives: no Windows is
+            // already running, and the broadcasts are acknowledged by leaving
+            // the registers as the caller set them, which is what "nobody
+            // objected" looks like on this interface.
+
+            case 0x1600:
+                // "Is Windows in enhanced mode already running?" AL=0 means no.
+                // Answering anything else would make Windows refuse to start,
+                // believing a second copy of itself is already up.
+                cpu.State.SetReg8(0, 0x00);
+                return;
+
+            case 0x1605:
+                // Windows is starting. A resident program that cannot survive
+                // it says so by setting CX to a non-zero value; leaving CX
+                // alone is consent, which is what a machine with nothing
+                // resident should give.
+                return;
+
+            case 0x1606:
+                // Windows is shutting down.
+                return;
+
+            case 0x1607:
+                // A virtual device is calling out to its DOS-side half. With
+                // no such halves installed here, the call is simply returned:
+                // the device treats that as "not present" and carries on.
+                return;
+
+            case 0x160B:
+                // Enumerate the TSRs that asked to be told about Windows.
+                // CX=0 ends the enumeration, which is the honest answer when
+                // none registered.
+                cpu.State.Cx = 0;
                 return;
 
             case 0x4310:
@@ -764,10 +800,19 @@ public sealed class Machine : IDisposable
                 return;
 
             case 0xC0:
-                // System configuration table. Not provided: some programs ask
-                // for it, but all of them cope with its absence.
-                cpu.State.SetReg8(4, 0x86);
-                cpu.SetCarryInStackedFlags(true);
+                // The system configuration table, returned in ES:BX.
+                //
+                // Refusing this call is not as harmless as it looks. Callers
+                // are inconsistent about how they detect the refusal: some
+                // check the carry flag, but others -- Windows' own DOS
+                // extender among them -- test ES:BX for zero and read the
+                // table wherever those registers happen to point. Leaving
+                // them untouched hands such a caller whatever was in them,
+                // which it then reads as feature bits.
+                cpu.SetSegment(CpuNs.SegReg.Es, 0xF000);
+                cpu.State.Bx = BiosRom.Entry.SystemConfiguration;
+                cpu.State.SetReg8(4, 0);
+                cpu.SetCarryInStackedFlags(false);
                 return;
 
             case 0x24:

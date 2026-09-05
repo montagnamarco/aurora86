@@ -149,6 +149,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Session.WithMachine(machine =>
         {
             machine.DiskServices.DriveAccessed += OnDriveAccessed;
+
+            // AURORA_DOSLOG records the DOS calls that move files about --
+            // rename, create, delete, exec -- which is what says how far an
+            // installer got. Unlike the write log it needs no disk, so it is
+            // hooked with the machine itself.
+            string? dosLog = Environment.GetEnvironmentVariable("AURORA_DOSLOG");
+            if (_dosLog is null && !string.IsNullOrWhiteSpace(dosLog))
+                _dosLog = DosCallLog.Attach(machine, dosLog);
+
         });
     }
 
@@ -156,6 +165,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// Called on the emulation thread for every sector transfer. Keep it to a
     /// counter bump: anything heavier would slow the guest down.
     /// </summary>
+    private DiskWriteLog? _writeLog;
+    private DosCallLog? _dosLog;
+
     private void OnDriveAccessed(byte driveNumber, bool write)
     {
         lock (_accessCounts)
@@ -559,6 +571,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 : DiskImage.OpenFloppy(path, driveNumber, readOnly);
 
             machine.AttachDisk(image);
+
+            // Setting AURORA_WRITELOG to a path records every file the guest
+            // writes to, in order. It has to be hooked here rather than when
+            // the machine is built: resolving a sector to a name means reading
+            // the volume's own tables, and until a disk is attached there are
+            // none. It stays off unless asked for, being far too much work to
+            // do on a machine that is merely running.
+            string? writeLog = Environment.GetEnvironmentVariable("AURORA_WRITELOG");
+            if (driveNumber >= 0x80 && _writeLog is null && !string.IsNullOrWhiteSpace(writeLog))
+                _writeLog = DiskWriteLog.Attach(machine, image, writeLog);
 
             // Tell the guest the medium changed. Without this DOS keeps using
             // the file allocation table it read from the previous disk, and

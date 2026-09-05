@@ -281,12 +281,29 @@ public sealed partial class Cpu
             case 3:   // indirect far CALL: the operand is offset:segment
             {
                 if (m.IsRegister) throw new CpuException(6);
+
+                // Settled before CS moves, as in the direct form: the operand
+                // size belongs to the segment being called from.
+                bool wide = OperandSize32;
+
                 uint offset = ReadMemOperand(m.Segment, m.Offset);
-                ushort selector = ReadMem16(m.Segment, m.Offset + (OperandSize32 ? 4u : 2u));
-                PushOperand(State.Cs.Selector);
-                PushOperand(State.Eip);
-                LoadSegment(SegReg.Cs, selector);
-                State.Eip = OperandSize32 ? offset : offset & 0xFFFF;
+                ushort selector = ReadMem16(m.Segment, m.Offset + (wide ? 4u : 2u));
+
+                // The selector may name a call gate here just as it may in the
+                // direct form, and then the offset read from memory is
+                // discarded: the gate holds the real destination. Omitting
+                // this makes the gate's selector be loaded as though it were a
+                // code segment, and control goes to whatever the caller's own
+                // pointer said -- which is exactly what a gate exists to
+                // prevent.
+                if (State.ProtectedMode && !State.Virtual8086Mode && IsCallGate(selector))
+                {
+                    CallThroughGate(selector);
+                    return;
+                }
+
+                RequireSamePrivilegeTarget(selector);
+                CallFarInto(selector, offset, wide);
                 return;
             }
             case 4:   // indirect near JMP
@@ -298,10 +315,27 @@ public sealed partial class Cpu
             case 5:   // indirect far JMP
             {
                 if (m.IsRegister) throw new CpuException(6);
+
+                // Settled before CS moves, for the same reason as every other
+                // far transfer: the operand size is the source segment's.
+                // Read afterwards it comes from the destination, and a 16-bit
+                // segment jumping to a 32-bit one through a 66h-prefixed
+                // pointer has its offset truncated to sixteen bits -- the
+                // pointer was read correctly, then thrown half away. This is
+                // the very instruction with which WIN386 enters its 32-bit
+                // kernel, and the truncation sent it into DOS's data instead.
+                bool wide = OperandSize32;
+
                 uint offset = ReadMemOperand(m.Segment, m.Offset);
-                ushort selector = ReadMem16(m.Segment, m.Offset + (OperandSize32 ? 4u : 2u));
+                ushort selector = ReadMem16(m.Segment, m.Offset + (wide ? 4u : 2u));
+                if (State.ProtectedMode && !State.Virtual8086Mode && IsCallGate(selector))
+                {
+                    JumpThroughGate(selector);
+                    return;
+                }
+                RequireSamePrivilegeTarget(selector);
                 LoadSegment(SegReg.Cs, selector);
-                State.Eip = OperandSize32 ? offset : offset & 0xFFFF;
+                State.Eip = wide ? offset : offset & 0xFFFF;
                 return;
             }
             case 6:

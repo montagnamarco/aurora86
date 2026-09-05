@@ -44,8 +44,23 @@ public sealed class DiskServices
     /// </summary>
     public event Action<byte, bool>? DriveAccessed;
 
+    /// <summary>
+    /// The same transfers, with the cylinder, head, sector and count that were
+    /// asked for. Where <see cref="DriveAccessed"/> is enough to blink a light,
+    /// this is enough to reconstruct what was read or written and in what
+    /// order -- which is how a stalled guest is told apart from a slow one.
+    /// </summary>
+    public event Action<byte, bool, int, int, int, int>? SectorTransferred;
+
     private void NoteAccess(byte driveNumber, bool write)
         => DriveAccessed?.Invoke(driveNumber, write);
+
+    private void NoteTransfer(byte driveNumber, bool write,
+                              int cylinder, int head, int sector, int count)
+    {
+        DriveAccessed?.Invoke(driveNumber, write);
+        SectorTransferred?.Invoke(driveNumber, write, cylinder, head, sector, count);
+    }
 
     public DiskImage? GetDrive(byte driveNumber)
         => _drives.TryGetValue(driveNumber, out DiskImage? image) ? image : null;
@@ -126,7 +141,7 @@ public sealed class DiskServices
         if (image is null) { Fail(cpu, 0x80); return; }   // drive not ready
 
         (int cylinder, int head, int sector, int count) = DecodeChs(cpu);
-        NoteAccess(drive, write: false);
+        NoteTransfer(drive, write: false, cylinder, head, sector, count);
 
         // The destination buffer is ES:BX in the caller's address space.
         var buffer = new byte[count * DiskImage.SectorSize];
@@ -152,7 +167,7 @@ public sealed class DiskServices
         if (image.ReadOnly) { Fail(cpu, 0x03); return; }   // write protected
 
         (int cylinder, int head, int sector, int count) = DecodeChs(cpu);
-        NoteAccess(drive, write: true);
+        NoteTransfer(drive, write: true, cylinder, head, sector, count);
 
         var buffer = new byte[count * DiskImage.SectorSize];
         ushort source = cpu.State.Bx;

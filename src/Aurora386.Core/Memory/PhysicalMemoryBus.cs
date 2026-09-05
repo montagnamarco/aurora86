@@ -152,6 +152,45 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// Maps a ROM: the contents are copied into the underlying RAM and the
     /// pages are marked read-only. Reads therefore keep taking the fast path,
     /// which matters because a ROM is read constantly and written never, and
+    /// Copies the whole of installed RAM out, for a snapshot.
+    ///
+    /// The page table is deliberately not part of this: it is rebuilt from the
+    /// devices when a snapshot is restored, and a captured table would hold
+    /// pointers into memory that no longer exists.
+    /// </summary>
+    public byte[] CaptureRam()
+    {
+        var copy = new byte[_ramSize];
+        new ReadOnlySpan<byte>(_ram, (int)_ramSize).CopyTo(copy);
+        return copy;
+    }
+
+    /// <summary>
+    /// Wipes everything above the first megabyte, which is what the POST's
+    /// count of extended memory does on a real machine: it writes a pattern
+    /// to every location and reads it back, and nothing that was there
+    /// survives. Software relies on that. HIMEM leaves a VDISK header at the
+    /// one-megabyte mark while it is installed, and on the next boot refuses
+    /// to install again if it still finds it -- a warm reset that kept the
+    /// memory intact would leave the machine without extended memory.
+    /// </summary>
+    public void ClearExtendedMemory()
+    {
+        if (_ramSize > 0x100000)
+            NativeMemory.Clear(_ram + 0x100000, (nuint)(_ramSize - 0x100000));
+    }
+
+    /// <summary>Puts back RAM captured by <see cref="CaptureRam"/>.</summary>
+    public void RestoreRam(ReadOnlySpan<byte> content)
+    {
+        if (content.Length != _ramSize)
+            throw new ArgumentException("The snapshot was taken from a machine with different RAM.",
+                                        nameof(content));
+
+        content.CopyTo(new Span<byte>(_ram, (int)_ramSize));
+    }
+
+    /// <summary>
     /// writes are discarded without complaint.
     /// </summary>
     public void MapRom(uint physicalBase, ReadOnlySpan<byte> content)
@@ -364,11 +403,19 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
     // ----------------------------------------------------------------- writes
 
+    /// <summary>Diagnostics: a single physical address to report writes to, or uint.MaxValue for none.</summary>
+    public uint WatchAddress = uint.MaxValue;
+
+    /// <summary>How many bytes from <see cref="WatchAddress"/> are watched; one by default.</summary>
+    public uint WatchLength = 1;
+    public event Action<uint, byte>? Watched;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteByte(uint address, byte value)
     {
         address = Translate(address);
         if (address >= _addressableBytes) return;
+        if (address - WatchAddress < WatchLength) Watched?.Invoke(address, value);
 
         uint index = address >> PageShift;
         byte* page = _pageRam[index];
@@ -385,6 +432,15 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     public void WriteWord(uint address, ushort value)
     {
         address = Translate(address);
+
+        // Inside a watched range the write goes byte by byte, so that it is
+        // reported like any other.
+        if (address - WatchAddress < WatchLength + 1)
+        {
+            WriteByte(address, (byte)value);
+            WriteByte(address + 1, (byte)(value >> 8));
+            return;
+        }
 
         if (address < _addressableBytes && (address & PageMask) <= PageMask - 1)
         {
@@ -404,6 +460,12 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     public void WriteDword(uint address, uint value)
     {
         address = Translate(address);
+
+        if (address - WatchAddress < WatchLength + 3)
+        {
+            for (uint i = 0; i < 4; i++) WriteByte(address + i, (byte)(value >> (int)(8 * i)));
+            return;
+        }
 
         if (address < _addressableBytes && (address & PageMask) <= PageMask - 3)
         {

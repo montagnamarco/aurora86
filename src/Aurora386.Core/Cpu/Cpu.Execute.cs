@@ -24,16 +24,143 @@ public sealed partial class Cpu
             // has brought the page in, so EIP is rewound to where it began.
             State.Eip = _instructionStart;
             State.Cr2 = fault.LinearAddress;
-            RaiseException(14, fault.ErrorCode);
+            DeliverException(14, fault.ErrorCode);
         }
         catch (CpuException ex)
         {
             State.Eip = _instructionStart;
-            RaiseException(ex.Vector, ex.ErrorCode);
+            DeliverException(ex.Vector, ex.ErrorCode);
         }
 
         Cycles++;
         return 1;
+    }
+
+    /// <summary>
+    /// Raised when a double fault cannot itself be delivered. A real 386 shuts
+    /// down and is reset by the chipset; this machine resets the processor,
+    /// which restarts the BIOS. The two vectors are the ones that could not be
+    /// delivered, first and second, for whoever is watching.
+    /// </summary>
+    public event Action<byte, byte>? TripleFault;
+
+    /// <summary>
+    /// Delivers an exception, and copes with the delivery itself faulting.
+    ///
+    /// Reaching a handler means reading the gate, loading a code segment,
+    /// perhaps switching stacks and reading a task state segment: every one
+    /// of those can fault. The architecture says what happens then. A benign
+    /// second fault -- the gate was simply not present, say -- is delivered
+    /// in place of the first, which is how an operating system that marks
+    /// vectors not-present to catch their first use expects to be told. Two
+    /// contributory faults in a row, or two page faults, are a double fault,
+    /// vector 8 with an error code of zero. And a double fault that cannot be
+    /// delivered is a triple fault: the processor resets. Letting any of this
+    /// escape as a host exception instead stops the emulator dead on a
+    /// condition a real machine would have survived, or at least rebooted from.
+    /// </summary>
+    private void DeliverException(byte vector, uint errorCode)
+    {
+        var before = SaveTransferState();
+        try
+        {
+            RaiseException(vector, errorCode);
+        }
+        catch (Exception ex) when (ex is CpuException or PageFaultException)
+        {
+            RestoreTransferState(before);
+            (byte second, uint error) = Classify(ex);
+            Escalate(vector, second, error, rewind: true);
+        }
+    }
+
+    /// <summary>
+    /// A hardware interrupt, delivered through the same safety net. Two
+    /// things differ from an exception: the interrupted instruction has
+    /// already finished, so EIP must not be rewound to it; and a fault that
+    /// arises while delivering an external interrupt carries the EXT bit in
+    /// its error code, which is how a monitor tells an interrupt it has to
+    /// reflect from a software INT it has to emulate.
+    /// </summary>
+    private void DeliverExternalInterrupt(byte vector)
+    {
+        var before = SaveTransferState();
+        try
+        {
+            EnterInterrupt(vector, isSoftware: false);
+        }
+        catch (Exception ex) when (ex is CpuException or PageFaultException)
+        {
+            RestoreTransferState(before);
+            (byte second, uint error) = Classify(ex);
+            Escalate(vector, second, error | 1, rewind: false);
+        }
+    }
+
+    private (byte Vector, uint ErrorCode) Classify(Exception ex)
+    {
+        if (ex is PageFaultException fault)
+        {
+            State.Cr2 = fault.LinearAddress;
+            return (14, fault.ErrorCode);
+        }
+        var cpu = (CpuException)ex;
+        return (cpu.Vector, cpu.ErrorCode);
+    }
+
+    // A transfer that faults halfway may already have loaded the handler's CS
+    // or switched stacks. The second fault has to be reported against the
+    // state the first one found, so that much is put back.
+    private (SegmentCache Cs, SegmentCache Ss, uint Esp, uint Eip) SaveTransferState()
+        => (State.Segments[(int)SegReg.Cs], State.Segments[(int)SegReg.Ss], State.Esp, State.Eip);
+
+    private void RestoreTransferState((SegmentCache Cs, SegmentCache Ss, uint Esp, uint Eip) s)
+    {
+        State.Segments[(int)SegReg.Cs] = s.Cs;
+        State.Segments[(int)SegReg.Ss] = s.Ss;
+        State.Esp = s.Esp;
+        State.Eip = s.Eip;
+    }
+
+    private void Escalate(byte first, byte second, uint secondError, bool rewind)
+    {
+        if (rewind) State.Eip = _instructionStart;
+
+        if (!IsDoubleFault(first, second))
+        {
+            try { RaiseException(second, secondError); return; }
+            catch (PageFaultException fault) { State.Cr2 = fault.LinearAddress; }
+            catch (CpuException) { }
+        }
+
+        try
+        {
+            RaiseException(8, 0);
+        }
+        catch (Exception ex) when (ex is CpuException or PageFaultException or NotImplementedException)
+        {
+            // Including the task-gate case: Windows installs its double-fault
+            // handler behind a task gate, which this processor does not switch
+            // to yet. Resetting is what the hardware would do one step later.
+            TripleFault?.Invoke(first, second);
+            Reset();
+        }
+    }
+
+    /// <summary>
+    /// The 386's table of which pairs of faults compound. Divide error and the
+    /// segment faults (#TS, #NP, #SS, #GP) are "contributory"; a contributory
+    /// fault while delivering another, or while delivering a page fault, is a
+    /// double fault, as is a page fault while delivering a page fault. Anything
+    /// else -- an interrupt, a software INT, a breakpoint -- is benign, and the
+    /// second fault is simply the one that gets delivered.
+    /// </summary>
+    private static bool IsDoubleFault(byte first, byte second)
+    {
+        static bool Contributory(byte v) => v is 0 or 10 or 11 or 12 or 13;
+        if (Contributory(second)) return Contributory(first) || first == 14;
+        if (second == 14) return first == 14;
+        return false;
     }
 
     /// <summary>
@@ -167,12 +294,12 @@ public sealed partial class Cpu
         {
             // --- segment PUSH/POP (the gaps in the ALU table) --------------
             case 0x06: PushOperand(State.Es.Selector); return;
-            case 0x07: LoadSegment(SegReg.Es, (ushort)PopSegmentOperand()); return;
+            case 0x07: PopSegment(SegReg.Es); return;
             case 0x0E: PushOperand(State.Cs.Selector); return;
             case 0x16: PushOperand(State.Ss.Selector); return;
-            case 0x17: LoadSegment(SegReg.Ss, (ushort)PopSegmentOperand()); return;
+            case 0x17: PopSegment(SegReg.Ss); return;
             case 0x1E: PushOperand(State.Ds.Selector); return;
-            case 0x1F: LoadSegment(SegReg.Ds, (ushort)PopSegmentOperand()); return;
+            case 0x1F: PopSegment(SegReg.Ds); return;
 
             // --- register INC/DEC (0x40-0x4F) ------------------------------
             case >= 0x40 and <= 0x47: IncReg(opcode - 0x40); return;
@@ -220,6 +347,14 @@ public sealed partial class Cpu
             // ARPL: adjusts a selector's requested privilege level. Outside
             // protected mode it has no meaning and the 386 rejects it.
             case 0x63:
+                // ARPL exists only under protection. In real mode and in a virtual
+                // 8086 task the opcode is undefined and raises #UD -- and Windows'
+                // monitor depends on exactly that: it plants 63h in its V86 stubs
+                // as a breakpoint, and takes the #UD as its cue to step back in.
+                // Executing it instead lets the stub run on into the bytes after
+                // it, which are not code, and the DOS session ends up returning
+                // through an empty frame into the interrupt vector table.
+                if (!State.ProtectedMode || State.Virtual8086Mode) throw new CpuException(6);
             {
                 if (!State.ProtectedMode) throw new CpuException(6);
                 var m = DecodeModRm();
@@ -277,13 +412,13 @@ public sealed partial class Cpu
                 return;
 
             // --- I/O ports ---------------------------------------------------
-            case 0xE4: RequireIoPrivilege(); State.SetReg8(0, _io.ReadByte(FetchByte())); return;
+            case 0xE4: { ushort port = FetchByte(); CheckIoPermission(port, 1); State.SetReg8(0, _io.ReadByte(port)); return; }
             case 0xE5: ReadPortToAccumulator(FetchByte()); return;
-            case 0xE6: RequireIoPrivilege(); _io.WriteByte(FetchByte(), State.GetReg8(0)); return;
+            case 0xE6: { ushort port = FetchByte(); CheckIoPermission(port, 1); _io.WriteByte(port, State.GetReg8(0)); return; }
             case 0xE7: WriteAccumulatorToPort(FetchByte()); return;
-            case 0xEC: RequireIoPrivilege(); State.SetReg8(0, _io.ReadByte(State.Dx)); return;
+            case 0xEC: CheckIoPermission(State.Dx, 1); State.SetReg8(0, _io.ReadByte(State.Dx)); return;
             case 0xED: ReadPortToAccumulator(State.Dx); return;
-            case 0xEE: RequireIoPrivilege(); _io.WriteByte(State.Dx, State.GetReg8(0)); return;
+            case 0xEE: CheckIoPermission(State.Dx, 1); _io.WriteByte(State.Dx, State.GetReg8(0)); return;
             case 0xEF: WriteAccumulatorToPort(State.Dx); return;
 
             // --- shifts and rotates -------------------------------------------
@@ -418,6 +553,23 @@ public sealed partial class Cpu
             case 0x9A: CallFar(); return;
             case 0xD7: Xlat(); return;
 
+            // --- FPU escapes (0xD8-0xDF) ------------------------------------
+            // This machine has no coprocessor, which the BIOS already reports
+            // in the equipment word. The processor still has to decode the
+            // instruction and then refuse it as "device not available", so that
+            // an emulator library installed on vector 7 can step in and finish
+            // the work. Reporting an invalid opcode instead would be a lie, and
+            // leaves software with no way to recover: it faults, the handler
+            // finds nothing to do, and the instruction is retried for ever.
+            case >= 0xD8 and <= 0xDF:
+            {
+                // The operand still has to be consumed so that the address is
+                // computed and any segment fault is raised in the right order;
+                // only then does the escape itself fail.
+                DecodeModRm();
+                throw new CpuException(7);
+            }
+
             case 0x98: Cbw(); return;
             case 0x99: Cwd(); return;
             case 0x9C: Pushf(); return;
@@ -489,7 +641,19 @@ public sealed partial class Cpu
             case 0xCA: { ushort pop = FetchWord(); RetFar(pop); return; }
 
             case 0xCC: SoftwareInterrupt(3); return;
-            case 0xCD: SoftwareInterrupt(FetchByte()); return;
+            case 0xCD:
+            {
+                byte vector = FetchByte();
+                // INT n is IOPL-sensitive in virtual 8086 mode, and the check
+                // comes before the gate is even looked at: below IOPL 3 the
+                // task gets #GP(0) and the monitor reflects the interrupt
+                // itself. Consulting the gate first turns a trap the monitor
+                // is built to handle into #NP or #GP(selector), which it is
+                // not -- and the DOS session dies on its first INT 21h.
+                if (State.Virtual8086Mode) RequireIoPrivilege();
+                SoftwareInterrupt(vector);
+                return;
+            }
             case 0xCE: if (Flags.Overflow) SoftwareInterrupt(4); return;
             case 0xCF: Iret(); return;
 
@@ -510,6 +674,7 @@ public sealed partial class Cpu
                 // the computer, but it is one task among several and the
                 // monitor has to stay alive to schedule the rest.
                 if (State.Virtual8086Mode) throw new CpuException(13, 0);
+                RequireSupervisor();
                 State.Halted = true;
                 return;
             case 0xF5: Flags.Carry = !Flags.Carry; return;

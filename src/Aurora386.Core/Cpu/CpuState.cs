@@ -138,6 +138,13 @@ public sealed class CpuState
     /// <summary>Debug registers DR0-DR7.</summary>
     public readonly uint[] Dr = new uint[8];
 
+    /// <summary>
+    /// The test registers. Only TR6 and TR7 exist on a 386, held here as
+    /// Tr[0] and Tr[1]; they drive the TLB test hardware, which this
+    /// emulator's plain translation cache has no equivalent of.
+    /// </summary>
+    public readonly uint[] Tr = new uint[2];
+
     /// <summary>Halted by HLT: resumes on the next interrupt.</summary>
     public bool Halted;
 
@@ -272,6 +279,7 @@ public sealed class CpuState
     {
         Array.Clear(Gpr);
         Array.Clear(Dr);
+        Array.Clear(Tr);
         OtherFlags = Flags.Reserved1;
         Cr0 = 0;
         Cr2 = 0;

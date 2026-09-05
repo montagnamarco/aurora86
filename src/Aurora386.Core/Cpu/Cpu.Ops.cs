@@ -238,16 +238,58 @@ public sealed partial class Cpu
 
     // PUSHFD pushes the flags as 32 bits, but bits 16-31 come out zeroed: the
     // 386 has nothing to put up there yet (VM and RF arrive with the 486).
-    private void Pushf() => PushOperand(OperandSize32 ? Flags.Value & 0x0000FFFFu
-                                                      : Flags.Value & 0xFFFFu);
+    // The flag bits that the stack is not allowed to change. VM cannot be
+    // set or cleared by popping it -- only IRET from ring 0 and the fault path
+    // move a task in and out of virtual mode -- and RF is the processor's own.
+    private const uint InterruptFlag = 1u << 9;
+    private const uint IoplMask = 3u << 12;
+    private const uint ResumeFlag = 1u << 16;
+
+    private void Pushf()
+    {
+        // In virtual 8086 mode PUSHF is IOPL-sensitive: a task that could read
+        // the real flags would learn the real IF, and the monitor virtualises
+        // that flag precisely so the task cannot. Below IOPL 3 it traps.
+        if (State.Virtual8086Mode) RequireIoPrivilege();
+
+        // A 386 has nothing above bit 15 that the stack may see: VM and RF are
+        // pushed as zero, so the mask is the same for both operand sizes.
+        PushOperand(Flags.Value & 0xFFFFu);
+    }
 
     private void Popf()
     {
+        // IOPL-sensitive in virtual 8086 mode, for the same reason as PUSHF:
+        // the monitor owns the interrupt flag, and a task below IOPL 3 that
+        // tried to write it has to be caught and have the write emulated.
+        if (State.Virtual8086Mode) RequireIoPrivilege();
+
         uint value = PopOperand();
-        // In real mode every flag is writable; in protected mode IOPL and IF
-        // are guarded by the current privilege level, which will have to be
-        // handled along with the rest of the protection machinery.
-        Flags.SetValue(OperandSize32 ? value : (Flags.Value & 0xFFFF0000) | (value & 0xFFFF));
+        uint next = OperandSize32 ? value : (Flags.Value & 0xFFFF0000) | (value & 0xFFFF);
+        Flags.SetValue(GuardFlagsFromStack(next));
+    }
+
+    /// <summary>
+    /// Applies the privilege rules to a flags value taken off the stack, as
+    /// POPF and IRET both must. Real mode may write anything but VM; under
+    /// protection IOPL changes only at ring 0, IF only when the caller is at
+    /// least as privileged as IOPL says, and a virtual 8086 task -- which is
+    /// ring 3 by definition -- may therefore change neither IOPL nor, unless
+    /// IOPL is already 3, IF. Without these rules a task could raise its own
+    /// IOPL and step out from under the monitor.
+    /// </summary>
+    private uint GuardFlagsFromStack(uint next)
+    {
+        uint current = Flags.Value;
+        const uint fixedBits = VirtualModeFlag | ResumeFlag;
+        next = (next & ~fixedBits) | (current & fixedBits);
+
+        if (!State.ProtectedMode) return next;
+
+        byte iopl = (byte)((current & IoplMask) >> 12);
+        if (State.Cpl != 0) next = (next & ~IoplMask) | (current & IoplMask);
+        if (State.Cpl > iopl) next = (next & ~InterruptFlag) | (current & InterruptFlag);
+        return next;
     }
 
     private void Sahf()
@@ -307,8 +349,52 @@ public sealed partial class Cpu
     /// This is how 16-bit code calls routines outside its own segment, so DOS
     /// leans on it constantly for its internal calls.
     /// </summary>
+    /// <summary>
+    /// Refuses a direct far jump or call into code at a different privilege.
+    ///
+    /// Entering more privileged code has to go through a call gate, which is
+    /// the whole point of gates: they are the only doors in the wall, and each
+    /// names the single entry point the kernel chose to expose. A direct far
+    /// call into ring 0 would be a door of the caller's own choosing.
+    ///
+    /// This check belongs here rather than in the general segment load,
+    /// because that path also carries the transfers where the processor is
+    /// legitimately changing privilege -- through a gate, through an interrupt,
+    /// returning from one -- and refusing those breaks the mechanism this is
+    /// meant to protect.
+    /// </summary>
+    private void RequireSamePrivilegeTarget(ushort selector)
+    {
+        if (!State.ProtectedMode || State.Virtual8086Mode) return;
+        if ((selector & 0xFFFC) == 0) return;
+
+        ulong descriptor;
+        try { descriptor = ReadDescriptor(selector); }
+        catch (CpuException) { return; }        // the load itself will fault
+
+        byte access = (byte)(descriptor >> 40);
+        if ((access & 0x18) != 0x18) return;    // not a code segment
+
+        byte dpl = (byte)((access >> 5) & 3);
+        bool conforming = (access & 0x04) != 0;
+
+        // Conforming code runs at the caller's level, so entering it grants
+        // nothing; its DPL is a floor the caller must already be below.
+        if (conforming)
+        {
+            if (dpl > State.Cpl) throw new CpuException(13, selector);
+            return;
+        }
+
+        if (dpl != State.Cpl) throw new CpuException(13, selector);
+    }
+
     private void CallFar()
     {
+        // As in JumpFar: the operand size is the calling segment's, and CS is
+        // about to change. Settled here, before anything moves.
+        bool wide = OperandSize32;
+
         uint offset = FetchImmediate();
         ushort selector = FetchWord();
 
@@ -321,13 +407,41 @@ public sealed partial class Cpu
             return;
         }
 
-        // The push order is fixed by the architecture: segment first, then
-        // offset, so that RETF pops them back off in the opposite order.
+        RequireSamePrivilegeTarget(selector);
+        CallFarInto(selector, offset, wide);
+    }
+
+    /// <summary>
+    /// The tail of a far call to a code segment: return address on the stack,
+    /// then the new CS and EIP. The push order is fixed by the architecture,
+    /// segment first, then offset, so that RETF pops them back in the
+    /// opposite order.
+    ///
+    /// A fault while loading the new segment -- not present, for one -- must
+    /// leave the stack where it was. The processor checks the descriptor
+    /// before it writes anything; here the writes come first, so the stack
+    /// pointer is put back when the check fails. Windows depends on this: it
+    /// keeps code segments not present until they are called, loads them in
+    /// the #NP handler, and restarts the call. A return address left behind
+    /// by the first attempt would shift every argument of the second.
+    /// </summary>
+    private void CallFarInto(ushort selector, uint offset, bool wide)
+    {
+        uint stackPointer = State.Esp;
         PushOperand(State.Cs.Selector);
         PushOperand(State.Eip);
 
-        LoadSegment(SegReg.Cs, selector);
-        State.Eip = OperandSize32 ? offset : offset & 0xFFFF;
+        try
+        {
+            LoadSegment(SegReg.Cs, selector);
+        }
+        catch (Exception ex) when (ex is CpuException or PageFaultException)
+        {
+            State.Esp = stackPointer;
+            throw;
+        }
+
+        State.Eip = wide ? offset : offset & 0xFFFF;
     }
 
     /// <summary>
@@ -349,10 +463,28 @@ public sealed partial class Cpu
 
     private void JumpFar()
     {
+        // The operand size belongs to the segment being jumped *from*, so it
+        // has to be settled before CS moves. Reading it afterwards asks the
+        // destination how wide the offset was, which is the wrong question and
+        // gives the wrong answer precisely when the two differ -- a 32-bit
+        // segment jumping to a 16-bit one, which is how every DOS extender
+        // returns to real mode. The offset then keeps sixteen bits it should
+        // have dropped, or loses sixteen it should have kept, and control
+        // lands at an address nothing put there.
+        bool wide = OperandSize32;
+
         uint offset = FetchImmediate();
         ushort selector = FetchWord();
+
+        if (State.ProtectedMode && !State.Virtual8086Mode && IsCallGate(selector))
+        {
+            JumpThroughGate(selector);
+            return;
+        }
+
+        RequireSamePrivilegeTarget(selector);
         LoadSegment(SegReg.Cs, selector);
-        State.Eip = OperandSize32 ? offset : offset & 0xFFFF;
+        State.Eip = wide ? offset : offset & 0xFFFF;
     }
 
     /// <summary>
@@ -361,6 +493,19 @@ public sealed partial class Cpu
     /// it *before* they touch CS, so the question has to be asked separately.
     /// </summary>
     private static uint RealModeLimit(ushort selector) => 0xFFFF;
+
+    /// <summary>
+    /// POP into a segment register. The pop and the load are one instruction:
+    /// if the load faults, the stack pointer has to be where it was before, or
+    /// the handler that inspects the frame finds the popped value already
+    /// gone and the pointer one slot too far.
+    /// </summary>
+    private void PopSegment(SegReg segment)
+    {
+        uint espBefore = State.Esp;
+        try { LoadSegment(segment, (ushort)PopSegmentOperand()); }
+        catch (CpuException) { State.Esp = espBefore; throw; }
+    }
 
     private void RetFar(ushort popBytes)
     {
@@ -373,15 +518,50 @@ public sealed partial class Cpu
             ushort selector = (ushort)PopOperand();
             uint destination = OperandSize32 ? offset : offset & 0xFFFF;
 
-            // The limit is checked against the segment about to be loaded, but
-            // before it is actually loaded: if the address does not fit, CS has
-            // to stay as it was, because it is the old CS that ends up in the
-            // exception's stack frame and that the handler will report.
-            uint limiteNuovo = RealModeLimit(selector);
-            if (destination > limiteNuovo) throw new CpuException(13, 0);
+            if (!State.ProtectedMode || State.Virtual8086Mode)
+            {
+                // The limit is checked against the segment about to be loaded,
+                // but before it is loaded: if the address does not fit, CS has
+                // to stay as it was, because it is the old CS that ends up in
+                // the exception's frame and that the handler will report.
+                if (destination > RealModeLimit(selector)) throw new CpuException(13, 0);
+                LoadSegment(SegReg.Cs, selector);
+                State.Eip = destination;
+            }
+            else
+            {
+                // Under protection the limit is the descriptor's, not 64 KB:
+                // asking the real-mode question here refused every return to
+                // an address above 0xFFFF in a flat segment, which is to say
+                // every far return a 32-bit program makes.
+                if ((selector & 0xFFFC) == 0) throw new CpuException(13, 0);
+                byte returnPrivilege = (byte)(selector & 3);
+                if (returnPrivilege < State.Cpl) throw new CpuException(13, selector);   // no returning inward
+                if (destination > DescriptorLimit(selector)) throw new CpuException(13, 0);
 
-            LoadSegment(SegReg.Cs, selector);
-            State.Eip = destination;
+                if (returnPrivilege > State.Cpl)
+                {
+                    // Returning to a less privileged caller: its stack pointer
+                    // follows the return address on ours, and its data
+                    // segments are pruned exactly as IRET prunes them. The
+                    // immediate is applied to the caller's stack, which is
+                    // the one that held the arguments.
+                    uint returnEsp = PopOperand();
+                    ushort returnSs = (ushort)PopOperand();
+
+                    LoadSegmentProtected(SegReg.Cs, selector);
+                    State.Cpl = returnPrivilege;
+                    LoadSegmentProtected(SegReg.Ss, returnSs);
+                    State.Esp = returnEsp;
+                    State.Eip = destination;
+                    DropInaccessibleDataSegments(returnPrivilege);
+                    AdjustStack(popBytes);
+                    return;
+                }
+
+                LoadSegmentProtected(SegReg.Cs, selector);
+                State.Eip = destination;
+            }
         }
         catch (CpuException)
         {
@@ -426,8 +606,17 @@ public sealed partial class Cpu
     /// corrupting memory and leaving the caller's stack in a state the
     /// interrupted code has no way to anticipate.
     /// </summary>
+    /// <summary>
+    /// Raised whenever a segment register is loaded, with the value that is
+    /// about to go into it. Diagnostics use it to catch a selector arriving
+    /// from somewhere it should not.
+    /// </summary>
+    public event Action<SegReg, ushort, uint>? SegmentLoaded;
+
     private void LoadSegment(SegReg segment, ushort selector)
     {
+        SegmentLoaded?.Invoke(segment, selector, _instructionStart);
+
         if (segment == SegReg.Ss) _interruptShadow = true;
 
         // Virtual 8086 mode loads segments the real-mode way -- base is the
@@ -487,11 +676,27 @@ public sealed partial class Cpu
     /// INT n. In real mode the vector is read out of the table at address 0:
     /// four bytes per vector, offset first and then segment.
     /// </summary>
-    private void SoftwareInterrupt(byte vector) => EnterInterrupt(vector, isSoftware: true);
+    /// <summary>
+    /// Raised before every INT instruction the guest executes, with the vector
+    /// number. Diagnostics hang from this to watch a particular DOS call go by
+    /// without having to single-step the whole machine.
+    /// </summary>
+    public event Action<byte>? SoftwareInterruptIssued;
+
+    private void SoftwareInterrupt(byte vector)
+    {
+        SoftwareInterruptIssued?.Invoke(vector);
+        EnterInterrupt(vector, isSoftware: true);
+    }
 
     /// <summary>An exception raised by the processor itself.</summary>
+    /// <summary>Raised whenever the processor itself signals a fault.</summary>
+    public event Action<byte, uint, uint, bool>? ProcessorException;
+
     private void RaiseException(byte vector, uint errorCode)
     {
+        ProcessorException?.Invoke(vector, errorCode, _instructionStart, State.ProtectedMode);
+
         // In protected mode some exceptions also push an error code; in real
         // mode there is no such thing and it is simply ignored.
         EnterInterrupt(vector, isSoftware: false, errorCode);
@@ -521,8 +726,65 @@ public sealed partial class Cpu
         State.Eip = offset;
     }
 
+    /// <summary>
+    /// IRET inside a virtual 8086 task. IOPL-sensitive like the other flag
+    /// instructions: below IOPL 3 it traps to the monitor as #GP(0), which is
+    /// how the monitor sees every interrupt return the task makes and keeps
+    /// its virtual interrupt flag honest. At IOPL 3 it is a real-mode return
+    /// within the task -- 16-bit pops, a paragraph loaded into CS, a 64 KB
+    /// limit -- with the flags filtered so the task can change neither IOPL
+    /// nor VM.
+    /// </summary>
+    private void IretVirtual8086()
+    {
+        RequireIoPrivilege();
+
+        uint espBefore = State.Esp;
+        try
+        {
+            uint returnEip, returnFlags;
+            ushort returnCs;
+
+            if (OperandSize32)
+            {
+                returnEip = Pop32();
+                returnCs = (ushort)Pop32();
+                returnFlags = Pop32();
+            }
+            else
+            {
+                returnEip = Pop16();
+                returnCs = Pop16();
+                returnFlags = (Flags.Value & 0xFFFF0000) | Pop16();
+            }
+
+            // LoadSegment routes a V86 load to the real-mode form that also
+            // resets the limit, which is the confinement the task must keep.
+            LoadSegment(SegReg.Cs, returnCs);
+            State.Eip = returnEip & 0xFFFF;
+            Flags.SetValue(GuardFlagsFromStack(returnFlags));
+        }
+        catch (CpuException)
+        {
+            State.Esp = espBefore;
+            throw;
+        }
+    }
+
     private void Iret()
     {
+        // A virtual 8086 task has to be told apart from ordinary protected
+        // code before anything else: it is protected mode as far as CR0 is
+        // concerned, but its stack holds real-mode segment values, and
+        // handing those to the protected-mode IRET makes it load a paragraph
+        // number as a selector -- #GP with that number as the error code,
+        // which is exactly what a monitor does not expect and cannot emulate.
+        if (State.Virtual8086Mode)
+        {
+            IretVirtual8086();
+            return;
+        }
+
         if (State.ProtectedMode)
         {
             IretProtected();
@@ -566,14 +828,14 @@ public sealed partial class Cpu
 
     private void ReadPortToAccumulator(ushort port)
     {
-        RequireIoPrivilege();
+        CheckIoPermission(port, OperandSize32 ? 4 : 2);
         if (OperandSize32) State.Eax = _io.ReadDword(port);
         else State.Ax = _io.ReadWord(port);
     }
 
     private void WriteAccumulatorToPort(ushort port)
     {
-        RequireIoPrivilege();
+        CheckIoPermission(port, OperandSize32 ? 4 : 2);
         if (OperandSize32) _io.WriteDword(port, State.Eax);
         else _io.WriteWord(port, State.Ax);
     }
@@ -740,11 +1002,80 @@ public sealed partial class Cpu
     /// while the monitor quietly does something else, and how Windows keeps
     /// one DOS box from disabling interrupts for the whole machine.
     /// </summary>
+    /// <summary>
+    /// Refuses an instruction that only the kernel may execute.
+    ///
+    /// HLT, CLTS, LGDT, LIDT, LMSW and the control- and debug-register moves
+    /// change how the whole machine behaves, so the architecture reserves them
+    /// to ring 0. Without this check an application could stop the processor
+    /// or rewrite the descriptor tables, and an operating system that relies on
+    /// being able to run untrusted code -- which is what rings are for -- has
+    /// no protection at all.
+    ///
+    /// Real mode has no privilege levels and permits everything; a V86 task is
+    /// nominally at ring 3 and so is refused, which is how the monitor gets a
+    /// chance to emulate what the task was trying to do.
+    /// </summary>
+    private void RequireSupervisor()
+    {
+        if (!State.ProtectedMode) return;
+        if (State.Cpl != 0) throw new CpuException(13, 0);
+    }
+
     private void RequireIoPrivilege()
     {
         if (!State.ProtectedMode) return;
 
         byte iopl = (byte)((Flags.Value >> 12) & 3);
         if (State.Cpl > iopl) throw new CpuException(13, 0);
+    }
+
+    /// <summary>
+    /// The check every port access goes through. Under protection, code that
+    /// is not privileged enough for IOPL -- and a virtual 8086 task always,
+    /// whatever IOPL says -- is allowed a port only if the task state
+    /// segment's I/O permission bitmap has a clear bit for every byte of it;
+    /// a bit that is set, or a bitmap too short to hold the port, means #GP.
+    ///
+    /// This is the mechanism a monitor uses to virtualise devices: it marks
+    /// the ports it wants to see and lets the rest through at full speed.
+    /// Windows keeps a shadow of the display adapter's registers this way
+    /// and never reads the hardware back, so a mode set the BIOS performs
+    /// in a task must fault into the monitor port by port.
+    /// </summary>
+    private void CheckIoPermission(ushort port, int bytes)
+    {
+        if (!State.ProtectedMode) return;
+
+        if (!State.Virtual8086Mode)
+        {
+            byte iopl = (byte)((Flags.Value >> 12) & 3);
+            if (State.Cpl <= iopl) return;
+        }
+
+        if ((State.TaskRegister & 0xFFFC) == 0) throw new CpuException(13, 0);
+
+        ulong descriptor = ReadDescriptor(State.TaskRegister);
+        uint tssBase = (uint)(((descriptor >> 16) & 0xFFFFFF) | ((descriptor >> 32) & 0xFF000000));
+        uint tssLimit = (uint)((descriptor & 0xFFFF) | ((descriptor >> 32) & 0x0F0000));
+        if (((descriptor >> 55) & 1) != 0) tssLimit = (tssLimit << 12) | 0xFFF;
+
+        // The map's offset lives at 0x66 in the segment. A segment too short
+        // to hold even that word has no map, and nothing is permitted.
+        if (tssLimit < 0x67) throw new CpuException(13, 0);
+        ushort mapBase = _memory.ReadWord(TranslateLinear(tssBase + 0x66, false));
+
+        // Every byte of the access has its own bit; the last of them has to
+        // lie inside the segment.
+        uint firstByte = mapBase + (uint)(port >> 3);
+        uint lastByte = mapBase + (uint)((port + bytes - 1) >> 3);
+        if (lastByte > tssLimit) throw new CpuException(13, 0);
+
+        int bits = _memory.ReadByte(TranslateLinear(tssBase + firstByte, false));
+        if (lastByte != firstByte)
+            bits |= _memory.ReadByte(TranslateLinear(tssBase + lastByte, false)) << 8;
+
+        int mask = ((1 << bytes) - 1) << (port & 7);
+        if ((bits & mask) != 0) throw new CpuException(13, 0);
     }
 }

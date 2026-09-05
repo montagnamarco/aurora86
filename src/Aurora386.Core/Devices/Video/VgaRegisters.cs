@@ -197,16 +197,29 @@ public sealed class VgaRegisters : IIoDevice
         // which is what text mode draws with.
         LoadDefaultPalette();
 
-        // CRTC values for 80x25 text, which is how a PC comes up.
-        _crtc[0x01] = 79;    // last displayed column
-        _crtc[0x12] = 199;   // last displayed scanline
-        _crtc[0x0A] = 13;    // cursor start scanline within the cell
-        _crtc[0x0B] = 14;    // cursor end scanline within the cell
+        // The full register set for 80x25 text, which is how a PC comes up.
+        LoadStandardRegisters(0x03);
+    }
 
-        // Sequencer defaults: all four planes writable, and the bit mask wide
-        // open. A freshly reset adapter must not silently drop writes.
-        _sequencer[SeqMapMask] = 0x0F;
-        _graphics[GcBitMask] = 0xFF;
+    /// <summary>
+    /// Loads every register a VGA ROM programs for a standard mode: what a
+    /// program reading the adapter back through the ports expects to find
+    /// after a mode set. The DAC and the cursor position are left alone; the
+    /// BIOS handles those separately, as the real one does.
+    /// </summary>
+    public void LoadStandardRegisters(byte mode)
+    {
+        VgaRegisterTables.RegisterSet set = VgaRegisterTables.For(mode);
+        _miscOutput = set.MiscOutput;
+        Array.Clear(_sequencer);
+        set.Sequencer.CopyTo(_sequencer, 0);
+        Array.Clear(_crtc);
+        set.Crtc.CopyTo(_crtc, 0);
+        Array.Clear(_graphics);
+        set.Graphics.CopyTo(_graphics, 0);
+        Array.Clear(_attribute);
+        set.Attribute.CopyTo(_attribute, 0);
+        _attributeExpectingIndex = true;
     }
 
     public void Register(IoBus io)
@@ -219,6 +232,16 @@ public sealed class VgaRegisters : IIoDevice
         io.Register(0x3DA, this);       // input status 1
         io.Register(0x3CC, this);       // miscellaneous output (read)
         io.Register(0x3C2, this);       // miscellaneous output (write)
+        io.Register(0x3CA, this);       // feature control (read)
+        io.Register(0x3C3, this);       // video subsystem enable
+
+        // The monochrome addresses. A real adapter answers on one set or the
+        // other according to bit 0 of the miscellaneous output register;
+        // answering on both is a simplification that no program notices,
+        // while a program in a monochrome mode that found nothing at 0x3B4
+        // would conclude there is no CRTC at all.
+        io.Register(0x3B4, 2, this);    // CRTC, monochrome
+        io.Register(0x3BA, this);       // input status 1, monochrome
     }
 
     // --- register access for the memory path ----------------------------------
@@ -238,6 +261,7 @@ public sealed class VgaRegisters : IIoDevice
     public void SetCrtc(int index, byte value) => _crtc[index & 0x1F] = value;
 
     public byte Crtc(int index) => _crtc[index & 0x1F];
+    public byte Attribute(int index) => _attribute[index & 0x1F];
 
     /// <summary>Map Mask: bit N enables CPU writes to plane N.</summary>
     public byte MapMask => (byte)(_sequencer[SeqMapMask] & 0x0F);
@@ -255,7 +279,13 @@ public sealed class VgaRegisters : IIoDevice
     /// Offset in bytes between one displayed scan line and the next, in plane
     /// units. CRTC register 0x13 holds it in words, hence the doubling.
     /// </summary>
-    public int RowOffsetBytes => _crtc[0x13] * 2;
+    /// <summary>
+    /// CPU bytes from one scan line to the next. The offset register counts
+    /// in words of display memory; with chain-4 on, each address holds four
+    /// CPU bytes rather than one, which is how mode 13h's 0x28 comes to
+    /// mean 320 bytes while the same value in a planar mode means 80.
+    /// </summary>
+    public int RowOffsetBytes => _crtc[0x13] * (Chain4 ? 8 : 2);
 
     // --- cursor position ------------------------------------------------------
     // The cursor lives in two 8-bit CRTC registers that together form an
@@ -303,9 +333,27 @@ public sealed class VgaRegisters : IIoDevice
             case 0x3CC: return _miscOutput;
             case 0x3CE: return _graphicsIndex;
             case 0x3CF: return _graphics[_graphicsIndex & 0x0F];
-            case 0x3D4: return _crtcIndex;
-            case 0x3D5: return _crtc[_crtcIndex & 0x1F];
-            case 0x3DA:
+            case 0x3D4 or 0x3B4: return _crtcIndex;
+            case 0x3D5 or 0x3B5: return _crtc[_crtcIndex & 0x1F];
+            case 0x3CA: return 0x00;   // feature control: nothing set
+            case 0x3C3: return 0x01;   // the video subsystem is enabled
+            case 0x3C2:
+            {
+                // Input status 0. Bit 4 is the switch sense: the line the
+                // BIOS -- and Windows' display device -- reads four times,
+                // once for each clock-select setting in the miscellaneous
+                // output register, to identify the monitor. The pattern that
+                // comes back here is the one an analogue colour display
+                // gives on a real adapter: the bit set for settings 0 and 3,
+                // clear for 1 and 2. Bit 7 reports a vertical retrace
+                // interrupt; it follows the retrace state.
+                int clockSelect = (_miscOutput >> 2) & 3;
+                byte status = 0x60;
+                if (clockSelect is 0 or 3) status |= 0x10;
+                if (_retraceToggle) status |= 0x80;
+                return status;
+            }
+            case 0x3DA or 0x3BA:
             {
                 // Input status register 1. Bits 0 and 3 report horizontal and
                 // vertical retrace: software polls them to find the moment
@@ -352,8 +400,8 @@ public sealed class VgaRegisters : IIoDevice
 
             case 0x3CE: _graphicsIndex = value; return;
             case 0x3CF: _graphics[_graphicsIndex & 0x0F] = value; return;
-            case 0x3D4: _crtcIndex = value; return;
-            case 0x3D5: _crtc[_crtcIndex & 0x1F] = value; return;
+            case 0x3D4 or 0x3B4: _crtcIndex = value; return;
+            case 0x3D5 or 0x3B5: _crtc[_crtcIndex & 0x1F] = value; return;
         }
     }
 
@@ -401,28 +449,40 @@ public sealed class VgaRegisters : IIoDevice
 
     private void LoadDefaultPalette()
     {
-        // The 16 standard PC colours, as 6-bit components. Brown is the odd
-        // one out: it would otherwise come out as dark yellow, so IBM gave it
-        // a halved green component to make it look like a distinct colour.
-        ReadOnlySpan<byte> cga = [
-            0x00, 0x00, 0x00,  // black
-            0x00, 0x00, 0x2A,  // blue
-            0x00, 0x2A, 0x00,  // green
-            0x00, 0x2A, 0x2A,  // cyan
-            0x2A, 0x00, 0x00,  // red
-            0x2A, 0x00, 0x2A,  // magenta
-            0x2A, 0x15, 0x00,  // brown
-            0x2A, 0x2A, 0x2A,  // light grey
-            0x15, 0x15, 0x15,  // dark grey
-            0x15, 0x15, 0x3F,  // light blue
-            0x15, 0x3F, 0x15,  // light green
-            0x15, 0x3F, 0x3F,  // light cyan
-            0x3F, 0x15, 0x15,  // light red
-            0x3F, 0x15, 0x3F,  // light magenta
-            0x3F, 0x3F, 0x15,  // yellow
-            0x3F, 0x3F, 0x3F,  // white
-        ];
-        cga.CopyTo(_palette);
+        // The 64 colours a VGA comes up with in its first 64 DAC entries: the
+        // EGA palette, one bit per component at two-thirds intensity (bits 0,
+        // 1, 2 for blue, green, red) and one at one-third (bits 3, 4, 5). The
+        // attribute controller's standard tables point into this set -- the
+        // sixteen text colours are entries 0-5, 14h, 7 and 38h-3Fh, which is
+        // how colour 6 comes out brown (14h: red plus a third of green) and
+        // not dark yellow, and how the bright colours get their grey tint.
+        for (int i = 0; i < 64; i++)
+        {
+            byte r = (byte)(((i >> 2) & 1) * 0x2A + ((i >> 5) & 1) * 0x15);
+            byte g = (byte)(((i >> 1) & 1) * 0x2A + ((i >> 4) & 1) * 0x15);
+            byte b = (byte)((i & 1) * 0x2A + ((i >> 3) & 1) * 0x15);
+            _palette[i * 3] = r;
+            _palette[i * 3 + 1] = g;
+            _palette[i * 3 + 2] = b;
+        }
+    }
+
+    /// <summary>
+    /// Where a four-bit pixel (or text attribute nibble) lands in the DAC:
+    /// through the attribute controller's palette register for that value,
+    /// with the colour select register supplying the top bits -- all four of
+    /// them when the mode register's bit 7 asks for it, the top two always.
+    /// Software that programs the sixteen palette registers rather than the
+    /// DAC -- Windows' display driver, for one -- gets its colours only if
+    /// this mapping is honoured.
+    /// </summary>
+    public int PaletteIndexFor(int pixel)
+    {
+        int index = _attribute[pixel & 0x0F] & 0x3F;
+        byte mode = _attribute[0x10];
+        byte select = _attribute[0x14];
+        if ((mode & 0x80) != 0) index = (index & 0x0F) | ((select & 0x03) << 4);
+        return index | ((select & 0x0C) << 4);
     }
 
     /// <summary>

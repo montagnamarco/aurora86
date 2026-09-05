@@ -300,7 +300,6 @@ public sealed class KeyboardServices
         if (scanCode is 0xE0 or 0xE1)
         {
             _extendedPrefix = true;
-            cpu.Io.WriteByte(0x20, 0x20);
             return;
         }
 
@@ -318,7 +317,6 @@ public sealed class KeyboardServices
         }
 
         // End of interrupt to the master PIC.
-        cpu.Io.WriteByte(0x20, 0x20);
     }
 
     private void UpdateModifiers(byte code, bool released, bool extended)

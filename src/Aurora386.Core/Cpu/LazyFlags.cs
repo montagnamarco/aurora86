@@ -231,7 +231,14 @@ public struct LazyFlags
     /// <summary>Sets EFLAGS wholesale (POPF, IRET), discarding any laziness.</summary>
     public void SetValue(uint value)
     {
-        Stored = (Flags)value | Flags.Reserved1;
+        // The VM bit is not kept here: whether the processor is running a
+        // virtual 8086 task is recorded in the state, and it is put back into
+        // the image only when the flags are pushed by an interrupt out of the
+        // task. Letting it in would leave it behind after the task has been
+        // left -- the next interrupt from the monitor's own code would then
+        // push an image claiming to come from the task, and Windows' monitor
+        // reads exactly that bit to decide which way to dispatch.
+        Stored = ((Flags)value & ~Flags.Virtual8086) | Flags.Reserved1;
         Op = FlagOp.None;
         CarryIn = false;
     }

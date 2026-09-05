@@ -30,7 +30,7 @@ public sealed partial class Cpu
         // still responding promptly to the timer and the keyboard.
         State.Halted = false;
 
-        EnterInterrupt((byte)vector, isSoftware: false);
+        DeliverExternalInterrupt((byte)vector);
         return true;
     }
 

@@ -159,6 +159,11 @@ public class BootRegressionTests
             byte first = machine.Memory.ReadByte(linear);
             // Every entry point begins either with the native trap hook
             // (0F FF) or with an immediate IRET.
+            // INT 10h opens with a jump to its dispatcher, which routes mode
+            // sets and palette changes through the ROM's port-writing
+            // routines before the hook.
+            if (vector == 0x10 && first == 0xE9) continue;
+
             Assert.True(first == 0x0F || first == 0xCF,
                 $"vector {vector:X2}h points at {segment:X4}:{offset:X4}, " +
                 $"where the first byte is {first:X2}, which is not handler code");

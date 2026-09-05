@@ -23,8 +23,12 @@ public sealed partial class Cpu
         // cannot be dereferenced by accident. Into CS or SS it is an error.
         if ((selector & 0xFFFC) == 0)
         {
-            if (segment is SegReg.Cs or SegReg.Ss)
-                throw new CpuException(13, selector);
+            // A null stack is reported as #SS, not #GP: that is what the 386
+            // hardware the conformance suite was captured from does, and the
+            // distinction lets a handler tell a broken stack from a broken
+            // pointer. A null code segment stays #GP.
+            if (segment == SegReg.Ss) throw new CpuException(12, 0);
+            if (segment == SegReg.Cs) throw new CpuException(13, selector);
 
             cache.Selector = selector;
             cache.Base = 0;
@@ -53,6 +57,50 @@ public sealed partial class Cpu
         // 0xFFFFF pages, which has to expand to 0xFFFFFFFF.
         if ((granularity & 0x08) != 0) limit = (limit << 12) | 0xFFF;
 
+        // What kind of descriptor this is, and whether this register may hold
+        // it. These checks come *before* the present bit, and the order is
+        // the architecture's, not a convenience: a descriptor of the wrong
+        // type is #GP whether or not its segment is in memory, so a program
+        // cannot use the difference between #GP and #NP to learn which slots
+        // of a table are populated. A zeroed slot is type 0 -- invalid -- and
+        // so answers #GP with the selector, never #NP.
+        bool isSystem = (access & 0x10) == 0;
+        bool isCodeSegment = !isSystem && (access & 0x08) != 0;
+        bool conformingCode = isCodeSegment && (access & 0x04) != 0;
+        byte descriptorPrivilege = (byte)((access >> 5) & 3);
+        byte requestedPrivilege = (byte)(selector & 3);
+
+        switch (segment)
+        {
+            case SegReg.Cs:
+                // Only code may be executed; who may execute it is judged by
+                // the caller, which knows whether it arrived by jump, call,
+                // gate or return.
+                if (!isCodeSegment) throw new CpuException(13, selector);
+                break;
+
+            case SegReg.Ss:
+                // The stack has to be writable data. Its privilege is fixed by
+                // the transitions that load it -- interrupt entry, gates,
+                // returns -- which set CPL around this call, so it is not
+                // re-judged here.
+                if (isSystem || isCodeSegment || (access & 0x02) == 0)
+                    throw new CpuException(13, selector);
+                break;
+
+            default:
+                // A data register may hold data, or code that is readable;
+                // and unless the code is conforming, the segment has to be at
+                // least as accessible as the less trusted of the caller and
+                // the selector it arrived in. This last rule is what stops an
+                // application from simply naming the kernel's data segment.
+                if (isSystem) throw new CpuException(13, selector);
+                if (isCodeSegment && (access & 0x02) == 0) throw new CpuException(13, selector);
+                if (!conformingCode && descriptorPrivilege < Math.Max(State.Cpl, requestedPrivilege))
+                    throw new CpuException(13, selector);
+                break;
+        }
+
         // Bit 7 of the access byte: the descriptor is present in memory. A
         // not-present segment raises #NP (or #SS when it is the stack), which
         // is the hook a virtual memory system uses to load it on demand.
@@ -73,6 +121,147 @@ public sealed partial class Cpu
         cache.Readable = !isCode || (access & 0x02) != 0;
         cache.Writable = !isCode && (access & 0x02) != 0;
         cache.ExpandDown = !isCode && (access & 0x04) != 0;
+    }
+
+    private static uint DescriptorBase(ulong descriptor)
+        => (uint)(((descriptor >> 16) & 0xFFFFFF) | ((descriptor >> 32) & 0xFF000000));
+
+    private static uint DescriptorLimitOf(ulong descriptor)
+    {
+        uint limit = (uint)((descriptor & 0xFFFF) | ((descriptor >> 32) & 0x0F0000));
+        if ((descriptor & (1UL << 55)) != 0) limit = (limit << 12) | 0xFFF;
+        return limit;
+    }
+
+    /// <summary>
+    /// The limit a code segment would have if this selector were loaded,
+    /// found without loading it. The far returns need to know it before they
+    /// touch CS: an offset past the limit faults with the *old* CS in the
+    /// frame, so CS must not have moved yet.
+    /// </summary>
+    private uint DescriptorLimit(ushort selector) => DescriptorLimitOf(ReadDescriptor(selector));
+
+    /// <summary>
+    /// After a return to a less privileged level, drops any data segment the
+    /// new level may not touch. The kernel may have left DS or ES holding one
+    /// of its own segments; handing that back to an application would give it
+    /// a window onto the kernel's memory through a register it did not have
+    /// to load. Conforming code is exempt, as it always is.
+    /// </summary>
+    private void DropInaccessibleDataSegments(byte newPrivilege)
+    {
+        foreach (SegReg segment in new[] { SegReg.Es, SegReg.Ds, SegReg.Fs, SegReg.Gs })
+        {
+            ref SegmentCache cache = ref State.Segments[(int)segment];
+            if ((cache.Selector & 0xFFFC) == 0) continue;
+
+            bool drop;
+            try
+            {
+                ulong descriptor = ReadDescriptor(cache.Selector);
+                byte access = (byte)(descriptor >> 40);
+                bool isSystem = (access & 0x10) == 0;
+                bool conforming = !isSystem && (access & 0x0C) == 0x0C;
+                byte dpl = (byte)((access >> 5) & 3);
+                drop = isSystem || (!conforming && dpl < newPrivilege);
+            }
+            catch (CpuException) { drop = true; }
+
+            if (!drop) continue;
+            cache.Selector = 0;
+            cache.Base = 0;
+            cache.Limit = 0;
+            cache.Readable = cache.Writable = false;
+        }
+    }
+
+    /// <summary>LLDT: installs the local descriptor table, or removes it with a null selector.</summary>
+    private void LoadLocalDescriptorTable(ushort selector)
+    {
+        if ((selector & 0xFFFC) == 0)
+        {
+            State.Ldtr = selector;
+            State.LdtBase = 0;
+            State.LdtLimit = 0;
+            return;
+        }
+
+        // An LDT descriptor lives in the GDT and nowhere else.
+        if ((selector & 0x04) != 0) throw new CpuException(13, selector);
+
+        ulong descriptor = ReadDescriptor(selector);
+        byte access = (byte)(descriptor >> 40);
+        if ((access & 0x1F) != 0x02) throw new CpuException(13, selector);   // not an LDT
+        if ((access & 0x80) == 0) throw new CpuException(11, selector);
+
+        State.Ldtr = selector;
+        State.LdtBase = DescriptorBase(descriptor);
+        State.LdtLimit = DescriptorLimitOf(descriptor);
+    }
+
+    /// <summary>
+    /// LTR: installs the task state segment. Only an *available* TSS may be
+    /// loaded, and loading it marks it busy in the table, so that no second
+    /// task can be switched into the same segment while the first is using
+    /// its stack pointers.
+    /// </summary>
+    private void LoadTaskRegister(ushort selector)
+    {
+        if ((selector & 0xFFFC) == 0) throw new CpuException(13, 0);
+        if ((selector & 0x04) != 0) throw new CpuException(13, selector);
+
+        ulong descriptor = ReadDescriptor(selector);
+        byte access = (byte)(descriptor >> 40);
+        int type = access & 0x1F;
+        if (type != 0x01 && type != 0x09) throw new CpuException(13, selector);   // 16- or 32-bit available TSS
+        if ((access & 0x80) == 0) throw new CpuException(11, selector);
+
+        State.TaskRegister = selector;
+        State.TssBase = DescriptorBase(descriptor);
+        State.TssLimit = DescriptorLimitOf(descriptor);
+
+        uint accessAddress = State.GdtBase + (uint)(selector & 0xFFF8) + 5;
+        _memory.WriteByte(TranslateLinear(accessAddress, true), (byte)(access | 0x02));
+    }
+
+    /// <summary>
+    /// A far jump through a call gate. Unlike a call, a jump may not change
+    /// privilege: the gate is only a way of reaching code by an address the
+    /// kernel controls. So there is no stack to switch and nothing to copy;
+    /// the target has to be at the caller's own level -- or conforming, which
+    /// takes the caller's level anyway.
+    /// </summary>
+    private void JumpThroughGate(ushort gateSelector)
+    {
+        ulong gate = ReadDescriptor(gateSelector);
+        byte access = (byte)(gate >> 40);
+        byte gateDpl = (byte)((gate >> 45) & 3);
+        bool is32Bit = (access & 0x0F) == 0x0C;
+
+        byte requestorPrivilege = (byte)(gateSelector & 3);
+        if (State.Cpl > gateDpl || requestorPrivilege > gateDpl)
+            throw new CpuException(13, gateSelector);
+        if ((access & 0x80) == 0) throw new CpuException(11, gateSelector);
+
+        ushort targetSelector = (ushort)(gate >> 16);
+        uint targetOffset = is32Bit
+            ? (uint)((gate & 0xFFFF) | ((gate >> 32) & 0xFFFF0000))
+            : (uint)(gate & 0xFFFF);
+
+        if ((targetSelector & 0xFFFC) == 0) throw new CpuException(13, 0);
+        ulong target = ReadDescriptor(targetSelector);
+        byte targetAccess = (byte)(target >> 40);
+        if ((targetAccess & 0x18) != 0x18) throw new CpuException(13, targetSelector);
+
+        byte targetDpl = (byte)((targetAccess >> 5) & 3);
+        bool conforming = (targetAccess & 0x04) != 0;
+        if (conforming ? targetDpl > State.Cpl : targetDpl != State.Cpl)
+            throw new CpuException(13, targetSelector);
+        if ((targetAccess & 0x80) == 0) throw new CpuException(11, targetSelector);
+
+        LoadSegmentProtected(SegReg.Cs, (ushort)((targetSelector & 0xFFFC) | State.Cpl));
+        if (targetOffset > State.Cs.Limit) throw new CpuException(13, 0);
+        State.Eip = targetOffset;
     }
 
     /// <summary>
@@ -125,6 +314,9 @@ public sealed partial class Cpu
     /// debugger's breakpoint handler wants: the machine must keep servicing
     /// the clock and the keyboard while a human stares at the screen.
     /// </summary>
+    /// <summary>Diagnostics: fires as an interrupt frame is about to be built (vector, return CS:EIP, was-V86, software).</summary>
+    public event Action<byte,ushort,uint,bool,bool>? InterruptEntered;
+
     private void EnterInterruptProtected(byte vector, uint errorCode, bool isSoftware = false)
     {
         // Each IDT entry is eight bytes, exactly like a GDT descriptor, so the
@@ -195,6 +387,7 @@ public sealed partial class Cpu
 
         ushort savedCs = State.Cs.Selector;
         uint savedEip = State.Eip;
+        InterruptEntered?.Invoke(vector, savedCs, savedEip, State.Virtual8086Mode, isSoftware);
         ushort savedSs = State.Ss.Selector;
         uint savedEsp = State.Esp;
         ushort savedEs = 0, savedDs = 0, savedFs = 0, savedGs = 0;
@@ -203,12 +396,40 @@ public sealed partial class Cpu
         // privilege it runs at, and an interrupt that raises the privilege
         // has to move to a stack belonging to that level.
         byte targetPrivilege = (byte)(ReadDescriptorPrivilege(selector));
-        bool changingPrivilege = targetPrivilege < currentPrivilege;
+
+        // An interrupt may keep the privilege level or raise it, never lower
+        // it. A handler less privileged than the code it interrupts would be
+        // a way to hand control to untrusted code with the kernel's own stack
+        // frame already pushed, so the architecture refuses it outright.
+        //
+        // A conforming segment is the exception: it runs at the caller's
+        // privilege whatever its own DPL says, which is what conforming means.
+        if (targetPrivilege > currentPrivilege && !IsConformingCode(selector))
+            throw new CpuException(13, selector);
+
+        // A conforming handler runs at the interrupted code's privilege, not
+        // at its own descriptor's: there is no privilege change, no stack to
+        // switch to, and CS keeps the caller's level in its low two bits.
+        // Treating it as a change would move the handler onto the kernel
+        // stack and tell it, through CS, that it is more privileged than it
+        // really is.
+        bool conforming = IsConformingCode(selector);
+        bool changingPrivilege = !conforming && targetPrivilege < currentPrivilege;
+
+        if (conforming) targetPrivilege = currentPrivilege;
 
         // Load the handler's code segment first: if the selector is bad we
         // want to fault before anything has been pushed, so the frame the
         // fault handler sees describes the original instruction.
         LoadSegmentProtected(SegReg.Cs, selector);
+
+        // CS's low two bits report the privilege the handler runs at. For a
+        // conforming segment that is the interrupted code's level, not the
+        // descriptor's, so the caller's bits are carried across -- a handler
+        // that read CS and believed itself privileged would be wrong about
+        // what it is allowed to do.
+        if (conforming)
+            State.Cs.Selector = (ushort)((selector & 0xFFFC) | currentPrivilege);
 
         if (handlerOffset > State.Cs.Limit)
             throw new CpuException(13, 0);
@@ -499,6 +720,26 @@ public sealed partial class Cpu
     /// asking for a stack that does not exist, and the processor faults
     /// rather than guessing.
     /// </summary>
+    /// <summary>
+    /// Whether a selector names a conforming code segment: one that runs at
+    /// the caller's privilege rather than its own, so that a less privileged
+    /// caller may enter it without a privilege change.
+    /// </summary>
+    private bool IsConformingCode(ushort selector)
+    {
+        if ((selector & 0xFFFC) == 0) return false;
+
+        ulong descriptor;
+        try { descriptor = ReadDescriptor(selector); }
+        catch (CpuException) { return false; }
+
+        byte access = (byte)(descriptor >> 40);
+
+        // Bit 4 marks a normal segment, bit 3 code, bit 2 conforming; all
+        // three have to hold for the exemption to apply.
+        return (access & 0x1C) == 0x1C;
+    }
+
     private (ushort Selector, uint StackPointer) ReadStackFromTss(byte privilege)
     {
         if ((State.TaskRegister & 0xFFFC) == 0)
@@ -610,9 +851,13 @@ public sealed partial class Cpu
                 LoadSegmentProtected(SegReg.Cs, returnCs);
                 if (returnEip > State.Cs.Limit) throw new CpuException(13, 0);
 
+                State.Cpl = returnPrivilege;
                 LoadSegmentProtected(SegReg.Ss, returnSs);
                 State.Esp = returnEsp;
                 State.Eip = returnEip;
+
+                // The kernel's data segments do not travel out with it.
+                DropInaccessibleDataSegments(returnPrivilege);
             }
             else
             {

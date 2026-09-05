@@ -123,12 +123,12 @@ public class VgaRendererTests
 
         // White in the CGA palette is 0x3F on every component, which must
         // expand to a full 0xFF at 8 bits, not 0xFC.
-        (byte r, byte g, byte b) = registers.GetPaletteColor(15);
+        (byte r, byte g, byte b) = registers.GetPaletteColor(registers.PaletteIndexFor(15));
         Assert.Equal(0xFF, r);
         Assert.Equal(0xFF, g);
         Assert.Equal(0xFF, b);
 
-        (byte r0, byte g0, byte b0) = registers.GetPaletteColor(0);
+        (byte r0, byte g0, byte b0) = registers.GetPaletteColor(registers.PaletteIndexFor(0));
         Assert.Equal(0, r0);
         Assert.Equal(0, g0);
         Assert.Equal(0, b0);

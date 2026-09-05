@@ -276,6 +276,26 @@ public sealed class XmsManager
         }
 
         _memory.A20Enabled = previousA20;
+
+        // A real HIMEM performs this copy by switching into protected mode,
+        // loading segments with a four gigabyte limit, and dropping back to
+        // real mode -- and the wide limits survive, because a real-mode load
+        // recomputes only the base. Callers rely on that side effect: after
+        // asking XMS to move a block they address extended memory directly,
+        // which is how a DOS extender reaches its own image above the first
+        // megabyte.
+        //
+        // Copying behind the guest's back is faster and gives the same bytes,
+        // but it leaves the segments as they were, so the caller's next
+        // 32-bit access faults on a 64 KB limit it thought it had removed.
+        // Widening them here reproduces the state the real routine leaves
+        // behind, without the cost of emulating the switch itself.
+        foreach (CpuNs.SegReg segment in new[]
+                 { CpuNs.SegReg.Ds, CpuNs.SegReg.Es, CpuNs.SegReg.Fs, CpuNs.SegReg.Gs })
+        {
+            cpu.State.Segments[(int)segment].Limit = 0xFFFFFFFF;
+        }
+
         Succeed(cpu);
     }
 

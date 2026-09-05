@@ -165,8 +165,8 @@ public sealed class VgaRenderer
             _registers.UserFont is { } userFont && _registers.UserFontHeight == charHeight
                 ? userFont.AsSpan(character * charHeight, charHeight)
                 : VgaFonts.GetGlyph(character, charHeight);
-        uint foregroundColor = ToRgba(_registers.GetPaletteColor(foreground));
-        uint backgroundColor = ToRgba(_registers.GetPaletteColor(background));
+        uint foregroundColor = ToRgba(_registers.GetPaletteColor(_registers.PaletteIndexFor(foreground)));
+        uint backgroundColor = ToRgba(_registers.GetPaletteColor(_registers.PaletteIndexFor(background)));
 
         int originX = column * VgaFont.CharWidth;
         int originY = row * charHeight;
@@ -251,7 +251,7 @@ public sealed class VgaRenderer
         // per-pixel tuple return and shift into a single array read.
         Span<uint> colors = stackalloc uint[16];
         for (int i = 0; i < 16; i++)
-            colors[i] = ToRgba(_registers.GetPaletteColor(i));
+            colors[i] = ToRgba(_registers.GetPaletteColor(_registers.PaletteIndexFor(i)));
 
         for (int y = 0; y < Height; y++)
         {

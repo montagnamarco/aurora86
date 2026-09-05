@@ -55,6 +55,7 @@ public sealed partial class Cpu
             // override.
             case 0x6C:   // INSB
             case 0x6D:   // INSW/INSD
+                CheckIoPermission(State.Dx, byteOperand ? 1 : size);
                 if (byteOperand) WriteMem8(SegReg.Es, DestinationIndex, _io.ReadByte(State.Dx));
                 else if (size == 2) WriteMem16(SegReg.Es, DestinationIndex, _io.ReadWord(State.Dx));
                 else WriteMem32(SegReg.Es, DestinationIndex, _io.ReadDword(State.Dx));
@@ -65,6 +66,7 @@ public sealed partial class Cpu
             // source segment does accept an override.
             case 0x6E:   // OUTSB
             case 0x6F:   // OUTSW/OUTSD
+                CheckIoPermission(State.Dx, byteOperand ? 1 : size);
                 if (byteOperand) _io.WriteByte(State.Dx, ReadMem8(source, SourceIndex));
                 else if (size == 2) _io.WriteWord(State.Dx, ReadMem16(source, SourceIndex));
                 else _io.WriteDword(State.Dx, ReadMem32(source, SourceIndex));

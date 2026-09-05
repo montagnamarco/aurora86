@@ -31,9 +31,9 @@ public sealed partial class Cpu
 
             // --- PUSH/POP of FS and GS, both new in the 386 -----------------
             case 0xA0: PushOperand(State.Fs.Selector); return;
-            case 0xA1: LoadSegment(SegReg.Fs, (ushort)PopSegmentOperand()); return;
+            case 0xA1: PopSegment(SegReg.Fs); return;
             case 0xA8: PushOperand(State.Gs.Selector); return;
-            case 0xA9: LoadSegment(SegReg.Gs, (ushort)PopSegmentOperand()); return;
+            case 0xA9: PopSegment(SegReg.Gs); return;
 
             // --- zero and sign extension (0xB6/0xB7/0xBE/0xBF) --------------
             // These are what make it cheap to work with bytes and words in
@@ -81,16 +81,18 @@ public sealed partial class Cpu
 
                     case 2:   // LLDT
                         RequireProtectedMode();
-                        State.Ldtr = m.IsRegister
+                        RequireSupervisor();
+                        LoadLocalDescriptorTable(m.IsRegister
                             ? (ushort)State.GetReg32(m.Register)
-                            : ReadMem16(m.Segment, m.Offset);
+                            : ReadMem16(m.Segment, m.Offset));
                         return;
 
                     case 3:   // LTR
                         RequireProtectedMode();
-                        State.TaskRegister = m.IsRegister
+                        RequireSupervisor();
+                        LoadTaskRegister(m.IsRegister
                             ? (ushort)State.GetReg32(m.Register)
-                            : ReadMem16(m.Segment, m.Offset);
+                            : ReadMem16(m.Segment, m.Offset));
                         return;
 
                     // VERR and VERW ask whether a segment could be read or
@@ -131,6 +133,7 @@ public sealed partial class Cpu
                         return;
 
                     case 2:   // LGDT
+                        RequireSupervisor();
                     {
                         if (m.IsRegister) throw new CpuException(6);
                         State.GdtLimit = ReadMem16(m.Segment, m.Offset);
@@ -143,6 +146,7 @@ public sealed partial class Cpu
                     }
 
                     case 3:   // LIDT
+                        RequireSupervisor();
                     {
                         if (m.IsRegister) throw new CpuException(6);
                         State.IdtLimit = ReadMem16(m.Segment, m.Offset);
@@ -157,6 +161,7 @@ public sealed partial class Cpu
                         return;
 
                     case 6:   // LMSW: writes the low CR0 bits, but PE cannot be cleared
+                        RequireSupervisor();
                     {
                         ushort valore = ReadRm16(m);
                         uint nuovo = (State.Cr0 & 0xFFFFFFF0) | (uint)(valore & 0x0F);
@@ -177,8 +182,68 @@ public sealed partial class Cpu
                 }
             }
 
+            // LAR and LSL ask about a descriptor without loading it: LAR hands
+            // back its access rights, LSL the limit it describes. Windows uses
+            // them constantly to vet a selector handed in from elsewhere before
+            // trusting it. Both report success in the zero flag and leave the
+            // destination untouched when the selector is not readable, so a
+            // failed query has to write nothing at all.
+            case 0x02:
+            case 0x03:
+            {
+                RequireProtectedMode();
+                var m = DecodeModRm();
+                ushort selector = m.IsRegister
+                    ? (ushort)State.GetReg32(m.Register)
+                    : ReadMem16(m.Segment, m.Offset);
+
+                if (!DescriptorVisible(selector, out ulong descriptor))
+                {
+                    Flags.Zero = false;
+                    return;
+                }
+
+                if (opcode == 0x02)
+                {
+                    // The access-rights doubleword is the descriptor's second
+                    // word with the low byte cleared -- the byte that holds the
+                    // limit, which is no business of LAR.
+                    // Bits 8..23 of the descriptor's upper doubleword: the
+                    // access byte and, above it, the four flag bits together
+                    // with the top nibble of the limit. Keeping only the flags
+                    // and discarding that nibble -- masking F0 where FF
+                    // belongs -- loses part of what the instruction reports.
+                    uint rights = (uint)(descriptor >> 32) & 0x00FFFF00;
+
+                    // The whole 32-bit register is written whatever the
+                    // operand size says. This is peculiar to LAR and LSL: the
+                    // access-rights and limit values they produce are 32-bit
+                    // quantities, and the processor stores all of it rather
+                    // than leaving the top half of the destination holding
+                    // whatever it held before. Masking to 16 bits here leaves
+                    // stale bits above the answer, which reads as a plausible
+                    // but wrong set of rights.
+                    State.SetReg32(m.Reg, rights);
+                }
+                else
+                {
+                    uint limit = (uint)(descriptor & 0xFFFF)
+                               | ((uint)(descriptor >> 32) & 0x000F0000);
+
+                    // Granularity turns the limit into a count of 4K pages, and
+                    // the last page is included whole.
+                    if ((descriptor & (1UL << 55)) != 0) limit = (limit << 12) | 0xFFF;
+
+                    // As above: the full register, regardless of operand size.
+                    State.SetReg32(m.Reg, limit);
+                }
+
+                Flags.Zero = true;
+                return;
+            }
+
             // --- CLTS: clears the "task switched" bit of CR0 ----------------
-            case 0x06: State.Cr0 &= ~CpuState.Cr0TaskSwitched; return;
+            case 0x06: RequireSupervisor(); State.Cr0 &= ~CpuState.Cr0TaskSwitched; return;
 
             // --- bit instructions -------------------------------------------
             // In the /r form the bit index is a signed register value, and on a
@@ -219,6 +284,7 @@ public sealed partial class Cpu
             // --- control register access ------------------------------------
             case 0x20:
             {
+                RequireSupervisor();
                 var m = DecodeModRm();
                 State.SetReg32(m.Register, m.Reg switch
                 {
@@ -231,6 +297,7 @@ public sealed partial class Cpu
             }
             case 0x22:
             {
+                RequireSupervisor();
                 var m = DecodeModRm();
                 uint value = State.GetReg32(m.Register);
                 switch (m.Reg)
@@ -254,14 +321,39 @@ public sealed partial class Cpu
             // same values back, and debuggers probe exactly that way.
             case 0x21:
             {
+                RequireSupervisor();
                 var m = DecodeModRm();
                 State.SetReg32(m.Register, State.Dr[m.Reg]);
                 return;
             }
             case 0x23:
             {
+                RequireSupervisor();
                 var m = DecodeModRm();
                 State.Dr[m.Reg] = State.GetReg32(m.Register);
+                return;
+            }
+
+            // --- the test registers, TR6 and TR7 -----------------------------
+            // These drive the 386's TLB test hardware, and only TR6 and TR7
+            // exist. Nothing in DOS or Windows uses them for their real purpose,
+            // but memory sizers and CPU probes do read them to tell a 386 from
+            // a 486, so they have to exist and hold what was written rather than
+            // fault. The TLB here is a plain cache with no test path, so the
+            // registers are storage and nothing more.
+            case 0x24:
+            {
+                RequireSupervisor();
+                var m = DecodeModRm();
+                State.SetReg32(m.Register, m.Reg >= 6 ? State.Tr[m.Reg - 6] : 0);
+                return;
+            }
+
+            case 0x26:
+            {
+                RequireSupervisor();
+                var m = DecodeModRm();
+                if (m.Reg >= 6) State.Tr[m.Reg - 6] = State.GetReg32(m.Register);
                 return;
             }
 
@@ -273,8 +365,18 @@ public sealed partial class Cpu
             // easier to fix, than writing the BIOS in assembler.
             case 0xFF:
             {
+                // Only code in the BIOS ROM may use the hook. Anywhere else
+                // 0F FF is what it is on the real processor, an undefined
+                // opcode -- and software relies on that: Windows' kernel
+                // executes it on purpose to provoke #UD and get a look at the
+                // exception frame its DPMI host builds. Treating it as a hook
+                // there swallowed the byte after it as a handler number and
+                // ran on with the stack two bytes short of what the code
+                // expected.
+                uint physical = TranslateLinear(State.Cs.Base + _instructionStart, false);
+                bool inRom = physical is >= 0xF0000 and < 0x100000 || physical >= 0xFFFF0000;
+                if (!inRom || NativeHandler is null) throw new CpuException(6);
                 byte handlerId = FetchByte();
-                if (NativeHandler is null) throw new CpuException(6);
                 NativeHandler(this, handlerId);
                 return;
             }
@@ -451,6 +553,58 @@ public sealed partial class Cpu
         bool conforming = isCode && (access & 0x04) != 0;
         if (conforming) return true;
 
+        byte requestorPrivilege = (byte)(selector & 3);
+        byte effective = Math.Max(State.Cpl, requestorPrivilege);
+
+        return descriptorPrivilege >= effective;
+    }
+
+    /// <summary>
+    /// Whether a selector names a descriptor this code is allowed to ask about,
+    /// which is what LAR and LSL both have to establish first. Conforming code
+    /// segments answer to anyone; everything else has to be at least as
+    /// privileged as the caller and the selector it arrived in. System
+    /// descriptors are visible only in the kinds the 386 defines -- the gaps in
+    /// that table are invalid, and reserved types answer no.
+    /// </summary>
+    private bool DescriptorVisible(ushort selector, out ulong descriptor)
+    {
+        descriptor = 0;
+        if ((selector & 0xFFFC) == 0) return false;
+
+        try { descriptor = ReadDescriptor(selector); }
+        catch (CpuException) { return false; }
+
+        byte access = (byte)(descriptor >> 40);
+
+        // The present bit is deliberately not checked. LAR and LSL ask what a
+        // descriptor says, not whether the segment it names is in memory, and
+        // a virtual memory system needs exactly that: it has to read the type
+        // and privilege of a segment it has paged out in order to decide
+        // whether bringing it back is even allowed. Only an actual segment
+        // load requires P, and it raises #NP when the bit is clear.
+
+        bool isCode = (access & 0x08) != 0;
+        bool isSystem = (access & 0x10) == 0;
+
+        if (isSystem)
+        {
+            // Of the sixteen system types only these are ones LAR and LSL will
+            // describe; the rest are invalid or reserved on a 386.
+            switch (access & 0x0F)
+            {
+                case 0x01: case 0x02: case 0x03: case 0x04:
+                case 0x05: case 0x09: case 0x0B: case 0x0C:
+                    break;
+                default:
+                    return false;
+            }
+        }
+
+        bool conforming = !isSystem && isCode && (access & 0x04) != 0;
+        if (conforming) return true;
+
+        byte descriptorPrivilege = (byte)((descriptor >> 45) & 3);
         byte requestorPrivilege = (byte)(selector & 3);
         byte effective = Math.Max(State.Cpl, requestorPrivilege);
 

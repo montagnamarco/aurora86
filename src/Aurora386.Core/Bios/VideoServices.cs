@@ -74,6 +74,7 @@ public sealed class VideoServices
 
             case 0x0E: TeletypeOutput(cpu.State.GetReg8(0), cpu.State.GetReg8(3)); return;
             case 0x0F: GetVideoMode(cpu); return;
+            case 0x10: PaletteReads(cpu); return;
             case 0x13: WriteString(cpu); return;
 
             case 0x11: CharacterGenerator(cpu); return;
@@ -113,6 +114,49 @@ public sealed class VideoServices
     /// and, more importantly, because the planar write logic in
     /// <see cref="VgaMemory"/> is driven entirely by them.
     /// </summary>
+    /// <summary>
+    /// INT 10h AH=10h, the read side. The writes were done by the ROM with
+    /// OUT instructions before this handler ran; what is left is to report
+    /// the adapter's state back to the caller.
+    /// </summary>
+    private void PaletteReads(CpuNs.Cpu cpu)
+    {
+        var st = cpu.State;
+        switch (st.GetReg8(0))
+        {
+            case 0x07:   // read one attribute register BL -> BH
+                st.SetReg8(7, _registers.Attribute(st.GetReg8(3)));
+                return;
+            case 0x09:   // read all sixteen and the overscan to ES:DX
+            {
+                for (int i = 0; i < 16; i++) cpu.WriteMemoryByte(CpuNs.SegReg.Es, st.Dx + (uint)i, _registers.Attribute(i));
+                cpu.WriteMemoryByte(CpuNs.SegReg.Es, st.Dx + 16u, _registers.Attribute(0x11));
+                return;
+            }
+            case 0x15:   // read one DAC entry BX -> DH, CH, CL
+            {
+                (byte r, byte g, byte b) = _registers.GetRawPaletteEntry(st.Bx);
+                st.SetReg8(6, r); st.SetReg8(5, g); st.SetReg8(1, b);
+                return;
+            }
+            case 0x17:   // read a block of DAC entries: BX first, CX count, to ES:DX
+            {
+                for (int i = 0; i < st.Cx; i++)
+                {
+                    (byte r, byte g, byte b) = _registers.GetRawPaletteEntry(st.Bx + i);
+                    cpu.WriteMemoryByte(CpuNs.SegReg.Es, st.Dx + (uint)(i * 3), r);
+                    cpu.WriteMemoryByte(CpuNs.SegReg.Es, st.Dx + (uint)(i * 3 + 1), g);
+                    cpu.WriteMemoryByte(CpuNs.SegReg.Es, st.Dx + (uint)(i * 3 + 2), b);
+                }
+                return;
+            }
+            case 0x1A:   // read colour page state: BL = mode, BH = page
+                st.SetReg8(3, (byte)((_registers.Attribute(0x10) >> 7) & 1));
+                st.SetReg8(7, (byte)((_registers.Attribute(0x14) & 0x0C) >> 2));
+                return;
+        }
+    }
+
     public void SetVideoMode(byte mode)
     {
         // Bit 7 asks for the screen not to be cleared.
@@ -178,35 +222,14 @@ public sealed class VideoServices
     /// </summary>
     private void ProgramRegisters(VgaModeInfo info)
     {
-        _registers.SetSequencer(VgaRegisters.SeqMapMask, 0x0F);
-        _registers.SetSequencer(VgaRegisters.SeqMemoryMode,
-            info.Layout == VgaMemoryLayout.Linear8 ? (byte)0x0E : (byte)0x06);
-
-        // Graphics controller back to its post-mode-set state: no set/reset,
-        // write mode 0, read mode 0, bit mask wide open.
-        _registers.SetGraphics(VgaRegisters.GcSetReset, 0x00);
-        _registers.SetGraphics(VgaRegisters.GcEnableSetReset, 0x00);
-        _registers.SetGraphics(VgaRegisters.GcColorCompare, 0x00);
-        _registers.SetGraphics(VgaRegisters.GcDataRotate, 0x00);
-        _registers.SetGraphics(VgaRegisters.GcReadMapSelect, 0x00);
-        _registers.SetGraphics(VgaRegisters.GcMode, info.Layout switch
-        {
-            // Bit 6 selects 256-colour shift mode, bit 5 the CGA-style
-            // interleave. Neither changes anything here, but software reads
-            // these back to detect the mode.
-            VgaMemoryLayout.Linear8 => 0x40,
-            VgaMemoryLayout.Planar4 => 0x00,
-            _ => 0x10,   // odd/even, as text modes use
-        });
-        _registers.SetGraphics(VgaRegisters.GcMiscellaneous,
-            info.IsGraphics ? (byte)0x05 : (byte)0x0E);
-        _registers.SetGraphics(VgaRegisters.GcColorDontCare, 0x0F);
-        _registers.SetGraphics(VgaRegisters.GcBitMask, 0xFF);
-
-        // CRTC 0x13 is the row offset in words. The renderer uses it to step
-        // from one scan line to the next, so it has to match the mode.
-        _registers.SetCrtc(0x13, (byte)(info.BytesPerRow / 2));
-        _registers.SetCrtc(0x09, (byte)((info.CharHeight - 1) & 0x1F));
+        // The whole ROM table, so that a program reading the adapter back
+        // finds the state a real mode set leaves: sequencer memory mode and
+        // graphics mode select the addressing our memory path follows, the
+        // bit mask comes back wide open, the map mask enables every plane a
+        // mode uses, and CRTC 0x13 carries the row offset the renderer steps
+        // by. Overriding any of them with a value of our own would hand back
+        // an adapter that reads inconsistently.
+        _registers.LoadStandardRegisters(info.Mode);
     }
 
     private void ClearScreen(VgaModeInfo info)
