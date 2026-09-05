@@ -348,7 +348,7 @@ public sealed partial class Cpu
     /// having to assemble a program that faults in exactly the right way.
     /// </summary>
     public void RaiseInterruptForTest(byte vector, uint errorCode = 0)
-        => EnterInterrupt(vector, isSoftware: false, errorCode);
+        => EnterInterrupt(vector, isSoftware: false, errorCode, isException: true);
 
     /// <summary>
     /// Returns from an interrupt, as IRET would. The native handlers call it to

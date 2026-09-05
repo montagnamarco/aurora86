@@ -317,7 +317,13 @@ public sealed partial class Cpu
     /// <summary>Diagnostics: fires as an interrupt frame is about to be built (vector, return CS:EIP, was-V86, software).</summary>
     public event Action<byte,ushort,uint,bool,bool>? InterruptEntered;
 
-    private void EnterInterruptProtected(byte vector, uint errorCode, bool isSoftware = false)
+    /// <param name="isException">True when the processor itself raised the
+    /// vector as an exception. Only then does an error code go on the stack,
+    /// and only for the vectors that define one: an external interrupt or an
+    /// INT n that happens to land on vector 8 or 13 pushes nothing extra.
+    /// DOS extenders that leave the timer on vector 8 tell the two apart by
+    /// the size of the frame.</param>
+    private void EnterInterruptProtected(byte vector, uint errorCode, bool isSoftware = false, bool isException = false)
     {
         // Each IDT entry is eight bytes, exactly like a GDT descriptor, so the
         // same limit check applies: an entry that does not fit inside the
@@ -507,7 +513,7 @@ public sealed partial class Cpu
             Push32(savedFlags);
             Push32(savedCs);
             Push32(savedEip);
-            if (ExceptionPushesErrorCode(vector)) Push32(errorCode);
+            if (isException && ExceptionPushesErrorCode(vector)) Push32(errorCode);
         }
         else
         {
@@ -520,7 +526,7 @@ public sealed partial class Cpu
             Push16((ushort)savedFlags);
             Push16(savedCs);
             Push16((ushort)savedEip);
-            if (ExceptionPushesErrorCode(vector)) Push16((ushort)errorCode);
+            if (isException && ExceptionPushesErrorCode(vector)) Push16((ushort)errorCode);
         }
 
         State.Eip = handlerOffset;

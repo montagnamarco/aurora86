@@ -699,14 +699,14 @@ public sealed partial class Cpu
 
         // In protected mode some exceptions also push an error code; in real
         // mode there is no such thing and it is simply ignored.
-        EnterInterrupt(vector, isSoftware: false, errorCode);
+        EnterInterrupt(vector, isSoftware: false, errorCode, isException: true);
     }
 
-    private void EnterInterrupt(byte vector, bool isSoftware, uint errorCode = 0)
+    private void EnterInterrupt(byte vector, bool isSoftware, uint errorCode = 0, bool isException = false)
     {
         if (State.ProtectedMode)
         {
-            EnterInterruptProtected(vector, errorCode, isSoftware);
+            EnterInterruptProtected(vector, errorCode, isSoftware, isException);
             return;
         }
 

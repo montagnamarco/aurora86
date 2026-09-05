@@ -608,6 +608,56 @@ public class VirtualModeTests
         // The V86 frame is nine dwords below SP0 (GS, FS, DS, ES, SS, ESP, EFLAGS, CS, EIP).
         Assert.Equal(0x7F00u - 36, machine.Cpu.State.Esp);
     }
+
+    [Fact]
+    public void AHardwareInterruptOnVectorEightPushesNoErrorCode()
+    {
+        // With the controller left at its DOS vectors the timer arrives on
+        // vector 8, the double fault's number. It is not a double fault, and
+        // no error code goes on the stack; DOSX measures the frame to know.
+        using Machine machine = BuildMonitor();
+        machine.Cpu.State.Eip = 0x1000;
+        machine.Memory.WriteByte(0x1000, 0x90);   // NOP
+        machine.Memory.WriteByte(0x1001, 0x90);
+        WriteGate(machine, 8, 0x08, 0x5000, type: 0x0E, dpl: 0);
+        uint before = machine.Cpu.State.Esp;
+
+        // The test monitor never ran the POST: program the controller as the
+        // BIOS does, base 8, only the timer unmasked.
+        machine.Io.WriteByte(0x20, 0x11); machine.Io.WriteByte(0x21, 0x08);
+        machine.Io.WriteByte(0x21, 0x04); machine.Io.WriteByte(0x21, 0x01);
+        machine.Io.WriteByte(0x21, 0xFE);
+        machine.Cpu.Flags.Interrupt = true;
+        machine.Interrupts.RaiseIrq(0);
+        Assert.True(machine.Cpu.Flags.Interrupt, "IF non impostato");
+        Assert.True(machine.Interrupts.HasPendingInterrupt, "IRQ non pendente");
+        // Loading SS in the monitor's setup opened the one-instruction
+        // interrupt shadow; the second NOP is where the timer is taken.
+        machine.RunInstructions(2);
+
+        Assert.Equal(0x5000u, machine.Cpu.State.Eip);
+        Assert.Equal(before - 12, machine.Cpu.State.Esp);   // EIP, CS, EFLAGS and nothing else
+        uint top = machine.Cpu.State.Ss.Base + machine.Cpu.State.Esp;
+        Assert.Equal(0x1002u, machine.Memory.ReadDword(top));
+        Assert.Equal(0x0008u, machine.Memory.ReadDword(top + 4));
+    }
+
+    [Fact]
+    public void ASoftwareInterruptOnVectorThirteenPushesNoErrorCode()
+    {
+        using Machine machine = BuildMonitor();
+        machine.Cpu.State.Eip = 0x1000;
+        machine.Memory.WriteByte(0x1000, 0xCD);   // INT 0Dh
+        machine.Memory.WriteByte(0x1001, 0x0D);
+        WriteGate(machine, 13, 0x08, 0x5000, type: 0x0E, dpl: 0);
+        uint before = machine.Cpu.State.Esp;
+
+        machine.Cpu.Step();
+
+        Assert.Equal(0x5000u, machine.Cpu.State.Eip);
+        Assert.Equal(before - 12, machine.Cpu.State.Esp);
+        Assert.Equal(0x1002u, machine.Memory.ReadDword(machine.Cpu.State.Ss.Base + machine.Cpu.State.Esp));
+    }
 }
 
 
