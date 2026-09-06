@@ -450,7 +450,26 @@ public class MouseServiceTests
         Call(machine, 0x0024);
 
         Assert.Equal(0x0800, machine.Cpu.State.Bx);
-        Assert.Equal(0x04, machine.Cpu.State.Cx >> 8);   // a PS/2 mouse
+    }
+
+    [Fact]
+    public void TheReportedMouseTypeAndIrqFollowThePortItIsPluggedInto()
+    {
+        // CH is the type and CL the interrupt line. Windows' MOUSE.DRV reads
+        // both when it finds a resident driver, to know which line to mask
+        // while it talks to the hardware: naming IRQ 12 for a mouse that is
+        // really on COM1 has it mask the wrong one.
+        using Machine machine = Started();
+
+        machine.MouseInterface = MouseInterface.Ps2;
+        Call(machine, 0x0024);
+        Assert.Equal(0x04, machine.Cpu.State.Cx >> 8);      // PS/2 mouse
+        Assert.Equal(0x0C, machine.Cpu.State.Cx & 0xFF);    // on IRQ 12
+
+        machine.MouseInterface = MouseInterface.Serial;
+        Call(machine, 0x0024);
+        Assert.Equal(0x02, machine.Cpu.State.Cx >> 8);      // serial mouse
+        Assert.Equal(0x04, machine.Cpu.State.Cx & 0xFF);    // on IRQ 4
     }
 
     [Fact]
