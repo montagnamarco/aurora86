@@ -117,6 +117,7 @@ public sealed partial class Cpu
     public void FlushTlb()
     {
         for (int i = 0; i < _tlb.Length; i++) _tlb[i].Valid = false;
+        InvalidateFetchPage();
     }
 
     /// <summary>
@@ -127,6 +128,7 @@ public sealed partial class Cpu
         uint page = linear & 0xFFFFF000;
         ref TlbEntry entry = ref _tlb[(page >> 12) & (TlbSize - 1)];
         if (entry.Valid && entry.Page == page) entry.Valid = false;
+        InvalidateFetchPage();
     }
 
     /// <summary>
@@ -146,7 +148,10 @@ public sealed partial class Cpu
         public uint TableEntryAddress;
     }
 
-    private const int TlbSize = 64;
+    // 1024 entries: enhanced-mode Windows works across the monitor's pages
+    // high in the address space, the applications' and the display's, and
+    // with 64 entries the useful translations kept evicting one another.
+    private const int TlbSize = 1024;
     private readonly TlbEntry[] _tlb = new TlbEntry[TlbSize];
 
     private const uint PagePresent = 1u << 0;

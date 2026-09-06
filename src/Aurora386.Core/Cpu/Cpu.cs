@@ -238,10 +238,36 @@ public sealed partial class Cpu
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private byte FetchByte()
     {
-        byte value = ReadMem8(SegReg.Cs, State.Eip);
-        State.Eip++;
-        return value;
+        uint eip = State.Eip;
+        CheckLimit(SegReg.Cs, eip, 1);
+        uint linear = State.Segments[(int)SegReg.Cs].Base + eip;
+        State.Eip = eip + 1;
+
+        if (!State.PagingEnabled) return _memory.ReadByte(linear);
+
+        // Instruction bytes come from the same page almost every time, so
+        // the page's translation is kept here and reused until the fetch
+        // leaves the page, the tables are flushed, or the privilege level
+        // changes -- which matters because the page walk also checks that
+        // ring 3 is allowed to read the page. Without this every single
+        // opcode byte in enhanced-mode Windows paid for a TLB lookup, and
+        // fetching alone was a fifth of the emulator's time.
+        uint page = linear & 0xFFFFF000;
+        if (page != _fetchPage || State.Cpl != _fetchCpl)
+        {
+            _fetchPhysical = TranslatePaged(linear, false) & 0xFFFFF000;
+            _fetchPage = page;
+            _fetchCpl = State.Cpl;
+        }
+        return _memory.ReadByte(_fetchPhysical | (linear & 0xFFF));
     }
+
+    // The instruction fetch page cache; see FetchByte.
+    private uint _fetchPage = 0xFFFFFFFF, _fetchPhysical;
+    private byte _fetchCpl = 0xFF;
+
+    /// <summary>Forgets the fetch page: called whenever a translation may have changed.</summary>
+    private void InvalidateFetchPage() => _fetchPage = 0xFFFFFFFF;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ushort FetchWord()
