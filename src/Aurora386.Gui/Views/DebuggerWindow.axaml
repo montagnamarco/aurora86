@@ -121,6 +121,24 @@
                      Padding="4,2"
                      ToolTip.Tip="Linear (100000) or segment:offset (0040:001E)" />
             <Button Classes="tool" Command="{Binding GoToMemoryAddressCommand}">Go</Button>
+            <CheckBox IsChecked="{Binding MemoryFollowsPaging}" FontSize="11"
+                      ToolTip.Tip="Read through the guest's page tables instead of physical memory">
+              paged
+            </CheckBox>
+          </StackPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                      Margin="0,0,0,6">
+            <TextBox Text="{Binding MemoryEditAddressText}" Width="90"
+                     FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                     Watermark="address" ToolTip.Tip="Where to write" />
+            <TextBox Text="{Binding MemoryEditValueText}" Width="130"
+                     FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                     Watermark="B8 00 4C or &quot;text&quot;" ToolTip.Tip="Hex bytes, or a quoted string" />
+            <Button Classes="tool" Command="{Binding WriteMemoryCommand}">Write</Button>
+            <TextBox Text="{Binding MemorySearchText}" Width="130"
+                     FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                     Watermark="search" ToolTip.Tip="Hex bytes, or a quoted string" />
+            <Button Classes="tool" Command="{Binding SearchMemoryCommand}">Find</Button>
           </StackPanel>
           <ScrollViewer>
             <ItemsControl ItemsSource="{Binding MemoryLines}">

@@ -144,8 +144,12 @@ public sealed partial class Machine
     /// its own code, and that is respected: the machine must never fight the
     /// guest for a vector somebody deliberately took.
     /// </summary>
+    /// <summary>Whether INT 33h is put back on the BIOS driver after DOS parks it on an IRET.</summary>
+    public bool ReclaimMouseVector { get; set; } = true;
+
     private void TryReclaimMouseVector()
     {
+        if (!ReclaimMouseVector) return;
         if (--_mouseVectorCountdown > 0) return;
         _mouseVectorCountdown = MouseVectorCheckInterval;
 

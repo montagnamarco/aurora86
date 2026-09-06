@@ -174,21 +174,17 @@ public sealed class PointingDeviceServices
     private void AwaitAcknowledge()
     {
         IO.IoBus io = _machine.Io;
-        for (int attempt = 0; attempt < 8; attempt++)
+
+        // Drain the whole reply, not just its first byte. A reset answers
+        // FAh AAh 00h, and an acknowledgement byte left in the queue would
+        // later surface on IRQ 12 and be mistaken for the header of a packet.
+        for (int attempt = 0; attempt < 16; attempt++)
         {
             _machine.Keyboard.PollMouse();
             byte status = io.ReadByte(0x64);
-            if ((status & 0x21) == 0x21)                  // output full, and it is mouse data
-            {
-                if (io.ReadByte(0x60) == 0xFA) return;
-                continue;
-            }
-            if (_machine.Ps2Mouse.TryDequeue(out byte queued))
-            {
-                if (queued == 0xFA) return;
-                continue;
-            }
-            return;
+            if ((status & 0x21) == 0x21) { io.ReadByte(0x60); continue; }   // consume mouse data
+            if (_machine.Ps2Mouse.TryDequeue(out _)) continue;
+            break;
         }
     }
 

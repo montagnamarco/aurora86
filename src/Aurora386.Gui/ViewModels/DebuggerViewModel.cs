@@ -37,6 +37,17 @@ public sealed partial class DebuggerViewModel : ObservableObject
     public ObservableCollection<BreakpointEntry> Breakpoints { get; } = new();
 
     [ObservableProperty] private string _memoryAddressText = "0000:0000";
+    [ObservableProperty] private string _memoryEditAddressText = "";
+    [ObservableProperty] private string _memoryEditValueText = "";
+    [ObservableProperty] private string _memorySearchText = "";
+
+    /// <summary>
+    /// Whether the memory view goes through the page tables. A linear address
+    /// and a physical one are the same thing until paging is on; once it is,
+    /// the difference is everything -- the guest's own pointers are linear,
+    /// while the RAM the emulator holds is physical.
+    /// </summary>
+    [ObservableProperty] private bool _memoryFollowsPaging;
     [ObservableProperty] private string _breakpointAddressText = "";
     [ObservableProperty] private string _flagsText = "";
     [ObservableProperty] private string _statusText = "Paused";
@@ -162,7 +173,7 @@ public sealed partial class DebuggerViewModel : ObservableObject
 
                 for (int column = 0; column < 16; column++)
                 {
-                    byte value = machine.Memory.ReadByte(rowAddress + (uint)column);
+                    byte value = ReadForView(machine, rowAddress + (uint)column);
                     hex.Append(value.ToString("X2")).Append(' ');
                     text.Append(value >= 32 && value < 127 ? (char)value : '.');
                 }
@@ -170,6 +181,148 @@ public sealed partial class DebuggerViewModel : ObservableObject
                 MemoryLines.Add($"{rowAddress:X6}  {hex} {text}");
             }
         });
+    }
+
+    /// <summary>
+    /// Reads one byte the way the memory view is configured: straight out of
+    /// physical memory, or through the guest's page tables when the view is
+    /// following them. A page that is not present reads as 0xFF, which is
+    /// what the bus gives for nothing at all.
+    /// </summary>
+    private byte ReadForView(Machine machine, uint address)
+    {
+        if (!MemoryFollowsPaging) return machine.Memory.ReadByte(address);
+
+        uint physical = TranslateForView(machine, address);
+        return physical == uint.MaxValue ? (byte)0xFF : machine.Memory.ReadByte(physical);
+    }
+
+    /// <summary>
+    /// Walks the page directory by hand rather than asking the CPU, because
+    /// looking at memory in a debugger must never fault the guest, set an
+    /// accessed bit, or disturb the TLB.
+    /// </summary>
+    private static uint TranslateForView(Machine machine, uint linear)
+    {
+        CpuState state = machine.Cpu.State;
+        if ((state.Cr0 & CpuState.Cr0Paging) == 0) return linear;
+
+        uint directory = machine.Memory.ReadDword((state.Cr3 & 0xFFFFF000) + ((linear >> 22) << 2));
+        if ((directory & 1) == 0) return uint.MaxValue;
+
+        uint table = machine.Memory.ReadDword((directory & 0xFFFFF000) + (((linear >> 12) & 0x3FF) << 2));
+        if ((table & 1) == 0) return uint.MaxValue;
+
+        return (table & 0xFFFFF000) | (linear & 0xFFF);
+    }
+
+    /// <summary>
+    /// Writes bytes into guest memory from the editor: an address and a run
+    /// of hex bytes ("B8 00 4C" or "B8004C"), or a quoted string.
+    ///
+    /// This is a debugger, so the write is deliberately unchecked -- no
+    /// segment limit, no privilege, no page fault. Patching a byte in the
+    /// middle of a running guest is exactly what the feature is for.
+    /// </summary>
+    [RelayCommand]
+    private void WriteMemory()
+    {
+        if (!TryParseAddress(MemoryEditAddressText, out uint address))
+        {
+            StatusText = "Address not understood";
+            return;
+        }
+
+        if (!TryParseBytes(MemoryEditValueText, out byte[] bytes) || bytes.Length == 0)
+        {
+            StatusText = "Bytes not understood";
+            return;
+        }
+
+        _session.WithMachine(machine =>
+        {
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                uint target = address + (uint)i;
+                if (MemoryFollowsPaging)
+                {
+                    target = TranslateForView(machine, target);
+                    if (target == uint.MaxValue) continue;
+                }
+                machine.Memory.WriteByte(target, bytes[i]);
+            }
+        });
+
+        MemoryAddressText = MemoryEditAddressText;
+        Refresh();
+        StatusText = $"Wrote {bytes.Length} byte(s) at {address:X6}";
+    }
+
+    /// <summary>
+    /// Finds the next occurrence of a byte pattern or string, starting just
+    /// after the address the view is showing, and moves the view there.
+    /// </summary>
+    [RelayCommand]
+    private void SearchMemory()
+    {
+        if (!TryParseBytes(MemorySearchText, out byte[] pattern) || pattern.Length == 0)
+        {
+            StatusText = "Nothing to search for";
+            return;
+        }
+
+        TryParseAddress(MemoryAddressText, out uint start);
+
+        uint found = _session.WithMachine(machine =>
+        {
+            uint limit = machine.Memory.RamSize;
+            for (uint address = start + 1; address + (uint)pattern.Length <= limit; address++)
+            {
+                int i = 0;
+                while (i < pattern.Length && ReadForView(machine, address + (uint)i) == pattern[i]) i++;
+                if (i == pattern.Length) return address;
+            }
+            return uint.MaxValue;
+        });
+
+        if (found == uint.MaxValue)
+        {
+            StatusText = "Not found";
+            return;
+        }
+
+        MemoryAddressText = found.ToString("X6");
+        Refresh();
+        StatusText = $"Found at {found:X6}";
+    }
+
+    /// <summary>
+    /// Hex bytes with or without separators, or "a quoted string" taken as
+    /// its characters. Both forms turn up when hunting through a guest: one
+    /// for opcodes, the other for messages.
+    /// </summary>
+    private static bool TryParseBytes(string text, out byte[] bytes)
+    {
+        bytes = [];
+        text = text.Trim();
+        if (text.Length == 0) return false;
+
+        if (text.Length >= 2 && text[0] == '"' && text[^1] == '"')
+        {
+            bytes = System.Text.Encoding.ASCII.GetBytes(text[1..^1]);
+            return true;
+        }
+
+        string digits = text.Replace(" ", "").Replace("-", "");
+        if (digits.Length % 2 != 0) return false;
+
+        var result = new byte[digits.Length / 2];
+        for (int i = 0; i < result.Length; i++)
+            if (!byte.TryParse(digits.AsSpan(i * 2, 2), NumberStyles.HexNumber, null, out result[i]))
+                return false;
+
+        bytes = result;
+        return true;
     }
 
     /// <summary>

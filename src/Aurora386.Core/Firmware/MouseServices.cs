@@ -550,7 +550,13 @@ public sealed class MouseServices
     private void ReportVersion(CpuNs.Cpu cpu)
     {
         cpu.State.Bx = 0x0800;   // version 8.00
-        cpu.State.Cx = 0x0400;   // PS/2 mouse, no IRQ of its own
+
+        // CH is the mouse type and CL the IRQ it uses: 4 and 12 for a PS/2
+        // mouse, 2 and 4 for a serial one on COM1. Windows' MOUSE.DRV reads
+        // both when it finds a resident driver, to know which line to mask.
+        cpu.State.Cx = _state.ConnectedInterface == MouseInterface.Ps2
+            ? (ushort)0x040C
+            : (ushort)0x0204;
     }
 
     /// <summary>
