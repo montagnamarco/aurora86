@@ -121,6 +121,15 @@ public sealed class ScreenView : Control
     /// </summary>
     private double _mouseScaleX = 1, _mouseScaleY = 1;
 
+    /// <summary>
+    /// The mouse driver's coordinate range, refreshed with each frame. It is
+    /// not the picture's size: in text mode the driver counts eight units per
+    /// character cell, so an 80x25 screen is 640x200 units against a 640x400
+    /// picture, and scaling movement against the picture makes the pointer
+    /// crawl downwards at half the speed it moves sideways.
+    /// </summary>
+    private int _virtualWidth = 640, _virtualHeight = 200;
+
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
@@ -273,14 +282,25 @@ public sealed class ScreenView : Control
         int width = 0, height = 0;
         session.WithMachine(machine =>
         {
-            machine.Video.Render();
+            // Render says whether anything actually changed. In text mode
+            // almost every frame changes nothing at all -- a blinking cursor
+            // aside -- and copying a quarter of a million pixels to say so is
+            // the single most expensive thing the interface does.
+            bool changed = machine.Video.Render();
             width = machine.Video.Width;
             height = machine.Video.Height;
 
             if (width <= 0 || height <= 0) return;
 
+            bool resized = _bitmap is null || _bitmapWidth != width || _bitmapHeight != height;
             EnsureBitmap(width, height);
-            CopyFramebuffer(machine.Video.Framebuffer, width, height);
+            if (changed || resized) CopyFramebuffer(machine.Video.Framebuffer, width, height);
+
+            // Read here, inside the lock the frame copy already holds, rather
+            // than taking it a second time further down: this runs sixty
+            // times a second and the emulation thread wants the same lock for
+            // every batch.
+            (_virtualWidth, _virtualHeight) = machine.MouseServices.VirtualScreenSize();
         });
 
         if (_bitmap is null || width <= 0 || height <= 0)
@@ -302,11 +322,8 @@ public sealed class ScreenView : Control
         // pointer crawl downwards at half the speed it moved sideways.
         if (target.Width > 0 && target.Height > 0)
         {
-            (int virtualWidth, int virtualHeight) = _session?.WithMachine(
-                machine => machine.MouseServices.VirtualScreenSize()) ?? (width, height);
-
-            _mouseScaleX = virtualWidth / target.Width;
-            _mouseScaleY = virtualHeight / target.Height;
+            _mouseScaleX = _virtualWidth / target.Width;
+            _mouseScaleY = _virtualHeight / target.Height;
         }
 
         // Letterbox the rest: black bars look like a real monitor, whereas
