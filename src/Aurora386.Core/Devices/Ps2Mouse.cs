@@ -66,6 +66,8 @@ public sealed class Ps2Mouse
     /// </summary>
     public Ps2Mouse(MouseState state) => _state = state;
 
+    private MouseButtons _lastReportedButtons;
+
     /// <summary>
     /// Bytes the mouse wants to send: command acknowledgements and movement
     /// packets, in the order they were produced. The controller drains this.
@@ -85,6 +87,7 @@ public sealed class Ps2Mouse
     {
         _output.Clear();
         Reporting = false;
+        _lastReportedButtons = MouseButtons.None;
         _resolution = 0x02;
         _sampleRate = 100;
         _scaling = false;
@@ -110,8 +113,15 @@ public sealed class Ps2Mouse
         // recover from.
         if (_output.Count > 0) return false;
 
-        (int x, int y) = _state.TakePs2Motion();
+        // In stream mode -- the mode every driver uses -- the mouse speaks
+        // only when it has news: some movement, or a button that changed
+        // since the last packet. A mouse that reported on every poll would
+        // hold IRQ 12 busy for ever and drown the driver in empty packets.
         MouseButtons buttons = _state.Buttons;
+        if (!_state.HasPs2Motion && buttons == _lastReportedButtons) return false;
+
+        (int x, int y) = _state.TakePs2Motion();
+        _lastReportedButtons = buttons;
 
         // The vertical axis is inverted here and nowhere else: the host
         // counts downwards, the mouse counts upwards.

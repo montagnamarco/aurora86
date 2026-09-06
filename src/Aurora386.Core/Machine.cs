@@ -89,6 +89,7 @@ public sealed class Machine : IDisposable
 
     /// <summary>INT 33h, the mouse driver interface DOS programs and Windows use.</summary>
     public MouseServices MouseServices { get; }
+    public PointingDeviceServices PointingDevice { get; }
     public XmsManager Xms { get; }
 
     /// <summary>
@@ -179,6 +180,7 @@ public sealed class Machine : IDisposable
         Redirector = new RedirectorServices(this);
         _redirectorInstaller = new RedirectorInstaller(this);
         MouseServices = new MouseServices(this, Mouse);
+        PointingDevice = new PointingDeviceServices(this);
         Video.Pointer = MouseServices.Pointer;
         Video.BeforeRender = MouseServices.Refresh;
         Xms = new XmsManager(Memory);
@@ -224,14 +226,22 @@ public sealed class Machine : IDisposable
     {
         CompactDisc?.Dispose();
         CompactDisc = disc;
+        Ide.NotifyMediaChanged();
 
-        MountRedirectedDrive(CompactDiscServices.DriveLetter, new IsoFileSystem(disc));
+        // The redirector's letter is only for a guest without a CD-ROM
+        // driver of its own. Once OAKCDROM or any ATAPI driver has spoken to
+        // the drive, the disc has the letter that driver and MSCDEX gave it,
+        // and a second one would only confuse: the same disc twice, and the
+        // driver's letter the one that goes empty.
+        if (!GuestHasItsOwnCompactDiscExtensions)
+            MountRedirectedDrive(CompactDiscServices.DriveLetter, new IsoFileSystem(disc));
     }
 
     /// <summary>Ejects the disc, leaving the drive empty.</summary>
     public void EjectCompactDisc()
     {
         UnmountRedirectedDrive(CompactDiscServices.DriveLetter);
+        Ide.NotifyMediaChanged();
 
         CompactDisc?.Dispose();
         CompactDisc = null;
@@ -288,7 +298,7 @@ public sealed class Machine : IDisposable
             case BiosRom.Handler.Mouse: MouseServices.Handle(cpu); return;
 
             // The ROM entry reads the byte and acknowledges both controllers.
-            case BiosRom.Handler.MouseIrq: return;
+            case BiosRom.Handler.MouseIrq: PointingDevice.OnInterrupt(cpu); return;
 
             case BiosRom.Handler.Serial: HandleSerial(cpu); return;
             case BiosRom.Handler.Printer: HandlePrinter(cpu); return;
@@ -304,11 +314,15 @@ public sealed class Machine : IDisposable
     /// </summary>
     private void RunPost()
     {
+        // A reboot starts with no CD-ROM driver loaded; the guest reveals one
+        // again by sending its first packet.
+        GuestHasItsOwnCompactDiscExtensions = false;
         // The extended memory count comes first, as on a real board, and it
         // leaves nothing behind above the first megabyte.
         Memory.ClearExtendedMemory();
 
         Bda.Initialize(640, DiskServices.HardDiskCount);
+        PublishPointingDeviceInEquipment();
         InstallInterruptVectors();
         InitializeInterruptController();
 
@@ -383,7 +397,7 @@ public sealed class Machine : IDisposable
         for (byte vector = 0x0A; vector <= 0x0F; vector++)
             SetVector(vector, BiosRom.Entry.DummyIrq);
         for (byte vector = 0x70; vector <= 0x77; vector++)
-            SetVector(vector, BiosRom.Entry.DummyIrq);
+            if (vector != 0x74) SetVector(vector, BiosRom.Entry.DummyIrq);   // IRQ 12 keeps the mouse entry set above
     }
 
     private void SetVector(byte vector, ushort offset)
@@ -784,6 +798,10 @@ public sealed class Machine : IDisposable
 
         switch (function)
         {
+            case 0xC2:
+                PointingDevice.Handle(cpu);
+                return;
+
             case 0x88:
                 // Extended memory, in KB above the first megabyte.
                 uint extendedKb = Memory.RamSize > 0x100000
@@ -1275,7 +1293,26 @@ public sealed class Machine : IDisposable
     public MouseInterface MouseInterface
     {
         get => Mouse.ConnectedInterface;
-        set => Mouse.ConnectedInterface = value;
+        set
+        {
+            Mouse.ConnectedInterface = value;
+            PublishPointingDeviceInEquipment();
+        }
+    }
+
+    /// <summary>
+    /// Bit 2 of the equipment word says a pointing device hangs off the
+    /// keyboard controller. It is the first thing MOUSE.DRV and MOUSE.COM
+    /// look at: with it clear they never try INT 15h C2xx and go looking
+    /// for a serial mouse instead, so it follows the port the mouse is on.
+    /// </summary>
+    private void PublishPointingDeviceInEquipment()
+    {
+        ushort equipment = Bda.EquipmentWord;
+        equipment = Mouse.ConnectedInterface == MouseInterface.Ps2
+            ? (ushort)(equipment | 0x0004)
+            : (ushort)(equipment & ~0x0004);
+        Bda.EquipmentWord = equipment;
     }
 
     /// <summary>Presses or releases a mouse button.</summary>

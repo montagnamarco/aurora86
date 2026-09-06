@@ -122,6 +122,14 @@ public static class BiosRom
         public const ushort MouseCallbackReturn = 0x1120;
 
         /// <summary>
+        /// Where the INT 15h C207h pointing-device handler returns to. The
+        /// BIOS calls it with four words on the stack -- status, X, Y, Z --
+        /// so the return path has to discard them: ADD SP,8 then RETF onto
+        /// the interrupt handler that made the call.
+        /// </summary>
+        public const ushort PointingCallbackReturn = 0x1124;
+
+        /// <summary>
         /// The diskette parameter table, which INT 1Eh points at rather than
         /// calls: it is eleven bytes of data, not code.
         ///
@@ -293,13 +301,17 @@ public static class BiosRom
         }
         WriteCompactDiscDriver(rom);
         WriteInterruptEntry(rom, Entry.Mouse, Handler.Mouse);
-        WriteIrqEntry(rom, Entry.MouseIrq, Handler.MouseIrq, slave: true, userTick: false, readKeyboard: true);
+        WriteMouseIrqEntry(rom, Entry.MouseIrq, Handler.MouseIrq);
 
         // The landing pad a mouse event handler returns through. It is a bare
         // RETF: the far CALL that entered the handler pushed this address, so
         // returning here pops the address the guest was really at and carries
         // on as though nothing had happened.
         rom[Entry.MouseCallbackReturn] = 0xCB;   // RETF
+        rom[Entry.PointingCallbackReturn + 0] = 0x83;   // ADD SP,8
+        rom[Entry.PointingCallbackReturn + 1] = 0xC4;
+        rom[Entry.PointingCallbackReturn + 2] = 0x08;
+        rom[Entry.PointingCallbackReturn + 3] = 0xCB;   // RETF
 
         // The XMS entry point is not an interrupt handler: programs reach it
         // through a far CALL, so it has to return with RETF rather than IRET.
@@ -656,6 +668,30 @@ public static class BiosRom
         rom[o++] = 0xB0; rom[o++] = 0x20;                  // MOV AL,20h
         if (slave) { rom[o++] = 0xE6; rom[o++] = 0xA0; }   // OUT A0h,AL
         rom[o++] = 0xE6; rom[o++] = 0x20;                  // OUT 20h,AL
+        rom[o++] = 0x58;                                   // POP AX
+        rom[o++] = 0xCF;                                   // IRET
+        if (o > offset + 16) throw new InvalidOperationException("IRQ entry overruns its slot");
+    }
+
+    /// <summary>
+    /// IRQ 12, the PS/2 mouse. Unlike the other IRQ entries the hook comes
+    /// <b>after</b> the port read and the EOI, with the byte parked in AH:
+    /// the native side has to see the byte, and the real BIOS too acknowledges
+    /// the interrupt before it calls the INT 15h C207h handler, so that the
+    /// handler runs with the controller free to accept the next byte.
+    /// </summary>
+    private static void WriteMouseIrqEntry(byte[] rom, ushort offset, Handler handler)
+    {
+        int o = offset;
+        rom[o++] = 0x50;                                   // PUSH AX
+        rom[o++] = 0xE4; rom[o++] = 0x60;                  // IN AL,60h
+        rom[o++] = 0x88; rom[o++] = 0xC4;                  // MOV AH,AL
+        rom[o++] = 0xB0; rom[o++] = 0x20;                  // MOV AL,20h
+        rom[o++] = 0xE6; rom[o++] = 0xA0;                  // OUT A0h,AL
+        rom[o++] = 0xE6; rom[o++] = 0x20;                  // OUT 20h,AL
+        rom[o++] = HookByte1;
+        rom[o++] = HookByte2;
+        rom[o++] = (byte)handler;
         rom[o++] = 0x58;                                   // POP AX
         rom[o++] = 0xCF;                                   // IRET
         if (o > offset + 16) throw new InvalidOperationException("IRQ entry overruns its slot");

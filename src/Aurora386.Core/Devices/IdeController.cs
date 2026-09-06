@@ -414,7 +414,28 @@ public sealed class IdeController : IIoDevice
         // own, talking to the drive directly. From here the emulator's
         // stand-in MSCDEX must keep quiet: the guest is running the real one,
         // and two of them answering the same calls contradict each other.
-        _machine.GuestHasItsOwnCompactDiscExtensions = true;
+        // The same goes for the redirector's copy of the disc: the guest's
+        // driver will give it a letter, and a second letter for the same
+        // disc is how the drive ended up on E: with an empty D: beside it.
+        if (!_machine.GuestHasItsOwnCompactDiscExtensions)
+        {
+            _machine.GuestHasItsOwnCompactDiscExtensions = true;
+            _machine.UnmountRedirectedDrive(_machine.CompactDiscServices.DriveLetter);
+        }
+
+        // A disc that changed since the last command is reported once, as
+        // unit attention with "medium may have changed", before anything
+        // else is done. This is how a driver learns to throw away what it
+        // cached about the old disc: OAKCDROM and MSCDEX re-read the volume
+        // descriptor on seeing it, and without it a disc inserted after boot
+        // shows the previous directory -- or, when the tray was empty at
+        // boot, nothing at all.
+        if (_mediaChanged && packet[0] is not (0x03 or 0x12))
+        {
+            _mediaChanged = false;
+            FailWithSense(0x06, 0x28);
+            return;
+        }
 
         switch (packet[0])
         {
@@ -475,6 +496,15 @@ public sealed class IdeController : IIoDevice
 
     private byte _senseKey;
     private byte _senseCode;
+
+    private bool _mediaChanged;
+
+    /// <summary>
+    /// Tells the drive its tray was opened and closed: the next command from
+    /// the guest is answered with unit attention so the driver re-reads the
+    /// disc.
+    /// </summary>
+    public void NotifyMediaChanged() => _mediaChanged = true;
 
     /// <summary>
     /// Says what kind of device this is, in the words a driver prints.

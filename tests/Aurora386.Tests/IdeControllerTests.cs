@@ -38,8 +38,15 @@ public class IdeControllerTests
             bytes[sector * IsoImage.SectorSize] = (byte)sector;
 
         machine.AttachCompactDisc(new IsoImage(new MemoryStream(bytes)));
+
+        // A freshly inserted disc answers its first command with unit
+        // attention, as a real drive does; a driver clears that with a TEST
+        // UNIT READY before it does anything else, and so do these tests.
+        SendPacket(machine, 0x00);
         return machine;
     }
+
+    private static byte[] RequestSense(Machine machine) => SendPacket(machine, 0x03, 0, 0, 0, 18);
 
     /// <summary>Selects the CD-ROM, which sits as the slave on the cable.</summary>
     private static void SelectDrive(Machine machine) => machine.Io.WriteByte(0x1F6, 0x10);
@@ -343,5 +350,46 @@ public class IdeControllerTests
                              | (capacity[6] << 8) | capacity[7]);
 
         Assert.Equal((uint)IsoImage.SectorSize, blockSize);
+    }
+
+    [Fact]
+    public void TheFirstPacketFromTheGuestTakesTheDiscOffTheRedirector()
+    {
+        // Until a driver speaks ATAPI the disc is reachable through the
+        // redirector's letter. The moment one does, the redirector lets go:
+        // the driver and MSCDEX own the disc now, and a second letter for the
+        // same disc is what left D: empty next to a working E:.
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+        machine.AttachCompactDisc(new IsoImage(new MemoryStream(new byte[20 * IsoImage.SectorSize])));
+
+        Assert.Contains(machine.CompactDiscServices.DriveLetter, machine.Redirector.MountedDrives);
+        Assert.False(machine.GuestHasItsOwnCompactDiscExtensions);
+
+        SendPacket(machine, 0x00);
+
+        Assert.True(machine.GuestHasItsOwnCompactDiscExtensions);
+        Assert.DoesNotContain(machine.CompactDiscServices.DriveLetter, machine.Redirector.MountedDrives);
+    }
+
+    [Fact]
+    public void ADiscInsertedAfterTheDriverLoadedIsAnnouncedOnceAsUnitAttention()
+    {
+        using Machine machine = WithDisc();
+        SelectDrive(machine);
+
+        machine.AttachCompactDisc(new IsoImage(new MemoryStream(new byte[20 * IsoImage.SectorSize])));
+
+        // Not mounted on the redirector: the guest's own driver has the disc.
+        Assert.DoesNotContain(machine.CompactDiscServices.DriveLetter, machine.Redirector.MountedDrives);
+
+        SendPacket(machine, 0x00);                                  // TEST UNIT READY
+        Assert.Equal(0x01, machine.Io.ReadByte(0x1F7) & 0x01);      // error
+        byte[] sense = RequestSense(machine);
+        Assert.Equal(0x06, sense[2] & 0x0F);                        // unit attention
+        Assert.Equal(0x28, sense[12]);                              // medium may have changed
+
+        SendPacket(machine, 0x00);
+        Assert.Equal(0x00, machine.Io.ReadByte(0x1F7) & 0x01);      // and then all is well
     }
 }

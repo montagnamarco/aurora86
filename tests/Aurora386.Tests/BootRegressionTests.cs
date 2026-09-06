@@ -163,6 +163,8 @@ public class BootRegressionTests
             // sets and palette changes through the ROM's port-writing
             // routines before the hook.
             if (vector == 0x10 && first == 0xE9) continue;
+            // IRQ 12 reads the controller before it hooks: PUSH AX comes first.
+            if (vector == 0x74 && first == 0x50) continue;
 
             Assert.True(first == 0x0F || first == 0xCF,
                 $"vector {vector:X2}h points at {segment:X4}:{offset:X4}, " +
