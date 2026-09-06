@@ -154,6 +154,45 @@
             </DockPanel>
           </TabItem>
 
+          <TabItem Header="Watch" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <TextBox Text="{Binding WatchAddressText}" Width="110"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="address"
+                         ToolTip.Tip="Physical address: linear (100000) or segment:offset" />
+                <TextBox Text="{Binding WatchLengthText}" Width="50"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         ToolTip.Tip="How many bytes to watch" />
+                <Button Classes="tool" Command="{Binding AddWatchpointCommand}">Watch</Button>
+                <Button Classes="tool" Command="{Binding ClearWatchLogCommand}">Clear log</Button>
+              </StackPanel>
+              <ItemsControl DockPanel.Dock="Top" ItemsSource="{Binding Watchpoints}"
+                            Margin="0,0,0,6">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                      <TextBlock Classes="mono" Text="{Binding Display}" VerticalAlignment="Center" />
+                      <Button Classes="tool" FontSize="10"
+                              Command="{Binding $parent[ItemsControl].((vm:DebuggerViewModel)DataContext).RemoveWatchpointCommand}"
+                              CommandParameter="{Binding}">remove</Button>
+                    </StackPanel>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding WatchLog}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
           <TabItem Header="Trace" FontSize="11">
             <DockPanel Margin="0,6,0,0">
               <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"

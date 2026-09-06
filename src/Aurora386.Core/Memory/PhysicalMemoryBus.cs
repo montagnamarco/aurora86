@@ -410,12 +410,44 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     public uint WatchLength = 1;
     public event Action<uint, byte>? Watched;
 
+    /// <summary>
+    /// Extra watched ranges, for a debugger that wants several at once.
+    ///
+    /// The single range above is kept as it is because it costs one
+    /// subtraction and one comparison on the write path, and that path runs
+    /// tens of millions of times a second. This list is consulted only when
+    /// it is not empty, so a machine with no watchpoints pays one null-ish
+    /// test; the moment somebody sets one, every write pays for the walk,
+    /// which is the honest price of watching memory in an interpreter.
+    /// </summary>
+    private (uint Start, uint Length)[] _watchRanges = [];
+
+    /// <summary>Replaces the set of extra watched ranges.</summary>
+    public void SetWatchRanges(IEnumerable<(uint Start, uint Length)> ranges)
+        => _watchRanges = ranges.Where(r => r.Length > 0).ToArray();
+
+    /// <summary>True when any extra range covers this address.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool InWatchRanges(uint address)
+    {
+        (uint Start, uint Length)[] ranges = _watchRanges;
+        for (int i = 0; i < ranges.Length; i++)
+            if (address - ranges[i].Start < ranges[i].Length) return true;
+        return false;
+    }
+
+    /// <summary>True when this address is watched at all, by either mechanism.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsWatched(uint address, uint extra)
+        => address - WatchAddress < WatchLength + extra
+        || (_watchRanges.Length > 0 && InWatchRanges(address));
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteByte(uint address, byte value)
     {
         address = Translate(address);
         if (address >= _addressableBytes) return;
-        if (address - WatchAddress < WatchLength) Watched?.Invoke(address, value);
+        if (IsWatched(address, 0)) Watched?.Invoke(address, value);
 
         uint index = address >> PageShift;
         byte* page = _pageRam[index];
@@ -435,7 +467,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
         // Inside a watched range the write goes byte by byte, so that it is
         // reported like any other.
-        if (address - WatchAddress < WatchLength + 1)
+        if (IsWatched(address, 1))
         {
             WriteByte(address, (byte)value);
             WriteByte(address + 1, (byte)(value >> 8));
@@ -461,7 +493,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     {
         address = Translate(address);
 
-        if (address - WatchAddress < WatchLength + 3)
+        if (IsWatched(address, 3))
         {
             for (uint i = 0; i < 4; i++) WriteByte(address + i, (byte)(value >> (int)(8 * i)));
             return;

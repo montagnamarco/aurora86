@@ -665,6 +665,95 @@ public sealed partial class DebuggerViewModel : ObservableObject
 
     [RelayCommand]
     private void GoToMemoryAddress() => RefreshMemory();
+
+    // --- watchpoints ---------------------------------------------------------
+
+    public ObservableCollection<WatchpointEntry> Watchpoints { get; } = new();
+
+    [ObservableProperty] private string _watchAddressText = "";
+    [ObservableProperty] private string _watchLengthText = "1";
+
+    /// <summary>The most recent writes seen by a watchpoint, newest last.</summary>
+    public ObservableCollection<string> WatchLog { get; } = new();
+
+    private readonly List<WatchpointEntry> _watches = new();
+    private bool _watchHooked;
+
+    /// <summary>
+    /// Watches a range of physical memory for writes.
+    ///
+    /// A breakpoint says where the processor is; a watchpoint says who
+    /// touched something, which is a different and often better question --
+    /// "what overwrote this vector" is answerable in seconds with one, and
+    /// only by reading a lot of code without.
+    ///
+    /// The address is physical, deliberately: the guest's own idea of an
+    /// address changes with every segment load and every page table, while
+    /// the byte in RAM stays where it is.
+    /// </summary>
+    [RelayCommand]
+    private void AddWatchpoint()
+    {
+        if (!TryParseAddress(WatchAddressText, out uint address))
+        {
+            StatusText = "Address not understood";
+            return;
+        }
+
+        if (!uint.TryParse(WatchLengthText.Trim(), out uint length) || length == 0) length = 1;
+
+        var entry = new WatchpointEntry(address, length, $"{address:X6}+{length}");
+        _watches.Add(entry);
+        Watchpoints.Add(entry);
+        ApplyWatchpoints();
+
+        WatchAddressText = "";
+        StatusText = $"Watching {length} byte(s) at {address:X6}";
+    }
+
+    [RelayCommand]
+    private void RemoveWatchpoint(WatchpointEntry? entry)
+    {
+        if (entry is null) return;
+
+        _watches.Remove(entry);
+        Watchpoints.Remove(entry);
+        ApplyWatchpoints();
+    }
+
+    [RelayCommand]
+    private void ClearWatchLog() => WatchLog.Clear();
+
+    private void ApplyWatchpoints() => _session.WithMachine(machine =>
+    {
+        machine.Memory.SetWatchRanges(_watches.Select(w => (w.Address, w.Length)));
+
+        // Hooked once and left: the handler does nothing while the list is
+        // empty, and subscribing twice would log every write twice.
+        if (_watchHooked) return;
+        _watchHooked = true;
+        machine.Memory.Watched += OnWatchedWrite;
+    });
+
+    /// <summary>
+    /// Records a watched write. This runs on the emulation thread, inside the
+    /// write itself, so it does the least possible: format a line and keep the
+    /// last few hundred. Anything heavier here changes the timing of the guest
+    /// being watched.
+    /// </summary>
+    private void OnWatchedWrite(uint address, byte value)
+    {
+        if (_watches.Count == 0) return;
+
+        string where = _session.WithMachine(machine =>
+        {
+            CpuState state = machine.Cpu.State;
+            return $"{state.Cs.Selector:X4}:{state.Eip:X8}";
+        });
+
+        WatchLog.Add($"{address:X6} <- {value:X2}   from {where}");
+        while (WatchLog.Count > 400) WatchLog.RemoveAt(0);
+    }
 }
 
 public sealed record DisassemblyLine(
@@ -673,3 +762,5 @@ public sealed record DisassemblyLine(
 public sealed record RegisterEntry(string Name, string Value);
 
 public sealed record BreakpointEntry(uint LinearAddress, string Display);
+
+public sealed record WatchpointEntry(uint Address, uint Length, string Display);

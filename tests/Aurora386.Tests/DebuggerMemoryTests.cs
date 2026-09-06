@@ -16,6 +16,7 @@ namespace Aurora386.Tests;
 /// page tables the same way the processor does -- without faulting, without
 /// setting accessed bits, and without disturbing the TLB.
 /// </summary>
+[Collection(HeadlessAppCollection.Name)]
 public class DebuggerMemoryTests
 {
     private static (EmulatorSession Session, DebuggerViewModel Model) Open()
@@ -143,6 +144,7 @@ public class DebuggerMemoryTests
 /// The debugger's disk editor, driven through the view model the window binds
 /// to: navigating sectors, seeing what each one is, and patching one.
 /// </summary>
+[Collection(HeadlessAppCollection.Name)]
 public class DebuggerDiskTests
 {
     private static (EmulatorSession Session, DebuggerViewModel Model, string Path) Open()
@@ -241,5 +243,131 @@ public class DebuggerDiskTests
 
         Assert.Contains(model.DiskStructure, line => line.Contains("no disk"));
         Assert.Empty(model.DiskLines);
+    }
+}
+
+/// <summary>
+/// Watchpoints: who wrote to this byte, which is the question a breakpoint
+/// cannot answer. A breakpoint says where the processor is; a watchpoint says
+/// what touched something, and "what overwrote this interrupt vector" is
+/// answerable in seconds with one and only by reading a great deal of code
+/// without.
+/// </summary>
+[Collection(HeadlessAppCollection.Name)]
+public class DebuggerWatchpointTests
+{
+    private static (EmulatorSession Session, DebuggerViewModel Model) Open()
+    {
+        var session = new EmulatorSession();
+        session.WithMachine(machine => machine.RunInstructions(2000));
+        return (session, new DebuggerViewModel(session));
+    }
+
+    [Fact]
+    public void AWriteToAWatchedByteIsLoggedWithWhereItCameFrom()
+    {
+        (EmulatorSession session, DebuggerViewModel model) = Open();
+
+        model.WatchAddressText = "9000";
+        model.WatchLengthText = "1";
+        model.AddWatchpointCommand.Execute(null);
+
+        session.WithMachine(machine => machine.Memory.WriteByte(0x9000, 0x42));
+
+        string entry = Assert.Single(model.WatchLog);
+        Assert.Contains("009000", entry);
+        Assert.Contains("42", entry);
+        Assert.Contains("from", entry);
+    }
+
+    [Fact]
+    public void AWriteOutsideTheRangeIsNotLogged()
+    {
+        (EmulatorSession session, DebuggerViewModel model) = Open();
+
+        model.WatchAddressText = "9000";
+        model.WatchLengthText = "4";
+        model.AddWatchpointCommand.Execute(null);
+
+        session.WithMachine(machine =>
+        {
+            machine.Memory.WriteByte(0x8FFF, 0x11);   // just below
+            machine.Memory.WriteByte(0x9004, 0x22);   // just above
+        });
+
+        Assert.Empty(model.WatchLog);
+    }
+
+    [Fact]
+    public void SeveralWatchpointsAreHonouredAtOnce()
+    {
+        // The bus keeps one range of its own for the disk write log, so more
+        // than one watchpoint has to go through the list: a debugger hunting
+        // two structures at once is the ordinary case, not an exotic one.
+        (EmulatorSession session, DebuggerViewModel model) = Open();
+
+        model.WatchAddressText = "9000";
+        model.AddWatchpointCommand.Execute(null);
+        model.WatchAddressText = "A000";
+        model.AddWatchpointCommand.Execute(null);
+
+        session.WithMachine(machine =>
+        {
+            machine.Memory.WriteByte(0x9000, 0x11);
+            machine.Memory.WriteByte(0xA000, 0x22);
+        });
+
+        Assert.Equal(2, model.WatchLog.Count);
+        Assert.Equal(2, model.Watchpoints.Count);
+    }
+
+    [Fact]
+    public void AWordWrittenAcrossTheEdgeIsReportedByteByByte()
+    {
+        // A word write inside a watched range has to be broken up, or the
+        // second byte lands without anybody being told.
+        (EmulatorSession session, DebuggerViewModel model) = Open();
+
+        model.WatchAddressText = "9000";
+        model.WatchLengthText = "2";
+        model.AddWatchpointCommand.Execute(null);
+
+        session.WithMachine(machine => machine.Memory.WriteWord(0x9000, 0xBEEF));
+
+        Assert.Equal(2, model.WatchLog.Count);
+        Assert.Contains("EF", model.WatchLog[0]);
+        Assert.Contains("BE", model.WatchLog[1]);
+    }
+
+    [Fact]
+    public void RemovingAWatchpointStopsTheLogging()
+    {
+        (EmulatorSession session, DebuggerViewModel model) = Open();
+
+        model.WatchAddressText = "9000";
+        model.AddWatchpointCommand.Execute(null);
+        model.RemoveWatchpointCommand.Execute(model.Watchpoints[0]);
+
+        session.WithMachine(machine => machine.Memory.WriteByte(0x9000, 0x42));
+
+        Assert.Empty(model.WatchLog);
+        Assert.Empty(model.Watchpoints);
+    }
+
+    [Fact]
+    public void TheLogKeepsTheMostRecentWritesRatherThanGrowingForever()
+    {
+        (EmulatorSession session, DebuggerViewModel model) = Open();
+
+        model.WatchAddressText = "9000";
+        model.AddWatchpointCommand.Execute(null);
+
+        session.WithMachine(machine =>
+        {
+            for (int i = 0; i < 600; i++) machine.Memory.WriteByte(0x9000, (byte)i);
+        });
+
+        Assert.True(model.WatchLog.Count <= 400, $"the log grew to {model.WatchLog.Count}");
+        Assert.Contains("57", model.WatchLog[^1]);      // 599 & 0xFF = 0x57, the last write
     }
 }
