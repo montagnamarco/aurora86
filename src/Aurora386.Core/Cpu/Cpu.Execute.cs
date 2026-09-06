@@ -68,6 +68,21 @@ public sealed partial class Cpu
     /// I/O at ring 3 -- where a host exception per fault made enhanced-mode
     /// Windows run at less than half speed. The caller must return at once.
     /// </summary>
+    /// <summary>
+    /// True when a software INT to <paramref name="vector"/> would fault for
+    /// privilege: the gate exists, is present and has a DPL below CPL. The
+    /// other outcomes are left to the full delivery path.
+    /// </summary>
+    private bool SoftwareGateBelowPrivilege(byte vector)
+    {
+        uint offset = (uint)vector * 8;
+        if (offset + 7 > State.IdtLimit) return false;
+        uint high = _memory.ReadDword(TranslateLinear(State.IdtBase + offset + 4, false));
+        if ((high & 0x8000) == 0) return false;            // not present: #NP, not ours
+        int gateDpl = (int)((high >> 13) & 3);
+        return gateDpl < State.Cpl;
+    }
+
     private void FaultNow(byte vector, uint errorCode)
     {
         State.Eip = _instructionStart;
@@ -670,6 +685,16 @@ public sealed partial class Cpu
                 // is built to handle into #NP or #GP(selector), which it is
                 // not -- and the DOS session dies on its first INT 21h.
                 if (State.Virtual8086Mode) RequireIoPrivilege();
+                // A monitor keeps its service gates at ring 0 and lets ring 3
+                // INT n fault into it -- Windows reflects every INT 21h and
+                // INT 31h of a protected-mode program this way, thousands of
+                // times a second -- so that #GP is delivered directly rather
+                // than thrown, like the other faults a monitor lives on.
+                if (State.ProtectedMode && !State.Virtual8086Mode && SoftwareGateBelowPrivilege(vector))
+                {
+                    FaultNow(13, (uint)(vector * 8 + 2));
+                    return;
+                }
                 SoftwareInterrupt(vector);
                 return;
             }
