@@ -419,21 +419,38 @@ senza inventare chiamate che il DOS non conosce.
 Aurora386
 │
 ├── src/Aurora386.Core        ← il cuore, senza interfaccia
-│   ├── Cpu/                  processore (16 file)
-│   ├── Bios/                 BIOS, dischi, FPU (16 file)
-│   ├── Devices/              hardware emulato (23 file)
-│   │   ├── Video/            VGA: registri, memoria, font, disegno
-│   │   ├── Audio/            Sound Blaster, OPL3
-│   │   └── Network/          NE2000
-│   ├── Dos/                  redirector e filesystem
-│   ├── Memory/               bus di memoria a pagine
-│   └── IO/                   bus delle porte
+│   ├── Machine*.cs           il PC assemblato: costruzione, POST, ciclo di
+│   │                         esecuzione, gestori nativi minori, supporti
+│   ├── Cpu/                  processore (16 file parziali della classe Cpu)
+│   ├── Memory/               bus di memoria a pagine, A20
+│   ├── IO/                   bus delle porte
+│   ├── Firmware/             solo il BIOS: ROM con i ganci, BDA, servizi
+│   │   │                     video/disco/tastiera/mouse/CD, XMS
+│   │   └── Fpu/              il coprocessore emulato via trap (80 bit)
+│   ├── Devices/              hardware emulato, una cartella per ruolo
+│   │   ├── Interrupts/       8259 (master e slave)
+│   │   ├── Timing/           8253, CMOS/RTC
+│   │   ├── Input/            8042, mouse PS/2 e seriale, stato del mouse
+│   │   ├── Storage/          immagini disco e ISO, controller IDE/ATAPI
+│   │   ├── System/           DMA 8237, porte di sistema (61h, 92h)
+│   │   ├── Video/            VGA: registri, memoria, font, disegno, puntatore
+│   │   ├── Audio/            Sound Blaster 16, OPL3, mixer
+│   │   └── Network/          NE2000 e backend
+│   ├── Dos/                  redirector e filesystem (host, ISO)
+│   └── Diagnostics/          disassemblatore, log delle chiamate DOS e
+│                             delle scritture su disco
 │
-├── src/Aurora386.Gui         interfaccia Avalonia (finestra, menu, mouse)
+├── src/Aurora386.Gui         interfaccia Avalonia (finestra, menu, debugger)
 ├── src/Aurora386.Sdl         frontend alternativo SDL2
 ├── src/Aurora386.FatTool     strumento per iniettare file nelle immagini
-└── tests/Aurora386.Tests     754 test
+└── tests/Aurora386.Tests     840 test
 ```
+
+La regola è **una cartella per ruolo, e il namespace segue la cartella**:
+`Aurora386.Core.Devices.Storage`, `Aurora386.Core.Firmware`, e così via. Il
+firmware non contiene dispositivi e i dispositivi non contengono firmware:
+un'immagine disco è un pezzo di hardware (sta in `Devices/Storage`), il
+servizio INT 13h che la usa è firmware (sta in `Firmware`).
 
 **Il nucleo non dipende dall'interfaccia.** È la scelta che rende possibile
 scrivere test come questi: un `Machine` si costruisce, si esegue per un numero
