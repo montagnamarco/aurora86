@@ -154,15 +154,33 @@ public sealed class PointingDeviceServices
         io.WriteByte(0x60, enabled ? (byte)0xF4 : (byte)0xF5);           // mouse: reporting on / off
         AwaitAcknowledge();
 
-        // The interrupt itself, at the controllers. The PS/2 BIOS opens IRQ 12
-        // on the slave -- and the cascade line on the master, without which
-        // nothing from the slave arrives -- when the device is enabled, and
-        // closes it again on disable. A DOS extender that masked the line
-        // before Windows started would otherwise leave the driver installed,
-        // enabled, and deaf.
-        byte slaveMask = io.ReadByte(0xA1);
-        io.WriteByte(0xA1, enabled ? (byte)(slaveMask & ~0x10) : (byte)(slaveMask | 0x10));
-        if (enabled) io.WriteByte(0x21, (byte)(io.ReadByte(0x21) & ~0x04));
+        // The interrupt itself, at the controllers, and only ever opened --
+        // never closed.
+        //
+        // A real PS/2 BIOS leaves IRQ 12 unmasked from POST onwards, and that
+        // detail matters more than it looks. Windows' MOUSE.DRV installs its
+        // own IRQ 12 handler like this: read the mask, remember it, set the
+        // bit while it works, then put back what it remembered. If the BIOS
+        // opens the line only when C200h enables the device, the driver has
+        // already photographed a mask with IRQ 12 closed, and faithfully
+        // restores that -- leaving a mouse that is enabled, has a handler,
+        // and is deaf. Opening at POST and never closing keeps the snapshot
+        // honest whenever the driver takes it.
+        if (enabled)
+        {
+            OpenMouseInterrupt(_machine);
+        }
+    }
+
+    /// <summary>
+    /// Unmasks IRQ 12 on the slave controller and the cascade line on the
+    /// master, without which nothing from the slave arrives at the CPU.
+    /// </summary>
+    public static void OpenMouseInterrupt(Machine machine)
+    {
+        IO.IoBus io = machine.Io;
+        io.WriteByte(0xA1, (byte)(io.ReadByte(0xA1) & ~0x10));
+        io.WriteByte(0x21, (byte)(io.ReadByte(0x21) & ~0x04));
     }
 
     /// <summary>

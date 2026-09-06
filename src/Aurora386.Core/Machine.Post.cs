@@ -63,8 +63,16 @@ public sealed partial class Machine
         Bda.ExtendedBiosDataSegment = ExtendedBiosDataSegment;
         Memory.WriteByte((uint)ExtendedBiosDataSegment << 4, 1);
         PublishPointingDeviceInEquipment();
+
         InstallInterruptVectors();
         InitializeInterruptController();
+
+        // IRQ 12 is left open from here on when a PS/2 mouse is fitted, as a
+        // real PS/2 BIOS does. See PointingDeviceServices.OpenMouseInterrupt
+        // for why the moment matters: a driver that saves the mask before the
+        // line is open restores a closed one.
+        if (Mouse.ConnectedInterface == MouseInterface.Ps2)
+            PointingDeviceServices.OpenMouseInterrupt(this);
 
         // There is no coprocessor in this machine -- the equipment word says so
         // -- and CR0's emulation bit is how the processor is told. With it set,
