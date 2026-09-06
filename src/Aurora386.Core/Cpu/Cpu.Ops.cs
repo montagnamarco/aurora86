@@ -1016,6 +1016,17 @@ public sealed partial class Cpu
     /// nominally at ring 3 and so is refused, which is how the monitor gets a
     /// chance to emulate what the task was trying to do.
     /// </summary>
+    /// <summary>
+    /// Raises the invalid-opcode fault when the instruction belongs to a
+    /// later processor than the one being emulated. Deliberately a fault and
+    /// not a silent no-op: a program probing for a 486 executes one of its
+    /// new instructions and waits to see whether it faults.
+    /// </summary>
+    private void RequireCpuAtLeast486(byte opcode)
+    {
+        if (State.Model < CpuModel.Intel486) throw new CpuException(6);
+    }
+
     private void RequireSupervisor()
     {
         if (!State.ProtectedMode) return;

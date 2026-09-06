@@ -276,6 +276,121 @@ public sealed partial class Cpu
                 return;
             }
 
+            // --- the 486's new instructions ---------------------------------
+            //
+            // Three instructions arrived with the 486, and all three exist for
+            // the same reason: a multiprocessor system needs to change memory
+            // and find out what was there in one indivisible step. On a 386 a
+            // program had to bracket such a sequence with a lock prefix and
+            // hope; from the 486 the hardware offers the whole operation.
+
+            // BSWAP: reverses the four bytes of a 32-bit register.
+            //
+            // Nothing to do with atomicity: it turns a little-endian value
+            // into a big-endian one and back, which every network stack needs
+            // for every address and every port number it touches. Before it,
+            // that was three instructions.
+            case >= 0xC8 and <= 0xCF:
+            {
+                RequireCpuAtLeast486(opcode);
+                int register = opcode & 7;
+
+                // Only defined for a 32-bit operand. With a 16-bit one Intel
+                // documents the result as undefined, and real 486s leave the
+                // register zeroed; anything that relies on it is broken
+                // already, so the simplest faithful answer is that zero.
+                if (!OperandSize32) { State.SetReg16(register, 0); return; }
+
+                uint value = State.Gpr[register];
+                State.Gpr[register] = (value >> 24)
+                                    | ((value >> 8) & 0x0000FF00)
+                                    | ((value << 8) & 0x00FF0000)
+                                    | (value << 24);
+                return;
+            }
+
+            // XADD: exchange and add. The destination gets the sum, the source
+            // register gets the destination's old value, and the flags come
+            // from the addition. One instruction where a lock-prefixed
+            // sequence used to be needed, which is why every spinlock written
+            // after 1989 uses it.
+            case 0xC0:
+            {
+                RequireCpuAtLeast486(opcode);
+                var m = DecodeModRm();
+                byte destination = ReadRm8(m);
+                byte source = State.GetReg8(m.Reg);
+                byte sum = (byte)(destination + source);
+
+                State.SetReg8(m.Reg, destination);
+                WriteRm8(m, sum);
+                Flags.Set(FlagOp.Add, destination, source, sum, 8);
+                return;
+            }
+            case 0xC1:
+            {
+                RequireCpuAtLeast486(opcode);
+                var m = DecodeModRm();
+                uint destination = ReadRm(m);
+                uint source = ReadRegOperand(m);
+                uint sum = destination + source;
+
+                WriteRegOperand(m, destination);
+                WriteRm(m, sum);
+                Flags.Set(FlagOp.Add, destination, source, sum, OperandBits);
+                return;
+            }
+
+            // CMPXCHG: compare the accumulator with the destination and, only
+            // if they match, store the source there. Either way the flags come
+            // from the comparison, and on a mismatch the accumulator is loaded
+            // with what was actually found -- so a caller that loses the race
+            // already holds the value it needs for the next attempt. This is
+            // the instruction every lock-free algorithm is built on.
+            case 0xB0:
+            {
+                RequireCpuAtLeast486(opcode);
+                var m = DecodeModRm();
+                byte destination = ReadRm8(m);
+                byte accumulator = State.GetReg8(0);
+                byte difference = (byte)(accumulator - destination);
+                Flags.Set(FlagOp.Sub, accumulator, destination, difference, 8);
+
+                if (accumulator == destination) WriteRm8(m, State.GetReg8(m.Reg));
+                else State.SetReg8(0, destination);
+                return;
+            }
+            case 0xB1:
+            {
+                RequireCpuAtLeast486(opcode);
+                var m = DecodeModRm();
+                uint destination = ReadRm(m);
+                uint accumulator = OperandSize32 ? State.Eax : State.Ax;
+                uint difference = accumulator - destination;
+                Flags.Set(FlagOp.Sub, accumulator, destination, difference, OperandBits);
+
+                if (accumulator == destination)
+                {
+                    WriteRm(m, ReadRegOperand(m));
+                }
+                else
+                {
+                    if (OperandSize32) State.Eax = destination;
+                    else State.Ax = (ushort)destination;
+                }
+                return;
+            }
+
+            // INVD and WBINVD: throw the caches away, with and without writing
+            // dirty lines back first. This processor has no cache to speak of,
+            // so both are checked for privilege and then do nothing -- which
+            // is exactly what they do on a 486 with caching disabled.
+            case 0x08:
+            case 0x09:
+                RequireCpuAtLeast486(opcode);
+                RequireSupervisor();
+                return;
+
             // --- far pointer loads into the 386's new segment registers -----
             case 0xB2: LoadFarPointer(SegReg.Ss); return;
             case 0xB4: LoadFarPointer(SegReg.Fs); return;
@@ -594,7 +709,7 @@ public sealed partial class Cpu
             switch (access & 0x0F)
             {
                 case 0x01: case 0x02: case 0x03: case 0x04:
-                case 0x05: case 0x09: case 0x0B: case 0x0C:
+                case 0x05: case 0x0B: case 0x0C:
                     break;
                 default:
                     return false;

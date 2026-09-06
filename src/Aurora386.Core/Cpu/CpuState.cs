@@ -31,6 +31,17 @@ public struct SegmentCache
 /// Architectural state of the 386: registers, flags, segments, descriptor
 /// tables and control registers.
 /// </summary>
+/// <summary>
+/// The processor models this emulator can present. The difference that
+/// matters to software is which instructions exist and which faults they
+/// raise when they do not.
+/// </summary>
+public enum CpuModel
+{
+    Intel386,
+    Intel486,
+}
+
 public sealed class CpuState
 {
     /// <summary>
@@ -62,6 +73,15 @@ public sealed class CpuState
     public uint Cr3;
 
     // --- descriptor tables ----------------------------------------------------
+    /// <summary>
+    /// Which processor this is pretending to be.
+    ///
+    /// It is not decoration: a program probes for a 486 by executing one of
+    /// its new instructions and catching the fault, and a machine that runs
+    /// them regardless would be detected as a 486 while claiming to be a 386.
+    /// </summary>
+    public CpuModel Model = CpuModel.Intel486;
+
     public uint GdtBase;
     public ushort GdtLimit;
     public uint IdtBase;
