@@ -54,4 +54,18 @@ public enum Flags : uint
     Resume = 1u << 16,
     /// <summary>Virtual 8086 mode: needed by Windows 3.1 in enhanced mode.</summary>
     Virtual8086 = 1u << 17,
+
+    /// <summary>
+    /// Alignment check, from the 486. Enforces alignment for ring 3 code when
+    /// CR0.AM is also set, which almost nothing ever asked for.
+    /// </summary>
+    AlignmentCheck = 1u << 18,
+
+    /// <summary>
+    /// The bit that says CPUID exists, and the oddest one in the register: a
+    /// program finds out whether it can ask the processor its name by trying
+    /// to invert this bit and seeing whether the change sticks. On a processor
+    /// without CPUID it reads back unchanged.
+    /// </summary>
+    Identification = 1u << 21,
 }

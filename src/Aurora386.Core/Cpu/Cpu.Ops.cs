@@ -243,6 +243,7 @@ public sealed partial class Cpu
     // move a task in and out of virtual mode -- and RF is the processor's own.
     private const uint InterruptFlag = 1u << 9;
     private const uint IoplMask = 3u << 12;
+    private const uint IdentificationFlag = 1u << 21;
     private const uint ResumeFlag = 1u << 16;
 
     private void Pushf()
@@ -283,6 +284,14 @@ public sealed partial class Cpu
         uint current = Flags.Value;
         const uint fixedBits = VirtualModeFlag | ResumeFlag;
         next = (next & ~fixedBits) | (current & fixedBits);
+
+        // The identification bit only moves on a processor that has CPUID.
+        // This is not a detail: trying to invert it and seeing whether the
+        // change sticks is precisely how software decides the instruction is
+        // there, so a 386 that let it move would be asked a question it
+        // cannot answer.
+        if (!State.HasIdentification)
+            next = (next & ~IdentificationFlag) | (current & IdentificationFlag);
 
         if (!State.ProtectedMode) return next;
 

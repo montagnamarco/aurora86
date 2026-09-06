@@ -82,6 +82,23 @@ public sealed class CpuState
     /// </summary>
     public CpuModel Model = CpuModel.Intel486;
 
+    /// <summary>
+    /// Whether the identification bit of EFLAGS may be changed, which is how
+    /// software decides CPUID is available. A 486 without it is a perfectly
+    /// ordinary 486: the instruction arrived partway through the model's life.
+    /// </summary>
+    public bool HasIdentification = true;
+
+    /// <summary>
+    /// Selects a processor model and the features that come with it. Setting
+    /// the model alone would leave a 386 answering CPUID, which no 386 does.
+    /// </summary>
+    public void SelectModel(CpuModel model)
+    {
+        Model = model;
+        HasIdentification = model >= CpuModel.Intel486;
+    }
+
     public uint GdtBase;
     public ushort GdtLimit;
     public uint IdtBase;

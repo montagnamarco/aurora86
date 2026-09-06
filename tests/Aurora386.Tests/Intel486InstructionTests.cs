@@ -193,3 +193,99 @@ public class Intel486InstructionTests
         Assert.Equal(13, raised[0]);        // general protection
     }
 }
+
+/// <summary>
+/// CPUID, and the odd little dance software does to find out whether it is
+/// there. Before it, a program identified the processor by its quirks -- which
+/// flags a shift left alone, whether an instruction existed -- a collection of
+/// tricks that got less reliable with every generation. From Windows 95
+/// onwards everything simply asks.
+/// </summary>
+public class CpuIdentificationTests
+{
+    private static Machine Running(params byte[] code)
+    {
+        var machine = new Machine();
+        machine.RunInstructions(2000);
+
+        for (int i = 0; i < code.Length; i++)
+            machine.Memory.WriteByte(0x9000 + (uint)i, code[i]);
+
+        machine.Cpu.State.Halted = false;
+        machine.Cpu.SetSegment(SegReg.Cs, 0x0900);
+        machine.Cpu.State.Eip = 0;
+        machine.Cpu.SetSegment(SegReg.Ss, 0x0000);
+        machine.Cpu.State.Esp = 0x7000;
+        return machine;
+    }
+
+    [Fact]
+    public void FunctionZeroNamesTheMakerInThePeculiarRegisterOrder()
+    {
+        // EBX, EDX, ECX spells the twelve bytes in order. The sequence looks
+        // arbitrary and is not: it is what the silicon does, and software
+        // copies the registers into a buffer in exactly that order.
+        using Machine machine = Running(0x0F, 0xA2);
+        machine.Cpu.State.Eax = 0;
+
+        machine.Cpu.Step();
+
+        string vendor = System.Text.Encoding.ASCII.GetString(
+        [
+            .. BitConverter.GetBytes(machine.Cpu.State.Ebx),
+            .. BitConverter.GetBytes(machine.Cpu.State.Edx),
+            .. BitConverter.GetBytes(machine.Cpu.State.Ecx),
+        ]);
+
+        Assert.Equal("GenuineIntel", vendor);
+        Assert.Equal(1u, machine.Cpu.State.Eax);      // highest function answered
+    }
+
+    [Fact]
+    public void FunctionOneGivesTheFamilyAndSaysThereIsAFloatingPointUnit()
+    {
+        using Machine machine = Running(0x0F, 0xA2);
+        machine.Cpu.State.Eax = 1;
+
+        machine.Cpu.Step();
+
+        Assert.Equal(4u, (machine.Cpu.State.Eax >> 8) & 0xF);    // family 4: a 486
+        Assert.Equal(1u, machine.Cpu.State.Edx & 1);             // floating point on chip
+    }
+
+    [Fact]
+    public void TheIdentificationBitMovesOnlyWhereCpuidExists()
+    {
+        // The whole detection method rests on this. A processor that let the
+        // bit move without having CPUID would be asked a question it cannot
+        // answer; one that refused to move it while having CPUID would never
+        // be asked at all.
+        using Machine machine = Running(0x90);
+        machine.Cpu.State.SelectModel(CpuModel.Intel486);
+
+        machine.Cpu.Flags.SetValue(machine.Cpu.Flags.Value | (1u << 21));
+        Assert.True((machine.Cpu.Flags.Value & (1u << 21)) != 0);
+
+        machine.Cpu.State.SelectModel(CpuModel.Intel386);
+        machine.Cpu.Flags.SetValue(machine.Cpu.Flags.Value & ~(1u << 21));
+        // On a 386 the bit is stuck wherever it was: what matters is that the
+        // guest cannot change it, so a POPF must not move it either.
+        uint before = machine.Cpu.Flags.Value;
+        machine.Cpu.Step();
+        Assert.Equal(before & (1u << 21), machine.Cpu.Flags.Value & (1u << 21));
+    }
+
+    [Fact]
+    public void OnA386TheInstructionItselfIsNotThere()
+    {
+        using Machine machine = Running(0x0F, 0xA2);
+        machine.Cpu.State.SelectModel(CpuModel.Intel386);
+
+        var raised = new List<byte>();
+        machine.Cpu.ProcessorException += (vector, _, _, _) => raised.Add(vector);
+
+        machine.Cpu.Step();
+
+        Assert.Equal(6, raised[0]);      // invalid opcode
+    }
+}

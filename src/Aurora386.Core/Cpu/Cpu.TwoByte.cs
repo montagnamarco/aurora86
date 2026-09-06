@@ -381,6 +381,45 @@ public sealed partial class Cpu
                 return;
             }
 
+            // CPUID: the processor says what it is.
+            //
+            // Before it, software identified the processor by the differences
+            // between the models -- which flags a shift left alone, whether an
+            // instruction existed -- a collection of tricks that got less
+            // reliable with each generation. CPUID replaced all of it with a
+            // question, and from Windows 95 onwards everything asks.
+            //
+            // The function number is in EAX. Zero returns the highest function
+            // supported and the vendor string, in a register order that looks
+            // arbitrary and is not: EBX, EDX, ECX spells "GenuineIntel" when
+            // the twelve bytes are laid out in that sequence.
+            case 0xA2:
+            {
+                RequireCpuAtLeast486(opcode);
+                if (!State.HasIdentification) throw new CpuException(6);
+
+                switch (State.Eax)
+                {
+                    case 0:
+                        State.Eax = 1;                 // highest function we answer
+                        State.Ebx = 0x756E6547;        // "Genu"
+                        State.Edx = 0x49656E69;        // "ineI"
+                        State.Ecx = 0x6C65746E;        // "ntel"
+                        return;
+
+                    default:
+                        // Family 4, model 8, stepping 0: an Intel486 DX4. The
+                        // feature bits say what the processor can do; ours has
+                        // an on-chip floating point unit and nothing else that
+                        // needs announcing.
+                        State.Eax = 0x0480;
+                        State.Ebx = 0;
+                        State.Ecx = 0;
+                        State.Edx = 0x00000001;        // bit 0: floating point on chip
+                        return;
+                }
+            }
+
             // INVD and WBINVD: throw the caches away, with and without writing
             // dirty lines back first. This processor has no cache to speak of,
             // so both are checked for privilege and then do nothing -- which
