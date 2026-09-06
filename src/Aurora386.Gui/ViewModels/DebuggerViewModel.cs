@@ -5,6 +5,8 @@ using System.Globalization;
 using System.Linq;
 using Aurora386.Core;
 using Aurora386.Core.Cpu;
+using Aurora386.Core.Devices.Storage;
+using Aurora386.Core.Diagnostics;
 using Aurora386.Gui.Emulation;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -48,6 +50,22 @@ public sealed partial class DebuggerViewModel : ObservableObject
     /// while the RAM the emulator holds is physical.
     /// </summary>
     [ObservableProperty] private bool _memoryFollowsPaging;
+
+    // --- disk editor --------------------------------------------------------
+
+    public ObservableCollection<string> DiskLines { get; } = new();
+    public ObservableCollection<string> DiskStructure { get; } = new();
+
+    [ObservableProperty] private string _diskSectorText = "0";
+    [ObservableProperty] private string _diskEditOffsetText = "";
+    [ObservableProperty] private string _diskEditValueText = "";
+    [ObservableProperty] private string _diskStatusText = "";
+
+    /// <summary>Which attached drive the disk view is looking at, 0 for the first.</summary>
+    [ObservableProperty] private int _diskIndex;
+
+    private byte[] _diskSector = new byte[512];
+    private long _diskSectorNumber;
     [ObservableProperty] private string _breakpointAddressText = "";
     [ObservableProperty] private string _flagsText = "";
     [ObservableProperty] private string _statusText = "Paused";
@@ -69,6 +87,7 @@ public sealed partial class DebuggerViewModel : ObservableObject
         });
 
         RefreshMemory();
+        RefreshDisk();
     }
 
     private void RefreshRegisters(Machine machine)
@@ -181,6 +200,137 @@ public sealed partial class DebuggerViewModel : ObservableObject
                 MemoryLines.Add($"{rowAddress:X6}  {hex} {text}");
             }
         });
+    }
+
+    /// <summary>
+    /// Reads the sector the disk view is showing, and works out what it is:
+    /// a partition table, a boot sector, a FAT, the root directory, or a
+    /// cluster of file data. Seeing that label next to the bytes is most of
+    /// the value -- a sector of a FAT and a sector of a file look identical
+    /// until something tells you which is which.
+    /// </summary>
+    public void RefreshDisk()
+    {
+        DiskLines.Clear();
+        DiskStructure.Clear();
+
+        DiskInspector? inspector = OpenInspector();
+        if (inspector is null)
+        {
+            DiskStructure.Add("no disk attached");
+            return;
+        }
+
+        if (!long.TryParse(DiskSectorText.Trim(), out long sector)) sector = 0;
+        _diskSectorNumber = Math.Clamp(sector, 0, Math.Max(0, inspector.TotalSectors - 1));
+        _diskSector = inspector.ReadSector(_diskSectorNumber);
+
+        (int cylinder, int head, int number) = inspector.ToChs(_diskSectorNumber);
+        DiskStructure.Add($"sector {_diskSectorNumber} of {inspector.TotalSectors}"
+                        + $"  chs {cylinder}/{head}/{number}"
+                        + (inspector.ReadOnly ? "  (read-only)" : ""));
+        DiskStructure.Add(inspector.DescribeSector(_diskSectorNumber));
+
+        foreach (DiskInspector.Partition partition in inspector.ReadPartitions())
+        {
+            DiskStructure.Add($"partition {partition.Index + 1}: {partition.TypeName}"
+                            + $"  start {partition.FirstSector}  size {partition.SectorCount}"
+                            + (partition.Bootable ? "  bootable" : ""));
+
+            if (inspector.ReadBootParameters(partition.FirstSector) is not { } bpb) continue;
+
+            DiskStructure.Add($"   FAT{bpb.FatBits}  cluster {bpb.SectorsPerCluster} sectors"
+                            + $"  fats {bpb.FatCount}x{bpb.SectorsPerFat}"
+                            + $"  root {bpb.RootEntries} entries"
+                            + $"  label {bpb.Label.Trim()}");
+            DiskStructure.Add($"   fat at +{bpb.FirstFatSector}  root at +{bpb.RootDirectorySector}"
+                            + $"  data at +{bpb.FirstDataSector}  clusters {bpb.ClusterCount}");
+        }
+
+        for (int row = 0; row < _diskSector.Length; row += 16)
+        {
+            var hex = new System.Text.StringBuilder();
+            var text = new System.Text.StringBuilder();
+            for (int column = 0; column < 16; column++)
+            {
+                byte value = _diskSector[row + column];
+                hex.Append(value.ToString("X2")).Append(' ');
+                text.Append(value >= 32 && value < 127 ? (char)value : '.');
+            }
+            DiskLines.Add($"{row:X3}  {hex} {text}");
+        }
+    }
+
+    /// <summary>An inspector over the drive the view is pointed at, or null.</summary>
+    private DiskInspector? OpenInspector() => _session.WithMachine(machine =>
+    {
+        List<DiskImage> drives = machine.DiskServices.AttachedDrives.ToList();
+        if (DiskIndex < 0 || DiskIndex >= drives.Count) return null;
+        return new DiskInspector(drives[DiskIndex]);
+    });
+
+    [RelayCommand]
+    private void GoToSector()
+    {
+        RefreshDisk();
+        DiskStatusText = $"Sector {_diskSectorNumber}";
+    }
+
+    [RelayCommand]
+    private void NextSector()
+    {
+        DiskSectorText = (_diskSectorNumber + 1).ToString();
+        RefreshDisk();
+    }
+
+    [RelayCommand]
+    private void PreviousSector()
+    {
+        DiskSectorText = Math.Max(0, _diskSectorNumber - 1).ToString();
+        RefreshDisk();
+    }
+
+    /// <summary>
+    /// Patches bytes into the sector on screen and writes the whole sector
+    /// back. A disk has no smaller unit than a sector: there is no way to
+    /// change one byte on the medium, and pretending otherwise would hide
+    /// the read-modify-write that is really happening.
+    /// </summary>
+    [RelayCommand]
+    private void WriteDisk()
+    {
+        DiskInspector? inspector = OpenInspector();
+        if (inspector is null) { DiskStatusText = "No disk"; return; }
+        if (inspector.ReadOnly) { DiskStatusText = "Disk is read-only"; return; }
+
+        if (!int.TryParse(DiskEditOffsetText.Trim(), NumberStyles.HexNumber, null, out int offset)
+            || offset < 0 || offset >= _diskSector.Length)
+        {
+            DiskStatusText = "Offset not understood";
+            return;
+        }
+
+        if (!TryParseBytes(DiskEditValueText, out byte[] bytes) || bytes.Length == 0)
+        {
+            DiskStatusText = "Bytes not understood";
+            return;
+        }
+
+        if (offset + bytes.Length > _diskSector.Length)
+        {
+            DiskStatusText = "That would run past the end of the sector";
+            return;
+        }
+
+        bytes.CopyTo(_diskSector, offset);
+        if (!inspector.WriteSector(_diskSectorNumber, _diskSector))
+        {
+            DiskStatusText = "Write refused";
+            return;
+        }
+
+        RefreshDisk();
+        DiskStatusText = $"Wrote {bytes.Length} byte(s) at +{offset:X3}";
     }
 
     /// <summary>

@@ -138,3 +138,108 @@ public class DebuggerMemoryTests
         session.WithMachine(machine => Assert.Equal(0x00, machine.Memory.ReadByte(0x9000)));
     }
 }
+
+/// <summary>
+/// The debugger's disk editor, driven through the view model the window binds
+/// to: navigating sectors, seeing what each one is, and patching one.
+/// </summary>
+public class DebuggerDiskTests
+{
+    private static (EmulatorSession Session, DebuggerViewModel Model, string Path) Open()
+    {
+        string path = Path.Combine(System.IO.Path.GetTempPath(), $"aurora-dbg-{Guid.NewGuid():N}.img");
+        Aurora386.Core.Devices.Storage.HardDiskImage.Create(path, 8 * 1024 * 1024);
+
+        var session = new EmulatorSession();
+        session.WithMachine(machine =>
+        {
+            machine.RunInstructions(2000);
+            machine.AttachDisk(Aurora386.Core.Devices.Storage.DiskImage.OpenHardDisk(path));
+        });
+
+        return (session, new DebuggerViewModel(session), path);
+    }
+
+    [Fact]
+    public void TheFirstSectorIsRecognisedAsThePartitionTable()
+    {
+        (_, DebuggerViewModel model, _) = Open();
+
+        model.DiskSectorText = "0";
+        model.GoToSectorCommand.Execute(null);
+
+        Assert.Contains(model.DiskStructure, line => line.Contains("master boot record"));
+        Assert.Contains(model.DiskStructure, line => line.Contains("partition 1"));
+        Assert.Equal(32, model.DiskLines.Count);                 // 512 bytes, 16 to a row
+        Assert.Contains("55 AA", model.DiskLines[^1]);           // the signature that ends it
+    }
+
+    [Fact]
+    public void MovingASectorForwardAndBackLandsWhereItStarted()
+    {
+        (_, DebuggerViewModel model, _) = Open();
+
+        model.DiskSectorText = "63";
+        model.GoToSectorCommand.Execute(null);
+        string atSixtyThree = string.Join("", model.DiskLines);
+
+        model.NextSectorCommand.Execute(null);
+        Assert.Equal("64", model.DiskSectorText);
+
+        model.PreviousSectorCommand.Execute(null);
+        Assert.Equal("63", model.DiskSectorText);
+        Assert.Equal(atSixtyThree, string.Join("", model.DiskLines));
+    }
+
+    [Fact]
+    public void APatchedByteIsOnTheDiskAndBackOnTheScreen()
+    {
+        (EmulatorSession session, DebuggerViewModel model, _) = Open();
+
+        model.DiskSectorText = "200";
+        model.GoToSectorCommand.Execute(null);
+        model.DiskEditOffsetText = "10";
+        model.DiskEditValueText = "DE AD BE EF";
+        model.WriteDiskCommand.Execute(null);
+
+        Assert.Contains("Wrote 4", model.DiskStatusText);
+        Assert.Contains("DE AD BE EF", model.DiskLines[1]);      // row 010
+
+        // And it is really on the medium, not only in the view.
+        session.WithMachine(machine =>
+        {
+            var inspector = new Aurora386.Core.Diagnostics.DiskInspector(
+                machine.DiskServices.AttachedDrives.First());
+            byte[] sector = inspector.ReadSector(200);
+            Assert.Equal(0xDE, sector[0x10]);
+            Assert.Equal(0xEF, sector[0x13]);
+        });
+    }
+
+    [Fact]
+    public void AnEditThatWouldRunPastTheSectorIsRefused()
+    {
+        (_, DebuggerViewModel model, _) = Open();
+
+        model.DiskSectorText = "200";
+        model.GoToSectorCommand.Execute(null);
+        model.DiskEditOffsetText = "1FE";
+        model.DiskEditValueText = "11 22 33 44";     // four bytes from 0x1FE overruns
+        model.WriteDiskCommand.Execute(null);
+
+        Assert.Contains("past the end", model.DiskStatusText);
+    }
+
+    [Fact]
+    public void WithNoDiskTheViewSaysSoInsteadOfShowingNothing()
+    {
+        var session = new EmulatorSession();
+        session.WithMachine(machine => machine.RunInstructions(2000));
+        var model = new DebuggerViewModel(session);
+
+        model.GoToSectorCommand.Execute(null);
+
+        Assert.Contains(model.DiskStructure, line => line.Contains("no disk"));
+        Assert.Empty(model.DiskLines);
+    }
+}
