@@ -13,6 +13,12 @@ public sealed partial class Cpu
         _instructionStart = State.Eip;
         _prefixes.Clear();
 
+        // The trace is checked with a single field read when it is off, which
+        // is what lets it live on the hot path at all: recording costs about
+        // half the emulator's speed, so it is switched on only around the
+        // moment somebody is looking at.
+        if (Trace is { Enabled: true }) RecordForTrace();
+
         try
         {
             byte opcode = FetchPrefixesAndOpcode();
@@ -43,6 +49,44 @@ public sealed partial class Cpu
     /// delivered, first and second, for whoever is watching.
     /// </summary>
     public event Action<byte, byte>? TripleFault;
+
+    /// <summary>The ring of recent instructions, when one is attached.</summary>
+    public Diagnostics.InstructionTrace? Trace { get; set; }
+
+    /// <summary>
+    /// Copies the state the trace wants, including the first eight bytes of
+    /// the instruction. Reading those goes through the segment and the page
+    /// tables like any other access, but silently: a trace must never fault
+    /// the guest, so an unreadable byte is recorded as EEh rather than raised.
+    /// </summary>
+    private void RecordForTrace()
+    {
+        ulong bytes = 0;
+        for (int i = 7; i >= 0; i--) bytes = (bytes << 8) | TraceByte(State.Eip + (uint)i);
+
+        Trace!.Record(new Diagnostics.InstructionTrace.Entry(
+            0, State.Cs.Selector, State.Eip,
+            State.Eax, State.Ebx, State.Ecx, State.Edx,
+            State.Esi, State.Edi, State.Ebp,
+            State.Ss.Selector, State.Esp, State.Ds.Selector, State.Es.Selector,
+            Flags.Value & 0xFFFF,
+            State.Virtual8086Mode ? (byte)2 : State.ProtectedMode ? (byte)1 : (byte)0,
+            bytes));
+    }
+
+    private byte TraceByte(uint offset)
+    {
+        try
+        {
+            uint linear = State.Cs.Base + offset;
+            uint physical = State.PagingEnabled ? TranslatePaged(linear, false) : linear;
+            return _memory.ReadByte(physical);
+        }
+        catch (Exception ex) when (ex is CpuException or PageFaultException)
+        {
+            return 0xEE;
+        }
+    }
 
     /// <summary>
     /// Delivers an exception, and copes with the delivery itself faulting.

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using Aurora386.Core;
 using Aurora386.Core.Cpu;
@@ -66,6 +67,33 @@ public sealed partial class DebuggerViewModel : ObservableObject
 
     private byte[] _diskSector = new byte[512];
     private long _diskSectorNumber;
+
+    // --- instruction trace ---------------------------------------------------
+
+    public ObservableCollection<string> TraceLines { get; } = new();
+
+    /// <summary>
+    /// Whether the processor is recording what it executes. It is off by
+    /// default and says so: recording costs about half the emulator's speed,
+    /// which is a fair price while hunting something and an unfair one the
+    /// rest of the time.
+    /// </summary>
+    public bool TraceEnabled
+    {
+        get => _traceEnabled;
+        set
+        {
+            if (!SetProperty(ref _traceEnabled, value)) return;
+            _session.WithMachine(machine =>
+            {
+                machine.Cpu.Trace ??= new InstructionTrace();
+                machine.Cpu.Trace.Enabled = value;
+            });
+            RefreshTrace();
+        }
+    }
+
+    private bool _traceEnabled;
     [ObservableProperty] private string _breakpointAddressText = "";
     [ObservableProperty] private string _flagsText = "";
     [ObservableProperty] private string _statusText = "Paused";
@@ -88,6 +116,7 @@ public sealed partial class DebuggerViewModel : ObservableObject
 
         RefreshMemory();
         RefreshDisk();
+        RefreshTrace();
     }
 
     private void RefreshRegisters(Machine machine)
@@ -200,6 +229,48 @@ public sealed partial class DebuggerViewModel : ObservableObject
                 MemoryLines.Add($"{rowAddress:X6}  {hex} {text}");
             }
         });
+    }
+
+    /// <summary>
+    /// Shows the last few hundred instructions, oldest first, so that reading
+    /// downwards follows the guest forwards.
+    /// </summary>
+    [RelayCommand]
+    public void RefreshTrace()
+    {
+        TraceLines.Clear();
+
+        InstructionTrace? trace = _session.WithMachine(machine => machine.Cpu.Trace);
+        if (trace is null || !trace.Enabled)
+        {
+            TraceLines.Add("not recording -- tick the box to start");
+            return;
+        }
+
+        foreach (InstructionTrace.Entry entry in trace.Last(400))
+            TraceLines.Add(entry.ToString());
+
+        if (TraceLines.Count == 0) TraceLines.Add("nothing recorded yet");
+    }
+
+    [RelayCommand]
+    private void ClearTrace()
+    {
+        _session.WithMachine(machine => machine.Cpu.Trace?.Clear());
+        RefreshTrace();
+    }
+
+    /// <summary>Writes the trace to a file next to the emulator, for a long look.</summary>
+    [RelayCommand]
+    private void SaveTrace()
+    {
+        InstructionTrace? trace = _session.WithMachine(machine => machine.Cpu.Trace);
+        if (trace is null) { StatusText = "Nothing to save"; return; }
+
+        string path = Path.Combine(Path.GetTempPath(),
+            $"aurora-trace-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+        File.WriteAllLines(path, trace.Entries().Select(e => e.ToString()));
+        StatusText = $"Trace written to {path}";
     }
 
     /// <summary>

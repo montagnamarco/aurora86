@@ -154,6 +154,30 @@
             </DockPanel>
           </TabItem>
 
+          <TabItem Header="Trace" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <CheckBox IsChecked="{Binding TraceEnabled}" FontSize="11"
+                          ToolTip.Tip="Record every instruction. Costs about half the speed.">
+                  recording
+                </CheckBox>
+                <Button Classes="tool" Command="{Binding RefreshTraceCommand}">Refresh</Button>
+                <Button Classes="tool" Command="{Binding ClearTraceCommand}">Clear</Button>
+                <Button Classes="tool" Command="{Binding SaveTraceCommand}">Save</Button>
+              </StackPanel>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding TraceLines}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
           <TabItem Header="Disk" FontSize="11">
             <DockPanel Margin="0,6,0,0">
               <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
