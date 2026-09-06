@@ -252,4 +252,12 @@ public sealed class InterruptController
     public int GetPendingVector() => Master.GetPendingVector();
 
     public bool HasPendingInterrupt => Master.HasPendingInterrupt;
+
+    /// <summary>
+    /// True while the guest is inside an interrupt handler that has not yet
+    /// sent its end-of-interrupt. Anything that wants to redirect the guest
+    /// into a routine of its own has to wait for this to clear: building a
+    /// call on top of a handler's frame returns into the middle of it.
+    /// </summary>
+    public bool HasInterruptInService => Master.HasInterruptInService || Slave.HasInterruptInService;
 }

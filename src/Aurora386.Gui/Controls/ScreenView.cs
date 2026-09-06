@@ -294,10 +294,19 @@ public sealed class ScreenView : Control
         // The picture is letterboxed and scaled, so a host pixel is worth
         // less than a guest one. Recording the ratio here keeps it in step
         // with whatever is actually on screen, resizes included.
+        //
+        // The ratio is against the driver's coordinate range, not against the
+        // picture: in text mode the mouse driver counts eight units per
+        // character cell, so an 80x25 screen is 640x200 units while the
+        // picture is 640x400 pixels. Scaling against the picture made the
+        // pointer crawl downwards at half the speed it moved sideways.
         if (target.Width > 0 && target.Height > 0)
         {
-            _mouseScaleX = width / target.Width;
-            _mouseScaleY = height / target.Height;
+            (int virtualWidth, int virtualHeight) = _session?.WithMachine(
+                machine => machine.MouseServices.VirtualScreenSize()) ?? (width, height);
+
+            _mouseScaleX = virtualWidth / target.Width;
+            _mouseScaleY = virtualHeight / target.Height;
         }
 
         // Letterbox the rest: black bars look like a real monitor, whereas

@@ -110,6 +110,24 @@ public sealed partial class Machine
         // execution to whatever descriptor happens to have that index.
         if (Cpu.State.ProtectedMode) return;
 
+        // On real hardware this callback is reached from an interrupt, and a
+        // program protects the moments it cannot be interrupted by clearing
+        // the interrupt flag. We are not an interrupt -- we redirect the guest
+        // between batches -- so the guest has no way to keep us out unless we
+        // honour the same rules it would rely on:
+        //
+        //   * interrupts must be enabled, so a CLI really does protect;
+        //   * no handler may be in service, because the stack in hand belongs
+        //     to it until its end-of-interrupt.
+        //
+        // Without this the callback lands wherever the batch happened to end,
+        // including the middle of a routine holding a half-built structure.
+        // The symptom was EDIT and QBASIC ignoring the keyboard and QBASIC
+        // dying with a corrupted far heap: the callback was returning into
+        // the middle of somebody else's frame.
+        if (!Cpu.Flags.Interrupt) return;
+        if (Interrupts.HasInterruptInService) return;
+
         MouseServices.TryDispatchEvent(Cpu);
     }
 
@@ -149,7 +167,7 @@ public sealed partial class Machine
 
     private void TryReclaimMouseVector()
     {
-        if (!ReclaimMouseVector) return;
+        if (!ReclaimMouseVector || _mouseVectorReclaimed) return;
         if (--_mouseVectorCountdown > 0) return;
         _mouseVectorCountdown = MouseVectorCheckInterval;
 
@@ -160,11 +178,34 @@ public sealed partial class Machine
         ushort segment = Memory.ReadWord(0x33 * 4 + 2);
         if (segment == 0xF000 && offset == BiosRom.Entry.Mouse) return;
 
+        // Only the vector DOS itself parks, and only once.
+        //
+        // Both halves matter, and both were learnt the hard way. IO.SYS puts
+        // its stub low in memory, below the first program it loads, so a
+        // segment above that belongs to a program and is never ours to take
+        // -- EDIT installs a handler of its own, and strapping it produced a
+        // corrupted far heap in QBASIC and an EDIT that would not open at
+        // all. And doing it once is what keeps a program that later takes the
+        // vector legitimately from having it taken back a few thousand
+        // instructions later.
+        if (segment >= FirstProgramSegment) return;
+
         uint target = ((uint)segment << 4) + offset;
         if (Memory.ReadByte(target) != 0xCF) return;   // somebody's real handler: theirs
 
         SetVector(0x33, BiosRom.Entry.Mouse);
+        _mouseVectorReclaimed = true;
     }
+
+    /// <summary>
+    /// Below this paragraph is DOS itself; above it are the programs it loads.
+    /// The boundary is generous on purpose: it only has to separate IO.SYS's
+    /// stubs from a loaded program, and DOS with its buffers and drivers never
+    /// reaches anywhere near here.
+    /// </summary>
+    private const ushort FirstProgramSegment = 0x1000;
+
+    private bool _mouseVectorReclaimed;
 
     private const int MouseVectorCheckInterval = 50;
     private int _mouseVectorCountdown = 1;

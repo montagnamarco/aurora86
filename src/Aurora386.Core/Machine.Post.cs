@@ -52,6 +52,7 @@ public sealed partial class Machine
         // A reboot starts with no CD-ROM driver loaded; the guest reveals one
         // again by sending its first packet.
         GuestHasItsOwnCompactDiscExtensions = false;
+        _mouseVectorReclaimed = false;
         // The extended memory count comes first, as on a real board, and it
         // leaves nothing behind above the first megabyte.
         Memory.ClearExtendedMemory();

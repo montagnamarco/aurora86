@@ -55,6 +55,15 @@ public sealed class MouseServices
     public MousePointer Pointer { get; } = new();
 
     /// <summary>
+    /// Whether INT 33h still points at us. A program is free to install its
+    /// own mouse driver, and from that moment ours must be silent: it neither
+    /// draws a pointer nor calls anybody's callback.
+    /// </summary>
+    private bool OwnsInterruptVector
+        => _machine.Memory.ReadWord(0x33 * 4 + 2) == 0xF000
+        && _machine.Memory.ReadWord(0x33 * 4) == BiosRom.Entry.Mouse;
+
+    /// <summary>
     /// Brings the driver up to date with the mouse without a program asking:
     /// the renderer calls this once per frame so the pointer follows the
     /// mouse even while the program is busy and not polling, exactly as the
@@ -69,7 +78,10 @@ public sealed class MouseServices
 
     private void SyncPointer()
     {
-        Pointer.Visible = _enabled && CursorVisible;
+        // Nothing is drawn once somebody else owns INT 33h. A program that
+        // loaded its own driver draws its own pointer, and two pointers on
+        // one screen is worse than none.
+        Pointer.Visible = _enabled && CursorVisible && OwnsInterruptVector;
         Pointer.X = PositionX;
         Pointer.Y = PositionY;
     }
@@ -290,6 +302,20 @@ public sealed class MouseServices
     /// character cells scaled back up in text mode, which is why 80 columns
     /// comes out as 640 either way.
     /// </summary>
+    /// <summary>
+    /// The coordinate range the driver hands out, which a frontend needs in
+    /// order to scale host movement correctly. It is not the same as the
+    /// picture's size: in text mode the driver counts eight units per
+    /// character cell, so an 80x25 screen is 640x200 virtual units while the
+    /// picture is 640x400 pixels. Scaling movement against the picture makes
+    /// the pointer crawl vertically at half speed.
+    /// </summary>
+    public (int Width, int Height) VirtualScreenSize()
+    {
+        (int maxX, int maxY) = DefaultRange();
+        return (maxX + 1, maxY + 1);
+    }
+
     private (int MaxX, int MaxY) DefaultRange()
     {
         Devices.Video.VgaRegisters registers = _machine.VideoRegisters;
@@ -652,7 +678,7 @@ public sealed class MouseServices
     /// </summary>
     public bool TryDispatchEvent(CpuNs.Cpu cpu)
     {
-        if (!_enabled) return false;
+        if (!_enabled || !OwnsInterruptVector) return false;
         if (HandlerSegment == 0 && HandlerOffset == 0) return false;
 
         Update();
