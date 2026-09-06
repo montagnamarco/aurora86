@@ -154,6 +154,29 @@
             </DockPanel>
           </TabItem>
 
+          <TabItem Header="Tables" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <Button Classes="tool" Command="{Binding RefreshTablesCommand}">Refresh</Button>
+                <TextBox Text="{Binding TranslateAddressText}" Width="110"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="linear address"
+                         ToolTip.Tip="Walk the page tables for this address" />
+                <Button Classes="tool" Command="{Binding TranslateAddressCommand}">Translate</Button>
+              </StackPanel>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding TableLines}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
           <TabItem Header="Watch" FontSize="11">
             <DockPanel Margin="0,6,0,0">
               <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"

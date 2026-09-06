@@ -666,6 +666,88 @@ public sealed partial class DebuggerViewModel : ObservableObject
     [RelayCommand]
     private void GoToMemoryAddress() => RefreshMemory();
 
+    // --- system tables -------------------------------------------------------
+
+    public ObservableCollection<string> TableLines { get; } = new();
+
+    [ObservableProperty] private string _translateAddressText = "";
+
+    /// <summary>
+    /// Shows the tables that define protected mode: where they are, what the
+    /// descriptors say, and the ring 0 stack the processor will switch to on
+    /// the next fault. In real mode it says so and stops, because none of it
+    /// means anything yet.
+    /// </summary>
+    [RelayCommand]
+    public void RefreshTables()
+    {
+        TableLines.Clear();
+
+        _session.WithMachine(machine =>
+        {
+            CpuState state = machine.Cpu.State;
+            var tables = new DescriptorTables(machine);
+
+            TableLines.Add($"CR0 {state.Cr0:X8}   CR3 {state.Cr3:X8}   "
+                         + (state.ProtectedMode ? "protected" : "real")
+                         + (state.Virtual8086Mode ? ", virtual 8086" : "")
+                         + ((state.Cr0 & CpuState.Cr0Paging) != 0 ? ", paging" : ""));
+
+            if (!state.ProtectedMode)
+            {
+                TableLines.Add("");
+                TableLines.Add("real mode: the vector table at 0000:0000 is all there is");
+                return;
+            }
+
+            TableLines.Add($"GDT {state.GdtBase:X8} limit {state.GdtLimit:X4}   "
+                         + $"IDT {state.IdtBase:X8} limit {state.IdtLimit:X4}   "
+                         + $"LDTR {state.Ldtr:X4}   TR {state.TaskRegister:X4}");
+
+            if (tables.ReadTaskState() is { } task)
+            {
+                TableLines.Add($"TSS {task.Selector:X4} at {task.Base:X8}  "
+                             + $"{(task.Is386 ? "386" : "286")}  "
+                             + $"ring 0 stack {task.Ss0:X4}:{task.Esp0:X8}"
+                             + (task.Is386 && task.IoMapBase != 0 ? $"  I/O map at +{task.IoMapBase:X}" : ""));
+            }
+
+            TableLines.Add("");
+            TableLines.Add("GDT");
+            foreach (DescriptorTables.Descriptor entry in tables.ReadGlobalTable())
+                if (entry.Selector != 0 || entry.Access != 0)
+                    TableLines.Add("  " + entry);
+
+            IReadOnlyList<DescriptorTables.Descriptor> ldt = tables.ReadLocalTable();
+            if (ldt.Count > 0)
+            {
+                TableLines.Add("");
+                TableLines.Add("LDT");
+                foreach (DescriptorTables.Descriptor entry in ldt)
+                    if (entry.Access != 0) TableLines.Add("  " + entry);
+            }
+
+            TableLines.Add("");
+            TableLines.Add("IDT (present gates only)");
+            foreach (DescriptorTables.Gate gate in tables.ReadInterruptTable())
+                if (gate.Present) TableLines.Add("  " + gate);
+        });
+    }
+
+    /// <summary>Walks the page tables for one address, without disturbing them.</summary>
+    [RelayCommand]
+    private void TranslateAddress()
+    {
+        if (!TryParseAddress(TranslateAddressText, out uint linear))
+        {
+            StatusText = "Address not understood";
+            return;
+        }
+
+        StatusText = _session.WithMachine(machine =>
+            new DescriptorTables(machine).DescribeTranslation(linear));
+    }
+
     // --- watchpoints ---------------------------------------------------------
 
     public ObservableCollection<WatchpointEntry> Watchpoints { get; } = new();
