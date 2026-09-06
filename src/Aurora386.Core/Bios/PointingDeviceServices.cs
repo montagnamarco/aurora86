@@ -110,6 +110,12 @@ public sealed class PointingDeviceServices
                 HandlerSegment = cpu.State.Es.Selector;
                 HandlerOffset = cpu.State.Bx;
                 if ((HandlerSegment | HandlerOffset) == 0) SetEnabled(false);
+
+                // Mirrored into the EBDA where the PS/2 BIOS kept it (offset
+                // 22h), for software that peeks there.
+                uint ebda = (uint)Machine.ExtendedBiosDataSegment << 4;
+                _machine.Memory.WriteWord(ebda + 0x22, HandlerOffset);
+                _machine.Memory.WriteWord(ebda + 0x24, HandlerSegment);
                 Succeed(cpu);
                 return;
 

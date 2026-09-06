@@ -312,6 +312,9 @@ public sealed class Machine : IDisposable
     /// Machine initialisation: sets up the BIOS data area, the interrupt
     /// vector table and the devices, exactly as a real BIOS's POST would.
     /// </summary>
+    /// <summary>The EBDA sits in the last kilobyte below 640 KB.</summary>
+    public const ushort ExtendedBiosDataSegment = 0x9FC0;
+
     private void RunPost()
     {
         // A reboot starts with no CD-ROM driver loaded; the guest reveals one
@@ -321,7 +324,12 @@ public sealed class Machine : IDisposable
         // leaves nothing behind above the first megabyte.
         Memory.ClearExtendedMemory();
 
-        Bda.Initialize(640, DiskServices.HardDiskCount);
+        // 639 KB for DOS, and the last kilobyte is the Extended BIOS Data
+        // Area: its first byte is its size in KB, and INT 12h stops short of
+        // it so that no program overwrites the BIOS's own state.
+        Bda.Initialize(639, DiskServices.HardDiskCount);
+        Bda.ExtendedBiosDataSegment = ExtendedBiosDataSegment;
+        Memory.WriteByte((uint)ExtendedBiosDataSegment << 4, 1);
         PublishPointingDeviceInEquipment();
         InstallInterruptVectors();
         InitializeInterruptController();

@@ -34,6 +34,14 @@ public sealed class BiosDataArea
     public ushort MemorySizeKb { get => ReadWord(0x13); set => WriteWord(0x13, value); }
 
     /// <summary>
+    /// Segment of the Extended BIOS Data Area (0x40E), the kilobyte at the
+    /// top of conventional memory that the PS/2 BIOS carved out for itself.
+    /// The pointing-device support keeps its state there, and Microsoft's
+    /// mouse drivers take its presence as the sign that INT 15h C2xx exists.
+    /// </summary>
+    public ushort ExtendedBiosDataSegment { get => ReadWord(0x0E); set => WriteWord(0x0E, value); }
+
+    /// <summary>
     /// Keyboard modifier state (0x417): shift, ctrl, alt, caps lock. Programs
     /// read this byte directly when they need to know whether shift is held.
     /// </summary>

@@ -260,10 +260,12 @@ public static class BiosRom
             rom[table + 4] = 0x00;   // BIOS revision
 
             // Feature byte 1. Bit 6 says interrupts are cascaded through a
-            // second controller, bit 5 that there is a real-time clock, and
-            // bit 4 that INT 15h AH=4F filters keyboard scan codes -- all
-            // true here, and each one is something a caller may rely on.
-            rom[table + 5] = 0x70;
+            // second controller, bit 5 that there is a real-time clock, bit 4
+            // that INT 15h AH=4F filters keyboard scan codes, and bit 2 that
+            // an Extended BIOS Data Area is allocated -- which is also how
+            // Microsoft's mouse drivers decide the PS/2 mouse services of
+            // INT 15h C2xx are there. All true here.
+            rom[table + 5] = 0x74;
 
             rom[table + 6] = 0x00;
             rom[table + 7] = 0x00;

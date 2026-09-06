@@ -37,7 +37,7 @@ public class MachineTests
         // The CPU starts at the reset vector and runs into the POST.
         machine.RunInstructions(50);
 
-        Assert.Equal(640, machine.Bda.MemorySizeKb);
+        Assert.Equal(639, machine.Bda.MemorySizeKb);   // the last kilobyte is the EBDA
         Assert.Equal(0x03, machine.Bda.VideoMode);
         Assert.Equal(80, machine.Bda.VideoColumns);
         Assert.Equal(24, machine.Bda.VideoRowsMinusOne);
@@ -267,6 +267,6 @@ public class MachineTests
         machine.AttachDisk(CreateBootableFloppy(boot));
         machine.RunInstructions(1000);
 
-        Assert.Equal(640, machine.Memory.ReadWord(0x6000));
+        Assert.Equal(639, machine.Memory.ReadWord(0x6000));   // 640 minus the EBDA
     }
 }
