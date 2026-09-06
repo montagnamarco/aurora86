@@ -318,6 +318,83 @@ public class ProtectedModeTests
     }
 
     [Fact]
+    public void IretAtRingThreeLeavesIoplAloneButLoadsIfWithinIopl()
+    {
+        // DOSX runs Windows at ring 3 with IOPL 3 and lets its real-mode side
+        // build IRET frames whose flags image carries IOPL 0. A ring 3 IRET
+        // may not touch IOPL, so the image must not demote the client; IF,
+        // being within IOPL, does follow the image.
+        using Machine machine = BuildProtectedMachine();
+        AddUserModeAndTss(machine);
+        machine.Cpu.SetSegment(SegReg.Cs, 0x23);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x2B);
+        machine.Cpu.State.Cpl = 3;
+        machine.Cpu.State.Esp = 0x3000;
+        machine.Cpu.Flags.SetValue(0x3002);          // IOPL 3, IF clear
+
+        machine.Memory.WriteDword(0x3000, 0x2000);   // EIP
+        machine.Memory.WriteDword(0x3004, 0x23);     // CS
+        machine.Memory.WriteDword(0x3008, 0x0202);   // EFLAGS: IOPL 0, IF set
+        machine.Memory.WriteByte(0x1000, 0xCF);
+        machine.Cpu.State.Eip = 0x1000;
+        machine.Cpu.Step();
+
+        Assert.Equal(0x2000u, machine.Cpu.State.Eip);
+        Assert.Equal(3u, (machine.Cpu.Flags.Value >> 12) & 3);
+        Assert.True(machine.Cpu.Flags.Interrupt);
+    }
+
+    [Fact]
+    public void IretAtRingThreeBelowIoplChangesNeitherIoplNorIf()
+    {
+        using Machine machine = BuildProtectedMachine();
+        AddUserModeAndTss(machine);
+        machine.Cpu.SetSegment(SegReg.Cs, 0x23);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x2B);
+        machine.Cpu.State.Cpl = 3;
+        machine.Cpu.State.Esp = 0x3000;
+        machine.Cpu.Flags.SetValue(0x0002);          // IOPL 0, IF clear
+
+        machine.Memory.WriteDword(0x3000, 0x2000);
+        machine.Memory.WriteDword(0x3004, 0x23);
+        machine.Memory.WriteDword(0x3008, 0x3202);   // asks for IOPL 3 and IF
+        machine.Memory.WriteByte(0x1000, 0xCF);
+        machine.Cpu.State.Eip = 0x1000;
+        machine.Cpu.Step();
+
+        Assert.Equal(0u, (machine.Cpu.Flags.Value >> 12) & 3);
+        Assert.False(machine.Cpu.Flags.Interrupt);
+    }
+
+    [Fact]
+    public void IretFromRingZeroToRingThreeSetsIoplFromTheFrame()
+    {
+        // This is how DOSX starts its client: an IRET from ring 0 whose flags
+        // image carries IOPL 3, so that the client's CLI and STI do not fault.
+        using Machine machine = BuildProtectedMachine();
+        AddUserModeAndTss(machine);
+        machine.Cpu.SetSegment(SegReg.Cs, 0x08);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x10);
+        machine.Cpu.State.Cpl = 0;
+        machine.Cpu.State.Esp = 0x6000;
+        machine.Cpu.Flags.SetValue(0x0002);
+
+        machine.Memory.WriteDword(0x6000, 0x2000);   // EIP
+        machine.Memory.WriteDword(0x6004, 0x23);     // CS, ring 3
+        machine.Memory.WriteDword(0x6008, 0x3202);   // EFLAGS: IOPL 3, IF
+        machine.Memory.WriteDword(0x600C, 0x3000);   // ESP
+        machine.Memory.WriteDword(0x6010, 0x2B);     // SS
+        machine.Memory.WriteByte(0x1000, 0xCF);
+        machine.Cpu.State.Eip = 0x1000;
+        machine.Cpu.Step();
+
+        Assert.Equal(3, machine.Cpu.State.Cpl);
+        Assert.Equal(3u, (machine.Cpu.Flags.Value >> 12) & 3);
+        Assert.True(machine.Cpu.Flags.Interrupt);
+        Assert.Equal(0x3000u, machine.Cpu.State.Esp);
+    }
+
+    [Fact]
     public void ProtectedModeDoesNotDisturbRealModeSegmentLoading()
     {
         using var machine = new Machine();

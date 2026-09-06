@@ -853,6 +853,14 @@ public sealed partial class Cpu
             byte currentPrivilege = (byte)(State.Cs.Selector & 3);
             byte returnPrivilege = (byte)(returnCs & 3);
 
+            // The privilege rules on the popped flags are judged by the ring
+            // executing the IRET, not the one it returns to: only ring 0 may
+            // change IOPL, and IF moves only if the current ring is within
+            // IOPL. A ring 3 IRET whose flags image carries IOPL 0 -- DOSX's
+            // real-mode side builds exactly such images -- must therefore
+            // leave IOPL alone, or every CLI in the client faults from then on.
+            returnFlags = GuardFlagsFromStack(returnFlags);
+
             if (returnPrivilege > currentPrivilege)
             {
                 // Going out to less privileged code: the entry sequence left
