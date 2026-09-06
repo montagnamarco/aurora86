@@ -1,8 +1,13 @@
 using Aurora386.Core;
-using Aurora386.Core.Bios;
+using Aurora386.Core.Firmware;
+using Aurora386.Core.Firmware.Fpu;
+using Aurora386.Core.Devices.Storage;
+using Aurora386.Core.Diagnostics;
 using Aurora386.Core.Cpu;
-using Aurora386.Core.Devices;
-
+using Aurora386.Core.Devices.Input;
+using Aurora386.Core.Devices.Interrupts;
+using Aurora386.Core.Devices.Timing;
+using Aurora386.Core.Devices.System;
 namespace Aurora386.Tests;
 
 /// <summary>
@@ -65,6 +70,8 @@ public class PointingDeviceServicesTests
         Assert.True(machine.PointingDevice.Enabled);
         Assert.True(machine.Ps2Mouse.Reporting);
         Assert.Equal(0x02, machine.Keyboard.CommandByte & 0x22);   // aux IRQ on, aux port on
+        Assert.Equal(0x00, machine.Io.ReadByte(0xA1) & 0x10);      // IRQ 12 unmasked at the slave PIC
+        Assert.Equal(0x00, machine.Io.ReadByte(0x21) & 0x04);      // and the cascade at the master
     }
 
     [Fact]

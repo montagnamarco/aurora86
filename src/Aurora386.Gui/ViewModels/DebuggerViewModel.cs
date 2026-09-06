@@ -104,10 +104,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
         {
             uint linear = segmentBase + offset;
 
-            Core.Debug.DecodedInstruction decoded;
+            Core.Diagnostics.DecodedInstruction decoded;
             try
             {
-                decoded = Core.Debug.Disassembler.Decode(
+                decoded = Core.Diagnostics.Disassembler.Decode(
                     address => machine.Memory.ReadByte(address),
                     linear,
                     bits32: state.Cs.Big);
@@ -218,7 +218,7 @@ public sealed partial class DebuggerViewModel : ObservableObject
         uint target = _session.WithMachine(machine =>
         {
             CpuState state = machine.Cpu.State;
-            Core.Debug.DecodedInstruction decoded = Core.Debug.Disassembler.Decode(
+            Core.Diagnostics.DecodedInstruction decoded = Core.Diagnostics.Disassembler.Decode(
                 address => machine.Memory.ReadByte(address),
                 state.Cs.Base + state.Eip,
                 bits32: state.Cs.Big);

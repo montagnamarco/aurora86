@@ -6,7 +6,11 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Input;
 using Avalonia.Threading;
-using Aurora386.Core.Devices;
+using Aurora386.Core.Devices.Storage;
+using Aurora386.Core.Devices.Input;
+using Aurora386.Core.Devices.Interrupts;
+using Aurora386.Core.Devices.Timing;
+using Aurora386.Core.Devices.System;
 using Aurora386.Gui.Emulation;
 
 namespace Aurora386.Gui.Controls;

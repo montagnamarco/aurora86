@@ -1,5 +1,7 @@
 using Aurora386.Core.IO;
 
+using Aurora386.Core.Devices.Interrupts;
+using Aurora386.Core.Devices.System;
 namespace Aurora386.Core.Devices.Audio;
 
 /// <summary>

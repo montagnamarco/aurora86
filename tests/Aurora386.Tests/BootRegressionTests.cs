@@ -1,5 +1,8 @@
 using Aurora386.Core;
-using Aurora386.Core.Bios;
+using Aurora386.Core.Firmware;
+using Aurora386.Core.Firmware.Fpu;
+using Aurora386.Core.Devices.Storage;
+using Aurora386.Core.Diagnostics;
 using Aurora386.Core.Memory;
 using CpuNs = Aurora386.Core.Cpu;
 
@@ -277,7 +280,7 @@ public class BootRegressionTests
         // arbitrary spot in memory and quietly corrupt it.
         var bus = new PhysicalMemoryBus();
         var io = new Aurora386.Core.IO.IoBus();
-        var interrupts = new Aurora386.Core.Devices.InterruptController();
+        var interrupts = new Aurora386.Core.Devices.Interrupts.InterruptController();
         interrupts.Register(io);
         var cpu = new CpuNs.Cpu(bus, io) { Interrupts = interrupts };
 

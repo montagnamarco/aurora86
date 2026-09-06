@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using Aurora386.Core.IO;
 using Aurora386.Core.Memory;
 
+using Aurora386.Core.Devices.Interrupts;
 namespace Aurora386.Core.Cpu;
 
 /// <summary>
@@ -37,7 +38,7 @@ public sealed partial class Cpu
     /// The interrupt controller. Without one the CPU never sees a hardware
     /// interrupt, which is fine for unit tests but not for a whole machine.
     /// </summary>
-    public Devices.InterruptController? Interrupts { get; set; }
+    public Devices.Interrupts.InterruptController? Interrupts { get; set; }
 
     /// <summary>
     /// STI does not enable interrupts on the spot: the window opens only after

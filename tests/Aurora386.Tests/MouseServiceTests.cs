@@ -1,8 +1,14 @@
 using Aurora386.Core;
 using Aurora386.Core.Cpu;
 using Aurora386.Core.Devices.Video;
-using Aurora386.Core.Bios;
-using Aurora386.Core.Devices;
+using Aurora386.Core.Firmware;
+using Aurora386.Core.Firmware.Fpu;
+using Aurora386.Core.Devices.Storage;
+using Aurora386.Core.Diagnostics;
+using Aurora386.Core.Devices.Input;
+using Aurora386.Core.Devices.Interrupts;
+using Aurora386.Core.Devices.Timing;
+using Aurora386.Core.Devices.System;
 using CpuNs = Aurora386.Core.Cpu;
 
 namespace Aurora386.Tests;

@@ -1,5 +1,6 @@
 using Aurora386.Core.IO;
 
+using Aurora386.Core.Devices.Interrupts;
 namespace Aurora386.Core.Devices.Network;
 
 /// <summary>

@@ -176,7 +176,7 @@ public class A20HardwareTests
         sector[510] = 0x55; sector[511] = 0xAA;
 
         using var machine = new Machine();
-        var disk = Aurora386.Core.Bios.DiskImage.CreateInMemory(0x00, 80, 2, 18);
+        var disk = Aurora386.Core.Devices.Storage.DiskImage.CreateInMemory(0x00, 80, 2, 18);
         disk.WriteSectors(0, 0, 1, 1, sector);
         machine.AttachDisk(disk);
 
@@ -398,7 +398,7 @@ public class MultiplexTests
         sector[510] = 0x55; sector[511] = 0xAA;
 
         using var machine = new Machine();
-        var disk = Aurora386.Core.Bios.DiskImage.CreateInMemory(0x00, 80, 2, 18);
+        var disk = Aurora386.Core.Devices.Storage.DiskImage.CreateInMemory(0x00, 80, 2, 18);
         disk.WriteSectors(0, 0, 1, 1, sector);
         machine.AttachDisk(disk);
         machine.RunInstructions(2000);
@@ -425,7 +425,7 @@ public class MultiplexTests
         sector[510] = 0x55; sector[511] = 0xAA;
 
         using var machine = new Machine();
-        var disk = Aurora386.Core.Bios.DiskImage.CreateInMemory(0x00, 80, 2, 18);
+        var disk = Aurora386.Core.Devices.Storage.DiskImage.CreateInMemory(0x00, 80, 2, 18);
         disk.WriteSectors(0, 0, 1, 1, sector);
         machine.AttachDisk(disk);
         machine.RunInstructions(2000);

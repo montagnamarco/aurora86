@@ -1,5 +1,4 @@
-using Aurora386.Core.Debug;
-
+using Aurora386.Core.Diagnostics;
 namespace Aurora386.Tests;
 
 /// <summary>

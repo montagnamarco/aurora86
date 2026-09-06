@@ -1,5 +1,8 @@
 using Aurora386.Core;
-using Aurora386.Core.Bios;
+using Aurora386.Core.Firmware;
+using Aurora386.Core.Firmware.Fpu;
+using Aurora386.Core.Devices.Storage;
+using Aurora386.Core.Diagnostics;
 using Aurora386.Sdl.Frontend;
 
 // Emulator entry point. The command line says which disk images to attach and
