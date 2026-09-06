@@ -93,7 +93,7 @@ public sealed class VgaMemory : IMemoryDevice
     /// </summary>
     private bool PlanarWindow(uint offset)
         => offset < 0x10000
-        && Registers.ModeInfo.Layout == VgaMemoryLayout.Planar4;
+        && Registers.EffectiveMode.Layout == VgaMemoryLayout.Planar4;
 
     /// <summary>
     /// Mode 13h's chained window. Consecutive CPU addresses walk plane 0, 1,
@@ -104,7 +104,7 @@ public sealed class VgaMemory : IMemoryDevice
     /// </summary>
     private bool LinearWindow(uint offset)
         => offset < 0x10000
-        && Registers.ModeInfo.Layout == VgaMemoryLayout.Linear8;
+        && Registers.EffectiveMode.Layout == VgaMemoryLayout.Linear8;
 
     public byte ReadByte(uint offset)
     {
@@ -340,7 +340,7 @@ public sealed class VgaMemory : IMemoryDevice
     {
         _anyDirty = true;
 
-        VgaModeInfo mode = Registers.ModeInfo;
+        VgaModeInfo mode = Registers.EffectiveMode;
 
         switch (mode.Layout)
         {

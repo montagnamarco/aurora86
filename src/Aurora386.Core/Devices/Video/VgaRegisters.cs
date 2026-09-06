@@ -91,6 +91,10 @@ public sealed class VgaRegisters : IIoDevice
         {
             _videoMode = value;
             ModeInfo = VgaModes.Get(value);
+            // A BIOS mode set programs the whole controller, so the registers
+            // are made to agree with the table here as well: memory decoding
+            // and rendering both read the registers, not the mode number.
+            LoadStandardRegisters(value);
         }
     }
 

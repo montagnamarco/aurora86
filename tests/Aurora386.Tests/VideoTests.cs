@@ -537,6 +537,30 @@ public class EffectiveModeTests
     }
 
     [Fact]
+    public void PlanarWritesFollowTheRegistersNotTheBiosModeByte()
+    {
+        // After the VDD hands the display back, the BIOS mode byte still says
+        // text while the controller is planar. Writes through the window must
+        // honour the map mask and land in the selected plane, or the VDD's
+        // plane-by-plane restore piles all four planes into one.
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+        var regs = machine.VideoRegisters;
+        regs.VideoMode = 0x03;
+        regs.SetGraphics(VgaRegisters.GcMiscellaneous, 0x05);
+        regs.SetGraphics(VgaRegisters.GcMode, 0x00);
+        regs.SetGraphics(VgaRegisters.GcBitMask, 0xFF);
+        regs.SetCrtc(0x01, 0x4F); regs.SetCrtc(0x12, 0xDF); regs.SetCrtc(0x07, 0x3E); regs.SetCrtc(0x09, 0x40);
+
+        regs.SetSequencer(VgaRegisters.SeqMapMask, 0x02);       // plane 1 only
+        machine.VideoMemory.WriteByte(0x1234, 0xA5);
+
+        Assert.Equal(0xA5, machine.VideoMemory.ReadPlane(1, 0x1234));
+        Assert.Equal(0x00, machine.VideoMemory.ReadPlane(0, 0x1234));
+        Assert.Equal(0x00, machine.VideoMemory.ReadPlane(2, 0x1234));
+    }
+
+    [Fact]
     public void ATwoHundredFiftySixColourModeIsRecognisedFromTheShiftBit()
     {
         using var machine = new Machine();
