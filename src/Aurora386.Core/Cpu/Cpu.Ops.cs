@@ -1024,10 +1024,15 @@ public sealed partial class Cpu
 
     private void RequireIoPrivilege()
     {
-        if (!State.ProtectedMode) return;
+        if (!IoPrivileged()) throw new CpuException(13, 0);
+    }
 
+    /// <summary>True when the current ring may execute IOPL-sensitive instructions.</summary>
+    private bool IoPrivileged()
+    {
+        if (!State.ProtectedMode) return true;
         byte iopl = (byte)((Flags.Value >> 12) & 3);
-        if (State.Cpl > iopl) throw new CpuException(13, 0);
+        return State.Cpl <= iopl;
     }
 
     /// <summary>
@@ -1045,15 +1050,20 @@ public sealed partial class Cpu
     /// </summary>
     private void CheckIoPermission(ushort port, int bytes)
     {
-        if (!State.ProtectedMode) return;
+        if (!IoPermitted(port, bytes)) throw new CpuException(13, 0);
+    }
+
+    private bool IoPermitted(ushort port, int bytes)
+    {
+        if (!State.ProtectedMode) return true;
 
         if (!State.Virtual8086Mode)
         {
             byte iopl = (byte)((Flags.Value >> 12) & 3);
-            if (State.Cpl <= iopl) return;
+            if (State.Cpl <= iopl) return true;
         }
 
-        if ((State.TaskRegister & 0xFFFC) == 0) throw new CpuException(13, 0);
+        if ((State.TaskRegister & 0xFFFC) == 0) return false;
 
         ulong descriptor = ReadDescriptor(State.TaskRegister);
         uint tssBase = (uint)(((descriptor >> 16) & 0xFFFFFF) | ((descriptor >> 32) & 0xFF000000));
@@ -1062,20 +1072,20 @@ public sealed partial class Cpu
 
         // The map's offset lives at 0x66 in the segment. A segment too short
         // to hold even that word has no map, and nothing is permitted.
-        if (tssLimit < 0x67) throw new CpuException(13, 0);
+        if (tssLimit < 0x67) return false;
         ushort mapBase = _memory.ReadWord(TranslateLinear(tssBase + 0x66, false));
 
         // Every byte of the access has its own bit; the last of them has to
         // lie inside the segment.
         uint firstByte = mapBase + (uint)(port >> 3);
         uint lastByte = mapBase + (uint)((port + bytes - 1) >> 3);
-        if (lastByte > tssLimit) throw new CpuException(13, 0);
+        if (lastByte > tssLimit) return false;
 
         int bits = _memory.ReadByte(TranslateLinear(tssBase + firstByte, false));
         if (lastByte != firstByte)
             bits |= _memory.ReadByte(TranslateLinear(tssBase + lastByte, false)) << 8;
 
         int mask = ((1 << bytes) - 1) << (port & 7);
-        if ((bits & mask) != 0) throw new CpuException(13, 0);
+        return (bits & mask) == 0;
     }
 }

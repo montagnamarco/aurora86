@@ -102,6 +102,37 @@ public sealed class VgaRegisters : IIoDevice
     /// <summary>True in graphics modes, false in text modes.</summary>
     public bool IsGraphicsMode => ModeInfo.IsGraphics;
 
+    /// <summary>
+    /// The mode the registers actually describe, which is what the monitor
+    /// on a real VGA would show. Normally it agrees with the BIOS table; it
+    /// differs when software programs the controller directly, without an
+    /// INT 10h mode set -- Windows' VDD does exactly that when it hands the
+    /// display back to the Windows VM after a full-screen DOS session, and
+    /// a renderer that trusted the BIOS mode number kept showing text.
+    /// Graphics is the graphics controller's "alphanumeric disable" bit;
+    /// 256-colour is its shift-256 bit; the geometry comes from the CRTC.
+    /// </summary>
+    public VgaModeInfo EffectiveMode
+    {
+        get
+        {
+            bool graphics = (_graphics[GcMiscellaneous] & 0x01) != 0;
+            if (graphics == ModeInfo.IsGraphics) return ModeInfo;
+            if (!graphics)
+                return new VgaModeInfo(ModeInfo.Mode, VgaMemoryLayout.Text, 0, 0, TextColumns, TextRows, CharacterHeight);
+
+            bool linear8 = (_graphics[GcMode] & 0x40) != 0;
+            int width = (_crtc[0x01] + 1) * (linear8 ? 4 : 8);
+            int verticalEnd = _crtc[0x12] | ((_crtc[0x07] & 0x02) << 7) | ((_crtc[0x07] & 0x40) << 3);
+            int rows = verticalEnd + 1;
+            int repeat = (_crtc[0x09] & 0x1F) + 1;
+            if ((_crtc[0x09] & 0x80) != 0) repeat *= 2;
+            int height = Math.Max(1, rows / repeat);
+            return new VgaModeInfo(ModeInfo.Mode, linear8 ? VgaMemoryLayout.Linear8 : VgaMemoryLayout.Planar4,
+                                   width, height, TextColumns, TextRows, CharacterHeight);
+        }
+    }
+
     public int TextColumns { get; set; } = 80;
     public int TextRows { get; set; } = 25;
 

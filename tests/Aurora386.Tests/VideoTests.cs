@@ -510,6 +510,66 @@ public class HighCharacterGlyphTests
 /// that ignores the load draws those words out of whatever the ROM font
 /// happens to hold.
 /// </summary>
+public class EffectiveModeTests
+{
+    [Fact]
+    public void AGraphicsModeProgrammedThroughTheRegistersAloneIsRendered()
+    {
+        // Windows' VDD restores the Windows screen after a full-screen DOS
+        // box by reloading the VGA registers, never through INT 10h: the
+        // BIOS mode byte still says text while the controller shows 640x480.
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+        var regs = machine.VideoRegisters;
+        regs.VideoMode = 0x03;
+
+        regs.SetGraphics(VgaRegisters.GcMiscellaneous, 0x05);   // alphanumeric disable, A000 map
+        regs.SetGraphics(VgaRegisters.GcMode, 0x00);            // planar, not shift-256
+        regs.SetCrtc(0x01, 0x4F);                                // 80 character clocks -> 640 pixels
+        regs.SetCrtc(0x12, 0xDF);                                // vertical display end 0x1DF -> 480 lines
+        regs.SetCrtc(0x07, 0x3E);
+        regs.SetCrtc(0x09, 0x40);
+
+        Assert.Equal(VgaMemoryLayout.Planar4, regs.EffectiveMode.Layout);
+        machine.Video.Render(force: true);
+        Assert.Equal(640, machine.Video.Width);
+        Assert.Equal(480, machine.Video.Height);
+    }
+
+    [Fact]
+    public void ATwoHundredFiftySixColourModeIsRecognisedFromTheShiftBit()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+        var regs = machine.VideoRegisters;
+        regs.VideoMode = 0x03;
+
+        regs.SetGraphics(VgaRegisters.GcMiscellaneous, 0x05);
+        regs.SetGraphics(VgaRegisters.GcMode, 0x40);            // shift-256
+        regs.SetCrtc(0x01, 0x4F);                                // 80 clocks, 4 pixels each -> 320
+        regs.SetCrtc(0x12, 0x8F);                                // 0x18F -> 400 lines
+        regs.SetCrtc(0x07, 0x1F);
+        regs.SetCrtc(0x09, 0x41);                                // doubled scanlines -> 200
+
+        VgaModeInfo mode = regs.EffectiveMode;
+        Assert.Equal(VgaMemoryLayout.Linear8, mode.Layout);
+        Assert.Equal(320, mode.PixelWidth);
+        Assert.Equal(200, mode.PixelHeight);
+    }
+
+    [Fact]
+    public void WhenTheRegistersAgreeWithTheBiosModeTheTableWins()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+        var regs = machine.VideoRegisters;
+        regs.VideoMode = 0x12;
+        regs.SetGraphics(VgaRegisters.GcMiscellaneous, 0x05);
+
+        Assert.Equal(VgaModes.Get(0x12), regs.EffectiveMode);
+    }
+}
+
 public class UserFontTests
 {
     private static Machine PoweredOn()

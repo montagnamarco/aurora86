@@ -59,6 +59,21 @@ public sealed partial class Cpu
     /// escape as a host exception instead stops the emulator dead on a
     /// condition a real machine would have survived, or at least rebooted from.
     /// </summary>
+    /// <summary>
+    /// Delivers a fault from inside an instruction handler without throwing.
+    /// Semantically identical to letting a CpuException propagate to Step():
+    /// EIP is rewound to the instruction and the exception delivered through
+    /// the same safety net. Used on the paths a monitor hits tens of thousands
+    /// of times a second -- ARPL breakpoints in V86 tasks, CLI/STI and port
+    /// I/O at ring 3 -- where a host exception per fault made enhanced-mode
+    /// Windows run at less than half speed. The caller must return at once.
+    /// </summary>
+    private void FaultNow(byte vector, uint errorCode)
+    {
+        State.Eip = _instructionStart;
+        DeliverException(vector, errorCode);
+    }
+
     private void DeliverException(byte vector, uint errorCode)
     {
         var before = SaveTransferState();
@@ -354,7 +369,7 @@ public sealed partial class Cpu
                 // Executing it instead lets the stub run on into the bytes after
                 // it, which are not code, and the DOS session ends up returning
                 // through an empty frame into the interrupt vector table.
-                if (!State.ProtectedMode || State.Virtual8086Mode) throw new CpuException(6);
+                if (!State.ProtectedMode || State.Virtual8086Mode) { FaultNow(6, 0); return; }
             {
                 if (!State.ProtectedMode) throw new CpuException(6);
                 var m = DecodeModRm();
@@ -412,14 +427,18 @@ public sealed partial class Cpu
                 return;
 
             // --- I/O ports ---------------------------------------------------
-            case 0xE4: { ushort port = FetchByte(); CheckIoPermission(port, 1); State.SetReg8(0, _io.ReadByte(port)); return; }
-            case 0xE5: ReadPortToAccumulator(FetchByte()); return;
-            case 0xE6: { ushort port = FetchByte(); CheckIoPermission(port, 1); _io.WriteByte(port, State.GetReg8(0)); return; }
-            case 0xE7: WriteAccumulatorToPort(FetchByte()); return;
-            case 0xEC: CheckIoPermission(State.Dx, 1); State.SetReg8(0, _io.ReadByte(State.Dx)); return;
-            case 0xED: ReadPortToAccumulator(State.Dx); return;
-            case 0xEE: CheckIoPermission(State.Dx, 1); _io.WriteByte(State.Dx, State.GetReg8(0)); return;
-            case 0xEF: WriteAccumulatorToPort(State.Dx); return;
+            // Port access under a monitor faults constantly by design -- that is
+            // how Windows virtualises the hardware -- so the fault is delivered
+            // directly rather than thrown: a host exception per trapped port
+            // would cost more than the instruction it replaces.
+            case 0xE4: { ushort port = FetchByte(); if (!IoPermitted(port, 1)) { FaultNow(13, 0); return; } State.SetReg8(0, _io.ReadByte(port)); return; }
+            case 0xE5: { ushort port = FetchByte(); if (!IoPermitted(port, OperandSize32 ? 4 : 2)) { FaultNow(13, 0); return; } ReadPortToAccumulator(port); return; }
+            case 0xE6: { ushort port = FetchByte(); if (!IoPermitted(port, 1)) { FaultNow(13, 0); return; } _io.WriteByte(port, State.GetReg8(0)); return; }
+            case 0xE7: { ushort port = FetchByte(); if (!IoPermitted(port, OperandSize32 ? 4 : 2)) { FaultNow(13, 0); return; } WriteAccumulatorToPort(port); return; }
+            case 0xEC: if (!IoPermitted(State.Dx, 1)) { FaultNow(13, 0); return; } State.SetReg8(0, _io.ReadByte(State.Dx)); return;
+            case 0xED: if (!IoPermitted(State.Dx, OperandSize32 ? 4 : 2)) { FaultNow(13, 0); return; } ReadPortToAccumulator(State.Dx); return;
+            case 0xEE: if (!IoPermitted(State.Dx, 1)) { FaultNow(13, 0); return; } _io.WriteByte(State.Dx, State.GetReg8(0)); return;
+            case 0xEF: if (!IoPermitted(State.Dx, OperandSize32 ? 4 : 2)) { FaultNow(13, 0); return; } WriteAccumulatorToPort(State.Dx); return;
 
             // --- shifts and rotates -------------------------------------------
             case 0xC0: { var m = DecodeModRm(); ExecuteShift(m, FetchByte(), true); return; }
@@ -680,9 +699,12 @@ public sealed partial class Cpu
             case 0xF5: Flags.Carry = !Flags.Carry; return;
             case 0xF8: Flags.Carry = false; return;
             case 0xF9: Flags.Carry = true; return;
-            case 0xFA: RequireIoPrivilege(); Flags.Interrupt = false; return;
+            case 0xFA:
+                if (!IoPrivileged()) { FaultNow(13, 0); return; }
+                Flags.Interrupt = false;
+                return;
             case 0xFB:
-                RequireIoPrivilege();
+                if (!IoPrivileged()) { FaultNow(13, 0); return; }
                 // Enabling takes effect only after the next instruction, not
                 // immediately: see _interruptShadow.
                 Flags.Interrupt = true;

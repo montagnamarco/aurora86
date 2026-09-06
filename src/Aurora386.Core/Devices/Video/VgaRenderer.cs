@@ -60,7 +60,7 @@ public sealed class VgaRenderer
     /// <summary>The size the current mode wants the framebuffer to be.</summary>
     private (int Width, int Height) TargetSize()
     {
-        VgaModeInfo mode = _registers.ModeInfo;
+        VgaModeInfo mode = _registers.EffectiveMode;
 
         if (mode.IsGraphics) return (mode.PixelWidth, mode.PixelHeight);
 
@@ -104,7 +104,7 @@ public sealed class VgaRenderer
             force = true;
         }
 
-        switch (_registers.ModeInfo.Layout)
+        switch (_registers.EffectiveMode.Layout)
         {
             case VgaMemoryLayout.Planar4: RenderPlanar(force); break;
             case VgaMemoryLayout.Linear8: RenderLinear(force); break;
