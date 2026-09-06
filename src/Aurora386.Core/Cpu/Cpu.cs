@@ -166,7 +166,9 @@ public sealed partial class Cpu
     private ushort ReadMem16(SegReg segment, uint offset)
     {
         CheckLimit(segment, offset, 2);
-        return _memory.ReadWord(TranslateLinear(LinearAddress(segment, offset), false));
+        uint linear = LinearAddress(segment, offset);
+        if (State.PagingEnabled && (linear & 0xFFF) > 0xFFE) return (ushort)ReadSplit(linear, 2);
+        return _memory.ReadWord(TranslateLinear(linear, false));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -177,7 +179,9 @@ public sealed partial class Cpu
         // The hardware-generated tests for the 0x66-prefixed opcodes confirm
         // this.
         CheckLimit(segment, offset, 4);
-        return _memory.ReadDword(TranslateLinear(LinearAddress(segment, offset), false));
+        uint linear = LinearAddress(segment, offset);
+        if (State.PagingEnabled && (linear & 0xFFF) > 0xFFC) return ReadSplit(linear, 4);
+        return _memory.ReadDword(TranslateLinear(linear, false));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -191,14 +195,42 @@ public sealed partial class Cpu
     private void WriteMem16(SegReg segment, uint offset, ushort value)
     {
         CheckLimit(segment, offset, 2);
-        _memory.WriteWord(TranslateLinear(LinearAddress(segment, offset), true), value);
+        uint linear = LinearAddress(segment, offset);
+        if (State.PagingEnabled && (linear & 0xFFF) > 0xFFE) { WriteSplit(linear, 2, value); return; }
+        _memory.WriteWord(TranslateLinear(linear, true), value);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteMem32(SegReg segment, uint offset, uint value)
     {
         CheckLimit(segment, offset, 4);
-        _memory.WriteDword(TranslateLinear(LinearAddress(segment, offset), true), value);
+        uint linear = LinearAddress(segment, offset);
+        if (State.PagingEnabled && (linear & 0xFFF) > 0xFFC) { WriteSplit(linear, 4, value); return; }
+        _memory.WriteDword(TranslateLinear(linear, true), value);
+    }
+
+    /// <summary>
+    /// A word or dword that straddles a page boundary lives in two pages that
+    /// need not be adjacent in physical memory, and either may be absent. So
+    /// each byte is translated on its own; for a write every page is
+    /// translated -- and its dirty bit set -- before the first byte lands, so
+    /// that a fault on the second page leaves memory untouched. The first
+    /// symptom of getting this wrong was KRNL386 walking a fixup chain in
+    /// GDI.EXE: a selector written at linear 40FFF lost its high byte.
+    /// </summary>
+    private uint ReadSplit(uint linear, int size)
+    {
+        uint value = 0;
+        for (int i = size - 1; i >= 0; i--)
+            value = (value << 8) | _memory.ReadByte(TranslatePaged(linear + (uint)i, false));
+        return value;
+    }
+
+    private void WriteSplit(uint linear, int size, uint value)
+    {
+        Span<uint> physical = stackalloc uint[4];
+        for (int i = 0; i < size; i++) physical[i] = TranslatePaged(linear + (uint)i, true);
+        for (int i = 0; i < size; i++) _memory.WriteByte(physical[i], (byte)(value >> (8 * i)));
     }
 
     // --- instruction stream fetch ---------------------------------------------
@@ -329,6 +361,8 @@ public sealed partial class Cpu
     public ushort ReadMemoryWord(SegReg segment, uint offset) => ReadMem16(segment, offset);
     public void WriteMemoryByte(SegReg segment, uint offset, byte value) => WriteMem8(segment, offset, value);
     public void WriteMemoryWord(SegReg segment, uint offset, ushort value) => WriteMem16(segment, offset, value);
+    public uint ReadMemoryDword(SegReg segment, uint offset) => ReadMem32(segment, offset);
+    public void WriteMemoryDword(SegReg segment, uint offset, uint value) => WriteMem32(segment, offset, value);
 
     /// <summary>Physical memory, for accesses that bypass the segments.</summary>
     public PhysicalMemoryBus Memory => _memory;

@@ -85,6 +85,55 @@ public class PagingTests
     }
 
     [Fact]
+    public void AWordAcrossAPageBoundaryLandsInBothFrames()
+    {
+        // Two consecutive linear pages need not be consecutive physically.
+        // KRNL386's fixup loop writes selectors wherever the linker put them,
+        // and one of GDI's landed on the last byte of a page.
+        const uint Linear = 0x00400000;
+        using Machine machine = Paged(Linear, 0x00330000);
+        machine.Memory.WriteDword(TableAddress + (((Linear + 0x1000) >> 12) & 0x3FF) * 4,
+                                  0x00350000 | Present | Writable | User);
+
+        machine.Cpu.WriteMemoryWord(SegReg.Ds, Linear + 0xFFF, 0x050F);
+        Assert.Equal(0x0F, machine.Memory.ReadByte(0x00330FFF));
+        Assert.Equal(0x05, machine.Memory.ReadByte(0x00350000));
+
+        machine.Memory.WriteByte(0x00330FFF, 0x58);
+        machine.Memory.WriteByte(0x00350000, 0x34);
+        Assert.Equal((ushort)0x3458, machine.Cpu.ReadMemoryWord(SegReg.Ds, Linear + 0xFFF));
+    }
+
+    [Fact]
+    public void ADwordAcrossAPageBoundaryLandsInBothFrames()
+    {
+        const uint Linear = 0x00400000;
+        using Machine machine = Paged(Linear, 0x00330000);
+        machine.Memory.WriteDword(TableAddress + (((Linear + 0x1000) >> 12) & 0x3FF) * 4,
+                                  0x00350000 | Present | Writable | User);
+
+        machine.Cpu.WriteMemoryDword(SegReg.Ds, Linear + 0xFFD, 0x11223344);
+        Assert.Equal(0x44, machine.Memory.ReadByte(0x00330FFD));
+        Assert.Equal(0x33, machine.Memory.ReadByte(0x00330FFE));
+        Assert.Equal(0x22, machine.Memory.ReadByte(0x00330FFF));
+        Assert.Equal(0x11, machine.Memory.ReadByte(0x00350000));
+        Assert.Equal(0x11223344u, machine.Cpu.ReadMemoryDword(SegReg.Ds, Linear + 0xFFD));
+    }
+
+    [Fact]
+    public void AWriteAcrossAMissingSecondPageFaultsWithoutTouchingTheFirst()
+    {
+        const uint Linear = 0x00400000;
+        using Machine machine = Paged(Linear, 0x00330000);
+        machine.Memory.WriteByte(0x00330FFF, 0xAA);
+
+        var fault = Assert.Throws<PageFaultException>(
+            () => machine.Cpu.WriteMemoryWord(SegReg.Ds, Linear + 0xFFF, 0x050F));
+        Assert.Equal(Linear + 0x1000, fault.LinearAddress);
+        Assert.Equal(0xAA, machine.Memory.ReadByte(0x00330FFF));
+    }
+
+    [Fact]
     public void AMissingPageRaisesAFaultAndReportsTheAddress()
     {
         using Machine machine = Paged(0x00400000, 0x00330000);
