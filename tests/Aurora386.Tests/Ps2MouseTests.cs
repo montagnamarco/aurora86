@@ -23,7 +23,7 @@ public class Ps2MouseTests
         public InterruptController Interrupts { get; } = new();
         public IoBus Io { get; } = new();
         public Keyboard8042 Controller { get; }
-        public MouseState State { get; } = new();
+        public MouseState State { get; } = new() { ConnectedInterface = MouseInterface.Ps2 };   // the port under test
         public Ps2Mouse Mouse { get; }
 
         public Rig()
@@ -446,6 +446,7 @@ public class Ps2MouseTests
         // built, queued, and never delivered -- a mouse that is perfectly
         // functional and completely invisible.
         using var machine = new Machine();
+        machine.MouseInterface = MouseInterface.Ps2;   // these tests exercise the PS/2 port
         machine.RunInstructions(2000);
 
         machine.Io.WriteByte(0x64, 0xA8);

@@ -107,7 +107,10 @@ public sealed class MouseState
     /// it simply stops receiving packets, exactly as it would if the cable
     /// were pulled out of the back of a running machine.
     /// </summary>
-    public MouseInterface ConnectedInterface { get; set; } = MouseInterface.Ps2;
+    // COM1 by default. It is the port every DOS program and Windows 3.x
+    // driver of the period looks for first, and until the BIOS offers the
+    // INT 15h C2xx services MOUSE.DRV cannot use the PS/2 port anyway.
+    public MouseInterface ConnectedInterface { get; set; } = MouseInterface.Serial;
 
     /// <summary>
     /// Reports movement since the last report, in mickeys.

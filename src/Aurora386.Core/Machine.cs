@@ -179,6 +179,8 @@ public sealed class Machine : IDisposable
         Redirector = new RedirectorServices(this);
         _redirectorInstaller = new RedirectorInstaller(this);
         MouseServices = new MouseServices(this, Mouse);
+        Video.Pointer = MouseServices.Pointer;
+        Video.BeforeRender = MouseServices.Refresh;
         Xms = new XmsManager(Memory);
 
         InstallBios();
@@ -995,6 +997,7 @@ public sealed class Machine : IDisposable
             executed += steps;
             AdvanceDevices(steps);
             TryInstallRedirector();
+            TryReclaimMouseVector();
             DispatchMouseEvent();
 
             if (Keyboard.ResetRequested || SystemControl.ResetRequested)
@@ -1048,6 +1051,43 @@ public sealed class Machine : IDisposable
     /// guest, and doing that every two thousand instructions on a machine
     /// that will never have DOS on it would be pure waste.
     /// </summary>
+    /// <summary>
+    /// Puts INT 33h back on our driver after DOS has taken it away.
+    ///
+    /// The BIOS installs the mouse interface at POST, but IO.SYS, while it
+    /// initialises, points a block of vectors -- INT 33h among them -- at a
+    /// plain IRET of its own, because on a real PC there is no mouse driver
+    /// until MOUSE.COM loads. From then on every program asking "is there a
+    /// mouse?" gets its AX back unchanged and concludes there is not, which
+    /// is exactly what EDIT and QBASIC did here. MOUSE.COM fixes this by
+    /// being loaded after DOS; we fix it by noticing.
+    ///
+    /// Only a vector that leads to an IRET is reclaimed. A real driver the
+    /// user chose to load -- a genuine MOUSE.COM, say -- leaves the vector on
+    /// its own code, and that is respected: the machine must never fight the
+    /// guest for a vector somebody deliberately took.
+    /// </summary>
+    private void TryReclaimMouseVector()
+    {
+        if (--_mouseVectorCountdown > 0) return;
+        _mouseVectorCountdown = MouseVectorCheckInterval;
+
+        if (Cpu.State.ProtectedMode) return;
+        if (Mouse.ConnectedInterface == MouseInterface.None) return;
+
+        ushort offset = Memory.ReadWord(0x33 * 4);
+        ushort segment = Memory.ReadWord(0x33 * 4 + 2);
+        if (segment == 0xF000 && offset == BiosRom.Entry.Mouse) return;
+
+        uint target = ((uint)segment << 4) + offset;
+        if (Memory.ReadByte(target) != 0xCF) return;   // somebody's real handler: theirs
+
+        SetVector(0x33, BiosRom.Entry.Mouse);
+    }
+
+    private const int MouseVectorCheckInterval = 50;
+    private int _mouseVectorCountdown = 1;
+
     private void TryInstallRedirector()
     {
         if (!Redirector.MountedDrives.Any()) return;

@@ -89,6 +89,9 @@ public class MouseEndToEndTests
     /// </summary>
     private static void EnableReporting(Machine machine)
     {
+        // The port under test is the PS/2 one; the machine defaults to COM1.
+        machine.MouseInterface = MouseInterface.Ps2;
+
         // Exactly what a driver does: open the auxiliary port, allow its
         // interrupt, then tell the mouse to start reporting.
         machine.Io.WriteByte(0x64, 0xA8);

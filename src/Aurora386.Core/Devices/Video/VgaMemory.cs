@@ -388,6 +388,17 @@ public sealed class VgaMemory : IMemoryDevice
         _anyDirty = false;
     }
 
+    /// <summary>
+    /// Marks a run of rows for redrawing without any write having happened:
+    /// the renderer uses it to repaint where the mouse pointer used to be.
+    /// </summary>
+    public void MarkRowsDirty(int first, int count)
+    {
+        for (int row = Math.Max(0, first); row < first + count && row < _dirtyRows.Length; row++)
+            _dirtyRows[row] = true;
+        _anyDirty = true;
+    }
+
     public void MarkAllDirty()
     {
         Array.Fill(_dirtyRows, true);

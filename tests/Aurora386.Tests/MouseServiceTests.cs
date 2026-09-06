@@ -1,4 +1,6 @@
 using Aurora386.Core;
+using Aurora386.Core.Cpu;
+using Aurora386.Core.Devices.Video;
 using Aurora386.Core.Bios;
 using Aurora386.Core.Devices;
 using CpuNs = Aurora386.Core.Cpu;
@@ -752,5 +754,89 @@ public class MouseServiceTests
         machine.MoveMouse(5, 5);
 
         Assert.False(machine.MouseServices.TryDispatchEvent(machine.Cpu));
+    }
+
+    [Fact]
+    public void AVectorDosPointedAtAnIretIsTakenBack()
+    {
+        // IO.SYS parks INT 33h on an IRET during its own initialisation; a
+        // program probing afterwards would find no mouse. The machine notices
+        // and puts the driver back.
+        using Machine machine = Started();
+        machine.Memory.WriteByte(0x7000, 0xCF);            // an IRET, as DOS leaves it
+        machine.Memory.WriteWord(0x33 * 4, 0x0000);
+        machine.Memory.WriteWord(0x33 * 4 + 2, 0x0700);
+
+        machine.RunInstructions(200_000);
+
+        Assert.Equal((ushort)BiosRom.Entry.Mouse, machine.Memory.ReadWord(0x33 * 4));
+        Assert.Equal((ushort)0xF000, machine.Memory.ReadWord(0x33 * 4 + 2));
+    }
+
+    [Fact]
+    public void AVectorPointingAtARealDriverIsLeftAlone()
+    {
+        using Machine machine = Started();
+        machine.Memory.WriteByte(0x7000, 0x90);            // not an IRET: somebody's code
+        machine.Memory.WriteWord(0x33 * 4, 0x0000);
+        machine.Memory.WriteWord(0x33 * 4 + 2, 0x0700);
+
+        machine.RunInstructions(200_000);
+
+        Assert.Equal((ushort)0x0700, machine.Memory.ReadWord(0x33 * 4 + 2));
+    }
+
+    [Fact]
+    public void TheTextPointerSwapsTheColoursOfTheCellUnderIt()
+    {
+        using Machine machine = Started();
+        // A grey-on-black 'A' at column 3, row 2.
+        uint cell = VgaMemory.TextWindowOffset + (2 * 80 + 3) * 2;
+        machine.VideoMemory[cell] = (byte)'A';
+        machine.VideoMemory[cell + 1] = 0x07;
+
+        Call(machine, 0x0000);
+        machine.Cpu.State.Cx = 3 * 8; machine.Cpu.State.Dx = 2 * 8;
+        Call(machine, 0x0004);                              // position
+        Call(machine, 0x0001);                              // show
+
+        machine.Video.Render(force: true);
+        // The cell's background is now the old foreground: light grey, not black.
+        uint background = machine.Video.Framebuffer[(2 * 16) * machine.Video.Width + 3 * 8];
+        Assert.NotEqual(0xFF000000u, background);
+
+        // Hiding restores the cell on the next frame, and marks the row itself
+        // dirty so the repaint happens without any memory write.
+        Call(machine, 0x0002);
+        Assert.True(machine.Video.Render());
+        background = machine.Video.Framebuffer[(2 * 16) * machine.Video.Width + 3 * 8];
+        Assert.Equal(0xFF000000u, background);
+    }
+
+    [Fact]
+    public void FunctionTenSetsTheTextMasksAndFunctionNineTheShape()
+    {
+        using Machine machine = Started();
+        Call(machine, 0x0000);
+
+        machine.Cpu.State.Bx = 0; machine.Cpu.State.Cx = 0x00FF; machine.Cpu.State.Dx = 0x4700;
+        Call(machine, 0x000A);
+        Assert.Equal((ushort)0x00FF, machine.MouseServices.Pointer.TextScreenMask);
+        Assert.Equal((ushort)0x4700, machine.MouseServices.Pointer.TextCursorMask);
+
+        // 32 words at ES:DX: AND mask all ones, XOR mask a single top-left pixel.
+        for (int row = 0; row < 16; row++)
+        {
+            machine.Memory.WriteWord(0x8000 + (uint)(row * 2), 0xFFFF);
+            machine.Memory.WriteWord(0x8000 + 32 + (uint)(row * 2), row == 0 ? (ushort)0x8000 : (ushort)0);
+        }
+        machine.Cpu.SetSegment(SegReg.Es, 0x0800);
+        machine.Cpu.State.Bx = 2; machine.Cpu.State.Cx = 3; machine.Cpu.State.Dx = 0;
+        Call(machine, 0x0009);
+
+        Assert.Equal(2, machine.MouseServices.Pointer.HotSpotX);
+        Assert.Equal(3, machine.MouseServices.Pointer.HotSpotY);
+        Assert.Equal((ushort)0x8000, machine.MouseServices.Pointer.XorMask[0]);
+        Assert.Equal((ushort)0xFFFF, machine.MouseServices.Pointer.AndMask[5]);
     }
 }

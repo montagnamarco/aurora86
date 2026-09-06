@@ -1,4 +1,5 @@
 using Aurora386.Core.Devices;
+using Aurora386.Core.Devices.Video;
 using CpuNs = Aurora386.Core.Cpu;
 
 namespace Aurora386.Core.Bios;
@@ -40,6 +41,33 @@ public sealed class MouseServices
     {
         _machine = machine;
         _state = state;
+    }
+
+    /// <summary>
+    /// What the renderer draws for the pointer. Kept in step with the
+    /// driver's position and show count after every call, so that the
+    /// picture never lags the state a program would read back.
+    /// </summary>
+    public MousePointer Pointer { get; } = new();
+
+    /// <summary>
+    /// Brings the driver up to date with the mouse without a program asking:
+    /// the renderer calls this once per frame so the pointer follows the
+    /// mouse even while the program is busy and not polling, exactly as the
+    /// real driver's interrupt handler moved the pointer behind a program's
+    /// back.
+    /// </summary>
+    public void Refresh()
+    {
+        Update();
+        SyncPointer();
+    }
+
+    private void SyncPointer()
+    {
+        Pointer.Visible = _enabled && CursorVisible;
+        Pointer.X = PositionX;
+        Pointer.Y = PositionY;
     }
 
     /// <summary>
@@ -159,6 +187,18 @@ public sealed class MouseServices
     {
         ushort function = cpu.State.Ax;
 
+        try
+        {
+            Dispatch(cpu, function);
+        }
+        finally
+        {
+            SyncPointer();
+        }
+    }
+
+    private void Dispatch(CpuNs.Cpu cpu, ushort function)
+    {
         switch (function)
         {
             case 0x0000: Reset(cpu); return;
@@ -170,8 +210,8 @@ public sealed class MouseServices
             case 0x0006: ReportButtonRelease(cpu); return;
             case 0x0007: SetHorizontalRange(cpu); return;
             case 0x0008: SetVerticalRange(cpu); return;
-            case 0x0009: return;   // define the graphics cursor shape: we draw no cursor
-            case 0x000A: return;   // define the text cursor shape: likewise
+            case 0x0009: SetGraphicsCursor(cpu); return;
+            case 0x000A: SetTextCursor(cpu); return;
             case 0x000B: ReportMotion(cpu); return;
             case 0x000C: SetEventHandler(cpu); return;
             case 0x000F: SetSensitivityFromMickeys(cpu); return;
@@ -221,6 +261,11 @@ public sealed class MouseServices
         HandlerOffset = 0;
         HandlerMask = 0;
 
+        Pointer.LoadDefaultArrow();
+        Pointer.TextScreenMask = 0x77FF;
+        Pointer.TextCursorMask = 0x7700;
+        Pointer.UsesHardwareTextCursor = false;
+
         Array.Clear(_pressCount);
         Array.Clear(_releaseCount);
         _state.ClearButtonCounts();
@@ -261,6 +306,45 @@ public sealed class MouseServices
     }
 
     private void HideCursor() => _showCount--;
+
+    /// <summary>
+    /// Function 0009h: the graphics pointer's shape. BX,CX are the hot spot
+    /// and ES:DX points at 32 words: sixteen rows of screen (AND) mask
+    /// followed by sixteen rows of cursor (XOR) mask, most significant bit
+    /// leftmost. Programs that draw their own arrow, hand or hourglass all
+    /// come through here.
+    /// </summary>
+    private void SetGraphicsCursor(CpuNs.Cpu cpu)
+    {
+        Pointer.HotSpotX = (short)cpu.State.Bx;
+        Pointer.HotSpotY = (short)cpu.State.Cx;
+
+        uint offset = cpu.State.Dx;
+        for (int row = 0; row < 16; row++)
+        {
+            Pointer.AndMask[row] = cpu.ReadMemoryWord(CpuNs.SegReg.Es, offset + (uint)(row * 2));
+            Pointer.XorMask[row] = cpu.ReadMemoryWord(CpuNs.SegReg.Es, offset + 32 + (uint)(row * 2));
+        }
+    }
+
+    /// <summary>
+    /// Function 000Ah: the text pointer. BX selects the kind: 0 is the
+    /// software cursor, with CX the screen mask and DX the cursor mask applied
+    /// to the cell's character/attribute word; 1 asks for the hardware cursor
+    /// instead, with CX and DX its start and end scanlines.
+    /// </summary>
+    private void SetTextCursor(CpuNs.Cpu cpu)
+    {
+        if (cpu.State.Bx == 0)
+        {
+            Pointer.UsesHardwareTextCursor = false;
+            Pointer.TextScreenMask = cpu.State.Cx;
+            Pointer.TextCursorMask = cpu.State.Dx;
+            return;
+        }
+
+        Pointer.UsesHardwareTextCursor = true;
+    }
 
     /// <summary>
     /// Function 0003h: where the pointer is and which buttons are down.

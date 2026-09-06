@@ -254,9 +254,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         get => _mouseInterface;
         set
         {
-            if (!SetProperty(ref _mouseInterface, value)) return;
-
+            // Pushed to the machine even when unchanged: the machine may have
+            // been rebuilt (cold reset, new session) with its own default.
             Session.WithMachine(machine => machine.MouseInterface = value);
+            if (!SetProperty(ref _mouseInterface, value)) return;
 
             // The three "is this the one" properties the menu ticks are
             // derived from this one, so they have to be announced by hand.
@@ -273,7 +274,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
-    private MouseInterface _mouseInterface = MouseInterface.Ps2;
+    // COM1 by default: it is what MOUSE.DRV and every DOS program of the
+    // period expect to find, and the BIOS does not yet offer INT 15h C2xx
+    // for the PS/2 port.
+    private MouseInterface _mouseInterface = MouseInterface.Serial;
 
     // A menu item binds its tick to a boolean, so each choice needs one. They
     // are settable because a RadioButton-style MenuItem writes back when it

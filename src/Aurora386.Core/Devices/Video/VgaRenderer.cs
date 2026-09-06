@@ -57,6 +57,24 @@ public sealed class VgaRenderer
 
     public ReadOnlySpan<uint> Framebuffer => _framebuffer;
 
+    /// <summary>
+    /// The mouse pointer to compose over each frame, if a driver provides one.
+    /// See <see cref="MousePointer"/> for why it is drawn here and not in
+    /// video memory.
+    /// </summary>
+    public MousePointer? Pointer { get; set; }
+
+    /// <summary>
+    /// Called at the start of every frame, before the pointer is read: the
+    /// machine hooks the mouse driver's refresh here so the pointer moves
+    /// even when the program is not polling.
+    /// </summary>
+    public Action? BeforeRender { get; set; }
+
+    // Where the pointer was drawn last frame, so those rows are repainted.
+    private int _pointerRowFirst = -1, _pointerRowCount;
+    private bool _pointerWasVisible;
+
     /// <summary>The size the current mode wants the framebuffer to be.</summary>
     private (int Width, int Height) TargetSize()
     {
@@ -92,6 +110,9 @@ public sealed class VgaRenderer
     /// </summary>
     public bool Render(bool force = false)
     {
+        BeforeRender?.Invoke();
+        InvalidatePointerRows();
+
         if (!force && !_memory.HasChanges) return false;
 
         // A mode set the renderer never heard about -- a program programming
@@ -111,9 +132,111 @@ public sealed class VgaRenderer
             default: RenderText(force); break;
         }
 
+        DrawPointer();
+
         _memory.ClearDirty();
         FramesRendered++;
         return true;
+    }
+
+    /// <summary>
+    /// The rows under the pointer's last position have to be repainted from
+    /// memory when it moves or hides, or a trail of stale pointers is left
+    /// behind: nothing in video memory changed there, so nothing else would
+    /// mark them dirty.
+    /// </summary>
+    private void InvalidatePointerRows()
+    {
+        MousePointer? pointer = Pointer;
+        bool visible = pointer is { Visible: true } && !(pointer.UsesHardwareTextCursor && !_registers.EffectiveMode.IsGraphics);
+        (int first, int count) = visible ? PointerRows(pointer!) : (-1, 0);
+
+        bool moved = visible != _pointerWasVisible || first != _pointerRowFirst || count != _pointerRowCount;
+        if (!moved) return;
+
+        if (_pointerWasVisible) _memory.MarkRowsDirty(_pointerRowFirst, _pointerRowCount);
+        if (visible) _memory.MarkRowsDirty(first, count);
+
+        _pointerWasVisible = visible;
+        _pointerRowFirst = first;
+        _pointerRowCount = count;
+    }
+
+    /// <summary>The dirty-row span the pointer covers: one text row, or sixteen scanlines.</summary>
+    private (int First, int Count) PointerRows(MousePointer pointer)
+    {
+        if (_registers.EffectiveMode.IsGraphics)
+            return (pointer.Y - pointer.HotSpotY, 16);
+
+        int charHeight = Math.Max(1, _registers.CharacterHeight);
+        return (pointer.Y / 8, 1);
+    }
+
+    private void DrawPointer()
+    {
+        MousePointer? pointer = Pointer;
+        if (pointer is not { Visible: true }) return;
+
+        if (_registers.EffectiveMode.IsGraphics) DrawGraphicsPointer(pointer);
+        else if (!pointer.UsesHardwareTextCursor) DrawTextPointer(pointer);
+    }
+
+    /// <summary>
+    /// The text pointer: the cell under the pointer is redrawn with its
+    /// character/attribute word passed through the driver's two masks. With
+    /// the default masks that means the same character with foreground and
+    /// background swapped.
+    /// </summary>
+    private void DrawTextPointer(MousePointer pointer)
+    {
+        int columns = _registers.TextColumns;
+        int rows = _registers.TextRows;
+        int column = pointer.X / 8, row = pointer.Y / 8;
+        if (column < 0 || column >= columns || row < 0 || row >= rows) return;
+
+        uint baseOffset = VgaMemory.TextWindowOffset + (uint)(_registers.StartAddress * 2);
+        uint offset = baseOffset + (uint)((row * columns + column) * 2);
+        ushort cell = (ushort)(_memory[offset] | (_memory[offset + 1] << 8));
+        cell = (ushort)((cell & pointer.TextScreenMask) ^ pointer.TextCursorMask);
+
+        byte character = (byte)cell;
+        int attribute = cell >> 8;
+        DrawGlyph(column, row, _registers.CharacterHeight, character,
+                  attribute & 0x0F, (attribute >> 4) & 0x07, drawCursor: false);
+    }
+
+    /// <summary>
+    /// The graphics pointer, composed pixel by pixel: a clear AND bit blanks
+    /// the pixel, a set XOR bit inverts it. The usual arrow is AND clear and
+    /// XOR set for the body (white), AND clear and XOR clear for the outline
+    /// (black), and both set where the screen shows through unchanged.
+    /// </summary>
+    private void DrawGraphicsPointer(MousePointer pointer)
+    {
+        int left = pointer.X - pointer.HotSpotX;
+        int top = pointer.Y - pointer.HotSpotY;
+
+        for (int row = 0; row < 16; row++)
+        {
+            int y = top + row;
+            if (y < 0 || y >= Height) continue;
+
+            ushort and = pointer.AndMask[row], xor = pointer.XorMask[row];
+            for (int bit = 0; bit < 16; bit++)
+            {
+                int x = left + bit;
+                if (x < 0 || x >= Width) continue;
+
+                int mask = 0x8000 >> bit;
+                bool keep = (and & mask) != 0, invert = (xor & mask) != 0;
+                if (keep && !invert) continue;
+
+                int index = y * Width + x;
+                uint pixel = keep ? _framebuffer[index] : 0xFF000000;
+                if (invert) pixel ^= 0x00FFFFFF;
+                _framebuffer[index] = pixel;
+            }
+        }
     }
 
     private void RenderText(bool force)
