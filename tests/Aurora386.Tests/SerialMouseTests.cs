@@ -26,8 +26,7 @@ public class SerialMouseTests
         {
             // This rig is a machine with the mouse plugged into COM1, which
             // has to be said out loud: the shared state feeds whichever port
-            // the mouse is actually in, and it defaults to PS/2 because that
-            // is what a late 386 shipped with.
+            // the mouse is actually in.
             State.ConnectedInterface = MouseInterface.Serial;
 
             Mouse = new SerialMouse(State, Interrupts);
@@ -71,6 +70,20 @@ public class SerialMouseTests
 
         Assert.True(rig.DataWaiting);
         Assert.Equal((byte)'M', rig.Read(0));
+    }
+
+    [Fact]
+    public void APortWithTheMousePluggedInElsewhereStaysSilent()
+    {
+        // Windows' MOUSE.DRV probes COM1 before the PS/2 port. If COM1 says
+        // 'M' while the mouse is on the PS/2 socket, the driver adopts a
+        // serial mouse that will never move; an empty port must stay quiet.
+        var rig = new Rig();
+        rig.State.ConnectedInterface = MouseInterface.Ps2;
+
+        rig.Write(4, 0x03);
+
+        Assert.False(rig.DataWaiting);
     }
 
     [Fact]

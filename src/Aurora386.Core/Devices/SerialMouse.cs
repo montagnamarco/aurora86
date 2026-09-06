@@ -242,6 +242,13 @@ public sealed class SerialMouse : IIoDevice
     /// </summary>
     private void AnnounceItself()
     {
+        // A port with no mouse on it stays silent, and silence is exactly
+        // what a driver needs to hear: Windows' MOUSE.DRV probes COM1 before
+        // it tries the PS/2 port, and a port that answered 'M' with the mouse
+        // plugged in elsewhere made it adopt a serial mouse that would never
+        // move -- the pointer froze on the PS/2 setting for that reason.
+        if (_state.ConnectedInterface != MouseInterface.Serial) return;
+
         _receiveQueue.Enqueue((byte)'M');
         SignalIfEnabled();
     }
