@@ -75,6 +75,12 @@ public sealed partial class Machine
             AdvanceDevices(steps);
             TryInstallRedirector();
             TryReclaimMouseVector();
+
+            // The pointer's position is brought up to date here, on the
+            // emulation thread, and never from the renderer: the renderer
+            // runs on the interface thread, and touching the driver's state
+            // from there races with the guest reading it through INT 33h.
+            MouseServices.Refresh();
             DispatchMouseEvent();
 
             if (Keyboard.ResetRequested || SystemControl.ResetRequested)
@@ -163,7 +169,17 @@ public sealed partial class Machine
     /// guest for a vector somebody deliberately took.
     /// </summary>
     /// <summary>Whether INT 33h is put back on the BIOS driver after DOS parks it on an IRET.</summary>
-    public bool ReclaimMouseVector { get; set; } = true;
+    /// <summary>
+    /// Off by default, and deliberately so.
+    ///
+    /// Taking a vector out of the guest's hands is the most invasive thing
+    /// this emulator does, and the first field report was EDIT and QBASIC
+    /// misbehaving in three different ways because of it. A guest that wants
+    /// a mouse under DOS can load MOUSE.COM, exactly as on a real machine;
+    /// the emulator offers INT 33h from POST, and if DOS parks the vector the
+    /// honest answer is that there is no driver loaded.
+    /// </summary>
+    public bool ReclaimMouseVector { get; set; }
 
     private void TryReclaimMouseVector()
     {

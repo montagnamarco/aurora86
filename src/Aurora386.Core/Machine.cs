@@ -174,7 +174,6 @@ public sealed partial class Machine : IDisposable
         MouseServices = new MouseServices(this, Mouse);
         PointingDevice = new PointingDeviceServices(this);
         Video.Pointer = MouseServices.Pointer;
-        Video.BeforeRender = MouseServices.Refresh;
         Xms = new XmsManager(Memory);
 
         InstallBios();

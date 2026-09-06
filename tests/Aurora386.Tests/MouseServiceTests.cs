@@ -787,7 +787,11 @@ public class MouseServiceTests
         // IO.SYS parks INT 33h on an IRET during its own initialisation; a
         // program probing afterwards would find no mouse. The machine notices
         // and puts the driver back.
+        // Off by default -- taking a vector out of the guest's hands broke
+        // EDIT and QBASIC in the field -- so the test turns it on, and uses a
+        // segment low enough to be DOS rather than a loaded program.
         using Machine machine = Started();
+        machine.ReclaimMouseVector = true;
         machine.Memory.WriteByte(0x7000, 0xCF);            // an IRET, as DOS leaves it
         machine.Memory.WriteWord(0x33 * 4, 0x0000);
         machine.Memory.WriteWord(0x33 * 4 + 2, 0x0700);
@@ -802,6 +806,7 @@ public class MouseServiceTests
     public void AVectorPointingAtARealDriverIsLeftAlone()
     {
         using Machine machine = Started();
+        machine.ReclaimMouseVector = true;
         machine.Memory.WriteByte(0x7000, 0x90);            // not an IRET: somebody's code
         machine.Memory.WriteWord(0x33 * 4, 0x0000);
         machine.Memory.WriteWord(0x33 * 4 + 2, 0x0700);

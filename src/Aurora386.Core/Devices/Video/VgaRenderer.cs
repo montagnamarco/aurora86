@@ -64,12 +64,6 @@ public sealed class VgaRenderer
     /// </summary>
     public MousePointer? Pointer { get; set; }
 
-    /// <summary>
-    /// Called at the start of every frame, before the pointer is read: the
-    /// machine hooks the mouse driver's refresh here so the pointer moves
-    /// even when the program is not polling.
-    /// </summary>
-    public Action? BeforeRender { get; set; }
 
     // Where the pointer was drawn last frame, so those rows are repainted.
     private int _pointerRowFirst = -1, _pointerRowCount;
@@ -110,7 +104,6 @@ public sealed class VgaRenderer
     /// </summary>
     public bool Render(bool force = false)
     {
-        BeforeRender?.Invoke();
         InvalidatePointerRows();
 
         if (!force && !_memory.HasChanges) return false;
