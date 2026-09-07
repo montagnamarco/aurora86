@@ -23,6 +23,18 @@ public sealed class VgaRegisters : IIoDevice
 {
     // --- CRTC ----------------------------------------------------------------
     private readonly byte[] _crtc = new byte[32];
+
+    /// <summary>
+    /// The PEL mask (port 0x3C6), ANDed with every pixel value before it
+    /// reaches the palette. 0xFF -- everything through -- is the state after
+    /// any mode set, and the state it must power on in: a zero here would
+    /// leave every pixel reading colour 0 and the screen uniformly black,
+    /// which is a memorable way to appear broken.
+    /// </summary>
+    private byte _pelMask = 0xFF;
+
+    /// <summary>Whether the last DAC index written was for writing rather than reading.</summary>
+    private bool _dacWritePending;
     private byte _crtcIndex;
 
     // --- sequencer, graphics controller, attribute controller -----------------
@@ -79,6 +91,27 @@ public sealed class VgaRegisters : IIoDevice
 
     /// <summary>Graphics index 0x07: planes that take part in read mode 1's compare.</summary>
     public const int GcColorDontCare = 0x07;
+
+    /// <summary>
+    /// Where in the first megabyte the adapter answers, from bits 2-3 of the
+    /// Miscellaneous register.
+    ///
+    /// The four choices are not arbitrary: they are the addresses the earlier
+    /// adapters used, and a VGA claims whichever one the software it is
+    /// pretending to be expects. A graphics program wants the full 128 KB at
+    /// 0xA0000; a program written for a monochrome adapter looks at 0xB0000;
+    /// a CGA program looks at 0xB8000. Getting this wrong does not corrupt
+    /// anything -- the writes simply land somewhere the adapter is not
+    /// listening, and the screen stays blank while the program runs happily
+    /// on.
+    /// </summary>
+    public (uint Base, uint Size) MemoryWindow => ((_graphics[GcMiscellaneous] >> 2) & 3) switch
+    {
+        0 => (0xA0000u, 0x20000u),   // 128 KB: the whole aperture
+        1 => (0xA0000u, 0x10000u),   // 64 KB: what EGA and VGA graphics use
+        2 => (0xB0000u, 0x08000u),   // where a monochrome adapter lived
+        _ => (0xB8000u, 0x08000u),   // and where CGA lived
+    };
 
     /// <summary>Graphics index 0x08: which bits of the target byte may change.</summary>
     public const int GcBitMask = 0x08;
@@ -357,7 +390,13 @@ public sealed class VgaRegisters : IIoDevice
             case 0x3C1: return _attribute[_attributeIndex & 0x1F];
             case 0x3C4: return _sequencerIndex;
             case 0x3C5: return _sequencer[_sequencerIndex & 7];
-            case 0x3C7: return 0;
+            // The DAC's state: 0 means the last thing written was a read
+            // index, 3 that it was a write index. Software that finds the DAC
+            // mid-triple -- a handler that interrupted a palette update --
+            // reads this to know whether it may safely take over.
+            case 0x3C7: return _dacWritePending ? (byte)3 : (byte)0;
+
+            case 0x3C6: return _pelMask;
             case 0x3C8: return _dacWriteIndex;
             case 0x3C9:
             {
@@ -422,8 +461,14 @@ public sealed class VgaRegisters : IIoDevice
             case 0x3C4: _sequencerIndex = value; return;
             case 0x3C5: _sequencer[_sequencerIndex & 7] = value; return;
 
-            case 0x3C7: _dacReadIndex = value; _dacComponent = 0; return;
-            case 0x3C8: _dacWriteIndex = value; _dacComponent = 0; return;
+            // Writing 0xFF to the PEL mask is what every mode set does, and
+            // it is also how a program that has been masking colours puts
+            // things back. Anything else narrows which palette entries the
+            // pixel values can reach.
+            case 0x3C6: _pelMask = value; return;
+
+            case 0x3C7: _dacReadIndex = value; _dacComponent = 0; _dacWritePending = false; return;
+            case 0x3C8: _dacWriteIndex = value; _dacComponent = 0; _dacWritePending = true; return;
             case 0x3C9:
             {
                 // Components arrive one at a time, red then green then blue,
@@ -459,7 +504,17 @@ public sealed class VgaRegisters : IIoDevice
     /// <summary>A palette entry expanded to 8 bits per component.</summary>
     public (byte R, byte G, byte B) GetPaletteColor(int index)
     {
-        int offset = (index & 0xFF) * 3;
+        // The PEL mask sits between the pixel value and the palette lookup:
+        // whatever the frame buffer says, only the bits this register lets
+        // through select a colour. It reads 0xFF after any normal mode set, so
+        // it is invisible until something deliberately narrows it.
+        //
+        // What it is for: a program can hold two or four complete palettes in
+        // the 256 entries and switch between them in one write, with no
+        // reprogramming and no tearing. Fade to black, day and night versions
+        // of the same picture, flashing a selection -- all done by masking off
+        // the top bits of the index rather than rewriting 768 bytes of DAC.
+        int offset = ((index & _pelMask) & 0xFF) * 3;
         // VGA components are 6-bit. Expanding to 8 bits by replicating the
         // top two bits at the bottom makes full-scale 0x3F map to 0xFF rather
         // than 0xFC, so white really is white instead of very slightly grey.

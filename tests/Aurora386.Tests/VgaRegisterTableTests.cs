@@ -212,3 +212,107 @@ public class TextWindowMappingTests
         Assert.Equal((byte)'Q', machine.VideoMemory[0x18000]);
     }
 }
+
+/// <summary>
+/// The two registers that decide what the adapter shows and where it listens.
+///
+/// Both are invisible until something deliberately changes them, which is
+/// exactly why they are worth testing: a program that uses them is relying on
+/// behaviour nothing else exercises, and an emulator that ignores them looks
+/// perfectly correct right up until it does not.
+/// </summary>
+public class VgaWindowAndMaskTests
+{
+    [Fact]
+    public void ThePelMaskNarrowsWhichPaletteEntriesAPixelCanReach()
+    {
+        // What it is for: hold two complete palettes in the 256 entries and
+        // switch between them with one write. Fades, day and night versions
+        // of a picture, a flashing selection -- all without rewriting 768
+        // bytes of DAC and without tearing.
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+
+        var registers = machine.VideoRegisters;
+
+        // Written through the DAC ports, the way a program would: an index,
+        // then red, green and blue, with the index stepping on by itself.
+        machine.Io.WriteByte(0x3C8, 0x01);
+        machine.Io.WriteByte(0x3C9, 0x3F);
+        machine.Io.WriteByte(0x3C9, 0x00);
+        machine.Io.WriteByte(0x3C9, 0x00);   // entry 1: red
+
+        machine.Io.WriteByte(0x3C8, 0x81);
+        machine.Io.WriteByte(0x3C9, 0x00);
+        machine.Io.WriteByte(0x3C9, 0x3F);
+        machine.Io.WriteByte(0x3C9, 0x00);   // entry 0x81: green
+
+        // With the mask wide open, pixel 0x81 finds the green.
+        machine.Io.WriteByte(0x3C6, 0xFF);
+        Assert.Equal(0x00, registers.GetPaletteColor(0x81).R);
+
+        // Masking off the top bit sends the same pixel to entry 1 instead.
+        machine.Io.WriteByte(0x3C6, 0x7F);
+        Assert.Equal(0xFF, registers.GetPaletteColor(0x81).R);
+    }
+
+    [Fact]
+    public void ThePelMaskStartsWideOpen()
+    {
+        // It has to: a zero here would send every pixel to colour 0 and leave
+        // the screen uniformly black, which is a memorable way to appear
+        // broken for a register nobody has touched.
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+
+        Assert.Equal(0xFF, machine.Io.ReadByte(0x3C6));
+    }
+
+    [Fact]
+    public void TheDacReportsWhetherItWasLastSetForReadingOrWriting()
+    {
+        // A handler that interrupted a palette update reads this to find out
+        // whether it may safely take the DAC over.
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+
+        machine.Io.WriteByte(0x3C8, 0x10);
+        Assert.Equal(3, machine.Io.ReadByte(0x3C7));
+
+        machine.Io.WriteByte(0x3C7, 0x10);
+        Assert.Equal(0, machine.Io.ReadByte(0x3C7));
+    }
+
+    [Fact]
+    public void TheAdapterOnlyAnswersInsideTheSelectedWindow()
+    {
+        // Selecting the 64 KB graphics window at 0xA0000 takes the adapter off
+        // the bus at 0xB8000. A program writing there is writing where nothing
+        // is listening, and the screen not changing is correct rather than
+        // broken.
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+
+        machine.Io.WriteByte(0x3CE, 0x06);
+        machine.Io.WriteByte(0x3CF, 0x05);      // graphics, 0xA0000 for 64 KB
+
+        machine.VideoMemory.WriteByte(0x18000, 0x42);
+        Assert.Equal(0xFF, machine.VideoMemory.ReadByte(0x18000));
+    }
+
+    [Fact]
+    public void SelectingTheCgaWindowPutsItBack()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+
+        machine.Io.WriteByte(0x3CE, 0x06);
+        machine.Io.WriteByte(0x3CF, 0x0C);      // 0xB8000, 32 KB: where CGA lived
+
+        machine.VideoMemory.WriteByte(0x18000, 0x42);
+        Assert.Equal(0x42, machine.VideoMemory.ReadByte(0x18000));
+
+        // And now 0xA0000 is the address nothing answers at.
+        Assert.Equal(0xFF, machine.VideoMemory.ReadByte(0x0000));
+    }
+}

@@ -141,9 +141,27 @@ public sealed class VgaMemory : IMemoryDevice
         return ((int)(within & 1), 0x8000u + (within >> 1));
     }
 
+    /// <summary>
+    /// Whether the adapter answers at this offset at all.
+    ///
+    /// The graphics controller's memory map select decides which part of the
+    /// 128 KB aperture is live, and outside it the adapter is simply not on
+    /// the bus: reads float high and writes go nowhere. A program that
+    /// selects the 64 KB window at 0xA0000 and then writes to 0xB8000 is
+    /// writing to an address nothing is listening at, and the screen not
+    /// changing is the correct behaviour rather than a bug.
+    /// </summary>
+    private bool InWindow(uint offset)
+    {
+        (uint windowBase, uint windowSize) = Registers.MemoryWindow;
+        uint address = Base + offset;
+        return address >= windowBase && address < windowBase + windowSize;
+    }
+
     public byte ReadByte(uint offset)
     {
         if (offset >= Size) return 0xFF;
+        if (!InWindow(offset)) return 0xFF;
 
         if (TextWindow(offset))
         {
@@ -213,6 +231,7 @@ public sealed class VgaMemory : IMemoryDevice
     public void WriteByte(uint offset, byte value)
     {
         if (offset >= Size) return;
+        if (!InWindow(offset)) return;
 
         if (TextWindow(offset))
         {
