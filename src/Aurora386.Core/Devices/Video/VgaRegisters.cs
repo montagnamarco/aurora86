@@ -532,6 +532,46 @@ public sealed class VgaRegisters : IIoDevice
     /// <summary>The colours the pointer is drawn in, from registers 0x4A and 0x4B.</summary>
     public (byte Foreground, byte Background) CursorColours => (_crtc[0x4A], _crtc[0x4B]);
 
+    // --- Paradise/Western Digital compatibility -------------------------------
+    //
+    // A VGA's graphics controller ends at register 0x08. Paradise put its own
+    // register at 0x0F, and Windows 3.1's Super VGA driver identifies the
+    // card by testing it -- it makes no VESA call at all, so a card that does
+    // not answer here is one the driver refuses outright.
+    //
+    // The test, disassembled from the driver itself, is cleverer than looking
+    // for a signature. It reads the register, saves the top five bits
+    // unchanged, then writes back those five bits *inverted* with 101 in the
+    // low three. It reads again and cancels out the five it saved. What
+    // should be left is exactly the 5 it wrote.
+    //
+    // Work through what that demands. For the top five to cancel, they must
+    // come back as they were -- so the write to them has to be *ignored*. For
+    // the low three to survive, they must be real storage. The driver is not
+    // asking "are you a Paradise" but "does register 0x0F have three writable
+    // bits under five read-only ones", which is a thing no plain VGA does and
+    // no other card of the period did by accident.
+    //
+    // It is a good test, and it is why a register that simply kept everything
+    // written to it failed: the top five bits came back inverted and the
+    // cancellation left rubbish.
+
+    /// <summary>
+    /// Reads a graphics controller register. Everything below 0x09 is the
+    /// VGA's own; 0x0F is Paradise's, where the top five bits read back as
+    /// the card's configuration rather than as what was written.
+    /// </summary>
+    private byte ReadGraphics(byte index)
+    {
+        byte at = (byte)(index & 0x0F);
+        if (at != 0x0F) return _graphics[at];
+
+        // The top five bits report the card, not the last write: zero here
+        // says a plain member of the family, which is what this emulator is
+        // pretending to be. The low three are whatever software put there.
+        return (byte)(_graphics[0x0F] & 0x07);
+    }
+
     private byte ReadCrtc(byte index)
     {
         // Below 0x30 is the VGA, always readable.
@@ -709,7 +749,7 @@ public sealed class VgaRegisters : IIoDevice
             }
             case 0x3CC: return _miscOutput;
             case 0x3CE: return _graphicsIndex;
-            case 0x3CF: return _graphics[_graphicsIndex & 0x0F];
+            case 0x3CF: return ReadGraphics(_graphicsIndex);
             case 0x3D4 or 0x3B4: return _crtcIndex;
             case 0x3D5 or 0x3B5: return ReadCrtc(_crtcIndex);
             case 0x3CA: return 0x00;   // feature control: nothing set
@@ -848,7 +888,18 @@ public sealed class VgaRegisters : IIoDevice
             }
 
             case 0x3CE: _graphicsIndex = value; return;
-            case 0x3CF: _graphics[_graphicsIndex & 0x0F] = value; return;
+            case 0x3CF:
+                // Register 0x0F takes only its low three bits. The top five
+                // are the card's own configuration and a write to them goes
+                // nowhere -- which is precisely what the Super VGA driver
+                // tests for.
+                if ((_graphicsIndex & 0x0F) == 0x0F)
+                {
+                    _graphics[0x0F] = (byte)(value & 0x07);
+                    return;
+                }
+                _graphics[_graphicsIndex & 0x0F] = value;
+                return;
             case 0x3D4 or 0x3B4: _crtcIndex = value; return;
             case 0x3D5 or 0x3B5: WriteCrtc(_crtcIndex, value); return;
         }
