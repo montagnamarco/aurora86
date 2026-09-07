@@ -492,8 +492,11 @@ public sealed class VgaRegisters : IIoDevice
     /// <summary>0xA0 or higher in 0x39 unlocks 0x40 and above.</summary>
     private bool _extendedUnlocked;
 
-    /// <summary>The card's identifier, which is how a driver knows what it has.</summary>
-    public const byte S3DeviceId = 0xE1;       // Trio64
+    /// <summary>
+    /// The chip identifier in register 0x30, which names the family: 0xE1 is
+    /// the Trio series. Which member it is comes from 0x2D and 0x2E.
+    /// </summary>
+    public const byte S3DeviceId = 0xE1;
 
     // --- the hardware cursor --------------------------------------------------
     //
@@ -574,24 +577,40 @@ public sealed class VgaRegisters : IIoDevice
 
     private byte ReadCrtc(byte index)
     {
-        // Below 0x30 is the VGA, always readable.
-        if (index < 0x30) return _crtc[index];
-
         switch (index)
         {
+            // The identification registers. These come first because they
+            // sit below 0x30, in the range a VGA also uses -- and an earlier
+            // version of this method returned from the VGA range before
+            // reaching them, so a driver asking what card this was got zero
+            // and concluded there was no S3 here at all.
+
+            // 0x2D and 0x2E are the device identifier, high byte then low.
+            // Together they name the part precisely, where 0x30 only names
+            // the family: 0x88 0x11 is a Trio64V+, which is the card this
+            // emulator claims to be.
+            case 0x2D: return 0x88;
+            case 0x2E: return 0x11;
+
+            // 0x2F is the revision. Drivers read it to work around errata in
+            // particular steppings; zero is the first, which has none to work
+            // around.
+            case 0x2F: return 0x00;
+
             // 0x30 is the chip identifier, and it is readable whether or not
             // anything has been unlocked: a driver has to be able to ask what
             // card this is before it knows which unlock sequence to use.
             case 0x30: return S3DeviceId;
+        }
 
+        // Below 0x30 the rest is the VGA's own, always readable.
+        if (index < 0x30) return _crtc[index];
+
+        switch (index)
+        {
             // 0x36 reports how the card is configured. Bits 5-6 say how much
             // memory: 0 is 4 MB, 1 is 3, 2 is 2, 3 is 1. This card has two.
             case 0x36: return (byte)(0x40 | (_crtc[0x36] & 0x1F));
-
-            // 0x2E and 0x2F together are the secondary identifier some
-            // drivers check, and 0x2D is the high byte.
-            case 0x2D: return 0x88;
-            case 0x2E: return S3DeviceId;
         }
 
         // A locked register still answers. The lock protects writes, not
