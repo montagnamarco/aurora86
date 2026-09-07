@@ -348,3 +348,136 @@ public class S3RasterOperationTests
         Assert.Equal(0x0F, Pixel(machine, 20, 20));
     }
 }
+
+/// <summary>
+/// Patterns: an 8x8 motif tiled across the screen that decides, pixel by
+/// pixel, whether the foreground or the background colour is used.
+///
+/// It is how a window's grey background, a hatched fill and a dotted line all
+/// get drawn in one operation instead of two passes with a mask between them.
+/// The tiling is anchored to the screen rather than to the rectangle, which
+/// is what makes two adjoining fills line up instead of showing a seam.
+/// </summary>
+public class S3PatternTests
+{
+    private static Machine InSvgaMode()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        machine.Cpu.State.Halted = false;
+
+        machine.Cpu.State.Ax = 0x4F02;
+        machine.Cpu.State.Bx = 0x101;
+        machine.VideoServices.Handle(machine.Cpu);
+
+        machine.Accelerator.ResetClip(640, 480);
+        return machine;
+    }
+
+    private static void Write(Machine machine, ushort port, ushort value)
+    {
+        machine.Io.WriteByte((ushort)(port + 1), (byte)(value >> 8));
+        machine.Io.WriteByte(port, (byte)value);
+    }
+
+    private static byte Pixel(Machine machine, int x, int y)
+        => machine.VideoMemory.ReadLinear((uint)(y * 640 + x));
+
+    private static void Fill(Machine machine, int x, int y,
+                             ushort foreground, ushort background)
+    {
+        Write(machine, 0x86E8, (ushort)x);
+        Write(machine, 0x82E8, (ushort)y);
+        Write(machine, 0x96E8, 15);
+        Write(machine, 0x92E8, 15);
+        Write(machine, 0xA6E8, foreground);
+        Write(machine, 0xA2E8, background);
+        Write(machine, 0x9AE8, 0x6000);
+    }
+
+    [Fact]
+    public void WithoutAPatternAFillIsSolid()
+    {
+        // The pattern starts as all ones, so a driver that has not set one is
+        // drawing solid and the same code path serves both. A zero pattern by
+        // default would make every fill paint the background colour, which
+        // looks like the engine ignoring the foreground register.
+        using Machine machine = InSvgaMode();
+
+        Fill(machine, 0, 0, 0x0F, 0x00);
+
+        for (int x = 0; x < 8; x++)
+            Assert.Equal(0x0F, Pixel(machine, x, 0));
+    }
+
+    [Fact]
+    public void APatternAlternatesTheTwoColours()
+    {
+        using Machine machine = InSvgaMode();
+
+        // A chequerboard: 0xAA and 0x55 on alternate rows.
+        for (int i = 0; i < 4; i++) Write(machine, 0xE2E8, 0xAA55);
+
+        Fill(machine, 0, 32, 0x0F, 0x04);
+
+        // 0xAA is 10101010, so the first row starts with the foreground.
+        Assert.Equal(0x0F, Pixel(machine, 0, 32));
+        Assert.Equal(0x04, Pixel(machine, 1, 32));
+        Assert.Equal(0x0F, Pixel(machine, 2, 32));
+    }
+
+    [Fact]
+    public void SuccessiveRowsUseSuccessivePatternBytes()
+    {
+        using Machine machine = InSvgaMode();
+        for (int i = 0; i < 4; i++) Write(machine, 0xE2E8, 0xAA55);
+
+        Fill(machine, 0, 32, 0x0F, 0x04);
+
+        // 0x55 is 01010101: the row below starts with the background instead,
+        // which is what makes it a chequerboard rather than stripes.
+        Assert.Equal(0x04, Pixel(machine, 0, 33));
+        Assert.Equal(0x0F, Pixel(machine, 1, 33));
+    }
+
+    [Fact]
+    public void ThePatternIsAnchoredToTheScreenNotToTheRectangle()
+    {
+        // Two fills side by side have to line up. Anchoring the tiling to the
+        // rectangle would restart the motif at each one and leave a visible
+        // seam where they meet.
+        using Machine machine = InSvgaMode();
+        for (int i = 0; i < 4; i++) Write(machine, 0xE2E8, 0xAA55);
+
+        Fill(machine, 0, 100, 0x0F, 0x04);
+        Fill(machine, 16, 100, 0x0F, 0x04);
+
+        // Column 16 is column 0 of the motif again, so it matches column 0.
+        Assert.Equal(Pixel(machine, 0, 100), Pixel(machine, 16, 100));
+        Assert.Equal(Pixel(machine, 1, 100), Pixel(machine, 17, 100));
+    }
+
+    [Fact]
+    public void ThePatternRepeatsEveryEightRows()
+    {
+        using Machine machine = InSvgaMode();
+        for (int i = 0; i < 4; i++) Write(machine, 0xE2E8, 0xAA55);
+
+        Fill(machine, 0, 200, 0x0F, 0x04);
+
+        Assert.Equal(Pixel(machine, 0, 200), Pixel(machine, 0, 208));
+    }
+
+    [Fact]
+    public void ResettingThePatternMakesFillsSolidAgain()
+    {
+        using Machine machine = InSvgaMode();
+        for (int i = 0; i < 4; i++) Write(machine, 0xE2E8, 0x0000);
+
+        machine.Accelerator.ResetPattern();
+        Fill(machine, 0, 300, 0x0F, 0x04);
+
+        Assert.Equal(0x0F, Pixel(machine, 0, 300));
+        Assert.Equal(0x0F, Pixel(machine, 1, 300));
+    }
+}

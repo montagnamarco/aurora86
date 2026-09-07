@@ -146,9 +146,14 @@ public sealed class S3Accelerator : IIoDevice
             // pixel control that decides where a pattern comes from.
             case 0xBEE8: WriteMultifunction(value); return;
 
+            // 0xE2E8 is the pixel data port: everything the processor sends
+            // the engine arrives here. For a pattern that is eight bytes, one
+            // per row, and the port takes them a word at a time.
+            case 0xE2E8: LoadPatternWord(value); return;
+
             // Writing the command register is what starts the operation. Every
             // other register is set up first and then this one fires.
-            case 0x9AE8: _command = value; Execute(); return;
+            case 0x9AE8: _command = value; _patternRow = 0; Execute(); return;
         }
     }
 
@@ -215,7 +220,66 @@ public sealed class S3Accelerator : IIoDevice
 
         for (int y = 0; y < height; y++)
             for (int x = 0; x < width; x++)
-                PutPixel(_currentX + x, _currentY + y, _foreground);
+            {
+                // With a pattern, each pixel takes the foreground or the
+                // background colour according to a bit of an 8x8 motif tiled
+                // across the screen. It is how a window's grey background,
+                // a hatched fill or a dotted line get drawn in one operation
+                // instead of two passes with a mask between them.
+                //
+                // The tiling is anchored to the screen rather than to the
+                // rectangle, which is what makes two adjoining fills line up
+                // instead of showing a seam.
+                bool set = PatternBitAt(_currentX + x, _currentY + y);
+
+                PutPixel(_currentX + x, _currentY + y,
+                         set ? _foreground : _background,
+                         set ? _mix : _backgroundMix);
+            }
+    }
+
+    /// <summary>
+    /// Whether the 8x8 pattern has its bit set at this screen position.
+    ///
+    /// A pattern of all ones -- which is what a driver leaves when it is not
+    /// using one -- makes every pixel the foreground, so a plain fill comes
+    /// out of the same code with nothing special about it.
+    /// </summary>
+    private bool PatternBitAt(int x, int y)
+        => ((_pattern[y & 7] >> (7 - (x & 7))) & 1) != 0;
+
+    /// <summary>
+    /// The 8x8 pattern, one byte per row. All ones by default: a driver that
+    /// has not set one is drawing solid, and a zero pattern would make every
+    /// fill paint the background colour instead.
+    /// </summary>
+    private readonly byte[] _pattern = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+
+    /// <summary>Which row of the pattern the next word through the data port fills.</summary>
+    private int _patternRow;
+
+    /// <summary>
+    /// Takes two rows of the pattern from one word through the data port.
+    ///
+    /// The counter is reset by the command register rather than by any
+    /// separate signal, which is the sort of implicit sequencing that makes
+    /// these registers awkward to read and cheap to build: the driver writes
+    /// the command, then the data, and the engine knows where it is by
+    /// counting.
+    /// </summary>
+    private void LoadPatternWord(ushort value)
+    {
+        if (_patternRow >= 8) return;
+
+        _pattern[_patternRow++] = (byte)(value >> 8);
+        if (_patternRow < 8) _pattern[_patternRow++] = (byte)value;
+    }
+
+    /// <summary>Puts the pattern back to solid, which is where a driver leaves it.</summary>
+    public void ResetPattern()
+    {
+        Array.Fill(_pattern, (byte)0xFF);
+        _patternRow = 0;
     }
 
     /// <summary>
@@ -301,7 +365,9 @@ public sealed class S3Accelerator : IIoDevice
     /// costs nothing worth measuring and it means a line drawn diagonally out
     /// of the clip region stops at the boundary rather than at a corner.
     /// </summary>
-    private void PutPixel(int x, int y, ushort colour)
+    private void PutPixel(int x, int y, ushort colour) => PutPixel(x, y, colour, _mix);
+
+    private void PutPixel(int x, int y, ushort colour, ushort mix)
     {
         if (x < _clipLeft || x > _clipRight) return;
         if (y < _clipTop || y > _clipBottom) return;
@@ -320,7 +386,7 @@ public sealed class S3Accelerator : IIoDevice
             if (matches != ColourCompareWritesOnMatch) return;
         }
 
-        ushort result = ApplyMix(colour, existing);
+        ushort result = ApplyMix(colour, existing, mix);
 
         // The write mask -- "plane write mask" in the manual -- lets through
         // only the bits it has set. A driver that wants to change the top
@@ -360,7 +426,7 @@ public sealed class S3Accelerator : IIoDevice
     /// was underneath exactly as it was. No saving of the background, no
     /// second buffer.
     /// </summary>
-    private ushort ApplyMix(ushort source, ushort destination) => (_mix & 0x0F) switch
+    private static ushort ApplyMix(ushort source, ushort destination, ushort mix) => (mix & 0x0F) switch
     {
         0x0 => 0,                                            // clear
         0x1 => (ushort)(destination & source),
