@@ -510,7 +510,7 @@ public sealed class VgaRegisters : IIoDevice
                 int clockSelect = (_miscOutput >> 2) & 3;
                 byte status = 0x60;
                 if (clockSelect is 0 or 3) status |= 0x10;
-                if (_retraceToggle) status |= 0x80;
+                if ((RetraceStatus & 0x08) != 0) status |= 0x80;
                 return status;
             }
             case 0x3DA or 0x3BA:
@@ -518,17 +518,76 @@ public sealed class VgaRegisters : IIoDevice
                 // Input status register 1. Bits 0 and 3 report horizontal and
                 // vertical retrace: software polls them to find the moment
                 // when the beam is off-screen and video memory can be written
-                // without tearing. They must be made to toggle, or any program
-                // waiting for retrace spins forever.
-                _attributeExpectingIndex = true;   // reading here resets the attribute flip-flop
-                _retraceToggle = !_retraceToggle;
-                return (byte)(_retraceToggle ? 0x09 : 0x00);
+                // without tearing.
+                //
+                // Reading here also resets the attribute controller's
+                // index/data flip-flop, which is why every program that
+                // touches the attribute controller reads this port first.
+                _attributeExpectingIndex = true;
+                return RetraceStatus;
             }
             default: return 0xFF;
         }
     }
 
-    private bool _retraceToggle;
+    /// <summary>
+    /// Where the beam is, as a fraction of one frame, advanced by the machine
+    /// as emulated time passes.
+    /// </summary>
+    private double _framePhase;
+
+    /// <summary>
+    /// Advances the beam by a number of microseconds of emulated time.
+    ///
+    /// A VGA frame takes about 1/70th of a second in the 400-line text modes
+    /// and 1/60th at 480 lines. The value that matters is not the exact
+    /// figure but that it is a duration at all: a program measuring how long
+    /// vertical retrace lasts, or counting frames to time an animation, gets
+    /// a plausible answer instead of whatever the polling loop's own speed
+    /// happens to produce.
+    /// </summary>
+    public void AdvanceBeam(double microseconds)
+    {
+        // 70 Hz is the text and 200-line rate, which is what almost
+        // everything of the period runs at; 480-line modes drop to 60.
+        double frameMicroseconds = (_crtc[0x12] > 0xE0 || (_crtc[0x07] & 0x02) != 0)
+            ? 1_000_000.0 / 60.0
+            : 1_000_000.0 / 70.0;
+
+        _framePhase += microseconds / frameMicroseconds;
+        if (_framePhase >= 1.0) _framePhase -= Math.Floor(_framePhase);
+    }
+
+    /// <summary>
+    /// The retrace bits of input status register 1, from where the beam is.
+    ///
+    /// Vertical retrace is the interval between the last visible line and the
+    /// first line of the next frame -- about a twentieth of the frame on real
+    /// hardware. Horizontal retrace happens once per scan line and is far
+    /// shorter; a program polling it is waiting for a gap of a few
+    /// microseconds, and what it needs is that the bit spends most of its
+    /// time clear and briefly goes set.
+    /// </summary>
+    private byte RetraceStatus
+    {
+        get
+        {
+            // The last 5% of the frame is the vertical blanking interval,
+            // which is the window a program writes its palette in: changing
+            // the DAC while the beam is drawing produces visible snow, and
+            // this is the only moment it is safe.
+            bool vertical = _framePhase >= 0.95;
+
+            // Within a frame there are a few hundred scan lines, each ending
+            // in a short retrace. Deriving it from the same phase keeps the
+            // two consistent -- horizontal retrace really does happen during
+            // vertical retrace as well, since the beam keeps sweeping.
+            double linePhase = _framePhase * 449.0;
+            bool horizontal = linePhase - Math.Floor(linePhase) >= 0.8;
+
+            return (byte)((vertical ? 0x08 : 0x00) | (horizontal ? 0x01 : 0x00));
+        }
+    }
 
     public void WriteByte(ushort port, byte value)
     {

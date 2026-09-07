@@ -593,3 +593,102 @@ public class NinthColumnTests
         Assert.Equal(0u, frame[7 * width + 17] & 0xFFFFFF);
     }
 }
+
+/// <summary>
+/// Vertical and horizontal retrace, which have to be durations rather than a
+/// bit that flips on every read.
+///
+/// A program polls these to find the moment the beam is off-screen, because
+/// writing video memory or the palette while it is drawing produces visible
+/// tearing and snow. A bit that simply alternates keeps such a program from
+/// spinning for ever, which is why it was written that way first -- but it
+/// makes the answer depend on how fast the polling loop runs rather than on
+/// where the beam is, so anything that measures how long retrace lasts, or
+/// counts frames to time an animation, gets nonsense.
+/// </summary>
+public class RetraceTimingTests
+{
+    private static Machine Started()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        return machine;
+    }
+
+    [Fact]
+    public void AProgramWaitingForVerticalRetraceEventuallySeesIt()
+    {
+        // The first thing that must be true, and the reason the old
+        // alternating bit existed at all: a wait loop has to terminate.
+        using Machine machine = Started();
+
+        bool seen = false;
+        for (int i = 0; i < 5000 && !seen; i++)
+        {
+            machine.RunInstructions(2000);
+            seen = (machine.Io.ReadByte(0x3DA) & 0x08) != 0;
+        }
+
+        Assert.True(seen);
+    }
+
+    [Fact]
+    public void VerticalRetraceIsASmallFractionOfTheFrame()
+    {
+        // About a twentieth, as on real hardware. What matters is that it is
+        // a minority of the time: a program that writes its palette during
+        // retrace must find a window, not a coin flip.
+        using Machine machine = Started();
+
+        int inside = 0;
+        const int samples = 3000;
+        for (int i = 0; i < samples; i++)
+        {
+            machine.RunInstructions(2000);
+            if ((machine.Io.ReadByte(0x3DA) & 0x08) != 0) inside++;
+        }
+
+        double fraction = (double)inside / samples;
+        Assert.InRange(fraction, 0.01, 0.15);
+    }
+
+    [Fact]
+    public void HorizontalRetraceHappensFarMoreOftenThanVertical()
+    {
+        // Once per scan line against once per frame: a few hundred times as
+        // often, which is what tells the two apart for a program sampling
+        // both.
+        using Machine machine = Started();
+
+        int horizontal = 0, vertical = 0;
+        for (int i = 0; i < 3000; i++)
+        {
+            machine.RunInstructions(200);
+            byte status = machine.Io.ReadByte(0x3DA);
+            if ((status & 0x01) != 0) horizontal++;
+            if ((status & 0x08) != 0) vertical++;
+        }
+
+        Assert.True(horizontal > vertical);
+    }
+
+    [Fact]
+    public void ReadingTheStatusStillResetsTheAttributeFlipFlop()
+    {
+        // The other job this port does, and the reason every program that
+        // touches the attribute controller reads it first: the index and data
+        // registers share one address, and this is how software makes sure
+        // the next write is taken as an index.
+        using Machine machine = Started();
+
+        // Leave the flip-flop expecting data by writing an index only.
+        machine.Io.WriteByte(0x3C0, 0x10);
+
+        machine.Io.ReadByte(0x3DA);
+
+        // Now an index and a value both land where they should.
+        machine.Io.WriteByte(0x3C0, 0x10);
+        machine.Io.WriteByte(0x3C0, 0x04);
+        Assert.False(machine.VideoRegisters.BlinkEnabled);
+    }
+}

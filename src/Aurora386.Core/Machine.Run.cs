@@ -296,7 +296,14 @@ public sealed partial class Machine
 
         // The sound card is driven from the same clock: microseconds of
         // emulated time, converted from the instructions just executed.
-        SoundBlaster.Advance((double)instructions * 1_000_000.0 / CpuFrequencyHz);
+        double microseconds = (double)instructions * 1_000_000.0 / CpuFrequencyHz;
+        SoundBlaster.Advance(microseconds);
+
+        // And so is the video beam. A program polling for vertical retrace is
+        // waiting for a moment that has a duration; without the clock behind
+        // it, the answer it gets depends on how fast its own polling loop
+        // runs rather than on where the beam is.
+        VideoRegisters.AdvanceBeam(microseconds);
 
         // The keyboard has a clock of its own: it is what makes a held key
         // repeat, without the guest having to ask for anything.
