@@ -303,11 +303,26 @@ public sealed class VgaRenderer
 
         if (!drawCursor) return;
 
-        // The cursor is a solid block on the last couple of scanlines of the
-        // cell, drawn in the foreground colour -- the familiar DOS underline.
-        int cursorTop = Math.Max(0, charHeight - 3);
-        for (int y = cursorTop; y < charHeight - 1; y++)
+        // The cursor's shape comes from two CRTC registers naming the first
+        // and last scan line of the cell it covers. Programs change it: an
+        // underline for insert mode and a full block for overwrite is the
+        // convention every DOS editor follows, and it is two register writes
+        // rather than any drawing.
+        (int start, int end) = _registers.CursorShape;
+
+        for (int y = 0; y < charHeight; y++)
         {
+            // The hardware switches the cursor on at the start line and off
+            // after the end line. With the two reversed it never switches off
+            // within the cell, giving a cursor split into a bar at the top
+            // and one at the bottom -- which is not a bug to be tidied away,
+            // some programs asked for exactly that.
+            bool on = start <= end
+                ? y >= start && y <= end
+                : y >= start || y <= end;
+
+            if (!on) continue;
+
             int destination = (originY + y) * Width + originX;
             for (int x = 0; x < VgaFont.CharWidth; x++)
                 _framebuffer[destination + x] = foregroundColor;

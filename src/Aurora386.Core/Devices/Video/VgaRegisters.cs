@@ -414,6 +414,23 @@ public sealed class VgaRegisters : IIoDevice
     /// <summary>True when the cursor is visible; bit 5 of CRTC register 0x0A hides it.</summary>
     public bool CursorVisible => (_crtc[0x0A] & 0x20) == 0;
 
+    /// <summary>
+    /// The first and last scan lines of the cell that the cursor covers, from
+    /// CRTC registers 0x0A and 0x0B.
+    ///
+    /// This is the whole of the cursor's shape, and programs really do change
+    /// it: an underline for insert mode and a full block for overwrite is the
+    /// convention every DOS editor follows, and it is done by writing two
+    /// registers rather than by drawing anything.
+    ///
+    /// A start below the end is not a mistake to be corrected. The hardware
+    /// turns the cursor on at the start line and off after the end line, and
+    /// with the two reversed it never turns off within the cell: the result
+    /// is a cursor split into a bar at the top and a bar at the bottom, which
+    /// some programs used deliberately.
+    /// </summary>
+    public (int Start, int End) CursorShape => (_crtc[0x0A] & 0x1F, _crtc[0x0B] & 0x1F);
+
     public byte ReadByte(ushort port)
     {
         switch (port)

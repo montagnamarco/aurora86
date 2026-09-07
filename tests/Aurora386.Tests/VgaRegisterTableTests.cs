@@ -316,3 +316,77 @@ public class VgaWindowAndMaskTests
         Assert.Equal(0xFF, machine.VideoMemory.ReadByte(0x0000));
     }
 }
+
+/// <summary>
+/// The text cursor's shape, which lives entirely in two CRTC registers.
+///
+/// Programs really do change it: an underline for insert mode and a full
+/// block for overwrite is the convention every DOS editor follows, and it is
+/// done by writing two registers rather than by drawing anything. An emulator
+/// that draws a fixed shape looks right at the DOS prompt and wrong in every
+/// editor.
+/// </summary>
+public class TextCursorShapeTests
+{
+    private static Machine InTextMode()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        return machine;
+    }
+
+    private static void SetCrtc(Machine machine, int index, byte value)
+    {
+        machine.Io.WriteByte(0x3D4, (byte)index);
+        machine.Io.WriteByte(0x3D5, value);
+    }
+
+    [Fact]
+    public void TheShapeComesFromTheTwoRegisters()
+    {
+        using Machine machine = InTextMode();
+
+        SetCrtc(machine, 0x0A, 0x0D);
+        SetCrtc(machine, 0x0B, 0x0E);
+
+        Assert.Equal((13, 14), machine.VideoRegisters.CursorShape);
+    }
+
+    [Fact]
+    public void ABlockCursorCoversTheWholeCell()
+    {
+        // What an editor asks for in overwrite mode.
+        using Machine machine = InTextMode();
+
+        SetCrtc(machine, 0x0A, 0x00);
+        SetCrtc(machine, 0x0B, 0x0F);
+
+        Assert.Equal((0, 15), machine.VideoRegisters.CursorShape);
+    }
+
+    [Fact]
+    public void BitFiveOfTheStartRegisterHidesTheCursor()
+    {
+        // Separate from the shape: this is how a program turns the cursor off
+        // without forgetting what shape it had.
+        using Machine machine = InTextMode();
+
+        SetCrtc(machine, 0x0A, 0x20);
+        Assert.False(machine.VideoRegisters.CursorVisible);
+
+        SetCrtc(machine, 0x0A, 0x0D);
+        Assert.True(machine.VideoRegisters.CursorVisible);
+    }
+
+    [Fact]
+    public void TheHideBitDoesNotDisturbTheShape()
+    {
+        using Machine machine = InTextMode();
+
+        SetCrtc(machine, 0x0A, 0x26);      // hidden, starting at line 6
+        SetCrtc(machine, 0x0B, 0x07);
+
+        Assert.False(machine.VideoRegisters.CursorVisible);
+        Assert.Equal((6, 7), machine.VideoRegisters.CursorShape);
+    }
+}
