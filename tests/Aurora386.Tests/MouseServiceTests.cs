@@ -832,14 +832,14 @@ public class MouseServiceTests
 
         machine.Video.Render(force: true);
         // The cell's background is now the old foreground: light grey, not black.
-        uint background = machine.Video.Framebuffer[(2 * 16) * machine.Video.Width + 3 * 8];
+        uint background = machine.Video.Framebuffer[(2 * 16) * machine.Video.Width + 3 * 9];
         Assert.NotEqual(0xFF000000u, background);
 
         // Hiding restores the cell on the next frame, and marks the row itself
         // dirty so the repaint happens without any memory write.
         Call(machine, 0x0002);
         Assert.True(machine.Video.Render());
-        background = machine.Video.Framebuffer[(2 * 16) * machine.Video.Width + 3 * 8];
+        background = machine.Video.Framebuffer[(2 * 16) * machine.Video.Width + 3 * 9];
         Assert.Equal(0xFF000000u, background);
     }
 

@@ -170,6 +170,43 @@ public sealed class VgaRegisters : IIoDevice
         }
     }
 
+    /// <summary>
+    /// How many pixels wide a character cell is, from bit 0 of the
+    /// sequencer's clocking mode register: nine, or eight when the bit is
+    /// set.
+    ///
+    /// Nine is the odd-looking number and it is the one the text modes use.
+    /// The VGA's text modes are 720 pixels across, not 640, precisely so that
+    /// eighty characters can have nine columns each: eight for the glyph and
+    /// a ninth of space between it and the next, which is what makes text on
+    /// a VGA look less cramped than text on an EGA.
+    ///
+    /// The ninth column is normally blank, with one exception that matters
+    /// enough to be built into the hardware -- see
+    /// <see cref="NinthColumnRepeats"/>.
+    ///
+    /// Graphics modes set the bit and get eight, because there a "character"
+    /// is just eight pixels of a byte and a ninth would have nothing in it.
+    /// </summary>
+    public int CharacterWidth => (_sequencer[0x01] & 0x01) != 0 ? 8 : 9;
+
+    /// <summary>
+    /// Whether the ninth column repeats the eighth instead of being blank,
+    /// from bit 2 of the attribute controller's mode register.
+    ///
+    /// It applies only to character codes 0xC0 to 0xDF, and that range is not
+    /// arbitrary: it is where the line-drawing characters live. A horizontal
+    /// rule drawn out of them would otherwise come apart into dashes, one
+    /// blank column per cell, because the line reaches the right edge of the
+    /// glyph and then stops. Repeating the last column carries it across the
+    /// gap, and a box drawn in text mode has continuous edges.
+    ///
+    /// It is switched on for every standard text mode, and the reason the
+    /// range is fixed in hardware rather than configurable is that it only
+    /// ever needed to serve the one font.
+    /// </summary>
+    public bool NinthColumnRepeats => (_attribute[0x10] & 0x04) != 0;
+
     public int TextColumns { get; set; } = 80;
     public int TextRows { get; set; } = 25;
 

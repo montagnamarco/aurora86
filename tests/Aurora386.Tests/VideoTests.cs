@@ -110,7 +110,10 @@ public class VgaRendererTests
         machine.RunInstructions(200);
         machine.Video.Render(force: true);
 
-        Assert.Equal(80 * VgaFont.CharWidth, machine.Video.Width);    // 640
+        // 720, not 640: a VGA text cell is nine pixels wide, eight of glyph
+        // and a ninth of space, which is what makes text on a VGA look less
+        // cramped than text on an EGA.
+        Assert.Equal(720, machine.Video.Width);
         Assert.Equal(25 * VgaFont.CharHeight, machine.Video.Height);  // 400
         Assert.Equal(machine.Video.Width * machine.Video.Height,
                      machine.Video.Framebuffer.Length);

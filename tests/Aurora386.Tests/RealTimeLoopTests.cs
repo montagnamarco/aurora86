@@ -88,9 +88,10 @@ public class RealTimeLoopTests
         machine.RunInstructions(500);
         machine.Video.Render(force: true);
 
-        Assert.Equal(640, machine.Video.Width);
+        // 720 across: nine pixels per text cell, not eight.
+        Assert.Equal(720, machine.Video.Width);
         Assert.Equal(400, machine.Video.Height);
-        Assert.Equal(640 * 400, machine.Video.Framebuffer.Length);
+        Assert.Equal(720 * 400, machine.Video.Framebuffer.Length);
     }
 
     [Fact]

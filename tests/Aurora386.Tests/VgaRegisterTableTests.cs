@@ -504,3 +504,92 @@ public class TextBlinkTests
         return count;
     }
 }
+
+/// <summary>
+/// The ninth column of a text cell.
+///
+/// A VGA text mode is 720 pixels across, not 640, because a character cell is
+/// nine pixels wide: eight of glyph and a ninth of space before the next.
+/// That extra column is the whole reason text on a VGA looks less cramped
+/// than text on an EGA, and it is chosen by one bit of the sequencer.
+/// </summary>
+public class NinthColumnTests
+{
+    private static Machine InTextMode()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        return machine;
+    }
+
+    [Fact]
+    public void TextModeCellsAreNinePixelsWide()
+    {
+        using Machine machine = InTextMode();
+
+        Assert.Equal(9, machine.VideoRegisters.CharacterWidth);
+        Assert.Equal(720, machine.Video.Width);
+    }
+
+    [Fact]
+    public void GraphicsModesUseEight()
+    {
+        // In a graphics mode a "character" is just eight pixels of a byte,
+        // and a ninth would have nothing in it.
+        using Machine machine = InTextMode();
+        machine.VideoRegisters.VideoMode = 0x12;
+        machine.VideoRegisters.NotifyModeChanged();
+
+        Assert.Equal(8, machine.VideoRegisters.CharacterWidth);
+    }
+
+    [Fact]
+    public void TheNinthColumnCarriesTheLineDrawingCharactersAcross()
+    {
+        // The reason the hardware has this rule at all: a horizontal rule
+        // drawn out of character 0xC4 would otherwise come apart into dashes,
+        // one blank column per cell, because the line reaches the right edge
+        // of the glyph and stops.
+        using Machine machine = InTextMode();
+
+        machine.VideoMemory[0x18000] = 0xC4;      // horizontal line
+        machine.VideoMemory[0x18001] = 0x07;
+        machine.VideoMemory[0x18002] = 0xC4;
+        machine.VideoMemory[0x18003] = 0x07;
+        machine.VideoMemory.MarkRowsDirty(0, 25);
+        machine.Video.Render();
+
+        // Eighteen unbroken columns across two cells: no gap at the seam.
+        var frame = machine.Video.Framebuffer;
+        int width = machine.Video.Width;
+        for (int x = 0; x < 18; x++)
+            Assert.NotEqual(0u, frame[7 * width + x] & 0xFFFFFF);
+    }
+
+    [Fact]
+    public void AnOrdinaryCharacterLeavesTheNinthColumnBlank()
+    {
+        // Only 0xC0 to 0xDF get the repeat, and that range is where the
+        // line-drawing characters live. A letter would look badly spaced if
+        // its last column were doubled.
+        using Machine machine = InTextMode();
+
+        // A solid block, so that its eighth column is certainly lit.
+        machine.VideoMemory[0x18000] = 0xDB;
+        machine.VideoMemory[0x18001] = 0x07;
+        machine.VideoMemory[0x18002] = (byte)'M';
+        machine.VideoMemory[0x18003] = 0x07;
+        machine.VideoMemory.MarkRowsDirty(0, 25);
+        machine.Video.Render();
+
+        var frame = machine.Video.Framebuffer;
+        int width = machine.Video.Width;
+
+        // 0xDB is inside the range, so its ninth column repeats the eighth.
+        Assert.NotEqual(0u, frame[7 * width + 8] & 0xFFFFFF);
+
+        // 'M' is not, so the ninth column of the second cell stays blank
+        // whatever the glyph does.
+        Assert.Equal(0u, frame[7 * width + 17] & 0xFFFFFF);
+    }
+}

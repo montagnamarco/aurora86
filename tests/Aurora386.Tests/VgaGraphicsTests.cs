@@ -106,7 +106,8 @@ public class VgaGraphicsTests
         Assert.StartsWith("HELLO", machine.GetScreenText());
 
         machine.Video.Render(force: true);
-        Assert.Equal(640, machine.Video.Width);
+        // 720 across: a VGA text cell is nine pixels wide.
+        Assert.Equal(720, machine.Video.Width);
         Assert.Equal(400, machine.Video.Height);
     }
 
@@ -592,9 +593,10 @@ public class VgaGraphicsTests
         Assert.Equal(50, machine.VideoRegisters.TextRows);
         Assert.Equal(80, machine.VideoRegisters.TextColumns);
 
-        // The raster is unchanged: still 640x400, just with smaller characters.
+        // The raster is unchanged: still 720x400, just with smaller characters.
+        // Fifty rows come from an eight-line font, not from a taller screen.
         machine.Video.Render(force: true);
-        Assert.Equal(640, machine.Video.Width);
+        Assert.Equal(720, machine.Video.Width);
         Assert.Equal(400, machine.Video.Height);
     }
 

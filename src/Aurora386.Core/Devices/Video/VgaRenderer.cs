@@ -52,7 +52,7 @@ public sealed class VgaRenderer
     {
         _memory = memory;
         _registers = registers;
-        Width = registers.TextColumns * VgaFont.CharWidth;
+        Width = registers.TextColumns * registers.CharacterWidth;
         Height = registers.TextRows * registers.CharacterHeight;
         _framebuffer = new uint[Width * Height];
         registers.ModeChanged += OnModeChanged;
@@ -82,7 +82,7 @@ public sealed class VgaRenderer
         // Text geometry follows the registers rather than the table, because
         // INT 10h AH=11h can switch the font -- and therefore the row count --
         // without going through a mode set.
-        return (_registers.TextColumns * VgaFont.CharWidth,
+        return (_registers.TextColumns * _registers.CharacterWidth,
                 _registers.TextRows * _registers.CharacterHeight);
     }
 
@@ -333,19 +333,36 @@ public sealed class VgaRenderer
         uint foregroundColor = ToRgba(_registers.GetPaletteColor(_registers.PaletteIndexFor(foreground)));
         uint backgroundColor = ToRgba(_registers.GetPaletteColor(_registers.PaletteIndexFor(background)));
 
-        int originX = column * VgaFont.CharWidth;
+        int cellWidth = _registers.CharacterWidth;
+        int originX = column * cellWidth;
         int originY = row * charHeight;
         if (originY + charHeight > Height) return;
+
+        // The ninth column, when there is one, is normally blank -- it is the
+        // space between one character and the next, and it is why text on a
+        // VGA looks less cramped than on an EGA. The exception is the
+        // line-drawing characters, 0xC0 to 0xDF, where the ninth column
+        // repeats the eighth: without that a horizontal rule drawn out of
+        // them would come apart into dashes, one blank column per cell.
+        bool extendGlyph = cellWidth > 8
+                        && _registers.NinthColumnRepeats
+                        && character >= 0xC0 && character <= 0xDF;
 
         for (int y = 0; y < charHeight; y++)
         {
             byte bits = glyph[y];
             int destination = (originY + y) * Width + originX;
 
-            for (int x = 0; x < VgaFont.CharWidth; x++)
+            for (int x = 0; x < cellWidth; x++)
             {
-                // The most significant bit is the leftmost pixel.
-                bool on = (bits & (0x80 >> x)) != 0;
+                // The most significant bit is the leftmost pixel. Past the
+                // eighth there is no glyph data, so the pixel is background
+                // unless this is one of the characters whose line has to
+                // carry on into the gap.
+                bool on = x < 8
+                    ? (bits & (0x80 >> x)) != 0
+                    : extendGlyph && (bits & 0x01) != 0;
+
                 _framebuffer[destination + x] = on ? foregroundColor : backgroundColor;
             }
         }
@@ -373,7 +390,7 @@ public sealed class VgaRenderer
             if (!on) continue;
 
             int destination = (originY + y) * Width + originX;
-            for (int x = 0; x < VgaFont.CharWidth; x++)
+            for (int x = 0; x < cellWidth; x++)
                 _framebuffer[destination + x] = foregroundColor;
         }
     }
