@@ -370,3 +370,133 @@ public class TaskSwitchTests
         Assert.Equal(0x6000u, machine.Cpu.State.LdtBase);
     }
 }
+
+/// <summary>
+/// What entering a handler through a gate does to the nested-task flag.
+///
+/// NT is what makes an IRET return to another task instead of popping a
+/// return frame: it follows the link field in the current TSS. A handler
+/// entered through an interrupt gate has no such link -- it was reached by a
+/// frame on a stack, and that frame is exactly what its IRET must pop.
+///
+/// So the processor clears NT on the way in, and the reason is not tidiness.
+/// Windows 3.11 in enhanced mode leaves NT set in its own monitor; with the
+/// bit surviving into the handler, closing a program produced a #GP on the
+/// monitor's IRET, then on the handler's IRET, then again, until the machine
+/// gave up and fell out of protected mode into the BIOS and spun there for
+/// ever. One bit, fourteen faults, a frozen desktop.
+/// </summary>
+public class NestedTaskFlagTests
+{
+    private const uint GdtBase = 0x1000;
+    private const uint IdtBase = 0x2000;
+
+    private static void WriteDescriptor(Machine machine, int index,
+                                        uint baseAddress, uint limit,
+                                        byte access, byte granularity)
+    {
+        uint address = GdtBase + (uint)(index * 8);
+        machine.Memory.WriteWord(address, (ushort)(limit & 0xFFFF));
+        machine.Memory.WriteWord(address + 2, (ushort)(baseAddress & 0xFFFF));
+        machine.Memory.WriteByte(address + 4, (byte)((baseAddress >> 16) & 0xFF));
+        machine.Memory.WriteByte(address + 5, access);
+        machine.Memory.WriteByte(address + 6,
+            (byte)((granularity & 0xF0) | ((limit >> 16) & 0x0F)));
+        machine.Memory.WriteByte(address + 7, (byte)((baseAddress >> 24) & 0xFF));
+    }
+
+    private static Machine Build()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(200);
+
+        WriteDescriptor(machine, 1, 0, 0xFFFFF, 0x9A, 0xC0);
+        WriteDescriptor(machine, 2, 0, 0xFFFFF, 0x92, 0xC0);
+
+        machine.Cpu.State.GdtBase = GdtBase;
+        machine.Cpu.State.GdtLimit = 0x17;
+        machine.Cpu.State.IdtBase = IdtBase;
+        machine.Cpu.State.IdtLimit = 0x7FF;
+        machine.Cpu.State.Cr0 |= CpuState.Cr0ProtectionEnable;
+        machine.Cpu.State.Halted = false;
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x08);
+        machine.Cpu.SetSegment(SegReg.Ds, 0x10);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x10);
+        machine.Cpu.State.Esp = 0x8000;
+
+        // An interrupt gate on vector 0x30, pointing at 0x5000.
+        uint gate = IdtBase + 0x30 * 8;
+        machine.Memory.WriteWord(gate, 0x5000);
+        machine.Memory.WriteWord(gate + 2, 0x08);
+        machine.Memory.WriteByte(gate + 4, 0);
+        machine.Memory.WriteByte(gate + 5, 0x8E);
+        machine.Memory.WriteWord(gate + 6, 0);
+
+        return machine;
+    }
+
+    [Fact]
+    public void AGateClearsTheNestedTaskFlagOnTheWayIn()
+    {
+        using Machine machine = Build();
+
+        // NT set on the way in, as Windows' monitor leaves it.
+        machine.Cpu.Flags.SetValue(machine.Cpu.Flags.Value | (uint)Flags.NestedTask);
+
+        machine.Memory.WriteByte(0x0700, 0xCD);      // int 0x30
+        machine.Memory.WriteByte(0x0701, 0x30);
+        machine.Cpu.State.Eip = 0x0700;
+
+        machine.Cpu.Step();
+
+        Assert.Equal(0x5000u, machine.Cpu.State.Eip);
+        Assert.Equal(0u, machine.Cpu.Flags.Value & (uint)Flags.NestedTask);
+    }
+
+    [Fact]
+    public void TheHandlersIretPopsItsFrameRatherThanChasingALink()
+    {
+        // The whole consequence of the bit being cleared: the IRET at the end
+        // of the handler takes the ordinary path back. With NT still set it
+        // would look for a task to return to, find the link field never
+        // written, and fault -- inside the fault handler.
+        using Machine machine = Build();
+        machine.Cpu.Flags.SetValue(machine.Cpu.Flags.Value | (uint)Flags.NestedTask);
+
+        machine.Memory.WriteByte(0x0700, 0xCD);
+        machine.Memory.WriteByte(0x0701, 0x30);
+        machine.Memory.WriteByte(0x5000, 0xCF);      // iret
+        machine.Cpu.State.Eip = 0x0700;
+
+        var raised = new List<byte>();
+        machine.Cpu.ProcessorException += (vector, _, _, _) => raised.Add(vector);
+
+        machine.Cpu.Step();     // into the handler
+        machine.Cpu.Step();     // and back out
+
+        Assert.Empty(raised);
+        Assert.Equal(0x0702u, machine.Cpu.State.Eip);
+    }
+
+    [Fact]
+    public void TheFlagIsRestoredFromTheStackOnTheWayBack()
+    {
+        // Clearing NT on entry does not lose it: it went onto the stack with
+        // the rest of EFLAGS, and the IRET puts it back. The interrupted code
+        // is entitled to find its own flags as it left them.
+        using Machine machine = Build();
+        machine.Cpu.Flags.SetValue(machine.Cpu.Flags.Value | (uint)Flags.NestedTask);
+
+        machine.Memory.WriteByte(0x0700, 0xCD);
+        machine.Memory.WriteByte(0x0701, 0x30);
+        machine.Memory.WriteByte(0x5000, 0xCF);
+        machine.Cpu.State.Eip = 0x0700;
+
+        machine.Cpu.Step();
+        machine.Cpu.Step();
+
+        Assert.Equal((uint)Flags.NestedTask,
+                     machine.Cpu.Flags.Value & (uint)Flags.NestedTask);
+    }
+}

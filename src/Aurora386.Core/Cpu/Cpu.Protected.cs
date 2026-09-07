@@ -548,6 +548,23 @@ public sealed partial class Cpu
         // handler as well as the code being debugged.
         if (!isTrapGate) Flags.Interrupt = false;
         Flags.Trap = false;
+
+        // NT is cleared too, and this one is not a nicety.
+        //
+        // NT is what makes an IRET return to another *task* instead of popping
+        // a return frame, following the link field in the current TSS. A
+        // handler entered through a gate has no such link -- it was reached by
+        // a frame on a stack, and that frame is exactly what its IRET must
+        // pop. Leaving NT set from whatever ran before would send that IRET
+        // down the task-return path towards a link that was never written.
+        //
+        // The symptom is memorable: Windows 3.11 in enhanced mode leaves NT
+        // set in its own monitor, and closing a program produced a #GP on the
+        // monitor's IRET, then again on the handler's, then again -- until the
+        // machine gave up and fell out of protected mode into the BIOS, where
+        // it sat spinning in an interrupt handler for ever. Fourteen faults
+        // from one missing bit.
+        Flags.Stored &= ~Aurora386.Core.Cpu.Flags.NestedTask;
     }
 
     /// <summary>
