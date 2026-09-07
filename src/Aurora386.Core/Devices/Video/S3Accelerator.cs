@@ -48,11 +48,23 @@ public sealed class S3Accelerator : IIoDevice
     private ushort _foreground, _background;     // 0xA6E8, 0xA2E8
     private ushort _writeMask, _readMask;        // 0xAAE8, 0xAEE8
     private ushort _colourCompare;               // 0xB2E8
-    private ushort _mix, _backgroundMix;         // 0xBAE8, 0xB6E8
     private ushort _command;                     // 0x9AE8
+
+    /// <summary>
+    /// The raster operation, from 0xBAE8. It powers on as plain replacement,
+    /// because a zero here would mean "clear" and a driver that had not set
+    /// it yet would find every draw painting black.
+    /// </summary>
+    private ushort _mix = 0x07;
+
+    /// <summary>The same for pixels the pattern leaves as background, from 0xB6E8.</summary>
+    private ushort _backgroundMix = 0x07;
 
     /// <summary>Clipping: nothing is drawn outside this rectangle.</summary>
     private ushort _clipTop, _clipLeft, _clipBottom, _clipRight;
+
+    /// <summary>The pixel control register, which holds the colour compare condition.</summary>
+    private ushort _pixelControl;
 
     /// <summary>Operations performed, which the tests read.</summary>
     public long OperationsPerformed { get; private set; }
@@ -155,6 +167,10 @@ public sealed class S3Accelerator : IIoDevice
 
         switch (value >> 12)
         {
+            // 0xA000 is the pixel control register, which holds the colour
+            // compare condition among other things.
+            case 0xA: _pixelControl = (ushort)data; return;
+
             case 0x1: _clipTop = (ushort)data; return;
             case 0x2: _clipLeft = (ushort)data; return;
             case 0x3: _clipBottom = (ushort)data; return;
@@ -277,7 +293,8 @@ public sealed class S3Accelerator : IIoDevice
     }
 
     /// <summary>
-    /// Writes one pixel, respecting the clip rectangle.
+    /// Writes one pixel, respecting the clip rectangle, the raster operation,
+    /// the write mask and the colour compare.
     ///
     /// Clipping is done here rather than by trimming the rectangle first
     /// because that is what the hardware does: every pixel is tested. It
@@ -290,11 +307,78 @@ public sealed class S3Accelerator : IIoDevice
         if (y < _clipTop || y > _clipBottom) return;
         if (x < 0 || y < 0) return;
 
+        ushort existing = GetPixel(x, y);
+
+        // Colour compare: a pixel already holding the compare colour is
+        // either the only one that may be written or the only one that may
+        // not, depending on the condition. This is how a card draws a
+        // transparent sprite in one pass -- and how a driver paints only the
+        // background of a window without disturbing what is on it.
+        if (ColourCompareEnabled)
+        {
+            bool matches = (existing & 0xFF) == (_colourCompare & 0xFF);
+            if (matches != ColourCompareWritesOnMatch) return;
+        }
+
+        ushort result = ApplyMix(colour, existing);
+
+        // The write mask -- "plane write mask" in the manual -- lets through
+        // only the bits it has set. A driver that wants to change the top
+        // four bits of every pixel and leave the rest alone does it here
+        // rather than reading, modifying and writing back.
+        if (_writeMask != 0)
+            result = (ushort)((result & _writeMask) | (existing & ~_writeMask));
+
         uint at = (uint)(y * Stride + x * BytesPerPixel);
 
-        _memory.WriteLinear(at, (byte)colour);
-        if (BytesPerPixel >= 2) _memory.WriteLinear(at + 1, (byte)(colour >> 8));
+        _memory.WriteLinear(at, (byte)result);
+        if (BytesPerPixel >= 2) _memory.WriteLinear(at + 1, (byte)(result >> 8));
     }
+
+    /// <summary>
+    /// Whether the colour compare is in force, from bits 3-5 of the
+    /// multifunction pixel control register.
+    /// </summary>
+    private bool ColourCompareEnabled => (_pixelControl & 0x0038) != 0;
+
+    /// <summary>
+    /// Whether a matching pixel is the one that gets written or the one that
+    /// is skipped. Both are used: skipping matches draws a sprite with a
+    /// transparent colour, and writing only matches replaces one colour
+    /// throughout an area.
+    /// </summary>
+    private bool ColourCompareWritesOnMatch => (_pixelControl & 0x0020) != 0;
+
+    /// <summary>
+    /// Combines the new pixel with the one already there, according to the
+    /// low four bits of the mix register.
+    ///
+    /// These are the raster operations, and the two that matter are 7 -- plain
+    /// replacement, what almost every draw uses -- and 5, exclusive or. XOR is
+    /// how a rubber-band selection rectangle works: draw it once and it
+    /// appears, draw it again in the same place and it vanishes, leaving what
+    /// was underneath exactly as it was. No saving of the background, no
+    /// second buffer.
+    /// </summary>
+    private ushort ApplyMix(ushort source, ushort destination) => (_mix & 0x0F) switch
+    {
+        0x0 => 0,                                            // clear
+        0x1 => (ushort)(destination & source),
+        0x2 => (ushort)(destination & ~source),
+        0x3 => source,
+        0x4 => (ushort)(~destination & source),
+        0x5 => (ushort)(destination ^ source),               // the rubber band
+        0x6 => (ushort)(destination | source),
+        0x7 => source,                                       // replace: the common case
+        0x8 => (ushort)~(destination | source),
+        0x9 => (ushort)~(destination ^ source),
+        0xA => destination,                                  // leave it alone
+        0xB => (ushort)(destination | ~source),
+        0xC => (ushort)~source,
+        0xD => (ushort)(~destination | source),
+        0xE => (ushort)~(destination & source),
+        _ => 0xFFFF,                                         // set
+    };
 
     private ushort GetPixel(int x, int y)
     {
