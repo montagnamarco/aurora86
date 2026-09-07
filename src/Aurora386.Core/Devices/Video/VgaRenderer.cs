@@ -134,6 +134,7 @@ public sealed class VgaRenderer
             case VgaMemoryLayout.Planar4: RenderPlanar(force); break;
             case VgaMemoryLayout.Linear8: RenderLinear(force); break;
             case VgaMemoryLayout.Cga: RenderCga(force); break;
+            case VgaMemoryLayout.HighColour: RenderHighColour(force); break;
             default: RenderText(force); break;
         }
 
@@ -615,6 +616,72 @@ public sealed class VgaRenderer
             }
         }
     }
+
+    /// <summary>
+    /// The SVGA modes: one flat array of pixels with no planes, no
+    /// interleaving and no window -- the renderer sees the whole of video
+    /// memory whatever the guest is doing with the bank register.
+    ///
+    /// Four depths, and the interesting one is 15-bit. It stores five bits
+    /// per channel in two bytes and leaves the sixteenth unused, which looks
+    /// wasteful until you notice the alternative: 16-bit colour gives green
+    /// the spare bit, because the eye resolves green far better than red or
+    /// blue. That asymmetry is why 15- and 16-bit are different modes rather
+    /// than one, and why an image drawn assuming the wrong one comes out with
+    /// a green cast.
+    ///
+    /// Expanding five bits to eight is done by repeating the top three at the
+    /// bottom rather than shifting and leaving zeros: it makes full scale map
+    /// to 255 instead of 248, so white really is white.
+    /// </summary>
+    private void RenderHighColour(bool force)
+    {
+        VgaModeInfo mode = _registers.EffectiveMode;
+        int bytesPerRow = mode.BytesPerRow;
+        int depth = mode.BitsPerPixel;
+
+        for (int y = 0; y < Height; y++)
+        {
+            if (!force && !_memory.IsRowDirty(y)) continue;
+
+            uint rowStart = (uint)(y * bytesPerRow);
+            int destination = y * Width;
+
+            for (int x = 0; x < Width; x++)
+            {
+                uint at = rowStart + (uint)(x * mode.BytesPerRow / Width);
+                _framebuffer[destination + x] = depth switch
+                {
+                    8 => ToRgba(_registers.GetPaletteColor(_memory.ReadLinear(rowStart + (uint)x))),
+                    15 => From15(_memory.ReadLinear(at) | (_memory.ReadLinear(at + 1) << 8)),
+                    16 => From16(_memory.ReadLinear(at) | (_memory.ReadLinear(at + 1) << 8)),
+                    _ => FromBytes(_memory.ReadLinear(at + 2),
+                                   _memory.ReadLinear(at + 1),
+                                   _memory.ReadLinear(at)),
+                };
+            }
+        }
+    }
+
+    /// <summary>Five bits per channel, the sixteenth bit unused.</summary>
+    private static uint From15(int pixel)
+        => FromBytes(Expand5((pixel >> 10) & 0x1F),
+                     Expand5((pixel >> 5) & 0x1F),
+                     Expand5(pixel & 0x1F));
+
+    /// <summary>
+    /// Five bits of red and blue, six of green. The spare bit goes to green
+    /// because the eye resolves it far better than the other two.
+    /// </summary>
+    private static uint From16(int pixel)
+        => FromBytes(Expand5((pixel >> 11) & 0x1F),
+                     (byte)(((pixel >> 5) & 0x3F) << 2 | ((pixel >> 5) & 0x3F) >> 4),
+                     Expand5(pixel & 0x1F));
+
+    private static byte Expand5(int value) => (byte)((value << 3) | (value >> 2));
+
+    private static uint FromBytes(byte r, byte g, byte b)
+        => 0xFF000000u | ((uint)b << 16) | ((uint)g << 8) | r;
 
     private static uint ToRgba((byte R, byte G, byte B) color)
         => (uint)(color.R | (color.G << 8) | (color.B << 16) | (0xFF << 24));

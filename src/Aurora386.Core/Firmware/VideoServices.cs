@@ -22,6 +22,17 @@ public sealed class VideoServices
     }
 
     /// <summary>
+    /// The VESA extension, attached by the machine after construction.
+    ///
+    /// It needs the whole machine -- it writes into the caller's memory and
+    /// reads the video memory's size -- which the plain video services do
+    /// not, so it is handed over afterwards rather than taken as a
+    /// constructor argument that everything else would have to thread
+    /// through.
+    /// </summary>
+    public VesaServices? Vesa { get; set; }
+
+    /// <summary>
     /// Address of a text cell, taking the CRTC's start address into account.
     ///
     /// The adapter does not necessarily display the first cell of video memory
@@ -93,6 +104,14 @@ public sealed class VideoServices
                 // Display combination code: identifies the adapter type.
                 cpu.State.SetReg8(0, 0x1A);    // function supported
                 cpu.State.Bx = 0x0808;         // color VGA
+                return;
+
+            case 0x4F:
+                // The VESA BIOS Extension. It is a whole interface of its own
+                // hung off one INT 10h function, which is how it could be
+                // added to a BIOS that already existed: a card maker did not
+                // have to renumber anything.
+                Vesa?.Handle(cpu);
                 return;
 
             default:

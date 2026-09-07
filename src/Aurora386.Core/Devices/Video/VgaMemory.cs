@@ -48,8 +48,32 @@ public sealed class VgaMemory : IMemoryDevice
     /// <summary>Offset of the colour text window within this device.</summary>
     public const uint TextWindowOffset = 0x18000;   // 0xB8000 - 0xA0000
 
-    /// <summary>Bytes in one plane. 64 KB each, four of them, 256 KB total.</summary>
+    /// <summary>
+    /// Bytes in one plane, which on a plain VGA is 64 KB: four planes of 64 KB
+    /// each, 256 KB in total, and that is what a VGA has.
+    ///
+    /// The planar modes cannot address more than this -- the offset within a
+    /// plane is sixteen bits -- so it is also the ceiling for everything the
+    /// VGA proper can do. The extra memory an SVGA card carries is reached
+    /// through banking or a linear frame buffer instead, which is what makes
+    /// resolutions above 640x480 possible at all.
+    /// </summary>
     public const int PlaneSize = 64 * 1024;
+
+    /// <summary>
+    /// The whole of video memory, which on this card is two megabytes.
+    ///
+    /// A VGA has 256 KB and cannot address more; the rest exists for the SVGA
+    /// modes, where the card is not four planes but one flat array of pixels.
+    ///
+    /// Two megabytes is what an S3 Trio64 shipped with, and the figure is not
+    /// arbitrary: it is what the card's own top mode needs. 1024x768 at 256
+    /// colours takes 786 KB, but at 16-bit colour it takes 1.5 MB, and a card
+    /// that offered the resolution without the depth would have been a poor
+    /// showing against its competitors. The remainder is the off-screen
+    /// scratch a 2D accelerator blits from.
+    /// </summary>
+    public const int TotalSize = 2 * 1024 * 1024;
 
     /// <summary>
     /// The four planes, laid out end to end: plane N occupies
@@ -61,7 +85,7 @@ public sealed class VgaMemory : IMemoryDevice
     /// simple interleaved layout in plane 0's space -- it is what every other
     /// part of this emulator already assumes, and it costs nothing.
     /// </summary>
-    private readonly byte[] _vram = new byte[4 * PlaneSize];
+    private readonly byte[] _vram = new byte[TotalSize];
 
     /// <summary>
     /// The four latch registers, one per plane. Loaded on every CPU read from
@@ -142,6 +166,49 @@ public sealed class VgaMemory : IMemoryDevice
     }
 
     /// <summary>
+    /// Video memory seen as one flat array, for mapping as a linear frame
+    /// buffer.
+    ///
+    /// It is a separate device rather than a second range on the same one
+    /// because the addresses mean different things: through the window at
+    /// 0xA0000 an offset is a position within the current bank, and here it
+    /// is a position within the whole megabyte. Sharing one device would
+    /// mean deciding which by looking at the address, and that is the kind of
+    /// implicit rule that turns into a bug the first time a mode changes.
+    /// </summary>
+    public sealed class LinearAperture(VgaMemory memory) : IMemoryDevice
+    {
+        public byte ReadByte(uint offset) => memory.ReadLinear(offset);
+        public void WriteByte(uint offset, byte value) => memory.WriteLinear(offset, value);
+    }
+
+    /// <summary>The flat view of this memory, for the frame buffer mapping.</summary>
+    public LinearAperture Linear => _linear ??= new LinearAperture(this);
+    private LinearAperture? _linear;
+
+    /// <summary>
+    /// Reads video memory by its own address, with no windowing and no
+    /// planes: this is what the display hardware sees.
+    ///
+    /// The renderer uses it because the beam does not care which 64 KB slice
+    /// the guest currently has mapped at 0xA0000 -- the whole picture is in
+    /// memory and the whole picture is drawn. The bank register moves what
+    /// the *processor* can reach, not what the monitor shows.
+    /// </summary>
+    public byte ReadLinear(uint address)
+        => address < TotalSize ? _vram[address] : (byte)0;
+
+    /// <summary>Writes by video memory's own address, as above.</summary>
+    public void WriteLinear(uint address, byte value)
+    {
+        if (address >= TotalSize) return;
+        if (_vram[address] == value) return;
+
+        _vram[address] = value;
+        MarkDirty(address);
+    }
+
+    /// <summary>
     /// Whether the adapter answers at this offset at all.
     ///
     /// The graphics controller's memory map select decides which part of the
@@ -161,6 +228,14 @@ public sealed class VgaMemory : IMemoryDevice
     public byte ReadByte(uint offset)
     {
         if (offset >= Size) return 0xFF;
+
+        // In a VBE mode the window at 0xA0000 is a moveable 64 KB porthole
+        // onto video memory rather than the planar aperture: the bank
+        // register says which slice, and the planes are not in the path at
+        // all.
+        if (Registers.VesaMode is not null && offset < 0x10000)
+            return ReadLinear((uint)(Registers.VesaWindowBank * 0x10000) + offset);
+
         if (!InWindow(offset)) return 0xFF;
 
         if (TextWindow(offset))
@@ -231,6 +306,13 @@ public sealed class VgaMemory : IMemoryDevice
     public void WriteByte(uint offset, byte value)
     {
         if (offset >= Size) return;
+
+        if (Registers.VesaMode is not null && offset < 0x10000)
+        {
+            WriteLinear((uint)(Registers.VesaWindowBank * 0x10000) + offset, value);
+            return;
+        }
+
         if (!InWindow(offset)) return;
 
         if (TextWindow(offset))
@@ -420,6 +502,18 @@ public sealed class VgaMemory : IMemoryDevice
                 int columns = Registers.TextColumns > 0 ? Registers.TextColumns : 80;
                 uint row = textOffset / (uint)(columns * 2);
                 if (row < _dirtyRows.Length) _dirtyRows[row] = true;
+                return;
+            }
+
+            // An SVGA mode has no window: the offset is video memory's own
+            // address, and the row follows from the mode's bytes per row.
+            case VgaMemoryLayout.HighColour:
+            {
+                int stride = mode.BytesPerRow;
+                if (stride <= 0) { Array.Fill(_dirtyRows, true); return; }
+
+                uint svgaRow = offset / (uint)stride;
+                if (svgaRow < _dirtyRows.Length) _dirtyRows[svgaRow] = true;
                 return;
             }
 

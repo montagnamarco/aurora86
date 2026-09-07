@@ -108,9 +108,24 @@ public sealed partial class Machine : IDisposable
     /// <summary>Diagnostics: where DOS keeps its list of lists.</summary>
     public uint DosListOfLists => _redirectorInstaller.ListOfListsAddress;
 
+    /// <summary>
+    /// Where the SVGA linear frame buffer appears in physical memory: the
+    /// whole of video memory as one flat array, which is what a display
+    /// driver in protected mode uses instead of moving a 64 KB window about.
+    /// </summary>
+    public uint LinearFrameBufferBase { get; private set; }
+
     public Machine(uint ramSize = 16 * 1024 * 1024)
     {
-        Memory = new PhysicalMemoryBus(ramSize);
+        // The addressable space is larger than the RAM, because the linear
+        // frame buffer lives above it. A real card put it above the 16 MB
+        // line -- below that is the ISA hole and whatever memory the machine
+        // has, and a card cannot know how much of either -- so here it goes
+        // directly above the installed RAM, which is the same reasoning
+        // applied to a machine whose memory size is known.
+        uint frameBufferBase = Math.Max(ramSize, 16u * 1024 * 1024);
+        Memory = new PhysicalMemoryBus(ramSize, frameBufferBase + VgaMemory.TotalSize);
+        LinearFrameBufferBase = frameBufferBase;
         Io = new IoBus();
 
         Interrupts = new InterruptController();
@@ -142,6 +157,10 @@ public sealed partial class Machine : IDisposable
         VideoRegisters.Register(Io);
         VideoMemory = new VgaMemory(VideoRegisters);
         Memory.MapDevice(VgaMemory.Base, VgaMemory.Size, VideoMemory);
+
+        // And the same memory again, flat, above the RAM. A protected-mode
+        // display driver writes here and never touches the bank register.
+        Memory.MapDevice(LinearFrameBufferBase, VgaMemory.TotalSize, VideoMemory.Linear);
         Video = new VgaRenderer(VideoMemory, VideoRegisters);
 
         // The 8237 DMA pair and the Sound Blaster 16 that streams through it.
@@ -163,6 +182,7 @@ public sealed partial class Machine : IDisposable
 
         Bda = new BiosDataArea(Memory);
         VideoServices = new VideoServices(VideoMemory, VideoRegisters, Bda);
+        VideoServices.Vesa = new VesaServices(this);
         DiskServices = new DiskServices(Bda);
         KeyboardServices = new KeyboardServices(Bda, Memory, Keyboard);
         CompactDiscServices = new CompactDiscServices(this);

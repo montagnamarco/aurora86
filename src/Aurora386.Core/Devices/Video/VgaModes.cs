@@ -50,6 +50,19 @@ public enum VgaMemoryLayout
     /// since.
     /// </summary>
     Cga,
+
+    /// <summary>
+    /// An SVGA mode: one flat array of pixels, several bytes each, with no
+    /// planes and no interleaving.
+    ///
+    /// This is what every graphics system has done since, and the reason it
+    /// took until the 1990s is memory cost rather than cleverness. A VGA's
+    /// planar arrangement lets four bits of colour share one byte of address
+    /// space across four chips, which mattered when memory was the expensive
+    /// part; once it was not, one byte per pixel became obviously simpler and
+    /// the planes went away.
+    /// </summary>
+    HighColour,
 }
 
 /// <summary>
@@ -69,7 +82,14 @@ public readonly record struct VgaModeInfo(
     int PixelHeight,
     int TextColumns,
     int TextRows,
-    int CharHeight)
+    int CharHeight,
+
+    /// <summary>
+    /// Bits per pixel, which only an SVGA mode needs to state. Every VGA mode
+    /// is defined by its layout instead -- planar is four bits, linear is
+    /// eight -- so this stays zero there and nothing reads it.
+    /// </summary>
+    int BitsPerPixel = 0)
 {
     /// <summary>Bytes per scan line: one bit per pixel per plane in planar modes.</summary>
     public int BytesPerRow => Layout switch
@@ -82,6 +102,17 @@ public readonly record struct VgaModeInfo(
         // coincidence -- the two modes are the same scan hardware reading the
         // same amount of memory, differing only in how the bits are grouped.
         VgaMemoryLayout.Cga => 80,
+
+        // An SVGA mode states its depth, and the bytes per pixel follow: one
+        // at 256 colours, two at 15 and 16 bits -- 15-bit colour wastes the
+        // sixteenth rather than packing tighter -- three at 24, four at 32.
+        VgaMemoryLayout.HighColour => PixelWidth * BitsPerPixel switch
+        {
+            8 => 1,
+            15 or 16 => 2,
+            24 => 3,
+            _ => 4,
+        },
 
         _ => TextColumns * 2,
     };

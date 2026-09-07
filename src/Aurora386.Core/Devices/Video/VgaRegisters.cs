@@ -153,6 +153,16 @@ public sealed class VgaRegisters : IIoDevice
     {
         get
         {
+            // A VBE mode overrides everything the VGA registers say: the
+            // planar hardware is not in the path at all, and the CRTC values
+            // an SVGA card would hold for these resolutions are extensions
+            // this emulator does not pretend to have.
+            if (VesaMode is { } vesa)
+                return new VgaModeInfo(0xFF, VgaMemoryLayout.HighColour,
+                                       vesa.Width, vesa.Height,
+                                       vesa.Width / 8, vesa.Height / 16, 16,
+                                       vesa.BitsPerPixel);
+
             bool graphics = (_graphics[GcMiscellaneous] & 0x01) != 0;
             if (graphics == ModeInfo.IsGraphics) return ModeInfo;
             if (!graphics)
@@ -206,6 +216,47 @@ public sealed class VgaRegisters : IIoDevice
     /// ever needed to serve the one font.
     /// </summary>
     public bool NinthColumnRepeats => (_attribute[0x10] & 0x04) != 0;
+
+    // --- VESA BIOS Extension state --------------------------------------------
+    //
+    // The VBE modes are not VGA modes with bigger numbers: they bypass the
+    // planar hardware entirely and treat video memory as one flat array. So
+    // the geometry is held here rather than derived from the CRTC, which on a
+    // real SVGA card is programmed through vendor-specific extended registers
+    // that no two makers agreed on -- and agreeing on that is precisely what
+    // VBE was invented to avoid having to do.
+
+    /// <summary>The VBE mode in force, or null when the card is in a VGA mode.</summary>
+    public VesaModes.VesaModeInfo? VesaMode { get; private set; }
+
+    /// <summary>
+    /// Which 64 KB slice of video memory the window at 0xA0000 shows.
+    ///
+    /// This is how a real-mode program reaches more than 64 KB of pixels: the
+    /// address space has no room for the rest, so the card shows one slice at
+    /// a time and the program moves the window. Drawing anything that crosses
+    /// a boundary means splitting the write in two, which is the tedium the
+    /// linear frame buffer exists to end.
+    /// </summary>
+    public int VesaWindowBank { get; set; }
+
+    /// <summary>
+    /// Whether the mode was set with the linear frame buffer requested, in
+    /// which case the window at 0xA0000 is not used at all and the whole of
+    /// video memory is reached at one physical address.
+    /// </summary>
+    public bool VesaLinearFrameBuffer { get; private set; }
+
+    /// <summary>
+    /// Puts the card into a VBE mode, or back into VGA modes when given null.
+    /// </summary>
+    public void SetVesaMode(VesaModes.VesaModeInfo? mode, bool linearFrameBuffer)
+    {
+        VesaMode = mode;
+        VesaLinearFrameBuffer = linearFrameBuffer;
+        VesaWindowBank = 0;
+        ModeChanged?.Invoke();
+    }
 
     public int TextColumns { get; set; } = 80;
     public int TextRows { get; set; } = 25;

@@ -78,6 +78,22 @@ public static class BiosRom
         public const ushort SystemConfiguration = 0x11A0;
 
         /// <summary>
+        /// The card's name, as a far pointer in the VBE information block.
+        ///
+        /// It has to live in ROM because the structure hands back a pointer
+        /// rather than the text: on a real card that pointer goes into its
+        /// own ROM, and a program is entitled to keep it and read the string
+        /// whenever it likes.
+        /// </summary>
+        public const ushort VesaOemName = 0x1800;
+
+        /// <summary>
+        /// The list of supported mode numbers, terminated by 0xFFFF. Also
+        /// pointed at rather than copied, for the same reason.
+        /// </summary>
+        public const ushort VesaModeList = 0x1840;
+
+        /// <summary>
         /// The redirector's own INT 2Fh entry point, which chains.
         ///
         /// It has to exist separately from <see cref="Multiplex"/> because
@@ -271,6 +287,31 @@ public static class BiosRom
             rom[table + 7] = 0x00;
             rom[table + 8] = 0x00;
             rom[table + 9] = 0x00;
+        }
+
+        // The two VBE tables the information block points at rather than
+        // copies. They have to be in ROM because a program is entitled to
+        // keep the pointer and read them later, long after the call that
+        // handed it over has returned.
+        {
+            const string name = "Aurora386 SVGA";
+            for (int i = 0; i < name.Length; i++)
+                rom[Entry.VesaOemName + i] = (byte)name[i];
+            rom[Entry.VesaOemName + name.Length] = 0;
+
+            int at = Entry.VesaModeList;
+            foreach (Devices.Video.VesaModes.VesaModeInfo mode
+                     in Devices.Video.VesaModes.Available(Devices.Video.VgaMemory.TotalSize))
+            {
+                rom[at++] = (byte)mode.Number;
+                rom[at++] = (byte)(mode.Number >> 8);
+            }
+
+            // 0xFFFF ends the list. A program walks it until it sees this,
+            // so leaving it out sends the program off through whatever
+            // follows in ROM.
+            rom[at++] = 0xFF;
+            rom[at] = 0xFF;
         }
 
         // The chaining redirector entry. It is only three bytes and an IRET,
