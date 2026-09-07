@@ -132,3 +132,83 @@ public class VgaRegisterTableTests
         Assert.Equal((0x00, 0x00, 0xAA), regs.GetPaletteColor(regs.PaletteIndexFor(4)));
     }
 }
+
+/// <summary>
+/// The colour text window and its odd/even mapping.
+///
+/// The CPU sees characters and attributes alternating at 0xB8000, but that is
+/// not how they are stored: even addresses go to plane 0 and odd ones to
+/// plane 1, both at the same offset. So a screenful of characters is
+/// contiguous in one plane and a screenful of attributes contiguous in
+/// another, which is exactly what the character generator needs -- it fetches
+/// both from the same address in one memory cycle.
+///
+/// It matters because a program can see through the illusion: period code
+/// reads plane 0 directly to scan the screen at twice the speed, and storing
+/// the interleaved bytes as the CPU wrote them would hand it an alternating
+/// string of characters and colour bytes.
+/// </summary>
+public class TextWindowMappingTests
+{
+    [Fact]
+    public void CharactersAndAttributesLandInDifferentPlanes()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+
+        machine.VideoMemory.WriteByte(0x18000, (byte)'A');
+        machine.VideoMemory.WriteByte(0x18001, 0x1F);
+
+        Assert.Equal((byte)'A', machine.VideoMemory.ReadPlane(0, 0x8000));
+        Assert.Equal(0x1F, machine.VideoMemory.ReadPlane(1, 0x8000));
+    }
+
+    [Fact]
+    public void TheCpuStillSeesThemInterleaved()
+    {
+        // The mapping is invisible from the address bus, which is the whole
+        // point: every program written since 1981 writes a character and then
+        // its attribute at the next address.
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+
+        machine.VideoMemory.WriteByte(0x18000, (byte)'X');
+        machine.VideoMemory.WriteByte(0x18001, 0x4E);
+
+        Assert.Equal((byte)'X', machine.VideoMemory.ReadByte(0x18000));
+        Assert.Equal(0x4E, machine.VideoMemory.ReadByte(0x18001));
+    }
+
+    [Fact]
+    public void ConsecutiveCharactersAreContiguousInPlaneZero()
+    {
+        // What the character generator wants, and what a program scanning the
+        // screen through plane 0 relies on: no attribute bytes in between.
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+
+        machine.VideoMemory.WriteByte(0x18000, (byte)'H');
+        machine.VideoMemory.WriteByte(0x18002, (byte)'i');
+
+        Assert.Equal((byte)'H', machine.VideoMemory.ReadPlane(0, 0x8000));
+        Assert.Equal((byte)'i', machine.VideoMemory.ReadPlane(0, 0x8001));
+    }
+
+    [Fact]
+    public void TheBiosHelpersUseTheSameMapping()
+    {
+        // The indexer bypasses the write modes -- the BIOS is writing
+        // characters, not driving the graphics controller -- but it must not
+        // bypass where the byte lives, or the screen would look right through
+        // that one path and wrong to everything else.
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+
+        machine.VideoMemory[0x18000] = (byte)'Q';
+        machine.VideoMemory[0x18001] = 0x70;
+
+        Assert.Equal((byte)'Q', machine.VideoMemory.ReadPlane(0, 0x8000));
+        Assert.Equal(0x70, machine.VideoMemory.ReadPlane(1, 0x8000));
+        Assert.Equal((byte)'Q', machine.VideoMemory[0x18000]);
+    }
+}

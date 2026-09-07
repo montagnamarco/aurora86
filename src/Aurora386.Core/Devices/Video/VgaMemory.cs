@@ -106,9 +106,50 @@ public sealed class VgaMemory : IMemoryDevice
         => offset < 0x10000
         && Registers.EffectiveMode.Layout == VgaMemoryLayout.Linear8;
 
+    /// <summary>
+    /// The colour text window at 0xB8000, which is odd/even mapped.
+    ///
+    /// This is the arrangement that makes text mode work on planar hardware.
+    /// The CPU sees characters and attributes alternating -- 0xB8000 is a
+    /// character, 0xB8001 its attribute -- but they are not stored that way:
+    /// even addresses go to plane 0 and odd ones to plane 1, both at the same
+    /// offset. So a screenful of characters is contiguous in plane 0 and a
+    /// screenful of attributes contiguous in plane 1, which is exactly what
+    /// the character generator wants to read: it fetches a character and its
+    /// attribute from the same address in two planes, in one memory cycle.
+    ///
+    /// A program can also see through the illusion. Setting the sequencer to
+    /// address the planes directly and reading plane 0 gives characters with
+    /// no attributes between them, and there is period code that does this to
+    /// scan the screen twice as fast. Storing the interleaved bytes as the CPU
+    /// wrote them would give that code an alternating string of characters and
+    /// colour bytes instead.
+    /// </summary>
+    private bool TextWindow(uint offset)
+        => offset >= TextWindowOffset
+        && Registers.EffectiveMode.Layout == VgaMemoryLayout.Text;
+
+    /// <summary>
+    /// Where an address inside the text window really lives: which plane, and
+    /// at what offset within it. The low bit of the address chooses the plane
+    /// and is then dropped, so two consecutive CPU addresses land at the same
+    /// offset in two different planes.
+    /// </summary>
+    private static (int Plane, uint Offset) TextLocation(uint offset)
+    {
+        uint within = offset - TextWindowOffset;
+        return ((int)(within & 1), 0x8000u + (within >> 1));
+    }
+
     public byte ReadByte(uint offset)
     {
         if (offset >= Size) return 0xFF;
+
+        if (TextWindow(offset))
+        {
+            (int plane, uint within) = TextLocation(offset);
+            return _vram[plane * PlaneSize + within];
+        }
 
         if (PlanarWindow(offset))
         {
@@ -172,6 +213,16 @@ public sealed class VgaMemory : IMemoryDevice
     public void WriteByte(uint offset, byte value)
     {
         if (offset >= Size) return;
+
+        if (TextWindow(offset))
+        {
+            (int plane, uint within) = TextLocation(offset);
+            int at = plane * PlaneSize + (int)within;
+            if (_vram[at] == value) return;
+            _vram[at] = value;
+            MarkDirty(offset);
+            return;
+        }
 
         if (PlanarWindow(offset))
         {
@@ -420,14 +471,41 @@ public sealed class VgaMemory : IMemoryDevice
     public Span<byte> GetSpan(uint offset, int length) => _vram.AsSpan((int)offset, length);
 
     /// <summary>
-    /// Raw access that bypasses the planar logic entirely. The BIOS text
-    /// helpers and the tests use it; anything emulating a CPU access must go
-    /// through <see cref="ReadByte"/> / <see cref="WriteByte"/> instead, or the
-    /// plane and latch behaviour is lost.
+    /// Access by the address the CPU would use, bypassing the write modes and
+    /// the latches. The BIOS text helpers and the tests use it: the BIOS is
+    /// writing characters, not driving the graphics controller, and making it
+    /// go through the planar write path would mean setting up four registers
+    /// to write one byte.
+    ///
+    /// What it does not bypass is where the byte lives. The text window is
+    /// odd/even mapped -- characters in plane 0, attributes in plane 1 -- and
+    /// a helper that wrote the interleaved bytes into one plane would leave
+    /// the screen looking right through this same indexer and wrong to
+    /// everything else, which is the kind of bug that survives for years.
     /// </summary>
     public byte this[uint offset]
     {
-        get => _vram[offset];
-        set { _vram[offset] = value; MarkDirty(offset); }
+        get
+        {
+            if (TextWindow(offset))
+            {
+                (int plane, uint within) = TextLocation(offset);
+                return _vram[plane * PlaneSize + within];
+            }
+            return _vram[offset];
+        }
+        set
+        {
+            if (TextWindow(offset))
+            {
+                (int plane, uint within) = TextLocation(offset);
+                _vram[plane * PlaneSize + within] = value;
+            }
+            else
+            {
+                _vram[offset] = value;
+            }
+            MarkDirty(offset);
+        }
     }
 }
