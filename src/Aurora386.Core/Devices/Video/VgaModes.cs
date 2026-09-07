@@ -91,6 +91,19 @@ public readonly record struct VgaModeInfo(
     /// </summary>
     int BitsPerPixel = 0)
 {
+    /// <summary>
+    /// Bytes one pixel occupies in an SVGA mode: one at 256 colours, two at
+    /// both 15 and 16 bits -- 15-bit colour wastes the sixteenth rather than
+    /// packing tighter -- three at 24, four at 32.
+    /// </summary>
+    public int BytesPerPixel => BitsPerPixel switch
+    {
+        8 => 1,
+        15 or 16 => 2,
+        24 => 3,
+        _ => 4,
+    };
+
     /// <summary>Bytes per scan line: one bit per pixel per plane in planar modes.</summary>
     public int BytesPerRow => Layout switch
     {
@@ -103,16 +116,8 @@ public readonly record struct VgaModeInfo(
         // same amount of memory, differing only in how the bits are grouped.
         VgaMemoryLayout.Cga => 80,
 
-        // An SVGA mode states its depth, and the bytes per pixel follow: one
-        // at 256 colours, two at 15 and 16 bits -- 15-bit colour wastes the
-        // sixteenth rather than packing tighter -- three at 24, four at 32.
-        VgaMemoryLayout.HighColour => PixelWidth * BitsPerPixel switch
-        {
-            8 => 1,
-            15 or 16 => 2,
-            24 => 3,
-            _ => 4,
-        },
+        // An SVGA mode states its depth, and the bytes per pixel follow.
+        VgaMemoryLayout.HighColour => PixelWidth * BytesPerPixel,
 
         _ => TextColumns * 2,
     };

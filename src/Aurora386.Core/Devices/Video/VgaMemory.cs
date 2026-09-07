@@ -509,10 +509,19 @@ public sealed class VgaMemory : IMemoryDevice
             // address, and the row follows from the mode's bytes per row.
             case VgaMemoryLayout.HighColour:
             {
-                int stride = mode.BytesPerRow;
+                // The stride, and the origin, both come from the VBE state
+                // rather than the mode: a program can set a scan line longer
+                // than the picture and scroll a window across it, and a write
+                // outside that window belongs to no visible row at all.
+                int stride = Registers.VesaScanLineBytes > 0
+                    ? Registers.VesaScanLineBytes
+                    : mode.BytesPerRow;
                 if (stride <= 0) { Array.Fill(_dirtyRows, true); return; }
 
-                uint svgaRow = offset / (uint)stride;
+                uint origin = (uint)Registers.VesaDisplayStart;
+                if (offset < origin) return;
+
+                uint svgaRow = (offset - origin) / (uint)stride;
                 if (svgaRow < _dirtyRows.Length) _dirtyRows[svgaRow] = true;
                 return;
             }

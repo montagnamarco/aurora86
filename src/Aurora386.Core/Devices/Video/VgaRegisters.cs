@@ -230,6 +230,35 @@ public sealed class VgaRegisters : IIoDevice
     public VesaModes.VesaModeInfo? VesaMode { get; private set; }
 
     /// <summary>
+    /// Bytes between one scan line and the next, which need not be the width
+    /// of the picture.
+    ///
+    /// A program that makes this longer gets a picture wider than the screen
+    /// and scrolls a window across it, which is how side-scrolling works at
+    /// resolutions where copying the screen every frame is out of the
+    /// question. Zero means "the same as the visible width", which is what a
+    /// mode set leaves.
+    /// </summary>
+    public int VesaScanLineBytes { get; set; }
+
+    /// <summary>
+    /// The byte within video memory that appears at the top left of the
+    /// screen: the SVGA equivalent of the VGA's start address, and the
+    /// register that does the scrolling.
+    /// </summary>
+    public int VesaDisplayStart { get; set; }
+
+    /// <summary>
+    /// How many bits of each colour the palette holds.
+    ///
+    /// A VGA's DAC keeps six, which gives 262144 colours and visible banding
+    /// in a gradient. VBE 2.0 cards could switch to eight, and a program that
+    /// wants smooth gradients asks for it -- because on a card that cannot,
+    /// the same values come out four times too bright.
+    /// </summary>
+    public int DacBitsPerColour { get; set; } = 6;
+
+    /// <summary>
     /// Which 64 KB slice of video memory the window at 0xA0000 shows.
     ///
     /// This is how a real-mode program reaches more than 64 KB of pixels: the
@@ -255,6 +284,12 @@ public sealed class VgaRegisters : IIoDevice
         VesaMode = mode;
         VesaLinearFrameBuffer = linearFrameBuffer;
         VesaWindowBank = 0;
+
+        // A mode set puts the scan line back to the visible width and the
+        // display start back to the beginning. A program that had set up a
+        // wider virtual screen has just asked for a different one.
+        VesaScanLineBytes = 0;
+        VesaDisplayStart = 0;
         ModeChanged?.Invoke();
     }
 
@@ -669,7 +704,14 @@ public sealed class VgaRegisters : IIoDevice
             {
                 // Components arrive one at a time, red then green then blue,
                 // with the index auto-incrementing after the third.
-                _palette[_dacWriteIndex * 3 + _dacComponent] = (byte)(value & 0x3F);
+                // A VGA's DAC keeps six bits and discards the top two, which
+                // is not rounding but the width of the hardware. With an
+                // eight-bit DAC there is nothing to discard -- and truncating
+                // anyway would make the whole point of asking for it
+                // disappear, since a program that wants smooth gradients is
+                // writing precisely the values that would be lost.
+                _palette[_dacWriteIndex * 3 + _dacComponent] =
+                    DacBitsPerColour >= 8 ? value : (byte)(value & 0x3F);
                 if (++_dacComponent == 3) { _dacComponent = 0; _dacWriteIndex++; }
                 return;
             }
@@ -711,6 +753,14 @@ public sealed class VgaRegisters : IIoDevice
         // of the same picture, flashing a selection -- all done by masking off
         // the top bits of the index rather than rewriting 768 bytes of DAC.
         int offset = ((index & _pelMask) & 0xFF) * 3;
+
+        // With an eight-bit DAC the stored value is already the full range
+        // and nothing is expanded. With six -- what a VGA has -- the top two
+        // bits are repeated at the bottom, so that full scale 0x3F maps to
+        // 0xFF rather than 0xFC and white really is white.
+        if (DacBitsPerColour >= 8)
+            return (_palette[offset], _palette[offset + 1], _palette[offset + 2]);
+
         // VGA components are 6-bit. Expanding to 8 bits by replicating the
         // top two bits at the bottom makes full-scale 0x3F map to 0xFF rather
         // than 0xFC, so white really is white instead of very slightly grey.

@@ -52,6 +52,9 @@ public sealed class VesaServices
             case 0x02: SetMode(cpu); return true;
             case 0x03: GetMode(cpu); return true;
             case 0x05: WindowControl(cpu); return true;
+            case 0x06: ScanLineLength(cpu); return true;
+            case 0x07: DisplayStart(cpu); return true;
+            case 0x08: DacWidth(cpu); return true;
 
             default:
                 // Unsupported subfunction: AL=0x4F says VBE is here, AH=0x01
@@ -240,6 +243,121 @@ public sealed class VesaServices
         if (operation == 0x01)
         {
             cpu.State.Dx = (ushort)_machine.VideoRegisters.VesaWindowBank;
+            cpu.State.Ax = 0x004F;
+            return;
+        }
+
+        cpu.State.Ax = 0x014F;
+    }
+
+    /// <summary>
+    /// 4F06: how many bytes there are between one scan line and the next.
+    ///
+    /// It need not be the width of the picture, and that is the whole point.
+    /// A program that sets a longer line gets a picture wider than the screen
+    /// and scrolls a window across it with 4F07 -- which is how side-scrolling
+    /// works at SVGA resolutions, where copying the screen every frame is out
+    /// of the question. It is the same trick the VGA's start address gives,
+    /// generalised so that the off-screen part can be as wide as memory
+    /// allows.
+    /// </summary>
+    private void ScanLineLength(CpuNs.Cpu cpu)
+    {
+        VgaRegisters registers = _machine.VideoRegisters;
+        if (registers.VesaMode is not { } mode) { cpu.State.Ax = 0x014F; return; }
+
+        byte operation = cpu.State.GetReg8(3);   // BL
+
+        // BL=0 sets the length in pixels, BL=2 in bytes, BL=1 and 3 ask.
+        if (operation is 0x00 or 0x02)
+        {
+            int requested = operation == 0x00
+                ? cpu.State.Cx * mode.BytesPerPixel
+                : cpu.State.Cx;
+
+            // Never narrower than the visible picture: a line shorter than
+            // the screen would make the display read the same bytes twice
+            // and show a picture folded onto itself.
+            registers.VesaScanLineBytes = Math.Max(requested, mode.BytesPerRow);
+        }
+
+        int bytes = registers.VesaScanLineBytes > 0
+            ? registers.VesaScanLineBytes
+            : mode.BytesPerRow;
+
+        cpu.State.Bx = (ushort)bytes;                              // bytes per line
+        cpu.State.Cx = (ushort)(bytes / mode.BytesPerPixel);       // pixels per line
+        cpu.State.Dx = (ushort)(VideoMemory / bytes);              // lines that fit
+        cpu.State.Ax = 0x004F;
+    }
+
+    /// <summary>
+    /// 4F07: which pixel of the larger picture appears at the top left of the
+    /// screen.
+    ///
+    /// With a scan line longer than the display, this is the window that
+    /// moves -- one register write scrolls the whole screen, with nothing
+    /// copied. BL=0x80 asks to wait for vertical retrace before the change
+    /// takes effect, which is what stops the picture tearing halfway down.
+    /// </summary>
+    private void DisplayStart(CpuNs.Cpu cpu)
+    {
+        VgaRegisters registers = _machine.VideoRegisters;
+        if (registers.VesaMode is not { } mode) { cpu.State.Ax = 0x014F; return; }
+
+        byte operation = cpu.State.GetReg8(3);   // BL
+
+        if (operation is 0x00 or 0x80)
+        {
+            int stride = registers.VesaScanLineBytes > 0
+                ? registers.VesaScanLineBytes
+                : mode.BytesPerRow;
+
+            registers.VesaDisplayStart =
+                cpu.State.Dx * stride + cpu.State.Cx * mode.BytesPerPixel;
+            cpu.State.Ax = 0x004F;
+            return;
+        }
+
+        if (operation == 0x01)
+        {
+            int stride = registers.VesaScanLineBytes > 0
+                ? registers.VesaScanLineBytes
+                : mode.BytesPerRow;
+
+            cpu.State.Dx = (ushort)(registers.VesaDisplayStart / stride);
+            cpu.State.Cx = (ushort)(registers.VesaDisplayStart % stride / mode.BytesPerPixel);
+            cpu.State.Ax = 0x004F;
+            return;
+        }
+
+        cpu.State.Ax = 0x014F;
+    }
+
+    /// <summary>
+    /// 4F08: how many bits of each colour the palette holds.
+    ///
+    /// A VGA's DAC keeps six, which gives 262144 possible colours and visible
+    /// banding in a gradient. Cards from the VBE 2.0 era could switch to
+    /// eight, and a program that wants smooth gradients asks for it here
+    /// rather than assuming -- because on a card that cannot, the same values
+    /// come out four times too bright.
+    /// </summary>
+    private void DacWidth(CpuNs.Cpu cpu)
+    {
+        byte operation = cpu.State.GetReg8(3);   // BL
+
+        if (operation == 0x00)
+        {
+            _machine.VideoRegisters.DacBitsPerColour = cpu.State.GetReg8(7) >= 8 ? 8 : 6;
+            cpu.State.SetReg8(7, (byte)_machine.VideoRegisters.DacBitsPerColour);
+            cpu.State.Ax = 0x004F;
+            return;
+        }
+
+        if (operation == 0x01)
+        {
+            cpu.State.SetReg8(7, (byte)_machine.VideoRegisters.DacBitsPerColour);
             cpu.State.Ax = 0x004F;
             return;
         }

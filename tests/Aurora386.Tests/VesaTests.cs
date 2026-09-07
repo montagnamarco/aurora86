@@ -270,3 +270,210 @@ public class VesaTests
         Assert.Equal(0x014F, machine.Cpu.State.Ax);
     }
 }
+
+/// <summary>
+/// The three VBE calls that make a picture larger than the screen useful.
+///
+/// 4F06 sets how many bytes lie between one scan line and the next, which
+/// need not be the visible width; 4F07 says which pixel of that larger
+/// picture appears at the top left. Together they are hardware scrolling at
+/// SVGA resolutions, where copying the screen every frame is out of the
+/// question -- one register write moves the whole picture and nothing is
+/// copied at all.
+///
+/// 4F08 is unrelated but belongs to the same era: it asks the card for an
+/// eight-bit palette instead of the VGA's six, which is the difference
+/// between a smooth gradient and a visibly banded one.
+/// </summary>
+public class VesaScrollAndPaletteTests
+{
+    private static Machine Started()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        machine.Cpu.State.Halted = false;
+        return machine;
+    }
+
+    private static void Int10(Machine machine, ushort ax,
+                              ushort bx = 0, ushort cx = 0, ushort dx = 0)
+    {
+        machine.Cpu.State.Ax = ax;
+        machine.Cpu.State.Bx = bx;
+        machine.Cpu.State.Cx = cx;
+        machine.Cpu.State.Dx = dx;
+        machine.VideoServices.Handle(machine.Cpu);
+    }
+
+    [Fact]
+    public void ALongerScanLineReportsHowManyLinesNowFit()
+    {
+        using Machine machine = Started();
+        Int10(machine, 0x4F02, bx: 0x101);        // 640x480x8
+
+        Int10(machine, 0x4F06, bx: 0x0002, cx: 1024);
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.Equal(1024, machine.Cpu.State.Bx);      // bytes per line
+        Assert.Equal(1024, machine.Cpu.State.Cx);      // pixels, at one byte each
+        Assert.True(machine.Cpu.State.Dx > 480);       // more lines than the screen
+    }
+
+    [Fact]
+    public void AScanLineNarrowerThanTheScreenIsRefusedQuietly()
+    {
+        // A line shorter than the picture would make the display read the
+        // same bytes twice and show the picture folded onto itself.
+        using Machine machine = Started();
+        Int10(machine, 0x4F02, bx: 0x101);
+
+        Int10(machine, 0x4F06, bx: 0x0002, cx: 100);
+
+        Assert.Equal(640, machine.Cpu.State.Bx);
+    }
+
+    [Fact]
+    public void MovingTheDisplayStartScrollsWithoutCopyingAnything()
+    {
+        // The whole point: a column drawn off the right of the screen appears
+        // at the left after one register write.
+        using Machine machine = Started();
+        Int10(machine, 0x4F02, bx: 0x101);
+        Int10(machine, 0x4F06, bx: 0x0002, cx: 1024);
+
+        for (int y = 0; y < 480; y++)
+            machine.VideoMemory.WriteLinear((uint)(y * 1024 + 700), 0x0F);
+
+        machine.VideoMemory.MarkRowsDirty(0, 480);
+        machine.Video.Render();
+        Assert.Equal(0u, machine.Video.Framebuffer[0] & 0xFFFFFF);
+
+        Int10(machine, 0x4F07, bx: 0x0000, cx: 700, dx: 0);
+
+        machine.VideoMemory.MarkRowsDirty(0, 480);
+        machine.Video.Render();
+        Assert.NotEqual(0u, machine.Video.Framebuffer[0] & 0xFFFFFF);
+    }
+
+    [Fact]
+    public void TheDisplayStartCanBeReadBackInPixels()
+    {
+        using Machine machine = Started();
+        Int10(machine, 0x4F02, bx: 0x101);
+        Int10(machine, 0x4F06, bx: 0x0002, cx: 1024);
+
+        Int10(machine, 0x4F07, bx: 0x0000, cx: 100, dx: 5);
+        Int10(machine, 0x4F07, bx: 0x0001);
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.Equal(100, machine.Cpu.State.Cx);
+        Assert.Equal(5, machine.Cpu.State.Dx);
+    }
+
+    [Fact]
+    public void AModeSetPutsTheVirtualScreenBack()
+    {
+        // A program that had set up a wider virtual screen has just asked for
+        // a different mode, and should not inherit the old geometry.
+        using Machine machine = Started();
+        Int10(machine, 0x4F02, bx: 0x101);
+        Int10(machine, 0x4F06, bx: 0x0002, cx: 1024);
+        Int10(machine, 0x4F07, bx: 0x0000, cx: 100, dx: 5);
+
+        Int10(machine, 0x4F02, bx: 0x103);
+
+        Assert.Equal(0, machine.VideoRegisters.VesaScanLineBytes);
+        Assert.Equal(0, machine.VideoRegisters.VesaDisplayStart);
+    }
+
+    [Fact]
+    public void TheDacCanBeAskedForEightBitsPerColour()
+    {
+        using Machine machine = Started();
+
+        Int10(machine, 0x4F08, bx: 0x0800);
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.Equal(8, machine.Cpu.State.Bx >> 8);
+        Assert.Equal(8, machine.VideoRegisters.DacBitsPerColour);
+    }
+
+    [Fact]
+    public void AtSixBitsFullScaleStillMeansWhite()
+    {
+        // The VGA's own arrangement: six bits expanded by repeating the top
+        // two at the bottom, so 0x3F maps to 0xFF rather than 0xFC.
+        using Machine machine = Started();
+
+        machine.Io.WriteByte(0x3C8, 0x01);
+        machine.Io.WriteByte(0x3C9, 0x3F);
+        machine.Io.WriteByte(0x3C9, 0x3F);
+        machine.Io.WriteByte(0x3C9, 0x3F);
+
+        Assert.Equal((byte)0xFF, machine.VideoRegisters.GetPaletteColor(1).R);
+    }
+
+    [Fact]
+    public void AtEightBitsTheStoredValueIsTheColour()
+    {
+        // Nothing is expanded any more: the program is writing the full
+        // range, which is the whole reason it asked.
+        using Machine machine = Started();
+        Int10(machine, 0x4F08, bx: 0x0800);
+
+        machine.Io.WriteByte(0x3C8, 0x01);
+        machine.Io.WriteByte(0x3C9, 0x3F);
+        machine.Io.WriteByte(0x3C9, 0x00);
+        machine.Io.WriteByte(0x3C9, 0x00);
+
+        // 0x3F is a middling value at eight bits, not full scale.
+        Assert.Equal((byte)0x3F, machine.VideoRegisters.GetPaletteColor(1).R);
+    }
+}
+
+/// <summary>
+/// The half of the eight-bit DAC that is easy to forget: the writing side.
+/// </summary>
+public class DacWidthWriteTests
+{
+    [Fact]
+    public void AtEightBitsTheTopTwoBitsSurviveBeingWritten()
+    {
+        // A VGA's DAC keeps six bits and discards the rest, which is the
+        // width of the hardware rather than rounding. Truncating anyway with
+        // an eight-bit DAC would make asking for it pointless, since the
+        // values a program wants smooth gradients from are exactly the ones
+        // that would be lost.
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        machine.Cpu.State.Halted = false;
+
+        machine.Cpu.State.Ax = 0x4F08;
+        machine.Cpu.State.Bx = 0x0800;
+        machine.VideoServices.Handle(machine.Cpu);
+
+        machine.Io.WriteByte(0x3C8, 0x01);
+        machine.Io.WriteByte(0x3C9, 0xC8);
+        machine.Io.WriteByte(0x3C9, 0x00);
+        machine.Io.WriteByte(0x3C9, 0x00);
+
+        Assert.Equal((byte)0xC8, machine.VideoRegisters.GetPaletteColor(1).R);
+        machine.Dispose();
+    }
+
+    [Fact]
+    public void AtSixBitsTheyAreStillDiscarded()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+
+        machine.Io.WriteByte(0x3C8, 0x01);
+        machine.Io.WriteByte(0x3C9, 0xC8);
+        machine.Io.WriteByte(0x3C9, 0x00);
+        machine.Io.WriteByte(0x3C9, 0x00);
+
+        // 0xC8 & 0x3F is 8; expanding it by repeating the top two bits gives
+        // 0x20, since those two bits are zero here.
+        Assert.Equal((byte)0x20, machine.VideoRegisters.GetPaletteColor(1).R);
+    }
+}

@@ -637,22 +637,31 @@ public sealed class VgaRenderer
     private void RenderHighColour(bool force)
     {
         VgaModeInfo mode = _registers.EffectiveMode;
-        int bytesPerRow = mode.BytesPerRow;
         int depth = mode.BitsPerPixel;
+
+        // The stride need not be the visible width: a program can set a
+        // longer one and scroll a window across a picture wider than the
+        // screen, which is how side-scrolling works at resolutions where
+        // copying the whole screen every frame is out of the question.
+        int bytesPerRow = _registers.VesaScanLineBytes > 0
+            ? _registers.VesaScanLineBytes
+            : mode.BytesPerRow;
+
+        uint origin = (uint)_registers.VesaDisplayStart;
 
         for (int y = 0; y < Height; y++)
         {
             if (!force && !_memory.IsRowDirty(y)) continue;
 
-            uint rowStart = (uint)(y * bytesPerRow);
+            uint rowStart = origin + (uint)(y * bytesPerRow);
             int destination = y * Width;
 
             for (int x = 0; x < Width; x++)
             {
-                uint at = rowStart + (uint)(x * mode.BytesPerRow / Width);
+                uint at = rowStart + (uint)(x * mode.BytesPerPixel);
                 _framebuffer[destination + x] = depth switch
                 {
-                    8 => ToRgba(_registers.GetPaletteColor(_memory.ReadLinear(rowStart + (uint)x))),
+                    8 => ToRgba(_registers.GetPaletteColor(_memory.ReadLinear(at))),
                     15 => From15(_memory.ReadLinear(at) | (_memory.ReadLinear(at + 1) << 8)),
                     16 => From16(_memory.ReadLinear(at) | (_memory.ReadLinear(at + 1) << 8)),
                     _ => FromBytes(_memory.ReadLinear(at + 2),
