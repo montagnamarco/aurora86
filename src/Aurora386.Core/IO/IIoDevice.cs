@@ -43,14 +43,37 @@ public sealed class IoBus
             _devices[firstPort + i] = device;
     }
 
-    public byte ReadByte(ushort port) => _devices[port]?.ReadByte(port) ?? 0xFF;
+    /// <summary>
+    /// Raised on every port access, for diagnostics.
+    ///
+    /// It exists because a driver looking for its card does it by reading and
+    /// writing registers, and nothing else shows that: the guest makes no
+    /// BIOS call, raises no interrupt and touches no memory the emulator
+    /// watches. Which ports it pokes, and in what order, is the whole of the
+    /// evidence.
+    ///
+    /// Null when nothing is listening, which is the normal case: the check
+    /// costs one comparison on a path that runs many times a second.
+    /// </summary>
+    public event Action<ushort, bool, byte>? PortAccessed;
+
+    public byte ReadByte(ushort port)
+    {
+        byte value = _devices[port]?.ReadByte(port) ?? 0xFF;
+        PortAccessed?.Invoke(port, false, value);
+        return value;
+    }
 
     public ushort ReadWord(ushort port) => _devices[port]?.ReadWord(port) ?? 0xFFFF;
 
     public uint ReadDword(ushort port)
         => (uint)(ReadWord(port) | (ReadWord((ushort)(port + 2)) << 16));
 
-    public void WriteByte(ushort port, byte value) => _devices[port]?.WriteByte(port, value);
+    public void WriteByte(ushort port, byte value)
+    {
+        PortAccessed?.Invoke(port, true, value);
+        _devices[port]?.WriteByte(port, value);
+    }
 
     public void WriteWord(ushort port, ushort value) => _devices[port]?.WriteWord(port, value);
 
