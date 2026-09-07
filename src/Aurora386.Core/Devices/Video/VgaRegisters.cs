@@ -594,8 +594,18 @@ public sealed class VgaRegisters : IIoDevice
             case 0x2E: return S3DeviceId;
         }
 
-        if (index < 0x40) return _systemUnlocked ? _crtc[index] : (byte)0xFF;
-        return _extendedUnlocked ? _crtc[index] : (byte)0xFF;
+        // A locked register still answers. The lock protects writes, not
+        // reads: on the silicon the register is there and readable, and what
+        // the lock stops is software written for a plain VGA from changing
+        // it by accident.
+        //
+        // The difference matters more than it sounds. 0xFF is what the bus
+        // puts on the wire when nothing responds at all -- it is what a
+        // driver reads on a machine without the card -- so returning it from
+        // a locked register tells every driver that the card is absent. That
+        // was a wrong choice here, and the Super VGA driver reading 0xFF from
+        // the whole extended range is exactly what it looks like.
+        return _crtc[index];
     }
 
     private void WriteCrtc(byte index, byte value)

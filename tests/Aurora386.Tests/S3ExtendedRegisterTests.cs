@@ -42,12 +42,19 @@ public class S3ExtendedRegisterTests
     }
 
     [Fact]
-    public void TheChipIdentifierAnswersWhileEverythingElseIsLocked()
+    public void ALockedRegisterStillAnswers()
     {
+        // The lock protects writes, not reads. On the silicon the register is
+        // there and readable, and what the lock stops is software written for
+        // a plain VGA from changing it by accident.
+        //
+        // The difference is not academic: 0xFF is what the bus puts on the
+        // wire when nothing responds, so a locked register answering 0xFF
+        // tells every driver that the card is not there at all.
         using Machine machine = Started();
 
         Assert.Equal(0xE1, Read(machine, 0x30));      // Trio64
-        Assert.Equal(0xFF, Read(machine, 0x31));      // locked
+        Assert.Equal(0x00, Read(machine, 0x31));      // readable, and empty
     }
 
     [Fact]
@@ -78,8 +85,11 @@ public class S3ExtendedRegisterTests
         // Two locks, not one: 0x38 opens 0x30-0x3F and 0x39 opens the rest.
         using Machine machine = Started();
 
+        // With only the first lock open, a write above 0x40 goes nowhere --
+        // though the register still reads back, as any register does.
         Write(machine, 0x38, 0x48);
-        Assert.Equal(0xFF, Read(machine, 0x51));
+        Write(machine, 0x51, 0x77);
+        Assert.Equal(0x00, Read(machine, 0x51));
 
         Write(machine, 0x39, 0xA5);
         Write(machine, 0x51, 0x33);
@@ -95,9 +105,13 @@ public class S3ExtendedRegisterTests
 
         Write(machine, 0x38, 0x48);
         Write(machine, 0x31, 0x0A);
+        Assert.Equal(0x0A, Read(machine, 0x31));
 
+        // Locked again: the value stays readable, but a further write is
+        // dropped.
         Write(machine, 0x38, 0x00);
-        Assert.Equal(0xFF, Read(machine, 0x31));
+        Write(machine, 0x31, 0x55);
+        Assert.Equal(0x0A, Read(machine, 0x31));
     }
 
     [Fact]
