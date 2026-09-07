@@ -571,3 +571,89 @@ public class CpuSelectionTests
         Assert.Equal(CpuModel.Intel486, machine.CpuModel);
     }
 }
+
+/// <summary>
+/// INVLPG, and the two control-register bits that have nowhere to go.
+///
+/// Flushing the whole translation cache to change one mapping is what a 386
+/// has to do, and it throws away every other translation the processor had
+/// earned. INVLPG names a single page instead. The subtlety is that it names
+/// it: the operand is an address, not something read from that address, so
+/// the instruction must not fault on a page that is not there -- which is
+/// very often precisely the page being invalidated.
+/// </summary>
+public class PageInvalidationTests
+{
+    private static Machine Running(params byte[] code)
+    {
+        var machine = new Machine();
+        machine.RunInstructions(2000);
+
+        for (int i = 0; i < code.Length; i++)
+            machine.Memory.WriteByte(0x9000 + (uint)i, code[i]);
+
+        machine.Cpu.State.Halted = false;
+        machine.Cpu.SetSegment(SegReg.Cs, 0x0900);
+        machine.Cpu.State.Eip = 0;
+        machine.Cpu.SetSegment(SegReg.Ds, 0x0000);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x0000);
+        machine.Cpu.State.Esp = 0x7000;
+        return machine;
+    }
+
+    [Fact]
+    public void InvlpgDoesNotTouchTheAddressItNames()
+    {
+        // invlpg [1234] -- with paging off there is nothing to invalidate,
+        // and the point of the test is that it completes rather than faults.
+        using Machine machine = Running(0x0F, 0x01, 0x3E, 0x34, 0x12);
+        var raised = new List<byte>();
+        machine.Cpu.ProcessorException += (vector, _, _, _) => raised.Add(vector);
+
+        machine.Cpu.Step();
+
+        Assert.Empty(raised);
+        Assert.Equal(5u, machine.Cpu.State.Eip);
+    }
+
+    [Fact]
+    public void InvlpgWantsAMemoryOperand()
+    {
+        // A register form would be naming a page by its contents, which is
+        // not a thing the instruction can mean.
+        using Machine machine = Running(0x0F, 0x01, 0xF8);
+        var raised = new List<byte>();
+        machine.Cpu.ProcessorException += (vector, _, _, _) => raised.Add(vector);
+
+        machine.Cpu.Step();
+
+        Assert.Equal(6, raised[0]);
+    }
+
+    [Fact]
+    public void OnA386ThereIsNoSuchInstruction()
+    {
+        using Machine machine = Running(0x0F, 0x01, 0x3E, 0x34, 0x12);
+        machine.Cpu.State.SelectModel(CpuModel.Intel386);
+        var raised = new List<byte>();
+        machine.Cpu.ProcessorException += (vector, _, _, _) => raised.Add(vector);
+
+        machine.Cpu.Step();
+
+        Assert.Equal(6, raised[0]);
+    }
+
+    [Fact]
+    public void TheCachingBitsOfCr3AreKept()
+    {
+        // PWT and PCD say how the page directory itself should be cached.
+        // There is no cache to tell, but an operating system can only write
+        // them and read them back, so keeping them is the whole behaviour.
+        using Machine machine = Running(0x0F, 0x22, 0xD8);   // mov cr3, eax
+        machine.Cpu.State.Eax = 0x00012018;                  // directory at 12000, PWT|PCD
+
+        machine.Cpu.Step();
+
+        Assert.Equal(0x00012018u, machine.Cpu.State.Cr3);
+    }
+}

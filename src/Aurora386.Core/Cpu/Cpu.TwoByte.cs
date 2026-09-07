@@ -177,6 +177,21 @@ public sealed partial class Cpu
                         return;
                     }
 
+                    case 7:   // INVLPG: drops one page's cached translation
+                    {
+                        RequireCpuAtLeast486(0x01);
+                        RequireSupervisor();
+
+                        // The operand is an address, not a value read from
+                        // it: the instruction names a page rather than
+                        // touching one, so it must not fault on a page that
+                        // is absent -- which is very often exactly the page
+                        // being invalidated.
+                        if (m.IsRegister) throw new CpuException(6);
+                        InvalidatePage(LinearAddress(m.Segment, m.Offset));
+                        return;
+                    }
+
                     default:
                         throw new CpuException(6);
                 }

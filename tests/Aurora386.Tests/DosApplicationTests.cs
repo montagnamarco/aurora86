@@ -79,7 +79,17 @@ public class DosApplicationTests
         }
     }
 
+    // Twelve minutes: the test boots a real DOS and then runs the guest for
+    // some four billion instructions, because EDIT does not open any faster
+    // than EDIT opens. That is too slow to sit in the ordinary run -- it
+    // would treble the time of every change -- so it carries a trait and is
+    // asked for by name:
+    //
+    //     dotnet test --filter Speed=Slow
+    //
+    // and the ordinary run excludes it with --filter Speed!=Slow.
     [Fact]
+    [Trait("Speed", "Slow")]
     public void EditOpensAndAcceptsTypingWithTheMouseDriverPresent()
     {
         string? image = FindImage();

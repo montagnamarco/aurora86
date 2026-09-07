@@ -69,7 +69,21 @@ public sealed class CpuState
     public uint Cr0;
     /// <summary>Faulting linear address (CR2), written by exception 14.</summary>
     public uint Cr2;
-    /// <summary>Page directory base.</summary>
+    /// <summary>
+    /// Page directory base.
+    ///
+    /// Only the top twenty bits are the address: a page directory is
+    /// page-aligned, so the low twelve are free for other uses. The 486 took
+    /// two of them, PWT and PCD (bits 3 and 4), to say how the directory
+    /// itself should be cached; the page table entries carry the same pair
+    /// for the pages they describe.
+    ///
+    /// There is no cache here for them to configure, and they are held
+    /// rather than acted on -- which is the whole of what an operating system
+    /// can observe, since it can only write them and read them back. The
+    /// register keeps every bit written to it and the translation masks the
+    /// low twelve away, so this works out on its own.
+    /// </summary>
     public uint Cr3;
 
     // --- descriptor tables ----------------------------------------------------
