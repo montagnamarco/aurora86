@@ -50,7 +50,13 @@ public sealed class VgaRegisters : IIoDevice
     private byte _crtcIndex;
 
     // --- sequencer, graphics controller, attribute controller -----------------
-    private readonly byte[] _sequencer = new byte[8];
+    /// <summary>
+    /// The sequencer registers. A VGA has five, ending at 0x04; the array is
+    /// 32 because an S3 puts its own above 0x08 -- the clock synthesiser
+    /// among them, which is how a card reaches resolutions the VGA's fixed
+    /// crystals cannot produce.
+    /// </summary>
+    private readonly byte[] _sequencer = new byte[32];
     private byte _sequencerIndex;
 
     private readonly byte[] _graphics = new byte[16];
@@ -589,6 +595,62 @@ public sealed class VgaRegisters : IIoDevice
         return (byte)(_graphics[0x0F] & 0x07);
     }
 
+    // --- the S3 extended sequencer registers -----------------------------------
+    //
+    // A VGA's sequencer ends at register 0x04. Above 0x08 an S3 puts its own,
+    // and the interesting ones are the clock synthesiser: 0x12 and 0x13 hold
+    // the multiplier and divider that turn the card's reference crystal into
+    // the pixel clock.
+    //
+    // That is how an SVGA reaches resolutions a VGA cannot. A VGA has two
+    // crystals and therefore two pixel clocks; a card with a synthesiser can
+    // produce any frequency, which is what 800x600 and 1024x768 need. There
+    // is nothing to synthesise here -- the emulator draws a frame when it is
+    // asked to, not when a clock says so -- but the registers have to hold
+    // what is written, because a driver programs them and then reads them
+    // back to check the card accepted the mode.
+
+    /// <summary>
+    /// Sequencer register 0x08 is the lock: 0x06 unlocks the extended range,
+    /// anything else locks it. Same idea as the CRTC's 0x38, and for the same
+    /// reason -- software written for a plain VGA must not stumble into the
+    /// clock registers, because a wrong pixel clock takes the monitor out of
+    /// range and shows nothing at all.
+    /// </summary>
+    private bool _sequencerUnlocked;
+
+    private byte ReadSequencer(byte index)
+    {
+        byte at = (byte)(index & 0x1F);
+
+        // Below 0x05 is the VGA's own, always readable.
+        if (at < 0x05) return _sequencer[at];
+
+        // The lock register reads back what unlocks it, which is how a driver
+        // checks whether it succeeded.
+        if (at == 0x08) return _sequencerUnlocked ? (byte)0x06 : (byte)0x00;
+
+        return _sequencer[at];
+    }
+
+    private void WriteSequencer(byte index, byte value)
+    {
+        byte at = (byte)(index & 0x1F);
+
+        if (at < 0x05) { _sequencer[at] = value; return; }
+
+        if (at == 0x08)
+        {
+            _sequencerUnlocked = value == 0x06;
+            _sequencer[at] = value;
+            return;
+        }
+
+        // The extended registers take writes only while unlocked.
+        if (!_sequencerUnlocked) return;
+        _sequencer[at] = value;
+    }
+
     private byte ReadCrtc(byte index)
     {
         switch (index)
@@ -802,7 +864,7 @@ public sealed class VgaRegisters : IIoDevice
             case 0x3C0: return _attributeIndex;
             case 0x3C1: return _attribute[_attributeIndex & 0x1F];
             case 0x3C4: return _sequencerIndex;
-            case 0x3C5: return _sequencer[_sequencerIndex & 7];
+            case 0x3C5: return ReadSequencer(_sequencerIndex);
             // The DAC's state: 0 means the last thing written was a read
             // index, 3 that it was a write index. Software that finds the DAC
             // mid-triple -- a handler that interrupted a palette update --
@@ -931,7 +993,7 @@ public sealed class VgaRegisters : IIoDevice
 
             case 0x3C2: _miscOutput = value; return;
             case 0x3C4: _sequencerIndex = value; return;
-            case 0x3C5: _sequencer[_sequencerIndex & 7] = value; return;
+            case 0x3C5: WriteSequencer(_sequencerIndex, value); return;
 
             // Writing 0xFF to the PEL mask is what every mode set does, and
             // it is also how a program that has been masking colours puts

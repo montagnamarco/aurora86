@@ -157,3 +157,105 @@ public class S3ExtendedRegisterTests
         Assert.Equal(0x34, Read(machine, 0x0D));
     }
 }
+
+/// <summary>
+/// The S3's extended sequencer registers, and the clock synthesiser among
+/// them.
+///
+/// A VGA's sequencer ends at 0x04 and its pixel clock comes from one of two
+/// crystals -- which is why a VGA has the resolutions it has and no others.
+/// An SVGA has a synthesiser instead: registers 0x12 and 0x13 hold a
+/// multiplier and a divider that turn one reference frequency into any pixel
+/// clock, and that is what makes 800x600 and 1024x768 possible.
+///
+/// There is nothing to synthesise here -- this emulator draws a frame when
+/// asked, not when a clock says so -- but the registers must hold what is
+/// written, because a driver programs them and reads them back to check the
+/// card accepted the mode.
+/// </summary>
+public class S3SequencerTests
+{
+    private static Machine Started()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        return machine;
+    }
+
+    private static void Write(Machine machine, int index, byte value)
+    {
+        machine.Io.WriteByte(0x3C4, (byte)index);
+        machine.Io.WriteByte(0x3C5, value);
+    }
+
+    private static byte Read(Machine machine, int index)
+    {
+        machine.Io.WriteByte(0x3C4, (byte)index);
+        return machine.Io.ReadByte(0x3C5);
+    }
+
+    [Fact]
+    public void TheExtendedRegistersAreLockedAtPowerOn()
+    {
+        // Same idea as the CRTC's lock, and for the same reason: a wrong
+        // pixel clock takes the monitor out of range and shows nothing, so
+        // software written for a plain VGA must not reach these by accident.
+        using Machine machine = Started();
+
+        Write(machine, 0x12, 0x40);
+        Assert.Equal(0x00, Read(machine, 0x12));
+    }
+
+    [Fact]
+    public void WritingSixToRegisterEightUnlocksThem()
+    {
+        using Machine machine = Started();
+
+        Write(machine, 0x08, 0x06);
+        Write(machine, 0x12, 0x40);
+
+        Assert.Equal(0x40, Read(machine, 0x12));
+    }
+
+    [Fact]
+    public void TheLockRegisterReadsBackWhatUnlocksIt()
+    {
+        // How a driver checks that it succeeded, rather than assuming.
+        using Machine machine = Started();
+
+        Assert.Equal(0x00, Read(machine, 0x08));
+
+        Write(machine, 0x08, 0x06);
+        Assert.Equal(0x06, Read(machine, 0x08));
+    }
+
+    [Fact]
+    public void TheClockRegistersKeepWhatADriverProgrammed()
+    {
+        // 0x12 and 0x13 are the synthesiser's divider and multiplier. A
+        // driver writes them and reads them back, and a card that lost the
+        // value would look like one that refused the mode.
+        using Machine machine = Started();
+        Write(machine, 0x08, 0x06);
+
+        Write(machine, 0x12, 0x21);
+        Write(machine, 0x13, 0x4D);
+
+        Assert.Equal(0x21, Read(machine, 0x12));
+        Assert.Equal(0x4D, Read(machine, 0x13));
+    }
+
+    [Fact]
+    public void TheVgaSequencerRegistersAreNeverLocked()
+    {
+        // Everything a plain VGA has stays reachable, or no graphics mode
+        // would work at all.
+        using Machine machine = Started();
+
+        Write(machine, 0x02, 0x0F);          // map mask
+        Assert.Equal(0x0F, Read(machine, 0x02));
+
+        Write(machine, 0x04, 0x0E);          // memory mode
+        Assert.Equal(0x0E, Read(machine, 0x04));
+    }
+}
