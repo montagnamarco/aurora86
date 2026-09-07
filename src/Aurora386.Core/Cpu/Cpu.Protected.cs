@@ -353,13 +353,6 @@ public sealed partial class Cpu
         if (gateType is not (0x05 or 0x06 or 0x07 or 0x0E or 0x0F))
             throw new CpuException(13, (uint)(vector * 8 + 2));
 
-        // Task gates would switch the whole context through a TSS. Nothing we
-        // run needs them, and pretending otherwise would be worse than saying
-        // so plainly.
-        if (gateType == 0x05)
-            throw new NotImplementedException(
-                $"Task gate on vector {vector} is not implemented.");
-
         ushort selector = (ushort)(low >> 16);
         uint handlerOffset = is32Bit
             ? (low & 0xFFFF) | (high & 0xFFFF0000)
@@ -383,6 +376,25 @@ public sealed partial class Cpu
         // a second fault, and then a third.
         if (isSoftware && gateDpl < currentPrivilege)
             throw new CpuException(13, (uint)(vector * 8 + 2));
+
+        // A task gate does not build a frame on any stack: it replaces the
+        // running context wholesale with the one saved in a task state
+        // segment. That is what makes it the only workable handler for a
+        // double fault -- the new task arrives with its own stack, its own
+        // page directory and its own everything, none of it reached through
+        // whatever was broken. Windows in enhanced mode puts vector 8 behind
+        // one for exactly that reason.
+        //
+        // It is placed after the privilege check because the gate's DPL
+        // governs reaching the gate, whichever kind it is, and before
+        // anything is saved because there is nothing here to save: the
+        // outgoing context goes into its own TSS, not onto a stack.
+        if (gateType == 0x05)
+        {
+            SwitchTask(selector, TaskSwitchKind.Call,
+                       isException && ExceptionPushesErrorCode(vector) ? errorCode : null);
+            return;
+        }
 
         // The VM flag lives outside EFLAGS in our state, so it has to be put
         // back into the value that goes on the stack: it is what tells the
@@ -811,6 +823,18 @@ public sealed partial class Cpu
     /// </summary>
     private void IretProtected()
     {
+        // With the nested task flag set there is no return frame to pop: this
+        // task was entered by a call to it, and the way back is the selector
+        // in its own TSS link field rather than anything on the stack. Popping
+        // first and checking afterwards would take three words that belong to
+        // the task itself.
+        if (NestedTaskSet)
+        {
+            ushort backLink = ReadTssWord(State.TssBase, 0);
+            SwitchTask(backLink, TaskSwitchKind.Return);
+            return;
+        }
+
         uint espBefore = State.Esp;
 
         try

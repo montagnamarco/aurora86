@@ -416,6 +416,17 @@ public sealed partial class Cpu
             return;
         }
 
+        // A call to a task, unlike a jump to one, keeps the way back: the new
+        // task's link field records where it came from and its flags carry
+        // NT, so that its IRET returns to this task rather than popping a
+        // frame that was never pushed.
+        if (State.ProtectedMode && !State.Virtual8086Mode
+            && (IsTaskSegment(selector) || IsTaskGateSelector(selector)))
+        {
+            SwitchTask(selector, TaskSwitchKind.Call);
+            return;
+        }
+
         RequireSamePrivilegeTarget(selector);
         CallFarInto(selector, offset, wide);
     }
@@ -488,6 +499,17 @@ public sealed partial class Cpu
         if (State.ProtectedMode && !State.Virtual8086Mode && IsCallGate(selector))
         {
             JumpThroughGate(selector);
+            return;
+        }
+
+        // A selector naming a task state segment does not jump anywhere: it
+        // replaces the whole running context with another one. The offset in
+        // the instruction is discarded, because the destination's EIP comes
+        // out of its own saved state rather than from here.
+        if (State.ProtectedMode && !State.Virtual8086Mode
+            && (IsTaskSegment(selector) || IsTaskGateSelector(selector)))
+        {
+            SwitchTask(selector, TaskSwitchKind.Jump);
             return;
         }
 
