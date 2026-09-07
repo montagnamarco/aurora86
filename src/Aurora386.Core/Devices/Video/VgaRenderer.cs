@@ -48,6 +48,9 @@ public sealed class VgaRenderer
     /// <summary>The blink phase the last drawn frame was drawn in.</summary>
     private bool _lastBlinkPhase = true;
 
+    /// <summary>Where the hardware pointer was in the last drawn frame.</summary>
+    private int _lastCursorX = -1, _lastCursorY = -1;
+
     public VgaRenderer(VgaMemory memory, VgaRegisters registers)
     {
         _memory = memory;
@@ -117,7 +120,25 @@ public sealed class VgaRenderer
         bool phaseChanged = CursorBlinkOn != _lastBlinkPhase;
         _lastBlinkPhase = CursorBlinkOn;
 
-        if (!force && !phaseChanged && !_memory.HasChanges) return false;
+        // The hardware pointer moves with nothing written to video memory
+        // either -- that is the whole point of it -- so a move is its own
+        // reason to redraw. The rows it used to cover have to be repainted
+        // as well, or it leaves a trail behind it.
+        bool cursorMoved = false;
+        if (_registers.CursorEnabled)
+        {
+            (int cursorX, int cursorY) = _registers.CursorPosition;
+            cursorMoved = cursorX != _lastCursorX || cursorY != _lastCursorY;
+
+            if (cursorMoved)
+            {
+                _memory.MarkRowsDirty(Math.Min(_lastCursorY, cursorY) - 1, 66 + Math.Abs(cursorY - _lastCursorY));
+                _lastCursorX = cursorX;
+                _lastCursorY = cursorY;
+            }
+        }
+
+        if (!force && !phaseChanged && !cursorMoved && !_memory.HasChanges) return false;
 
         // A mode set the renderer never heard about -- a program programming
         // the CRTC directly, say -- would otherwise write past the end of a
@@ -180,11 +201,84 @@ public sealed class VgaRenderer
 
     private void DrawPointer()
     {
+        // The card's own pointer takes precedence. When a driver has enabled
+        // it, the pointer on screen is the card's and the emulator must not
+        // draw a second one over it -- which is what the guest's own driver
+        // is asking for by enabling it in the first place.
+        if (_registers.CursorEnabled) { DrawHardwareCursor(); return; }
+
         MousePointer? pointer = Pointer;
         if (pointer is not { Visible: true }) return;
 
         if (_registers.EffectiveMode.IsGraphics) DrawGraphicsPointer(pointer);
         else if (!pointer.UsesHardwareTextCursor) DrawTextPointer(pointer);
+    }
+
+    /// <summary>
+    /// The S3's own 64x64 pointer, drawn over the picture as the beam passes.
+    ///
+    /// It costs nothing to move: writing two registers is the whole
+    /// operation. Doing the same in software means saving what is under the
+    /// pointer, drawing it, and putting the background back before the next
+    /// move -- three times the work, and it has to happen between frames or
+    /// the pointer flickers. At 1024x768 that was the difference between a
+    /// pointer that kept up with the hand and one that lagged behind it.
+    ///
+    /// The pattern is two bits per pixel, and the pair is not a colour index
+    /// but an instruction. AND clear with XOR clear paints the background
+    /// colour, AND clear with XOR set paints the foreground, and AND set
+    /// leaves the screen showing through -- either unchanged, or inverted
+    /// when XOR is also set. That last combination is what makes a pointer
+    /// visible over any background without knowing what is behind it.
+    /// </summary>
+    private void DrawHardwareCursor()
+    {
+        (int originX, int originY) = _registers.CursorPosition;
+        (int offsetX, int offsetY) = _registers.CursorOffset;
+        (byte foreground, byte background) = _registers.CursorColours;
+
+        uint pattern = _registers.CursorPatternAddress;
+
+        uint foregroundColour = ToRgba(_registers.GetPaletteColor(foreground));
+        uint backgroundColour = ToRgba(_registers.GetPaletteColor(background));
+
+        for (int row = offsetY; row < 64; row++)
+        {
+            int y = originY + row - offsetY;
+            if (y < 0 || y >= Height) continue;
+
+            for (int column = offsetX; column < 64; column++)
+            {
+                int x = originX + column - offsetX;
+                if (x < 0 || x >= Width) continue;
+
+                // Sixteen bytes per row: eight of AND bits and eight of XOR
+                // bits, interleaved in pairs of two bytes. The interleaving
+                // is what lets the card fetch both planes for sixteen pixels
+                // in one memory access.
+                uint at = pattern + (uint)(row * 16) + (uint)(column / 16) * 4;
+                int bit = 15 - (column % 16);
+
+                int and = (_memory.ReadLinear(at) << 8) | _memory.ReadLinear(at + 1);
+                int xor = (_memory.ReadLinear(at + 2) << 8) | _memory.ReadLinear(at + 3);
+
+                bool andBit = ((and >> bit) & 1) != 0;
+                bool xorBit = ((xor >> bit) & 1) != 0;
+
+                int destination = y * Width + x;
+
+                if (!andBit)
+                {
+                    _framebuffer[destination] = xorBit ? foregroundColour : backgroundColour;
+                }
+                else if (xorBit)
+                {
+                    // Screen through, inverted: the trick that keeps a pointer
+                    // visible over a background of any colour.
+                    _framebuffer[destination] ^= 0x00FFFFFF;
+                }
+            }
+        }
     }
 
     /// <summary>

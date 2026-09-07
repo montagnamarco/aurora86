@@ -488,6 +488,43 @@ public sealed class VgaRegisters : IIoDevice
     /// <summary>The card's identifier, which is how a driver knows what it has.</summary>
     public const byte S3DeviceId = 0xE1;       // Trio64
 
+    // --- the hardware cursor --------------------------------------------------
+    //
+    // Registers 0x45 to 0x4E. The card draws a 64x64 pointer over the picture
+    // as the beam passes, which means the pointer costs nothing at all to
+    // move: writing two registers is the whole operation.
+    //
+    // Doing it in software means saving what is under the pointer, drawing
+    // it, and putting the background back before the next move -- three
+    // times the work, and it has to happen between frames or the pointer
+    // flickers. At 1024x768 that was the difference between a pointer that
+    // kept up with the hand and one that lagged behind it.
+
+    /// <summary>Whether the hardware pointer is being drawn (register 0x45 bit 0).</summary>
+    public bool CursorEnabled => (_crtc[0x45] & 0x01) != 0;
+
+    /// <summary>Where the pointer's top left corner is, in pixels.</summary>
+    public (int X, int Y) CursorPosition =>
+        ((_crtc[0x46] << 8) | _crtc[0x47], (_crtc[0x48] << 8) | _crtc[0x49]);
+
+    /// <summary>
+    /// How far into the 64x64 pattern the top left of the pointer starts.
+    ///
+    /// This is what lets a pointer walk off the top or left of the screen
+    /// rather than stopping at the edge: the position stays at zero and the
+    /// offset moves instead, so the visible part shrinks as it goes.
+    /// </summary>
+    public (int X, int Y) CursorOffset => (_crtc[0x4E] & 0x3F, _crtc[0x4F] & 0x3F);
+
+    /// <summary>
+    /// Where the cursor's pattern lives in video memory, as a multiple of
+    /// 1024 bytes -- which is exactly what a 64x64 two-bit pattern occupies.
+    /// </summary>
+    public uint CursorPatternAddress => (uint)(((_crtc[0x4C] << 8) | _crtc[0x4D]) * 1024);
+
+    /// <summary>The colours the pointer is drawn in, from registers 0x4A and 0x4B.</summary>
+    public (byte Foreground, byte Background) CursorColours => (_crtc[0x4A], _crtc[0x4B]);
+
     private byte ReadCrtc(byte index)
     {
         // Below 0x30 is the VGA, always readable.
