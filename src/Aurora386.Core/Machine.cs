@@ -164,6 +164,10 @@ public sealed partial class Machine : IDisposable
         // And the same memory again, flat, above the RAM. A protected-mode
         // display driver writes here and never touches the bank register.
         Memory.MapDevice(LinearFrameBufferBase, VgaMemory.TotalSize, VideoMemory.Linear);
+
+        // And the card is told where that is, because a driver asks the
+        // hardware rather than being configured with the answer.
+        VideoRegisters.ApertureBase = LinearFrameBufferBase;
         Video = new VgaRenderer(VideoMemory, VideoRegisters);
 
         // The 2D engine, which is what makes the SVGA resolutions usable: at

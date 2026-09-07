@@ -498,6 +498,13 @@ public sealed class VgaRegisters : IIoDevice
     /// </summary>
     public const byte S3DeviceId = 0xE1;
 
+    /// <summary>
+    /// Where the linear aperture is, as the machine actually mapped it. Set
+    /// by the machine at construction; a driver reads it back through the
+    /// extended registers 0x59 and 0x5A.
+    /// </summary>
+    public uint ApertureBase { get; set; }
+
     // --- the hardware cursor --------------------------------------------------
     //
     // Registers 0x45 to 0x4E. The card draws a 64x64 pointer over the picture
@@ -611,6 +618,33 @@ public sealed class VgaRegisters : IIoDevice
             // 0x36 reports how the card is configured. Bits 5-6 say how much
             // memory: 0 is 4 MB, 1 is 3, 2 is 2, 3 is 1. This card has two.
             case 0x36: return (byte)(0x40 | (_crtc[0x36] & 0x1F));
+
+            // --- the linear aperture -------------------------------------
+            //
+            // Where the whole of video memory appears in the physical address
+            // space, as one flat array. A driver in protected mode writes
+            // there and never touches the 64 KB window or the bank register,
+            // which is what makes an SVGA resolution usable at all: moving a
+            // window every 64 KB while painting a 1024x768 screen is most of
+            // the work.
+            //
+            // The address is not something the driver chooses. It reads it
+            // from these registers, because on a real card the BIOS decided
+            // it at power-on from what else was in the address space. That is
+            // why the driver's own configuration leaves "aperture-base"
+            // empty: it is a question for the hardware, not a setting.
+
+            // 0x58: aperture size in bits 0-1 -- 0 is 64 KB, 1 is 1 MB, 2 is
+            // 2 MB, 3 is 4 MB -- and bit 4 enables it. Two megabytes, on.
+            case 0x58: return 0x12;
+
+            // 0x59 and 0x5A are the top two bytes of the address, which is
+            // therefore aligned to a megabyte. The emulator maps the frame
+            // buffer directly above the installed RAM rather than at a fixed
+            // address a real card would use: a card in a slot cannot know how
+            // much memory the machine has, and this one can.
+            case 0x59: return (byte)(ApertureBase >> 24);
+            case 0x5A: return (byte)(ApertureBase >> 16);
         }
 
         // A locked register still answers. The lock protects writes, not
