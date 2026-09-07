@@ -53,6 +53,9 @@ public sealed partial class Machine : IDisposable
     public VgaMemory VideoMemory { get; }
     public VgaRenderer Video { get; }
 
+    /// <summary>The S3's 2D drawing engine: fills, copies and lines.</summary>
+    public S3Accelerator Accelerator { get; }
+
     // Audio: the DMA controller is a system device rather than part of the
     // sound card, but the card is the only thing here that uses it.
     public Dma8237 Dma { get; }
@@ -162,6 +165,13 @@ public sealed partial class Machine : IDisposable
         // display driver writes here and never touches the bank register.
         Memory.MapDevice(LinearFrameBufferBase, VgaMemory.TotalSize, VideoMemory.Linear);
         Video = new VgaRenderer(VideoMemory, VideoRegisters);
+
+        // The 2D engine, which is what makes the SVGA resolutions usable: at
+        // 1024x768 a window scroll done by the processor means three quarters
+        // of a megabyte across the bus, and done by the card means a dozen
+        // register writes.
+        Accelerator = new S3Accelerator(VideoMemory, VideoRegisters);
+        Accelerator.Register(Io);
 
         // The 8237 DMA pair and the Sound Blaster 16 that streams through it.
         // Registering the card also claims the OPL3's own ports at 0x388.
