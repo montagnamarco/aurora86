@@ -799,3 +799,126 @@ public class VgaHardwareScrollTests
                      machine.Video.Framebuffer[149 * 320 + 1]);
     }
 }
+
+/// <summary>
+/// The CGA graphics modes, which the VGA kept for the sake of everything
+/// written before 1987.
+///
+/// Two things make this layout its own thing. The pixels are packed several
+/// to a byte -- four at two bits each, or eight at one -- and the scan lines
+/// are interleaved: even lines in the first 8 KB, odd lines in the second, so
+/// line 1 is not after line 0 but 8192 bytes further on.
+///
+/// The interleave was an admission rather than a design: the CGA could not
+/// read a contiguous frame fast enough to keep up with the beam, so it read
+/// from two banks alternately. It made the card buildable in 1981 and it has
+/// made every program that draws a vertical line pay for the arithmetic ever
+/// since.
+/// </summary>
+public class CgaGraphicsModeTests
+{
+    private static Machine InMode(byte mode)
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        machine.VideoRegisters.VideoMode = mode;
+        machine.VideoRegisters.NotifyModeChanged();
+        return machine;
+    }
+
+    /// <summary>0xB8000, where the CGA's memory was and where programs write.</summary>
+    private const uint CgaBase = 0x18000;
+
+    [Fact]
+    public void ModeFourIsGraphicsRatherThanText()
+    {
+        // The bug this replaces: a CGA game set mode 4, drew pixels, and the
+        // adapter went on showing text.
+        using Machine machine = InMode(0x04);
+
+        var mode = machine.VideoRegisters.EffectiveMode;
+        Assert.Equal(VgaMemoryLayout.Cga, mode.Layout);
+        Assert.Equal(320, mode.PixelWidth);
+        Assert.Equal(200, mode.PixelHeight);
+    }
+
+    [Fact]
+    public void FourColoursComeFromTwoBitsEach()
+    {
+        using Machine machine = InMode(0x04);
+
+        // 0x1B is 00 01 10 11: one pixel of each colour, left to right.
+        machine.VideoMemory[CgaBase] = 0x1B;
+        machine.VideoMemory.MarkRowsDirty(0, 200);
+        machine.Video.Render();
+
+        var frame = machine.Video.Framebuffer;
+        Assert.NotEqual(frame[0], frame[1]);
+        Assert.NotEqual(frame[1], frame[2]);
+        Assert.NotEqual(frame[2], frame[3]);
+    }
+
+    [Fact]
+    public void OddScanLinesLiveEightKilobytesFurtherOn()
+    {
+        // The interleave, which is the whole awkwardness of this layout.
+        using Machine machine = InMode(0x04);
+
+        machine.VideoMemory[CgaBase] = 0xFF;              // line 0: all white
+        machine.VideoMemory[CgaBase + 0x2000] = 0x00;     // line 1: all black
+        machine.VideoMemory.MarkRowsDirty(0, 200);
+        machine.Video.Render();
+
+        var frame = machine.Video.Framebuffer;
+        Assert.NotEqual(frame[0], frame[320]);
+    }
+
+    [Fact]
+    public void TheSecondBankIsWhereTheSecondLineIsAndNotAfterTheFirst()
+    {
+        // Stated the other way round, because this is the mistake: the byte
+        // immediately after line 0 belongs to line 2, not line 1.
+        using Machine machine = InMode(0x04);
+
+        for (uint i = 0; i < 80; i++) machine.VideoMemory[CgaBase + i] = 0x00;
+        for (uint i = 0; i < 80; i++) machine.VideoMemory[CgaBase + 80 + i] = 0xFF;
+        machine.VideoMemory.MarkRowsDirty(0, 200);
+        machine.Video.Render();
+
+        var frame = machine.Video.Framebuffer;
+        Assert.Equal(frame[0], frame[320]);          // lines 0 and 1: both black
+        Assert.NotEqual(frame[0], frame[2 * 320]);   // line 2: the white one
+    }
+
+    [Fact]
+    public void ModeSixIsSixHundredAndFortyPixelsOfTwoColours()
+    {
+        using Machine machine = InMode(0x06);
+
+        var mode = machine.VideoRegisters.EffectiveMode;
+        Assert.Equal(VgaMemoryLayout.Cga, mode.Layout);
+        Assert.Equal(640, mode.PixelWidth);
+
+        // One bit per pixel now: 0x80 is a single lit pixel at the left.
+        machine.VideoMemory[CgaBase] = 0x80;
+        machine.VideoMemory.MarkRowsDirty(0, 200);
+        machine.Video.Render();
+
+        var frame = machine.Video.Framebuffer;
+        Assert.NotEqual(frame[0], frame[1]);
+    }
+
+    [Fact]
+    public void BothResolutionsReadTheSameEightyBytesPerLine()
+    {
+        // Not a coincidence: 320 pixels at two bits and 640 at one come to
+        // the same 80 bytes, because they are the same scan hardware reading
+        // the same amount of memory and differing only in how the bits are
+        // grouped.
+        using Machine four = InMode(0x04);
+        using Machine two = InMode(0x06);
+
+        Assert.Equal(80, four.VideoRegisters.EffectiveMode.BytesPerRow);
+        Assert.Equal(80, two.VideoRegisters.EffectiveMode.BytesPerRow);
+    }
+}

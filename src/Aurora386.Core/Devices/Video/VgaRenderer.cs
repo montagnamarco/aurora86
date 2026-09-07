@@ -133,6 +133,7 @@ public sealed class VgaRenderer
         {
             case VgaMemoryLayout.Planar4: RenderPlanar(force); break;
             case VgaMemoryLayout.Linear8: RenderLinear(force); break;
+            case VgaMemoryLayout.Cga: RenderCga(force); break;
             default: RenderText(force); break;
         }
 
@@ -521,6 +522,78 @@ public sealed class VgaRenderer
                               | (((b3 >> shift) & 1) << 3);
 
                     _framebuffer[destination + x + bit] = colors[color];
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The CGA graphics modes, which the VGA kept for the sake of everything
+    /// written before 1987.
+    ///
+    /// Two things make this layout its own renderer rather than a variation
+    /// on the linear one. The pixels are packed several to a byte -- four at
+    /// two bits each, or eight at one -- and, more awkwardly, the scan lines
+    /// are interleaved: even lines live in the first 8 KB and odd lines in
+    /// the second, so line 1 is not after line 0 but 8192 bytes further on.
+    ///
+    /// That interleave was not a design choice so much as an admission. The
+    /// CGA could not read a contiguous frame fast enough to keep up with the
+    /// beam, so it read from two banks alternately. It made the card
+    /// buildable in 1981 and it has made every program that draws a vertical
+    /// line pay for the arithmetic ever since.
+    /// </summary>
+    private void RenderCga(bool force)
+    {
+        // Four colours at 320 wide, two at 640. The mode's own width says
+        // which, since both read the same 80 bytes per line.
+        bool fourColour = _registers.EffectiveMode.PixelWidth <= 320;
+        int pixelsPerByte = fourColour ? 4 : 8;
+
+        // The CGA's palette is not programmable in the way the VGA's is: a
+        // program picks one of a few fixed sets. This is the common one --
+        // black, cyan, magenta, white -- which is what almost every CGA game
+        // used and what everyone remembers the machine looking like.
+        Span<uint> colors = stackalloc uint[4];
+        if (fourColour)
+        {
+            colors[0] = ToRgba(_registers.GetPaletteColor(0));
+            colors[1] = ToRgba(_registers.GetPaletteColor(0x0B));   // cyan
+            colors[2] = ToRgba(_registers.GetPaletteColor(0x0D));   // magenta
+            colors[3] = ToRgba(_registers.GetPaletteColor(0x0F));   // white
+        }
+        else
+        {
+            colors[0] = ToRgba(_registers.GetPaletteColor(0));
+            colors[1] = ToRgba(_registers.GetPaletteColor(0x0F));
+        }
+
+        for (int y = 0; y < Height; y++)
+        {
+            if (!force && !_memory.IsRowDirty(y)) continue;
+
+            // The interleave, in one line: even scan lines from the first
+            // bank, odd ones from the second, 8 KB apart. Both banks are
+            // measured from 0xB8000, which is where the CGA's memory was and
+            // where every program written for it still writes.
+            uint rowStart = VgaMemory.TextWindowOffset
+                          + (uint)((y & 1) * 0x2000 + (y >> 1) * 80);
+            int destination = y * Width;
+
+            for (int x = 0; x < Width; x += pixelsPerByte)
+            {
+                byte packed = _memory[rowStart + (uint)(x / pixelsPerByte)];
+
+                int remaining = Math.Min(pixelsPerByte, Width - x);
+                for (int i = 0; i < remaining; i++)
+                {
+                    // The leftmost pixel is in the high bits, as everywhere
+                    // else on this hardware.
+                    int color = fourColour
+                        ? (packed >> (6 - i * 2)) & 3
+                        : (packed >> (7 - i)) & 1;
+
+                    _framebuffer[destination + x + i] = colors[color];
                 }
             }
         }

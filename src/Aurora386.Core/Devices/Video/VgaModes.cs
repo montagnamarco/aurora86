@@ -33,6 +33,23 @@ public enum VgaMemoryLayout
     Text,
     Planar4,
     Linear8,
+
+    /// <summary>
+    /// The CGA graphics layout, which the VGA still supports for the sake of
+    /// everything written before 1987.
+    ///
+    /// Two pixels per byte at four colours, or eight at two -- but the odd
+    /// thing is not the packing, it is that the scan lines are interleaved.
+    /// Even lines live in the first 8 KB and odd lines in the second, so line
+    /// 1 is not after line 0 but 8192 bytes further on.
+    ///
+    /// The reason is the CGA's memory bandwidth: the chip could not read a
+    /// contiguous frame fast enough to keep up with the beam, so it read from
+    /// two banks alternately. It made the hardware buildable and it made
+    /// every program that draws a vertical line pay for the arithmetic ever
+    /// since.
+    /// </summary>
+    Cga,
 }
 
 /// <summary>
@@ -59,6 +76,13 @@ public readonly record struct VgaModeInfo(
     {
         VgaMemoryLayout.Planar4 => PixelWidth / 8,
         VgaMemoryLayout.Linear8 => PixelWidth,
+
+        // Eighty bytes, at both CGA resolutions: 320 pixels two bits each, or
+        // 640 pixels one bit each, come to the same 80 bytes. That is not a
+        // coincidence -- the two modes are the same scan hardware reading the
+        // same amount of memory, differing only in how the bits are grouped.
+        VgaMemoryLayout.Cga => 80,
+
         _ => TextColumns * 2,
     };
 
@@ -85,6 +109,14 @@ public static class VgaModes
         new(0x02, VgaMemoryLayout.Text, 640, 400, 80, 25, 16),
         new(0x03, VgaMemoryLayout.Text, 640, 400, 80, 25, 16),
         new(0x07, VgaMemoryLayout.Text, 640, 400, 80, 25, 16),   // MDA monochrome
+
+        // The CGA graphics modes. Four colours at 320x200 from a fixed
+        // palette, or two at 640x200; mode 5 is mode 4 with the colour burst
+        // turned off, which on a television meant grey instead of colour and
+        // on a monitor meant nothing at all.
+        new(0x04, VgaMemoryLayout.Cga, 320, 200, 40, 25, 8),
+        new(0x05, VgaMemoryLayout.Cga, 320, 200, 40, 25, 8),
+        new(0x06, VgaMemoryLayout.Cga, 640, 200, 80, 25, 8),
 
         // Planar 16-colour graphics: the EGA family the VGA inherited.
         new(0x0D, VgaMemoryLayout.Planar4, 320, 200, 40, 25, 8),
