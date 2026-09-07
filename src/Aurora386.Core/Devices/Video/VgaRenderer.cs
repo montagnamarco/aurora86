@@ -45,6 +45,9 @@ public sealed class VgaRenderer
     /// <summary>Cursor blink phase; the caller toggles it on a timer.</summary>
     public bool CursorBlinkOn { get; set; } = true;
 
+    /// <summary>The blink phase the last drawn frame was drawn in.</summary>
+    private bool _lastBlinkPhase = true;
+
     public VgaRenderer(VgaMemory memory, VgaRegisters registers)
     {
         _memory = memory;
@@ -106,7 +109,15 @@ public sealed class VgaRenderer
     {
         InvalidatePointerRows();
 
-        if (!force && !_memory.HasChanges) return false;
+        // The blink phase changes with nothing writing to video memory, so a
+        // frame that differs only by the phase would otherwise be skipped as
+        // having nothing to draw -- and the cursor and any blinking text
+        // would simply stop flashing. Only the phase actually changing counts
+        // here: checking it every frame would redraw the screen continuously.
+        bool phaseChanged = CursorBlinkOn != _lastBlinkPhase;
+        _lastBlinkPhase = CursorBlinkOn;
+
+        if (!force && !phaseChanged && !_memory.HasChanges) return false;
 
         // A mode set the renderer never heard about -- a program programming
         // the CRTC directly, say -- would otherwise write past the end of a
@@ -245,9 +256,12 @@ public sealed class VgaRenderer
         for (int row = 0; row < rows; row++)
         {
             // The cursor's row is always redrawn: it blinks on a timer, and
-            // no write to video memory would ever mark that row dirty.
+            // no write to video memory would ever mark that row dirty. The
+            // same is true of any row holding a blinking character, so those
+            // rows are found once per frame rather than skipped as clean.
             bool hasCursor = row == cursorRow && _registers.CursorVisible;
-            if (!force && !_memory.IsRowDirty(row) && !hasCursor) continue;
+            bool blinking = _registers.BlinkEnabled && RowHasBlinkingText(baseOffset, row, columns);
+            if (!force && !_memory.IsRowDirty(row) && !hasCursor && !blinking) continue;
 
             for (int column = 0; column < columns; column++)
             {
@@ -259,17 +273,51 @@ public sealed class VgaRenderer
                 byte attribute = _memory[offset + 1];
 
                 // The attribute byte packs two colours: the low four bits are
-                // the foreground, the next three the background. Bit 7 is the
-                // blink flag on real hardware; we render it as an intense
-                // background instead, which is the same choice the VGA makes
-                // when blinking is disabled in the attribute controller.
+                // the foreground, the next three the background. Bit 7 has
+                // meant two different things since the CGA, and which one is
+                // a setting in the attribute controller rather than a
+                // convention.
+                //
+                // With blinking enabled -- what a mode set leaves -- there
+                // are eight background colours and the character flashes.
+                // With it disabled there are sixteen and nothing flashes,
+                // which is what a program wanting a bright background asks
+                // for.
                 int foreground = attribute & 0x0F;
-                int background = (attribute >> 4) & 0x07;
+                int background = _registers.BlinkEnabled
+                    ? (attribute >> 4) & 0x07
+                    : (attribute >> 4) & 0x0F;
+
+                // A blinking character spends half its cycle showing its
+                // background colour. The cursor's phase is reused rather than
+                // kept separately: on real hardware both are driven from the
+                // same vertical retrace counter, which is why a blinking
+                // character and the cursor flash together rather than
+                // drifting against each other.
+                if (_registers.BlinkEnabled && (attribute & 0x80) != 0 && !CursorBlinkOn)
+                    foreground = background;
 
                 bool drawCursor = hasCursor && column == cursorColumn && CursorBlinkOn;
                 DrawGlyph(column, row, charHeight, character, foreground, background, drawCursor);
             }
         }
+    }
+
+    /// <summary>
+    /// Whether any cell in this row has its blink bit set.
+    ///
+    /// A blinking character changes on a timer with nothing writing to video
+    /// memory, so the dirty-row tracking that makes rendering affordable
+    /// would skip it for ever. Scanning the row's attribute bytes is the
+    /// cheap half of drawing it, and it means only the rows that actually
+    /// blink pay for being redrawn.
+    /// </summary>
+    private bool RowHasBlinkingText(uint baseOffset, int row, int columns)
+    {
+        uint at = baseOffset + (uint)(row * columns * 2) + 1;
+        for (int column = 0; column < columns; column++, at += 2)
+            if ((_memory[at] & 0x80) != 0) return true;
+        return false;
     }
 
     private void DrawGlyph(int column, int row, int charHeight, byte character,

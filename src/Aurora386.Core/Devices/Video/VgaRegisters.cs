@@ -615,6 +615,19 @@ public sealed class VgaRegisters : IIoDevice
     /// DAC -- Windows' display driver, for one -- gets its colours only if
     /// this mapping is honoured.
     /// </summary>
+    /// <summary>
+    /// Whether bit 7 of a text attribute means "blink" or "bright background",
+    /// from bit 3 of the attribute controller's mode register.
+    ///
+    /// The same bit has meant two things since the CGA, and which one it means
+    /// is a setting rather than a convention. With blinking enabled -- the
+    /// state a mode set leaves -- there are eight background colours and the
+    /// text flashes; with it disabled there are sixteen and nothing flashes.
+    /// A program that wants a bright background writes this register first,
+    /// and one that wants attention writes the attribute and expects a blink.
+    /// </summary>
+    public bool BlinkEnabled => (_attribute[0x10] & 0x08) != 0;
+
     public int PaletteIndexFor(int pixel)
     {
         int index = _attribute[pixel & 0x0F] & 0x3F;

@@ -390,3 +390,117 @@ public class TextCursorShapeTests
         Assert.Equal((6, 7), machine.VideoRegisters.CursorShape);
     }
 }
+
+/// <summary>
+/// Bit 7 of a text attribute, which has meant two different things since the
+/// CGA and whose meaning is a setting rather than a convention.
+///
+/// With blinking enabled -- what a mode set leaves -- there are eight
+/// background colours and the character flashes. With it disabled there are
+/// sixteen and nothing flashes. Both are used: a program wanting a bright
+/// background writes the register first, and one wanting attention writes the
+/// attribute and expects a blink.
+/// </summary>
+public class TextBlinkTests
+{
+    private static Machine InTextMode()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        return machine;
+    }
+
+    /// <summary>
+    /// Writes an attribute controller register. Index and data share one
+    /// port, and the flip-flop that says which is which is reset by reading
+    /// the status register -- which is why every program that touches this
+    /// reads 0x3DA first.
+    /// </summary>
+    private static void SetAttribute(Machine machine, byte index, byte value)
+    {
+        machine.Io.ReadByte(0x3DA);
+        machine.Io.WriteByte(0x3C0, index);
+        machine.Io.WriteByte(0x3C0, value);
+    }
+
+    [Fact]
+    public void BlinkingIsOnAfterAModeSet()
+    {
+        // It has to be: every program written for the CGA assumes bit 7 makes
+        // text flash, and a mode set is what puts the adapter into the state
+        // those programs expect.
+        using Machine machine = InTextMode();
+        Assert.True(machine.VideoRegisters.BlinkEnabled);
+    }
+
+    [Fact]
+    public void ClearingTheBitGivesSixteenBackgroundColours()
+    {
+        using Machine machine = InTextMode();
+
+        SetAttribute(machine, 0x10, 0x04);      // line-graphics bit set, blink off
+        Assert.False(machine.VideoRegisters.BlinkEnabled);
+
+        SetAttribute(machine, 0x10, 0x04 | 0x08);
+        Assert.True(machine.VideoRegisters.BlinkEnabled);
+    }
+
+    [Fact]
+    public void ABlinkingCharacterSpendsHalfItsCycleInvisible()
+    {
+        // The visible consequence, checked through the frame buffer rather
+        // than through a flag: the same cell, the same memory, two different
+        // pictures depending on the phase.
+        using Machine machine = InTextMode();
+
+        // A blinking bright-white character on black at the top left.
+        machine.VideoMemory[0x18000] = (byte)'A';
+        machine.VideoMemory[0x18001] = 0x8F;
+
+        machine.Video.CursorBlinkOn = true;
+        machine.Video.Render();
+        uint lit = CountLitPixels(machine);
+
+        machine.Video.CursorBlinkOn = false;
+        machine.Video.Render();
+        uint dark = CountLitPixels(machine);
+
+        Assert.True(lit > 0);
+        Assert.Equal(0u, dark);
+    }
+
+    [Fact]
+    public void WithBlinkingOffTheSameAttributeIsJustABrightBackground()
+    {
+        using Machine machine = InTextMode();
+        SetAttribute(machine, 0x10, 0x04);      // blink off
+
+        machine.VideoMemory[0x18000] = (byte)'A';
+        machine.VideoMemory[0x18001] = 0x8F;
+
+        machine.Video.CursorBlinkOn = true;
+        machine.Video.Render();
+        uint onPhase = CountLitPixels(machine);
+
+        // The other phase of the blink timer changes nothing at all now.
+        machine.Video.CursorBlinkOn = false;
+        machine.VideoMemory.MarkRowsDirty(0, 25);
+        machine.Video.Render();
+
+        Assert.Equal(onPhase, CountLitPixels(machine));
+    }
+
+    /// <summary>Lit pixels in the top-left character cell.</summary>
+    private static uint CountLitPixels(Machine machine)
+    {
+        var frame = machine.Video.Framebuffer;
+        int width = machine.Video.Width;
+        int height = machine.VideoRegisters.CharacterHeight;
+
+        uint count = 0;
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < 8; x++)
+                if ((frame[y * width + x] & 0xFFFFFF) != 0) count++;
+        return count;
+    }
+}
