@@ -321,6 +321,36 @@ public sealed class VgaRenderer
     /// programmer would design from scratch, which is exactly why it became
     /// the mode every DOS game used.
     /// </summary>
+    /// <summary>
+    /// Where in memory a given scan line reads from.
+    ///
+    /// Three registers conspire here, and together they are the whole of VGA
+    /// hardware scrolling. The start address says where the picture begins,
+    /// so moving it scrolls everything without copying a byte. The line
+    /// compare register names a scan line below which the display restarts
+    /// from address zero, which is how a game keeps a status panel still
+    /// while the world moves behind it. And the panning register shifts the
+    /// result by up to eight pixels, covering the positions between one
+    /// character and the next -- a start address alone scrolls in jerky
+    /// eight-pixel steps.
+    /// </summary>
+    private uint SourceRow(int y, int bytesPerRow, out int panning)
+    {
+        int split = _registers.LineCompare;
+
+        // At or below the split the display is drawn from the start of
+        // memory, and the panning register does not apply: the panel a game
+        // puts there must not slide about with the scrolling world above it.
+        if (split < Height && y > split)
+        {
+            panning = 0;
+            return (uint)((y - split - 1) * bytesPerRow);
+        }
+
+        panning = _registers.HorizontalPan;
+        return (uint)(_registers.StartAddress * 2 + y * bytesPerRow);
+    }
+
     private void RenderLinear(bool force)
     {
         int bytesPerRow = _registers.RowOffsetBytes > 0
@@ -331,12 +361,14 @@ public sealed class VgaRenderer
         {
             if (!force && !_memory.IsRowDirty(y)) continue;
 
-            uint rowStart = (uint)(y * bytesPerRow);
+            uint rowStart = SourceRow(y, bytesPerRow, out int panning);
             int destination = y * Width;
 
+            // In a 256-colour mode each byte is one pixel, so panning is a
+            // plain offset into the row rather than a shift within a byte.
             for (int x = 0; x < Width; x++)
                 _framebuffer[destination + x] =
-                    ToRgba(_registers.GetPaletteColor(_memory[rowStart + (uint)x]));
+                    ToRgba(_registers.GetPaletteColor(_memory[rowStart + (uint)(x + panning)]));
         }
     }
 
@@ -373,29 +405,57 @@ public sealed class VgaRenderer
         {
             if (!force && !_memory.IsRowDirty(y)) continue;
 
-            uint rowStart = (uint)(y * bytesPerRow);
+            uint rowStart = SourceRow(y, bytesPerRow, out int panning);
             int destination = y * Width;
 
             for (int x = 0; x < Width; x += 8)
             {
-                uint offset = rowStart + (uint)(x >> 3);
+                // Panning shifts by pixels, and a byte covers eight of them,
+                // so a panned group of eight straddles two bytes: the fetch
+                // moves along by whole bytes and the remainder becomes the
+                // bit to start at. That is precisely why the register exists
+                // -- without it a scroll can only step a whole byte at a
+                // time, which at eight pixels a step is visibly jerky.
+                int shifted = x + panning;
+                uint offset = rowStart + (uint)(shifted >> 3);
+                int firstBit = shifted & 7;
 
-                // One fetch per plane covers the next eight pixels.
+                // Two fetches per plane when the group straddles, one when it
+                // does not. The second byte is read unconditionally only when
+                // it is actually needed, since at panning zero -- which is
+                // almost always -- there is nothing to straddle.
                 byte plane0 = _memory.ReadPlane(0, offset);
                 byte plane1 = _memory.ReadPlane(1, offset);
                 byte plane2 = _memory.ReadPlane(2, offset);
                 byte plane3 = _memory.ReadPlane(3, offset);
+
+                byte next0 = 0, next1 = 0, next2 = 0, next3 = 0;
+                if (firstBit != 0)
+                {
+                    next0 = _memory.ReadPlane(0, offset + 1);
+                    next1 = _memory.ReadPlane(1, offset + 1);
+                    next2 = _memory.ReadPlane(2, offset + 1);
+                    next3 = _memory.ReadPlane(3, offset + 1);
+                }
 
                 int remaining = Math.Min(8, Width - x);
                 for (int bit = 0; bit < remaining; bit++)
                 {
                     // Bit 7 is the leftmost pixel, matching the text font's
                     // convention and the order the CRTC shifts pixels out.
-                    int shift = 7 - bit;
-                    int color = ((plane0 >> shift) & 1)
-                              | (((plane1 >> shift) & 1) << 1)
-                              | (((plane2 >> shift) & 1) << 2)
-                              | (((plane3 >> shift) & 1) << 3);
+                    int position = firstBit + bit;
+                    bool fromNext = position >= 8;
+                    int shift = 7 - (position & 7);
+
+                    byte b0 = fromNext ? next0 : plane0;
+                    byte b1 = fromNext ? next1 : plane1;
+                    byte b2 = fromNext ? next2 : plane2;
+                    byte b3 = fromNext ? next3 : plane3;
+
+                    int color = ((b0 >> shift) & 1)
+                              | (((b1 >> shift) & 1) << 1)
+                              | (((b2 >> shift) & 1) << 2)
+                              | (((b3 >> shift) & 1) << 3);
 
                     _framebuffer[destination + x + bit] = colors[color];
                 }

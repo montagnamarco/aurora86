@@ -620,3 +620,182 @@ public class VgaGraphicsTests
         Assert.Equal(25, machine.VideoRegisters.TextRows);
     }
 }
+
+/// <summary>
+/// Hardware scrolling: the three registers that let a game move the picture
+/// without moving any memory.
+///
+/// The start address says where the picture begins, so changing it scrolls
+/// everything and costs one register write. The line compare register names
+/// a scan line below which the display restarts from address zero, which is
+/// how a status panel stays still while the world moves behind it. And the
+/// panning register covers the pixels in between, because a start address
+/// alone can only step a whole byte -- eight pixels -- which is visibly
+/// jerky.
+///
+/// Together they are why side-scrolling games on a VGA look smooth on
+/// hardware that could not possibly copy a screenful of pixels per frame.
+/// </summary>
+public class VgaHardwareScrollTests
+{
+    /// <summary>A machine in mode 13h, the 256-colour linear mode.</summary>
+    private static Machine InMode13(uint fill = 0)
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        machine.VideoRegisters.VideoMode = 0x13;
+        machine.VideoRegisters.NotifyModeChanged();
+        return machine;
+    }
+
+    private static void SetCrtc(Machine machine, int index, byte value)
+    {
+        machine.Io.WriteByte(0x3D4, (byte)index);
+        machine.Io.WriteByte(0x3D5, value);
+    }
+
+    /// <summary>
+    /// Sets the split line, all ten bits of it.
+    ///
+    /// The field is scattered across three registers -- the low eight in
+    /// 0x18, bit 8 in register 0x07 and bit 9 in register 0x09 -- because the
+    /// 286-era design ran out of room and later bits went wherever there was
+    /// space. A mode set leaves all ten ones, which is past the bottom of any
+    /// screen and means "no split"; writing only the low byte therefore
+    /// leaves the value at 868 rather than 100, and the split appears to be
+    /// ignored. Every program that uses this has to write all three.
+    /// </summary>
+    private static void SetSplitLine(Machine machine, int line)
+    {
+        SetCrtc(machine, 0x18, (byte)(line & 0xFF));
+
+        machine.Io.WriteByte(0x3D4, 0x07);
+        byte overflow = machine.Io.ReadByte(0x3D5);
+        overflow = (byte)((overflow & ~0x10) | ((line & 0x100) >> 4));
+        machine.Io.WriteByte(0x3D5, overflow);
+
+        machine.Io.WriteByte(0x3D4, 0x09);
+        byte maxScan = machine.Io.ReadByte(0x3D5);
+        maxScan = (byte)((maxScan & ~0x40) | ((line & 0x200) >> 3));
+        machine.Io.WriteByte(0x3D5, maxScan);
+    }
+
+    [Fact]
+    public void TheStartAddressMovesThePictureWithoutMovingMemory()
+    {
+        using Machine machine = InMode13();
+
+        // Two distinguishable rows, one after the other in memory.
+        for (uint x = 0; x < 320; x++) machine.VideoMemory[x] = 0x11;
+        for (uint x = 0; x < 320; x++) machine.VideoMemory[320 + x] = 0x22;
+
+        machine.Video.Render();
+        uint firstBefore = machine.Video.Framebuffer[0];
+
+        // The start address counts in words, so 160 of them is one row of 320
+        // bytes: the second row becomes the first.
+        SetCrtc(machine, 0x0C, 0x00);
+        SetCrtc(machine, 0x0D, 160);
+        machine.VideoMemory.MarkRowsDirty(0, 200);
+        machine.Video.Render();
+
+        Assert.NotEqual(firstBefore, machine.Video.Framebuffer[0]);
+    }
+
+    [Fact]
+    public void BelowTheSplitTheDisplayRestartsFromZero()
+    {
+        using Machine machine = InMode13();
+
+        // Row 0 of memory is one colour; everything the start address points
+        // at is another.
+        for (uint i = 0; i < 320; i++) machine.VideoMemory[i] = 0x11;
+        for (uint i = 320; i < 320 * 200; i++) machine.VideoMemory[i] = 0x22;
+
+        // Scroll away from address zero, then split the screen halfway down.
+        SetCrtc(machine, 0x0C, 0x00);
+        SetCrtc(machine, 0x0D, 160);
+        SetSplitLine(machine, 100);
+
+        machine.VideoMemory.MarkRowsDirty(0, 200);
+        machine.Video.Render();
+
+        // Above the split: the scrolled picture. Below it: address zero
+        // again, which is the row that was never scrolled.
+        uint above = machine.Video.Framebuffer[50 * 320];
+        uint below = machine.Video.Framebuffer[101 * 320];
+
+        Assert.NotEqual(above, below);
+    }
+
+    [Fact]
+    public void ThePanningRegisterShiftsWithinTheEightPixelsOfAByte()
+    {
+        using Machine machine = InMode13();
+
+        // A ramp, so that a shift of one pixel is unmistakable.
+        for (uint x = 0; x < 320; x++) machine.VideoMemory[x] = (byte)x;
+
+        machine.Video.Render();
+        uint unpanned = machine.Video.Framebuffer[0];
+
+        // The attribute controller's index and data share one port, and the
+        // flip-flop that says which is which is reset by reading the status
+        // register -- which is why every program that touches it reads 0x3DA
+        // first.
+        machine.Io.ReadByte(0x3DA);
+        machine.Io.WriteByte(0x3C0, 0x13);
+        machine.Io.WriteByte(0x3C0, 0x04);
+
+        machine.VideoMemory.MarkRowsDirty(0, 200);
+        machine.Video.Render();
+
+        Assert.NotEqual(unpanned, machine.Video.Framebuffer[0]);
+    }
+
+    [Fact]
+    public void ThePanelBelowTheSplitDoesNotPan()
+    {
+        // The point of the split is that what is below it holds still. If
+        // panning applied there too, a game's status panel would slide about
+        // by up to eight pixels while the world scrolled.
+        using Machine machine = InMode13();
+
+        for (uint x = 0; x < 320; x++) machine.VideoMemory[x] = (byte)x;
+        for (uint i = 320; i < 320 * 200; i++) machine.VideoMemory[i] = 0x22;
+
+        SetSplitLine(machine, 100);
+        machine.Video.Render();
+        uint panelBefore = machine.Video.Framebuffer[101 * 320];
+
+        machine.Io.ReadByte(0x3DA);
+        machine.Io.WriteByte(0x3C0, 0x13);
+        machine.Io.WriteByte(0x3C0, 0x07);
+
+        machine.VideoMemory.MarkRowsDirty(0, 200);
+        machine.Video.Render();
+
+        Assert.Equal(panelBefore, machine.Video.Framebuffer[101 * 320]);
+    }
+
+    [Fact]
+    public void WithoutASplitTheWholeScreenScrolls()
+    {
+        // The line compare register reads all ones after a mode set, which is
+        // past the bottom of any screen: no split, and the whole display
+        // follows the start address.
+        using Machine machine = InMode13();
+
+        for (uint i = 0; i < 320 * 200; i++) machine.VideoMemory[i] = 0x11;
+        for (uint x = 0; x < 320; x++) machine.VideoMemory[320 * 150 + x] = 0x33;
+
+        SetCrtc(machine, 0x0C, 0x00);
+        SetCrtc(machine, 0x0D, 160);
+        machine.VideoMemory.MarkRowsDirty(0, 200);
+        machine.Video.Render();
+
+        // The marked row has moved up by one, and nothing has restarted it.
+        Assert.Equal(machine.Video.Framebuffer[149 * 320],
+                     machine.Video.Framebuffer[149 * 320 + 1]);
+    }
+}

@@ -379,6 +379,38 @@ public sealed class VgaRegisters : IIoDevice
     /// <summary>Start address of the visible region; changing it scrolls in hardware.</summary>
     public ushort StartAddress => (ushort)((_crtc[0x0C] << 8) | _crtc[0x0D]);
 
+    /// <summary>
+    /// The scan line at which the display restarts from address zero,
+    /// regardless of where the start address put it: the split screen.
+    ///
+    /// This is how a game keeps a status panel still while the world scrolls
+    /// behind it. The top of the screen is drawn from wherever the start
+    /// address points -- and moving that pointer scrolls the whole picture
+    /// with no copying at all -- while everything below the split comes from
+    /// address zero and does not move. The panel is drawn once, at the
+    /// beginning, and then simply never scrolls.
+    ///
+    /// The field is ten bits scattered across three registers, which is the
+    /// usual VGA story: the 286-era design ran out of room and later bits
+    /// were put wherever there was space.
+    /// </summary>
+    public int LineCompare =>
+        _crtc[0x18]
+        | ((_crtc[0x07] & 0x10) << 4)
+        | ((_crtc[0x09] & 0x40) << 3);
+
+    /// <summary>
+    /// Horizontal panning, from the attribute controller's register 0x13:
+    /// how many pixels the picture is shifted left.
+    ///
+    /// The start address moves the picture in whole characters -- eight
+    /// pixels at a time in most modes -- which makes a scroll visibly jerky.
+    /// This register covers the eight positions in between, and a game that
+    /// combines the two scrolls one pixel at a time without moving a single
+    /// byte of memory.
+    /// </summary>
+    public int HorizontalPan => _attribute[0x13] & 0x0F;
+
     /// <summary>True when the cursor is visible; bit 5 of CRTC register 0x0A hides it.</summary>
     public bool CursorVisible => (_crtc[0x0A] & 0x20) == 0;
 
