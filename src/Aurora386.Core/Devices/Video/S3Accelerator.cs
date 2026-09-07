@@ -1,4 +1,5 @@
 using Aurora386.Core.IO;
+using Aurora386.Core.Memory;
 
 namespace Aurora386.Core.Devices.Video;
 
@@ -68,6 +69,32 @@ public sealed class S3Accelerator : IIoDevice
 
     /// <summary>Operations performed, which the tests read.</summary>
     public long OperationsPerformed { get; private set; }
+
+    /// <summary>
+    /// The same registers, reached through memory instead of I/O ports.
+    ///
+    /// Every register of the drawing engine has an address in a 64 KB window
+    /// as well as an I/O port, and a driver in protected mode uses the window
+    /// -- because an OUT instruction from a protected-mode driver is a fault
+    /// the monitor has to catch and emulate, while a memory write is just a
+    /// memory write. On a 486 that is the difference between a few hundred
+    /// cycles per register and a few.
+    ///
+    /// The mapping is the port address with the top bits replaced: port
+    /// 0x82E8 becomes offset 0x82E8 in the window, and so on, which makes the
+    /// two interfaces the same register file seen twice.
+    /// </summary>
+    public sealed class MemoryMappedRegisters(S3Accelerator engine) : IMemoryDevice
+    {
+        public byte ReadByte(uint offset) => engine.ReadByte((ushort)offset);
+
+        public void WriteByte(uint offset, byte value)
+            => engine.WriteByte((ushort)offset, value);
+    }
+
+    /// <summary>The engine's register file, addressed as memory.</summary>
+    public MemoryMappedRegisters Mmio => _mmio ??= new MemoryMappedRegisters(this);
+    private MemoryMappedRegisters? _mmio;
 
     public void Register(IoBus io)
     {

@@ -505,6 +505,13 @@ public sealed class VgaRegisters : IIoDevice
     /// </summary>
     public uint ApertureBase { get; set; }
 
+    /// <summary>
+    /// Where the drawing engine's registers appear as memory: a 64 KB window
+    /// directly above the frame buffer. A driver finds it there by
+    /// convention, which is why nothing reports it separately.
+    /// </summary>
+    public uint MmioBase { get; set; }
+
     // --- the hardware cursor --------------------------------------------------
     //
     // Registers 0x45 to 0x4E. The card draws a 64x64 pointer over the picture

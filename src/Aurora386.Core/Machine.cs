@@ -118,6 +118,12 @@ public sealed partial class Machine : IDisposable
     /// </summary>
     public uint LinearFrameBufferBase { get; private set; }
 
+    /// <summary>
+    /// Where the drawing engine's registers appear as memory: a 64 KB window
+    /// directly above the frame buffer.
+    /// </summary>
+    public uint MmioBase { get; private set; }
+
     public Machine(uint ramSize = 16 * 1024 * 1024)
     {
         // The addressable space is larger than the RAM, because the linear
@@ -127,7 +133,9 @@ public sealed partial class Machine : IDisposable
         // directly above the installed RAM, which is the same reasoning
         // applied to a machine whose memory size is known.
         uint frameBufferBase = Math.Max(ramSize, 16u * 1024 * 1024);
-        Memory = new PhysicalMemoryBus(ramSize, frameBufferBase + VgaMemory.TotalSize);
+        // Lo spazio indirizzabile comprende il frame buffer e i 64 KB di
+        // registri mappati subito sopra.
+        Memory = new PhysicalMemoryBus(ramSize, frameBufferBase + VgaMemory.TotalSize + 0x10000);
         LinearFrameBufferBase = frameBufferBase;
         Io = new IoBus();
 
@@ -168,6 +176,7 @@ public sealed partial class Machine : IDisposable
         // And the card is told where that is, because a driver asks the
         // hardware rather than being configured with the answer.
         VideoRegisters.ApertureBase = LinearFrameBufferBase;
+
         Video = new VgaRenderer(VideoMemory, VideoRegisters);
 
         // The 2D engine, which is what makes the SVGA resolutions usable: at
@@ -176,6 +185,15 @@ public sealed partial class Machine : IDisposable
         // register writes.
         Accelerator = new S3Accelerator(VideoMemory, VideoRegisters);
         Accelerator.Register(Io);
+
+        // The engine's registers again, mapped as memory directly above the
+        // frame buffer. A protected-mode driver writes there rather than to
+        // the I/O ports: an OUT from protected-mode code is a fault the
+        // monitor has to catch and emulate, and a memory write is not -- on a
+        // 486 that is a few hundred cycles per register against a few.
+        MmioBase = LinearFrameBufferBase + VgaMemory.TotalSize;
+        Memory.MapDevice(MmioBase, 0x10000, Accelerator.Mmio);
+        VideoRegisters.MmioBase = MmioBase;
 
         // The 8237 DMA pair and the Sound Blaster 16 that streams through it.
         // Registering the card also claims the OPL3's own ports at 0x388.
