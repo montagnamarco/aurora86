@@ -289,3 +289,236 @@ public class CpuIdentificationTests
         Assert.Equal(6, raised[0]);      // invalid opcode
     }
 }
+
+/// <summary>
+/// The four bits the 486 added to CR0, and the exception one of them turns on.
+///
+/// None of them change what an instruction computes: they change what the
+/// processor is willing to do behind the program's back. Write protection
+/// stops the kernel from ignoring its own page permissions, the alignment
+/// mask makes a misaligned access into an error rather than merely a slow
+/// one, and the two cache bits configure hardware this emulator does not
+/// have but firmware still insists on writing to.
+///
+/// They matter here because a program that cannot find them concludes it is
+/// running on a 386, and from Windows 95 onwards that conclusion is fatal.
+/// </summary>
+public class Intel486ControlRegisterTests
+{
+    private static Machine Running(params byte[] code)
+    {
+        var machine = new Machine();
+        machine.RunInstructions(2000);
+
+        for (int i = 0; i < code.Length; i++)
+            machine.Memory.WriteByte(0x9000 + (uint)i, code[i]);
+
+        machine.Cpu.State.Halted = false;
+        machine.Cpu.SetSegment(SegReg.Cs, 0x0900);
+        machine.Cpu.State.Eip = 0;
+        machine.Cpu.SetSegment(SegReg.Ss, 0x0000);
+        machine.Cpu.State.Esp = 0x7000;
+        return machine;
+    }
+
+    [Fact]
+    public void TheLateBitsAreStorageOnA486()
+    {
+        // mov cr0, eax
+        using Machine machine = Running(0x0F, 0x22, 0xC0);
+        machine.Cpu.State.SelectModel(CpuModel.Intel486);
+        machine.Cpu.State.Eax = CpuState.Cr0WriteProtect | CpuState.Cr0AlignmentMask
+                              | CpuState.Cr0NotWriteThrough | CpuState.Cr0CacheDisable;
+
+        machine.Cpu.Step();
+
+        Assert.Equal(CpuState.Cr0WriteProtect, machine.Cpu.State.Cr0 & CpuState.Cr0WriteProtect);
+        Assert.Equal(CpuState.Cr0AlignmentMask, machine.Cpu.State.Cr0 & CpuState.Cr0AlignmentMask);
+        Assert.Equal(CpuState.Cr0NotWriteThrough, machine.Cpu.State.Cr0 & CpuState.Cr0NotWriteThrough);
+        Assert.Equal(CpuState.Cr0CacheDisable, machine.Cpu.State.Cr0 & CpuState.Cr0CacheDisable);
+    }
+
+    [Fact]
+    public void OnA386TheSameBitsRefuseToStick()
+    {
+        // This is the detection method that predates CPUID, and it has to
+        // fail on a 386 for the right reason: the bits are not there, so
+        // they read back as zero however hard the write tried.
+        using Machine machine = Running(0x0F, 0x22, 0xC0);
+        machine.Cpu.State.SelectModel(CpuModel.Intel386);
+        machine.Cpu.State.Eax = CpuState.Cr0AlignmentMask | CpuState.Cr0WriteProtect;
+
+        machine.Cpu.Step();
+
+        Assert.Equal(0u, machine.Cpu.State.Cr0 & CpuState.Cr0AlignmentMask);
+        Assert.Equal(0u, machine.Cpu.State.Cr0 & CpuState.Cr0WriteProtect);
+    }
+
+    [Fact]
+    public void TheCoprocessorBitCannotBeClearedOnA486()
+    {
+        // A 486DX carries its floating point unit on the die. Software may
+        // write a zero there, but it is claiming the chip does not contain
+        // part of itself, and the processor does not agree.
+        using Machine machine = Running(0x0F, 0x22, 0xC0);
+        machine.Cpu.State.SelectModel(CpuModel.Intel486);
+        machine.Cpu.State.Eax = 0;
+
+        machine.Cpu.Step();
+
+        Assert.Equal(CpuState.Cr0ExtensionType,
+                     machine.Cpu.State.Cr0 & CpuState.Cr0ExtensionType);
+    }
+
+    [Fact]
+    public void ResetLeavesTheProcessorSignatureInEdx()
+    {
+        // Before any instruction has run there is no CPUID to ask, so the
+        // processor answers in advance: EDX holds family, model and stepping
+        // laid out exactly as CPUID function 1 will later return them.
+        var state = new CpuState { Model = CpuModel.Intel486 };
+        state.Reset();
+        Assert.Equal(4u, (state.Edx >> 8) & 0xF);
+
+        var older = new CpuState { Model = CpuModel.Intel386 };
+        older.Reset();
+        Assert.Equal(3u, (older.Edx >> 8) & 0xF);
+    }
+}
+
+/// <summary>
+/// Exception 17, the alignment check.
+///
+/// A word at an odd address costs the processor a second memory cycle, and
+/// this is the mechanism that tells a program where it is paying that price.
+/// It is deliberately hard to switch on: the operating system must set
+/// CR0.AM, the program must set EFLAGS.AC, and the code must be running at
+/// ring 3. All three, or nothing happens -- which is why almost no software
+/// of the period ever saw it fire, and why the kernel is free to keep doing
+/// the misaligned accesses that systems code is full of.
+/// </summary>
+public class AlignmentCheckTests
+{
+    /// <summary>
+    /// A machine in protected mode at ring 3, with a flat data segment and a
+    /// stack, ready to execute the given code. Alignment checking is the only
+    /// exception here that cares about the current ring, so the test has to
+    /// actually get down to ring 3 rather than assert about a field.
+    /// </summary>
+    private static Machine AtRingThree(params byte[] code)
+    {
+        var machine = new Machine();
+        machine.RunInstructions(2000);
+        machine.Cpu.State.Halted = false;
+
+        for (int i = 0; i < code.Length; i++)
+            machine.Memory.WriteByte(0x9000 + (uint)i, code[i]);
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x0900);
+        machine.Cpu.State.Eip = 0;
+        machine.Cpu.SetSegment(SegReg.Ds, 0x0000);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x0000);
+        machine.Cpu.State.Esp = 0x7000;
+        return machine;
+    }
+
+    private static List<byte> Watch(Machine machine)
+    {
+        var raised = new List<byte>();
+        machine.Cpu.ProcessorException += (vector, _, _, _) => raised.Add(vector);
+        return raised;
+    }
+
+    [Fact]
+    public void AMisalignedWordIsFineWhenNobodyAskedToBeTold()
+    {
+        // The ordinary case, and the one that matters for speed: with the
+        // mask clear the check is not even looked at.
+        using Machine machine = AtRingThree(0x8B, 0x1E, 0x01, 0x50);   // mov bx, [5001]
+        machine.Memory.WriteWord(0x5001, 0xBEEF);
+        List<byte> raised = Watch(machine);
+
+        machine.Cpu.Step();
+
+        Assert.Empty(raised);
+        Assert.Equal(0xBEEF, machine.Cpu.State.Bx);
+    }
+
+    [Fact]
+    public void TheMaskAloneIsNotEnough()
+    {
+        // CR0.AM says the check is permitted, not that it is wanted: without
+        // the program's own EFLAGS.AC nothing fires. An operating system can
+        // therefore turn the mask on globally without breaking every program
+        // that was written before the 486 existed.
+        using Machine machine = AtRingThree(0x8B, 0x1E, 0x01, 0x50);
+        machine.Cpu.State.Cr0 |= CpuState.Cr0AlignmentMask;
+        List<byte> raised = Watch(machine);
+
+        machine.Cpu.Step();
+
+        Assert.Empty(raised);
+    }
+
+    [Fact]
+    public void SupervisorCodeIsExempt()
+    {
+        // Both switches are on, but ring 0 is not subject to the check: a
+        // great deal of correct kernel code does unaligned accesses on
+        // purpose, and the 486 does not break it.
+        using Machine machine = AtRingThree(0x8B, 0x1E, 0x01, 0x50);
+        machine.Cpu.State.Cr0 |= CpuState.Cr0AlignmentMask;
+        machine.Cpu.Flags.SetValue(machine.Cpu.Flags.Value | (1u << 18));
+        List<byte> raised = Watch(machine);
+
+        machine.Cpu.Step();
+
+        Assert.Empty(raised);
+    }
+
+    [Fact]
+    public void AnAlignedAccessNeverFaultsHoweverItIsConfigured()
+    {
+        using Machine machine = AtRingThree(0x8B, 0x1E, 0x00, 0x50);   // mov bx, [5000]
+        machine.Memory.WriteWord(0x5000, 0x1234);
+        machine.Cpu.State.Cr0 |= CpuState.Cr0AlignmentMask;
+        machine.Cpu.Flags.SetValue(machine.Cpu.Flags.Value | (1u << 18));
+        List<byte> raised = Watch(machine);
+
+        machine.Cpu.Step();
+
+        Assert.Empty(raised);
+        Assert.Equal(0x1234, machine.Cpu.State.Bx);
+    }
+
+    [Fact]
+    public void ADwordWantsFourByteAlignmentNotTwo()
+    {
+        // The rule is by operand size, not a blanket "even address": a dword
+        // at an even but not multiple-of-four address is still misaligned,
+        // and this is the case that catches a naive implementation.
+        using Machine machine = AtRingThree(0x66, 0x8B, 0x1E, 0x02, 0x50);  // mov ebx, [5002]
+        machine.Cpu.State.Cr0 |= CpuState.Cr0AlignmentMask;
+        machine.Cpu.Flags.SetValue(machine.Cpu.Flags.Value | (1u << 18));
+        machine.Cpu.State.Virtual8086Mode = true;   // counts as ring 3 for this check
+        List<byte> raised = Watch(machine);
+
+        machine.Cpu.Step();
+
+        Assert.Equal(17, raised[0]);
+    }
+
+    [Fact]
+    public void WithEverythingSetTheMisalignedAccessFaults()
+    {
+        using Machine machine = AtRingThree(0x8B, 0x1E, 0x01, 0x50);
+        machine.Cpu.State.Cr0 |= CpuState.Cr0AlignmentMask;
+        machine.Cpu.Flags.SetValue(machine.Cpu.Flags.Value | (1u << 18));
+        machine.Cpu.State.Virtual8086Mode = true;
+        List<byte> raised = Watch(machine);
+
+        machine.Cpu.Step();
+
+        Assert.Equal(17, raised[0]);
+    }
+}

@@ -767,10 +767,24 @@ public sealed partial class Cpu
 
     private void WriteCr0(uint value)
     {
+        // Bits the processor does not implement do not become storage: they
+        // read back as zero however hard software writes them. This is how a
+        // program tells a 386 from a 486 without CPUID -- it writes the
+        // alignment mask bit and sees whether it stuck.
+        value &= State.Cr0Writable;
+
+        // On a 486DX the coprocessor is on the die and the bit that says so
+        // is not writable: clearing it would be claiming the chip does not
+        // contain a part of itself.
+        if (State.Model >= CpuModel.Intel486) value |= CpuState.Cr0ExtensionType;
+
         // Turning paging on or off changes what every linear address means,
-        // so nothing cached under the old arrangement is still true.
-        const uint Paging = 1u << 31;
-        if (((State.Cr0 ^ value) & Paging) != 0) FlushTlb();
+        // so nothing cached under the old arrangement is still true. So does
+        // the write-protect bit, more subtly: the TLB caches the *decision*
+        // about whether a page may be written, and that decision changes
+        // meaning underneath it when WP moves.
+        const uint Invalidating = CpuState.Cr0Paging | CpuState.Cr0WriteProtect;
+        if (((State.Cr0 ^ value) & Invalidating) != 0) FlushTlb();
 
         State.Cr0 = value;
     }

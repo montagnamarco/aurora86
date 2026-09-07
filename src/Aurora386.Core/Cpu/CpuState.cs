@@ -186,15 +186,83 @@ public sealed class CpuState
     public bool Halted;
 
     // --- CR0 bits -------------------------------------------------------------
+    //
+    // The low five bits are the 386's, and all of them concern the maths
+    // coprocessor except the first: whether the processor is in protected
+    // mode at all.
     public const uint Cr0ProtectionEnable = 1u << 0;
     public const uint Cr0MonitorCoprocessor = 1u << 1;
     public const uint Cr0Emulation = 1u << 2;
     public const uint Cr0TaskSwitched = 1u << 3;
+
+    /// <summary>
+    /// On a 386 this bit said whether a 387 was fitted, and software set it
+    /// after probing for one. On a 486DX the coprocessor is on the die, so
+    /// the bit is hardwired to 1 and cannot be cleared.
+    /// </summary>
     public const uint Cr0ExtensionType = 1u << 4;
+
+    // The four bits the 486 added, in ascending order.
+
+    /// <summary>
+    /// Numeric Error. Clear, a coprocessor error is reported the way the PC
+    /// has always reported it: the chip raises IRQ 13 and the interrupt
+    /// controller turns it into the vector DOS expects. Set, the processor
+    /// reports it itself as exception 16, which is what a protected-mode
+    /// operating system wants.
+    /// </summary>
+    public const uint Cr0NumericError = 1u << 5;
+
+    /// <summary>
+    /// Write Protect. Clear -- the only behaviour a 386 has -- supervisor code
+    /// may write any present page, read-only or not. Set, the kernel is held
+    /// to the same rule as everyone else, which is what makes copy-on-write
+    /// possible: the parent's pages are marked read-only and the kernel's own
+    /// writes to them fault just like the child's.
+    /// </summary>
+    public const uint Cr0WriteProtect = 1u << 16;
+
+    /// <summary>
+    /// Alignment Mask. The master switch for alignment checking; the check
+    /// only actually happens where this and EFLAGS.AC are both set and the
+    /// code is running at ring 3.
+    /// </summary>
+    public const uint Cr0AlignmentMask = 1u << 18;
+
+    /// <summary>
+    /// Not Write-through, and Cache Disable. These configure the 486's
+    /// on-chip cache. There is no cache here to configure, but the bits must
+    /// still be held: firmware writes them during memory sizing and reads
+    /// them back expecting its own values.
+    /// </summary>
+    public const uint Cr0NotWriteThrough = 1u << 29;
+    public const uint Cr0CacheDisable = 1u << 30;
+
     public const uint Cr0Paging = 1u << 31;
 
     public bool ProtectedMode => (Cr0 & Cr0ProtectionEnable) != 0;
     public bool PagingEnabled => (Cr0 & Cr0Paging) != 0;
+
+    /// <summary>
+    /// Whether alignment checking could possibly fire. Almost no real
+    /// software enables it, so this exists to keep the check off the hot path
+    /// entirely: one already-loaded register bit, tested before the real
+    /// conditions are looked at.
+    /// </summary>
+    public bool AlignmentChecked => (Cr0 & Cr0AlignmentMask) != 0;
+
+    /// <summary>
+    /// Every bit CR0 is allowed to hold on this processor. A 386 has no
+    /// write protection, no alignment mask and no cache to configure, so on
+    /// one of those the four late bits do not exist and writes to them are
+    /// dropped.
+    /// </summary>
+    public uint Cr0Writable => Model >= CpuModel.Intel486
+        ? Cr0ProtectionEnable | Cr0MonitorCoprocessor | Cr0Emulation | Cr0TaskSwitched
+        | Cr0ExtensionType | Cr0NumericError | Cr0WriteProtect | Cr0AlignmentMask
+        | Cr0NotWriteThrough | Cr0CacheDisable | Cr0Paging
+        : Cr0ProtectionEnable | Cr0MonitorCoprocessor | Cr0Emulation | Cr0TaskSwitched
+        | Cr0ExtensionType | Cr0Paging;
 
     // --- general-purpose register access --------------------------------------
 
@@ -318,7 +386,18 @@ public sealed class CpuState
         Array.Clear(Dr);
         Array.Clear(Tr);
         OtherFlags = Flags.Reserved1;
-        Cr0 = 0;
+
+        // EDX comes out of RESET holding the processor's own signature, in
+        // the same layout CPUID function 1 later returns: family in bits
+        // 8-11, model in 4-7, stepping in 0-3. It is the only identification
+        // available to firmware before any instruction has run, and it is
+        // where a BIOS looks to decide which chip it has woken up on.
+        Gpr[(int)Reg.Edx] = Model >= CpuModel.Intel486 ? 0x0480u : 0x0308u;
+
+        // A 486DX carries its coprocessor on the die, so the bit that says
+        // one is present is not something software gets to choose: it is set
+        // at RESET and stays set.
+        Cr0 = Model >= CpuModel.Intel486 ? Cr0ExtensionType : 0;
         Cr2 = 0;
         Cr3 = 0;
         GdtBase = IdtBase = 0;
@@ -342,7 +421,5 @@ public sealed class CpuState
         Cs.Base = 0xFFFF0000;
         Cs.Limit = 0xFFFF;
         Eip = 0xFFF0;
-
-        Edx = 0x00000308;   // 386 DX stepping D signature
     }
 }

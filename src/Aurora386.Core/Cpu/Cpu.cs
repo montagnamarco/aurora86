@@ -163,10 +163,46 @@ public sealed partial class Cpu
         throw new CpuException(segment == SegReg.Ss ? (byte)12 : (byte)13, 0);
     }
 
+    /// <summary>
+    /// The 486's alignment check, exception 17.
+    ///
+    /// A word at an odd address, or a dword not on a multiple of four, costs
+    /// the processor a second memory cycle. The check exists so that a
+    /// program can be told where it is paying that price rather than merely
+    /// running slowly, and it is deliberately hard to turn on by accident:
+    /// the operating system must set CR0.AM, the program must set EFLAGS.AC,
+    /// and only then does it apply -- and only at ring 3. The kernel and the
+    /// drivers are exempt, because a great deal of perfectly good systems
+    /// code does unaligned accesses on purpose.
+    ///
+    /// Virtual 8086 code counts as ring 3 here even though CPL is 0 while the
+    /// processor is in that mode, since from the monitor's point of view it
+    /// is application code.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CheckAlignment(uint offset, uint size)
+    {
+        if ((offset & (size - 1)) == 0) return;
+        if ((State.Cr0 & CpuState.Cr0AlignmentMask) == 0) return;
+
+        // Read straight out of the stored flags rather than through the lazy
+        // accessor: AC is never one of the pending arithmetic flags, and
+        // materialising those here would be work done for nothing.
+        if ((Flags.Stored & Aurora386.Core.Cpu.Flags.AlignmentCheck) == 0) return;
+
+        if (State.Cpl != 3 && !State.Virtual8086Mode) return;
+
+        // The error code is architecturally zero: the faulting address is
+        // already recoverable from the pushed CS:EIP, so there is nothing
+        // useful left to say.
+        throw new CpuException(17, 0);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ushort ReadMem16(SegReg segment, uint offset)
     {
         CheckLimit(segment, offset, 2);
+        if (State.AlignmentChecked) CheckAlignment(offset, 2);
         uint linear = LinearAddress(segment, offset);
         if (State.PagingEnabled && (linear & 0xFFF) > 0xFFE) return (ushort)ReadSplit(linear, 2);
         return _memory.ReadWord(TranslateLinear(linear, false));
@@ -180,6 +216,7 @@ public sealed partial class Cpu
         // The hardware-generated tests for the 0x66-prefixed opcodes confirm
         // this.
         CheckLimit(segment, offset, 4);
+        if (State.AlignmentChecked) CheckAlignment(offset, 4);
         uint linear = LinearAddress(segment, offset);
         if (State.PagingEnabled && (linear & 0xFFF) > 0xFFC) return ReadSplit(linear, 4);
         return _memory.ReadDword(TranslateLinear(linear, false));
@@ -196,6 +233,7 @@ public sealed partial class Cpu
     private void WriteMem16(SegReg segment, uint offset, ushort value)
     {
         CheckLimit(segment, offset, 2);
+        if (State.AlignmentChecked) CheckAlignment(offset, 2);
         uint linear = LinearAddress(segment, offset);
         if (State.PagingEnabled && (linear & 0xFFF) > 0xFFE) { WriteSplit(linear, 2, value); return; }
         _memory.WriteWord(TranslateLinear(linear, true), value);
@@ -205,6 +243,7 @@ public sealed partial class Cpu
     private void WriteMem32(SegReg segment, uint offset, uint value)
     {
         CheckLimit(segment, offset, 4);
+        if (State.AlignmentChecked) CheckAlignment(offset, 4);
         uint linear = LinearAddress(segment, offset);
         if (State.PagingEnabled && (linear & 0xFFF) > 0xFFC) { WriteSplit(linear, 4, value); return; }
         _memory.WriteDword(TranslateLinear(linear, true), value);
