@@ -55,6 +55,7 @@ public sealed class VesaServices
             case 0x06: ScanLineLength(cpu); return true;
             case 0x07: DisplayStart(cpu); return true;
             case 0x08: DacWidth(cpu); return true;
+            case 0x09: PaletteData(cpu); return true;
 
             default:
                 // Unsupported subfunction: AL=0x4F says VBE is here, AH=0x01
@@ -365,6 +366,66 @@ public sealed class VesaServices
         if (operation == 0x01)
         {
             cpu.State.SetReg8(7, (byte)_machine.VideoRegisters.DacBitsPerColour);
+            cpu.State.Ax = 0x004F;
+            return;
+        }
+
+        cpu.State.Ax = 0x014F;
+    }
+
+    /// <summary>
+    /// 4F09: loads or reads back the palette, a block of entries at a time.
+    ///
+    /// A program could do this through the VGA's own DAC ports, and in a
+    /// 256-colour mode that means 768 OUT instructions to change every
+    /// colour. From protected-mode code each of those is a fault the monitor
+    /// must catch and emulate, which is why VBE added a call that takes the
+    /// whole table at once.
+    ///
+    /// The entries are four bytes each and the order is not what one expects:
+    /// blue, green, red, and a spare. That is the order a VGA DAC latches
+    /// them internally, and VBE kept it rather than inventing a nicer one.
+    /// </summary>
+    private void PaletteData(CpuNs.Cpu cpu)
+    {
+        byte operation = cpu.State.GetReg8(3);   // BL
+        int count = cpu.State.Cx;
+        int first = cpu.State.Dx;
+        uint buffer = (uint)(cpu.State.Es.Selector << 4) + cpu.State.Di;
+
+        // BL=0 and BL=0x80 both set the palette; the difference is that 0x80
+        // asks to wait for vertical retrace first, so that the change does
+        // not show as a flicker halfway down the screen. There is nothing to
+        // wait for here -- a frame is drawn all at once -- so the two are the
+        // same.
+        if (operation is 0x00 or 0x80)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                uint at = buffer + (uint)(i * 4);
+                byte blue = _machine.Memory.ReadByte(at);
+                byte green = _machine.Memory.ReadByte(at + 1);
+                byte red = _machine.Memory.ReadByte(at + 2);
+
+                _machine.VideoRegisters.SetPaletteEntry(first + i, red, green, blue);
+            }
+
+            cpu.State.Ax = 0x004F;
+            return;
+        }
+
+        if (operation == 0x01)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                (byte red, byte green, byte blue) = _machine.VideoRegisters.GetRawPaletteEntry(first + i);
+                uint at = buffer + (uint)(i * 4);
+                _machine.Memory.WriteByte(at, blue);
+                _machine.Memory.WriteByte(at + 1, green);
+                _machine.Memory.WriteByte(at + 2, red);
+                _machine.Memory.WriteByte(at + 3, 0);
+            }
+
             cpu.State.Ax = 0x004F;
             return;
         }

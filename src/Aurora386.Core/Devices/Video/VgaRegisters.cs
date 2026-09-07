@@ -975,13 +975,22 @@ public sealed class VgaRegisters : IIoDevice
         }
     }
 
-    /// <summary>Writes one DAC entry directly, in 6-bit components.</summary>
+    /// <summary>
+    /// Writes one DAC entry directly.
+    ///
+    /// The components are truncated to six bits on a VGA's DAC, which is the
+    /// width of the hardware, and kept whole on an eight-bit one -- because
+    /// truncating there would throw away exactly the values a program asked
+    /// for an eight-bit DAC in order to use.
+    /// </summary>
     public void SetPaletteEntry(int index, byte red, byte green, byte blue)
     {
         int offset = (index & 0xFF) * 3;
-        _palette[offset] = (byte)(red & 0x3F);
-        _palette[offset + 1] = (byte)(green & 0x3F);
-        _palette[offset + 2] = (byte)(blue & 0x3F);
+        byte mask = DacBitsPerColour >= 8 ? (byte)0xFF : (byte)0x3F;
+
+        _palette[offset] = (byte)(red & mask);
+        _palette[offset + 1] = (byte)(green & mask);
+        _palette[offset + 2] = (byte)(blue & mask);
     }
 
     /// <summary>The raw 6-bit components of a palette entry, as the DAC stores them.</summary>
