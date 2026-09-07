@@ -512,6 +512,17 @@ public sealed class VgaRenderer
     /// </summary>
     private uint SourceRow(int y, int bytesPerRow, out int panning)
     {
+        // A VBE mode does not use the VGA's start address, split screen or
+        // panning at all: those live in CRTC registers that still hold
+        // whatever the last INT 10h mode set left there, and a stale start
+        // address would have the picture read from the wrong place entirely.
+        // VBE has its own display start, applied by the caller.
+        if (_registers.VesaMode is not null)
+        {
+            panning = 0;
+            return (uint)(y * bytesPerRow);
+        }
+
         int split = _registers.LineCompare;
 
         // At or below the split the display is drawn from the start of
@@ -566,9 +577,17 @@ public sealed class VgaRenderer
     /// </summary>
     private void RenderPlanar(bool force)
     {
-        int bytesPerRow = _registers.RowOffsetBytes > 0
-            ? _registers.RowOffsetBytes
-            : _registers.ModeInfo.BytesPerRow;
+        // The geometry comes from the mode actually in force, which in a VBE
+        // sixteen-colour mode is not the BIOS mode at all: the CRTC still
+        // holds whatever the last INT 10h mode set left there, and trusting
+        // it would draw an 800x600 picture with 640-pixel rows -- a screen
+        // that shears diagonally, which is the classic symptom.
+        VgaModeInfo mode = _registers.EffectiveMode;
+        int bytesPerRow = _registers.VesaMode is not null
+            ? mode.BytesPerRow
+            : _registers.RowOffsetBytes > 0
+                ? _registers.RowOffsetBytes
+                : _registers.ModeInfo.BytesPerRow;
 
         // Palette lookups dominate this loop, and there are only sixteen
         // possible results. Hoisting them out of the pixel loop turns a

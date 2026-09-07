@@ -50,10 +50,25 @@ public static class VesaModes
             _ => 4,
         };
 
-        public int BytesPerRow => Width * BytesPerPixel;
+        /// <summary>
+        /// Whether the mode is planar: four bits per pixel spread across four
+        /// planes, as a VGA does it, rather than whole bytes per pixel.
+        ///
+        /// The distinction is not the colour count but how the memory is
+        /// reached, and it changes everything downstream -- the renderer, the
+        /// window, and what a byte written by the processor means.
+        /// </summary>
+        public bool IsPlanar => BitsPerPixel == 4;
 
-        /// <summary>Video memory the mode needs, which decides whether it can be offered.</summary>
-        public int MemoryNeeded => BytesPerRow * Height;
+        public int BytesPerRow => IsPlanar ? Width / 8 : Width * BytesPerPixel;
+
+        /// <summary>
+        /// Video memory the mode needs, which decides whether it can be
+        /// offered. A planar mode needs four times its bytes per row, one
+        /// plane each -- which is still half of what the same resolution
+        /// costs at 256 colours.
+        /// </summary>
+        public int MemoryNeeded => BytesPerRow * Height * (IsPlanar ? 4 : 1);
     }
 
     /// <summary>
@@ -71,6 +86,22 @@ public static class VesaModes
         new(0x101, 640, 480, 8),
         new(0x103, 800, 600, 8),
         new(0x105, 1024, 768, 8),
+
+        // The sixteen-colour mode, which is the VGA's own planar arrangement
+        // at a larger size rather than anything new: four bits per pixel
+        // spread across four planes, eight pixels to a byte in each. It looks
+        // like a curiosity next to the 256-colour modes and it is not --
+        // Windows 3.1's own Super VGA driver wants this one and nothing else,
+        // because sixteen colours at 800x600 fits in the 256 KB a plain VGA
+        // has while 256 colours does not.
+        //
+        // 1024x768 in sixteen colours (mode 0x104) is deliberately absent. A
+        // plane is 64 KB and that mode needs 96 KB of one, so a real card
+        // served it by banking within the planes -- a second layer of window
+        // moving on top of the planar one, which nothing here does. Offering
+        // it and then drawing the top two thirds of the screen would be worse
+        // than not offering it.
+        new(0x102, 800, 600, 4),
 
         new(0x110, 640, 480, 15),
         new(0x111, 640, 480, 16),

@@ -138,10 +138,17 @@ public sealed class VesaServices
         WriteWord(buffer + 20, (ushort)mode.Height);
         Write(buffer + 22, 8);                                  // character cell width
         Write(buffer + 23, 16);                                 // character cell height
-        Write(buffer + 24, 1);                                  // memory planes
+        // Four planes in a sixteen-colour mode, one otherwise. A driver reads
+        // this to know whether to drive the graphics controller's write modes
+        // or to write bytes straight through.
+        Write(buffer + 24, (byte)(mode.IsPlanar ? 4 : 1));
         Write(buffer + 25, (byte)mode.BitsPerPixel);
         Write(buffer + 26, 1);                                  // banks
-        Write(buffer + 27, (byte)(mode.BitsPerPixel == 8 ? 4 : 6));   // memory model
+
+        // The memory model, which is the field that actually tells a driver
+        // how to reach the pixels: 3 is the planar EGA arrangement, 4 the
+        // packed byte-per-pixel one, 6 direct colour.
+        Write(buffer + 27, (byte)(mode.IsPlanar ? 3 : mode.BitsPerPixel == 8 ? 4 : 6));
         Write(buffer + 29, 8);                                  // DAC bits per colour
 
         // How the colour bits are laid out, which a program drawing at 15 or

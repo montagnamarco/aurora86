@@ -170,7 +170,14 @@ public sealed class VgaRegisters : IIoDevice
             // an SVGA card would hold for these resolutions are extensions
             // this emulator does not pretend to have.
             if (VesaMode is { } vesa)
-                return new VgaModeInfo(0xFF, VgaMemoryLayout.HighColour,
+                return new VgaModeInfo(0xFF,
+                                       // A sixteen-colour VBE mode is the
+                                       // VGA's own planar arrangement at a
+                                       // larger size, so it goes down the
+                                       // planar path rather than needing one
+                                       // of its own.
+                                       vesa.IsPlanar ? VgaMemoryLayout.Planar4
+                                                     : VgaMemoryLayout.HighColour,
                                        vesa.Width, vesa.Height,
                                        vesa.Width / 8, vesa.Height / 16, 16,
                                        vesa.BitsPerPixel);

@@ -233,7 +233,13 @@ public sealed class VgaMemory : IMemoryDevice
         // onto video memory rather than the planar aperture: the bank
         // register says which slice, and the planes are not in the path at
         // all.
-        if (Registers.VesaMode is not null && offset < 0x10000)
+        //
+        // Except in a sixteen-colour mode, which is the VGA's own planar
+        // arrangement at a larger size. There the planes very much are in the
+        // path, and a driver writing through the graphics controller's write
+        // modes expects them to be -- so those fall through to the planar
+        // code below.
+        if (Registers.VesaMode is { IsPlanar: false } && offset < 0x10000)
             return ReadLinear((uint)(Registers.VesaWindowBank * 0x10000) + offset);
 
         if (!InWindow(offset)) return 0xFF;
@@ -307,7 +313,7 @@ public sealed class VgaMemory : IMemoryDevice
     {
         if (offset >= Size) return;
 
-        if (Registers.VesaMode is not null && offset < 0x10000)
+        if (Registers.VesaMode is { IsPlanar: false } && offset < 0x10000)
         {
             WriteLinear((uint)(Registers.VesaWindowBank * 0x10000) + offset, value);
             return;
