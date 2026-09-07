@@ -1,0 +1,145 @@
+using Aurora386.Core;
+
+namespace Aurora386.Tests;
+
+/// <summary>
+/// The S3's extended CRTC registers, and the lock that guards them.
+///
+/// A VGA has 25 CRTC registers ending at 0x18. Everything an S3 adds sits
+/// above 0x30, and it is locked at power-on: writes are dropped and reads
+/// come back as all ones until software writes 0x48 to register 0x38, and
+/// 0xA0 or more to 0x39 for the range above 0x40.
+///
+/// That is not security -- every S3 driver has the values, and they were
+/// published. It is a guard against software written for a plain VGA
+/// stumbling into registers it does not know exist. On a real card the
+/// extended range includes the pixel clock, and a stray write there leaves
+/// the monitor showing nothing at all.
+///
+/// One register is exempt: 0x30, the chip identifier. A driver has to be able
+/// to ask what card this is before it can know which unlock sequence to use,
+/// so that one answers whether or not anything has been unlocked.
+/// </summary>
+public class S3ExtendedRegisterTests
+{
+    private static Machine Started()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        return machine;
+    }
+
+    private static void Write(Machine machine, int index, byte value)
+    {
+        machine.Io.WriteByte(0x3D4, (byte)index);
+        machine.Io.WriteByte(0x3D5, value);
+    }
+
+    private static byte Read(Machine machine, int index)
+    {
+        machine.Io.WriteByte(0x3D4, (byte)index);
+        return machine.Io.ReadByte(0x3D5);
+    }
+
+    [Fact]
+    public void TheChipIdentifierAnswersWhileEverythingElseIsLocked()
+    {
+        using Machine machine = Started();
+
+        Assert.Equal(0xE1, Read(machine, 0x30));      // Trio64
+        Assert.Equal(0xFF, Read(machine, 0x31));      // locked
+    }
+
+    [Fact]
+    public void WritesToLockedRegistersAreDropped()
+    {
+        using Machine machine = Started();
+
+        Write(machine, 0x31, 0x0A);
+
+        Write(machine, 0x38, 0x48);                   // unlock
+        Assert.Equal(0x00, Read(machine, 0x31));      // the write never landed
+    }
+
+    [Fact]
+    public void UnlockingMakesTheRegistersOrdinaryStorage()
+    {
+        using Machine machine = Started();
+
+        Write(machine, 0x38, 0x48);
+        Write(machine, 0x31, 0x0A);
+
+        Assert.Equal(0x0A, Read(machine, 0x31));
+    }
+
+    [Fact]
+    public void TheRangeAboveFortyNeedsItsOwnUnlock()
+    {
+        // Two locks, not one: 0x38 opens 0x30-0x3F and 0x39 opens the rest.
+        using Machine machine = Started();
+
+        Write(machine, 0x38, 0x48);
+        Assert.Equal(0xFF, Read(machine, 0x51));
+
+        Write(machine, 0x39, 0xA5);
+        Write(machine, 0x51, 0x33);
+        Assert.Equal(0x33, Read(machine, 0x51));
+    }
+
+    [Fact]
+    public void AWrongValueLocksThemAgain()
+    {
+        // The lock is the value, not the act of writing: a driver puts the
+        // registers back by writing something else.
+        using Machine machine = Started();
+
+        Write(machine, 0x38, 0x48);
+        Write(machine, 0x31, 0x0A);
+
+        Write(machine, 0x38, 0x00);
+        Assert.Equal(0xFF, Read(machine, 0x31));
+    }
+
+    [Fact]
+    public void TheCardReportsItsMemorySize()
+    {
+        // Bits 6-5 of register 0x36 say how much: 2 means two megabytes,
+        // which is what a Trio64 shipped with and what 1024x768 at 16-bit
+        // colour needs.
+        using Machine machine = Started();
+
+        Assert.Equal(2, (Read(machine, 0x36) >> 5) & 3);
+    }
+
+    [Fact]
+    public void AModeSetDoesNotRelockTheExtensions()
+    {
+        // A BIOS mode set programs the standard controller and leaves the
+        // card's own registers alone. Clearing them would lose the
+        // configuration a driver had set up -- and on real hardware a mode
+        // set most certainly does not do that.
+        using Machine machine = Started();
+
+        Write(machine, 0x38, 0x48);
+        Write(machine, 0x39, 0xA5);
+        Write(machine, 0x51, 0x33);
+
+        machine.VideoRegisters.VideoMode = 0x12;
+
+        Assert.Equal(0x33, Read(machine, 0x51));
+    }
+
+    [Fact]
+    public void TheVgaRegistersBelowThirtyAreNeverLocked()
+    {
+        // The lock is about the extensions. Everything a plain VGA has stays
+        // reachable, or nothing written before 1991 would run.
+        using Machine machine = Started();
+
+        Write(machine, 0x0C, 0x12);
+        Write(machine, 0x0D, 0x34);
+
+        Assert.Equal(0x12, Read(machine, 0x0C));
+        Assert.Equal(0x34, Read(machine, 0x0D));
+    }
+}

@@ -22,7 +22,19 @@ namespace Aurora386.Core.Devices.Video;
 public sealed class VgaRegisters : IIoDevice
 {
     // --- CRTC ----------------------------------------------------------------
-    private readonly byte[] _crtc = new byte[32];
+    /// <summary>
+    /// The CRTC registers. A VGA has 25 of them, ending at 0x18; the array is
+    /// 256 because an S3 puts its own extensions above 0x30, and those are
+    /// how a driver finds the card at all.
+    ///
+    /// The extended registers are locked at power-on and stay locked until
+    /// software writes the right values to 0x38 and 0x39. That is not
+    /// security -- the values are published -- but a guard against software
+    /// written for a plain VGA stumbling into registers it has no idea
+    /// exist, which on a real card could reprogram the pixel clock and take
+    /// the monitor out of range.
+    /// </summary>
+    private readonly byte[] _crtc = new byte[256];
 
     /// <summary>
     /// The PEL mask (port 0x3C6), ANDed with every pixel value before it
@@ -404,7 +416,12 @@ public sealed class VgaRegisters : IIoDevice
         _miscOutput = set.MiscOutput;
         Array.Clear(_sequencer);
         set.Sequencer.CopyTo(_sequencer, 0);
-        Array.Clear(_crtc);
+        // Only the VGA's own registers are reset. A BIOS mode set programs
+        // the standard controller and leaves the card's extensions alone:
+        // clearing them would relock the extended registers and lose the
+        // configuration a driver had set up, which on real hardware a mode
+        // set most certainly does not do.
+        Array.Clear(_crtc, 0, 0x30);
         set.Crtc.CopyTo(_crtc, 0);
         Array.Clear(_graphics);
         set.Graphics.CopyTo(_graphics, 0);
@@ -449,9 +466,79 @@ public sealed class VgaRegisters : IIoDevice
     public void SetGraphics(int index, byte value) => _graphics[index & 0x0F] = value;
 
     /// <summary>Directly sets a CRTC register.</summary>
-    public void SetCrtc(int index, byte value) => _crtc[index & 0x1F] = value;
+    public void SetCrtc(int index, byte value) => WriteCrtc((byte)index, value);
 
-    public byte Crtc(int index) => _crtc[index & 0x1F];
+    public byte Crtc(int index) => ReadCrtc((byte)index);
+
+    // --- the S3 extended registers --------------------------------------------
+    //
+    // Everything above 0x30 belongs to the card rather than to the VGA
+    // standard, and reaching it takes two specific writes first. The values
+    // are not secret -- every S3 driver has them -- but the lock stops
+    // software written for a plain VGA from stumbling into registers it does
+    // not know exist. On a real card that could reprogram the pixel clock and
+    // leave the monitor showing nothing.
+
+    /// <summary>0x4838 unlocks registers 0x30-0x3F; anything else locks them.</summary>
+    private bool _systemUnlocked;
+
+    /// <summary>0xA0 or higher in 0x39 unlocks 0x40 and above.</summary>
+    private bool _extendedUnlocked;
+
+    /// <summary>The card's identifier, which is how a driver knows what it has.</summary>
+    public const byte S3DeviceId = 0xE1;       // Trio64
+
+    private byte ReadCrtc(byte index)
+    {
+        // Below 0x30 is the VGA, always readable.
+        if (index < 0x30) return _crtc[index];
+
+        switch (index)
+        {
+            // 0x30 is the chip identifier, and it is readable whether or not
+            // anything has been unlocked: a driver has to be able to ask what
+            // card this is before it knows which unlock sequence to use.
+            case 0x30: return S3DeviceId;
+
+            // 0x36 reports how the card is configured. Bits 5-6 say how much
+            // memory: 0 is 4 MB, 1 is 3, 2 is 2, 3 is 1. This card has two.
+            case 0x36: return (byte)(0x40 | (_crtc[0x36] & 0x1F));
+
+            // 0x2E and 0x2F together are the secondary identifier some
+            // drivers check, and 0x2D is the high byte.
+            case 0x2D: return 0x88;
+            case 0x2E: return S3DeviceId;
+        }
+
+        if (index < 0x40) return _systemUnlocked ? _crtc[index] : (byte)0xFF;
+        return _extendedUnlocked ? _crtc[index] : (byte)0xFF;
+    }
+
+    private void WriteCrtc(byte index, byte value)
+    {
+        if (index < 0x30) { _crtc[index] = value; return; }
+
+        // The two lock registers themselves are always writable, or there
+        // would be no way in.
+        if (index == 0x38)
+        {
+            _systemUnlocked = value == 0x48;
+            _crtc[index] = value;
+            return;
+        }
+
+        if (index == 0x39)
+        {
+            _extendedUnlocked = value >= 0xA0;
+            _crtc[index] = value;
+            return;
+        }
+
+        if (index < 0x40 && !_systemUnlocked) return;
+        if (index >= 0x40 && !_extendedUnlocked) return;
+
+        _crtc[index] = value;
+    }
     public byte Attribute(int index) => _attribute[index & 0x1F];
 
     /// <summary>Map Mask: bit N enables CPU writes to plane N.</summary>
@@ -580,7 +667,7 @@ public sealed class VgaRegisters : IIoDevice
             case 0x3CE: return _graphicsIndex;
             case 0x3CF: return _graphics[_graphicsIndex & 0x0F];
             case 0x3D4 or 0x3B4: return _crtcIndex;
-            case 0x3D5 or 0x3B5: return _crtc[_crtcIndex & 0x1F];
+            case 0x3D5 or 0x3B5: return ReadCrtc(_crtcIndex);
             case 0x3CA: return 0x00;   // feature control: nothing set
             case 0x3C3: return 0x01;   // the video subsystem is enabled
             case 0x3C2:
@@ -719,7 +806,7 @@ public sealed class VgaRegisters : IIoDevice
             case 0x3CE: _graphicsIndex = value; return;
             case 0x3CF: _graphics[_graphicsIndex & 0x0F] = value; return;
             case 0x3D4 or 0x3B4: _crtcIndex = value; return;
-            case 0x3D5 or 0x3B5: _crtc[_crtcIndex & 0x1F] = value; return;
+            case 0x3D5 or 0x3B5: WriteCrtc(_crtcIndex, value); return;
         }
     }
 
