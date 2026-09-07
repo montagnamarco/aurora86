@@ -104,17 +104,21 @@ public class FpuEmulatorTests
         => Assert.Equal(1.6, Arithmetic(0x3E, 2.5, 4.0));
 
     [Fact]
-    public void TheInstructionPointerStepsOverWhatWasEmulated()
+    public void TheInstructionPointerStepsOverWhatWasExecuted()
     {
         using Machine machine = Build();
         PutDouble(machine, Data, 1.0);
 
         Run(machine, 0xDD, 0x06, 0x00, 0x30);
 
-        // Four bytes of instruction: had the handler returned without moving
-        // the saved IP, the machine would sit on the same instruction for ever.
+        // Four bytes of instruction. This mattered acutely when the escapes
+        // were served by a fault handler: the handler had to step the saved
+        // IP over the instruction itself, and a machine that forgot sat on
+        // the same instruction for ever. Executed in the processor there is
+        // nothing to step -- EIP has already moved past the operand -- which
+        // is one whole class of bug that stops existing.
         Assert.Equal(Code + 4, machine.Cpu.State.Eip);
-        Assert.Equal(1, machine.Fpu.Emulated);
+        Assert.Equal(1, machine.Cpu.Fpu.Executed);
     }
 
     [Fact]

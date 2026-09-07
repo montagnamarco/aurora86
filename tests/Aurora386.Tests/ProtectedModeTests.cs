@@ -733,9 +733,13 @@ public class ProtectedModeTests
     [Theory]
     [InlineData(0xD8)] [InlineData(0xD9)] [InlineData(0xDA)] [InlineData(0xDB)]
     [InlineData(0xDC)] [InlineData(0xDD)] [InlineData(0xDE)] [InlineData(0xDF)]
-    public void AFloatingPointEscapeAsksForVectorSevenRatherThanRefusingToDecode(int opcode)
+    public void AFloatingPointEscapeAsksForVectorSevenWhenThereIsNoCoprocessor(int opcode)
     {
         using Machine machine = BuildProtectedMachine();
+
+        // CR0.EM is the arrangement of a 386 sold without its 80387: every
+        // escape faults to vector 7 and a software library finishes the work.
+        machine.Cpu.State.Cr0 |= CpuState.Cr0Emulation;
 
         // Vector 7 needs somewhere to go: without a gate the fault escalates
         // and the test would be measuring the escalation, not the escape.
@@ -746,22 +750,53 @@ public class ProtectedModeTests
 
         RunInstruction(machine, (byte)opcode, 0xC0);
 
-        // 7 is "device not available": there is no coprocessor, and an emulator
-        // library on that vector is expected to finish the work. 6 -- invalid
-        // opcode -- would leave software with nothing to recover to.
+        // 7 is "device not available", which leaves software somewhere to
+        // recover to. 6 -- invalid opcode -- would not: the handler would find
+        // nothing to do and the instruction would be retried for ever.
         Assert.Equal(7, vector);
     }
 
     [Fact]
-    public void ThePostReportsThatNoCoprocessorIsFitted()
+    public void ATaskSwitchMakesTheNextEscapeTrapEvenWithACoprocessorFitted()
     {
-        using var machine = new Machine();
-        machine.RunInstructions(200);
+        using Machine machine = BuildProtectedMachine();
+        WriteGate(machine, IdtBase, 7, 0x08, 0x3000, type: 0x0E);
 
-        // CR0.EM is how the processor is told to trap floating point rather
-        // than attempt it against hardware that is not there.
-        Assert.Equal(CpuState.Cr0Emulation,
-                     machine.Cpu.State.Cr0 & CpuState.Cr0Emulation);
+        // CR0.TS says the floating-point registers belong to a task other than
+        // the running one. The handler saves them, restores this task's, and
+        // clears the bit -- which is how an operating system avoids saving
+        // eighty bytes of state for the many tasks that never touch the unit.
+        machine.Cpu.State.Cr0 |= CpuState.Cr0TaskSwitched;
+
+        byte vector = 0;
+        machine.Cpu.ProcessorException += (v, _, _, _) => vector = v;
+
+        RunInstruction(machine, 0xD9, 0xE8);        // fld1
+
+        Assert.Equal(7, vector);
+    }
+
+    [Fact]
+    public void ThePostReportsTheCoprocessorThatTheChosenProcessorHas()
+    {
+        // A 486DX carries its floating-point unit on the die, so the escapes
+        // are executed rather than trapped: EM stays clear, and bit 1 of the
+        // equipment word tells the software that asks the BIOS instead of the
+        // processor.
+        using var fitted = new Machine();
+        fitted.RunInstructions(3000);
+
+        Assert.Equal(0u, fitted.Cpu.State.Cr0 & CpuState.Cr0Emulation);
+        Assert.Equal(0x0002, fitted.Bda.EquipmentWord & 0x0002);
+
+        // A 386 is the older arrangement: a second chip in a second socket
+        // that this machine was sold without.
+        using var bare = new Machine();
+        bare.CpuModel = CpuModel.Intel386;
+        bare.RunInstructions(3000);
+
+        Assert.Equal(CpuState.Cr0Emulation, bare.Cpu.State.Cr0 & CpuState.Cr0Emulation);
+        Assert.Equal(0, bare.Bda.EquipmentWord & 0x0002);
     }
 
     [Fact]

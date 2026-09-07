@@ -1,4 +1,4 @@
-namespace Aurora386.Core.Firmware.Fpu;
+namespace Aurora386.Core.Cpu.Fpu;
 
 /// <summary>
 /// The 80-bit floating-point value an 80387 keeps in its registers: a sign, a

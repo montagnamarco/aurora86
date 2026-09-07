@@ -632,21 +632,16 @@ public sealed partial class Cpu
             case 0xD7: Xlat(); return;
 
             // --- FPU escapes (0xD8-0xDF) ------------------------------------
-            // This machine has no coprocessor, which the BIOS already reports
-            // in the equipment word. The processor still has to decode the
-            // instruction and then refuse it as "device not available", so that
-            // an emulator library installed on vector 7 can step in and finish
-            // the work. Reporting an invalid opcode instead would be a lie, and
-            // leaves software with no way to recover: it faults, the handler
-            // finds nothing to do, and the instruction is retried for ever.
+            // On a 486 the floating-point unit is on the die, so these are
+            // executed here like any other instruction. On a 386 the
+            // coprocessor was a second chip the buyer might not have bought,
+            // and CR0's emulation bit makes the escape fault to vector 7
+            // instead, where a software library finishes the work -- which is
+            // decided inside ExecuteEscape, since it depends on CR0 rather
+            // than on the opcode.
             case >= 0xD8 and <= 0xDF:
-            {
-                // The operand still has to be consumed so that the address is
-                // computed and any segment fault is raised in the right order;
-                // only then does the escape itself fail.
-                DecodeModRm();
-                throw new CpuException(7);
-            }
+                ExecuteEscape(opcode);
+                return;
 
             case 0x98: Cbw(); return;
             case 0x99: Cwd(); return;

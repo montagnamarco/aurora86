@@ -75,13 +75,30 @@ public sealed partial class Machine
         if (Mouse.ConnectedInterface == MouseInterface.Ps2)
             PointingDeviceServices.OpenMouseInterrupt(this);
 
-        // There is no coprocessor in this machine -- the equipment word says so
-        // -- and CR0's emulation bit is how the processor is told. With it set,
-        // a floating-point instruction faults to vector 7 and a software
-        // emulator can finish the work; with it clear the instruction would be
-        // attempted against a coprocessor that is not there. A real BIOS sets
-        // this during POST after failing to find an 80387.
-        Cpu.State.Cr0 |= Aurora386.Core.Cpu.CpuState.Cr0Emulation;
+        // Whether there is a coprocessor, told twice because software asks in
+        // two different ways.
+        //
+        // A 486DX has its floating-point unit on the die, so the escapes are
+        // executed by the processor itself: the emulation bit stays clear,
+        // the monitor bit is set so that a task switch traps and the operating
+        // system can save the registers, and bit 1 of the equipment word says
+        // a coprocessor is fitted for the software that asks the BIOS rather
+        // than the processor.
+        //
+        // A 386 is the older arrangement: the 80387 was a second chip in a
+        // second socket, and a machine sold without one has CR0.EM set so that
+        // every floating-point instruction faults to vector 7, where a
+        // software library finishes the work. A real BIOS decided this during
+        // POST, by probing for the chip and not finding it.
+        if (Cpu.State.Model >= Aurora386.Core.Cpu.CpuModel.Intel486)
+        {
+            Cpu.State.Cr0 |= Aurora386.Core.Cpu.CpuState.Cr0MonitorCoprocessor;
+            Bda.EquipmentWord |= 0x0002;
+        }
+        else
+        {
+            Cpu.State.Cr0 |= Aurora386.Core.Cpu.CpuState.Cr0Emulation;
+        }
 
         // 80x25 text mode, which is how a PC presents itself at power-on.
         VideoRegisters.VideoMode = 0x03;

@@ -1,5 +1,5 @@
 using Aurora386.Core.Firmware;
-using Aurora386.Core.Firmware.Fpu;
+using Aurora386.Core.Cpu.Fpu;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Diagnostics;
 namespace Aurora386.Tests;

@@ -1,4 +1,5 @@
 using CpuNs = Aurora386.Core.Cpu;
+using Aurora386.Core.Cpu.Fpu;
 
 namespace Aurora386.Core.Firmware.Fpu;
 
