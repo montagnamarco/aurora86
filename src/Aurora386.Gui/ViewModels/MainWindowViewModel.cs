@@ -13,6 +13,7 @@ using Aurora386.Core.Devices.Input;
 using Aurora386.Core.Devices.Interrupts;
 using Aurora386.Core.Devices.Timing;
 using Aurora386.Core.Devices.System;
+using Aurora386.Core.Cpu;
 using Aurora386.Core.Dos;
 using Aurora386.Gui.Emulation;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -281,8 +282,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     // COM1 by default: it is what MOUSE.DRV and every DOS program of the
-    // period expect to find, and the BIOS does not yet offer INT 15h C2xx
-    // for the PS/2 port.
+    // period expect to find. The PS/2 port works too -- the BIOS provides
+    // INT 15h C2xx and the 8042 raises IRQ 12 -- but a guest installed while
+    // the mouse was on COM1 has that choice written into its own
+    // configuration, and moving the plug does not rewrite it.
     private MouseInterface _mouseInterface = MouseInterface.Serial;
 
     // A menu item binds its tick to a boolean, so each choice needs one. They
@@ -305,6 +308,56 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         get => MouseInterface == MouseInterface.None;
         set { if (value) MouseInterface = MouseInterface.None; }
+    }
+
+    /// <summary>
+    /// Which processor the machine is fitted with.
+    ///
+    /// Unlike the mouse this cannot usefully be changed while the guest is
+    /// running: a program asks what it is running on once, at startup, and
+    /// then believes the answer for as long as it lives. So the choice takes
+    /// effect at the next reset, and the status line says so rather than
+    /// letting the user think nothing happened.
+    ///
+    /// The 386 is kept as a real option and not merely a label. Software of
+    /// the period identifies the processor by trying things and seeing what
+    /// fails -- writing a CR0 bit that should not stick, executing an opcode
+    /// that should fault -- and the only honest way to know those paths still
+    /// work is to have a processor on which they do.
+    /// </summary>
+    public CpuModel CpuModel
+    {
+        get => _cpuModel;
+        set
+        {
+            Session.WithMachine(machine => machine.CpuModel = value);
+            if (!SetProperty(ref _cpuModel, value)) return;
+
+            OnPropertyChanged(nameof(CpuIs486));
+            OnPropertyChanged(nameof(CpuIs386));
+
+            StatusText = value switch
+            {
+                CpuModel.Intel486 => "486DX at the next reset",
+                _ => "386DX at the next reset",
+            };
+        }
+    }
+
+    // A 486DX: it is the floor for Windows 95, it carries its own floating
+    // point unit, and nothing that ran on a 386 stopped running on one.
+    private CpuModel _cpuModel = CpuModel.Intel486;
+
+    public bool CpuIs486
+    {
+        get => CpuModel == CpuModel.Intel486;
+        set { if (value) CpuModel = CpuModel.Intel486; }
+    }
+
+    public bool CpuIs386
+    {
+        get => CpuModel == CpuModel.Intel386;
+        set { if (value) CpuModel = CpuModel.Intel386; }
     }
 
     /// <summary>

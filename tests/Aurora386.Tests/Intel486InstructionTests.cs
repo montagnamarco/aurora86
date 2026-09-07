@@ -522,3 +522,52 @@ public class AlignmentCheckTests
         Assert.Equal(17, raised[0]);
     }
 }
+
+/// <summary>
+/// Choosing which processor is fitted, which is the emulator's equivalent of
+/// opening the case and changing the chip.
+/// </summary>
+public class CpuSelectionTests
+{
+    [Fact]
+    public void ChoosingAProcessorTakesEffectAtOnceAndFromReset()
+    {
+        // The signature and the coprocessor bit both come from RESET, so
+        // changing the choice has to run one: otherwise the machine would
+        // claim to be a 486 while still holding a 386's answers.
+        using var machine = new Machine();
+        machine.CpuModel = CpuModel.Intel386;
+
+        Assert.Equal(CpuModel.Intel386, machine.CpuModel);
+        Assert.Equal(3u, (machine.Cpu.State.Edx >> 8) & 0xF);
+        Assert.Equal(0u, machine.Cpu.State.Cr0 & CpuState.Cr0ExtensionType);
+
+        machine.CpuModel = CpuModel.Intel486;
+
+        Assert.Equal(4u, (machine.Cpu.State.Edx >> 8) & 0xF);
+        Assert.Equal(CpuState.Cr0ExtensionType,
+                     machine.Cpu.State.Cr0 & CpuState.Cr0ExtensionType);
+    }
+
+    [Fact]
+    public void ChoosingTheProcessorAlreadyFittedChangesNothing()
+    {
+        // Setting the property to what it already is must not quietly reset
+        // a running machine: the menu writes the current value back whenever
+        // the previous choice is cleared.
+        using var machine = new Machine();
+        machine.RunInstructions(2000);
+        uint eip = machine.Cpu.State.Eip;
+
+        machine.CpuModel = machine.CpuModel;
+
+        Assert.Equal(eip, machine.Cpu.State.Eip);
+    }
+
+    [Fact]
+    public void A486IsWhatTheMachineComesWith()
+    {
+        using var machine = new Machine();
+        Assert.Equal(CpuModel.Intel486, machine.CpuModel);
+    }
+}

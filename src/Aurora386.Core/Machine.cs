@@ -191,6 +191,32 @@ public sealed partial class Machine : IDisposable
     public void MoveMouse(int deltaX, int deltaY) => Mouse.Move(deltaX, deltaY);
 
     /// <summary>
+    /// Which processor is fitted.
+    ///
+    /// This is the closest thing the emulator has to opening the case and
+    /// changing the chip, and like that operation it only makes sense with
+    /// the machine switched off: a guest that has already asked what it is
+    /// running on, and configured itself accordingly, will not ask again.
+    /// So the value is applied at RESET, which is where a real processor
+    /// publishes its own identity too.
+    ///
+    /// A 386 is worth keeping available rather than merely simulating an
+    /// older name: software of the period detects the processor by trying
+    /// things and seeing what fails, and the only way to know that path
+    /// still works is to have a processor on which it does fail.
+    /// </summary>
+    public CpuNs.CpuModel CpuModel
+    {
+        get => Cpu.State.Model;
+        set
+        {
+            if (Cpu.State.Model == value) return;
+            Cpu.State.SelectModel(value);
+            Cpu.State.Reset();
+        }
+    }
+
+    /// <summary>
     /// Which port the mouse is plugged into, or none at all.
     ///
     /// Both ports stay fitted whatever this says -- the 8042 keeps its
