@@ -40,6 +40,19 @@ public sealed class MachineSnapshot
     /// </summary>
     private readonly bool _a20;
 
+    /// <summary>
+    /// The video card: its memory and every register that decides what is on
+    /// screen.
+    ///
+    /// Without these a restored machine has the guest's pixels and the BIOS's
+    /// idea of the mode, which agree about nothing -- and the guest, having
+    /// no reason to redraw a picture it believes is already there, never puts
+    /// it right. It is the difference between a snapshot that resumes and one
+    /// that resumes blind.
+    /// </summary>
+    private readonly byte[] _videoMemory;
+    private readonly byte[] _videoRegisters;
+
     private MachineSnapshot(Machine machine)
     {
         CpuState state = machine.Cpu.State;
@@ -60,6 +73,9 @@ public sealed class MachineSnapshot
         _halted = state.Halted;
         _virtual8086 = state.Virtual8086Mode;
         _a20 = machine.Memory.A20Enabled;
+
+        _videoMemory = machine.VideoMemory.CaptureMemory();
+        _videoRegisters = machine.VideoRegisters.CaptureRegisters();
     }
 
     /// <summary>Takes a snapshot of the machine as it stands.</summary>
@@ -86,6 +102,9 @@ public sealed class MachineSnapshot
         state.CplRaw = _cpl;
         state.Halted = _halted;
         state.Virtual8086Mode = _virtual8086;
+
+        if (_videoMemory.Length > 0) machine.VideoMemory.RestoreMemory(_videoMemory);
+        if (_videoRegisters.Length > 0) machine.VideoRegisters.RestoreRegisters(_videoRegisters);
 
         // Paging translations cached from the old contents of memory describe
         // an address space that no longer exists.
@@ -120,6 +139,14 @@ public sealed class MachineSnapshot
         file.Write(_taskRegister); file.Write(_tssBase); file.Write(_tssLimit);
         file.Write((uint)_otherFlags); file.Write(_cpl);
         file.Write(_halted); file.Write(_virtual8086); file.Write(_a20);
+
+        // The video card last, so that a file written before it existed still
+        // reads: the loader stops when the stream ends and leaves the fields
+        // empty rather than failing.
+        file.Write(_videoMemory.Length);
+        file.Write(_videoMemory);
+        file.Write(_videoRegisters.Length);
+        file.Write(_videoRegisters);
     }
 
     private MachineSnapshot(BinaryReader file)
@@ -158,6 +185,21 @@ public sealed class MachineSnapshot
         _otherFlags = (Flags)file.ReadUInt32(); _cpl = file.ReadByte();
         _halted = file.ReadBoolean(); _virtual8086 = file.ReadBoolean();
         _a20 = file.ReadBoolean();
+
+        // A file written before the video card was part of a snapshot simply
+        // ends here. Reading it is not an error: what comes back is a
+        // machine that resumes with whatever the display happens to hold,
+        // which is what those files always meant.
+        if (file.BaseStream.Position < file.BaseStream.Length)
+        {
+            _videoMemory = file.ReadBytes(file.ReadInt32());
+            _videoRegisters = file.ReadBytes(file.ReadInt32());
+        }
+        else
+        {
+            _videoMemory = [];
+            _videoRegisters = [];
+        }
     }
 
     /// <summary>Reads a snapshot back from a file.</summary>

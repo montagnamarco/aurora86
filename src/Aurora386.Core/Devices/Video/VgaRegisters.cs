@@ -1132,6 +1132,64 @@ public sealed class VgaRegisters : IIoDevice
     public void NotifyModeChanged() => ModeChanged?.Invoke();
 
     /// <summary>
+    /// Every register that decides what is on screen, for a snapshot.
+    ///
+    /// Without these a restored machine has the guest's pixels and the
+    /// BIOS's idea of the mode, which agree about nothing: the geometry is
+    /// wrong, the palette is wrong, and the picture is unrecognisable even
+    /// though every byte of video memory is correct.
+    /// </summary>
+    public byte[] CaptureRegisters()
+    {
+        var state = new byte[_crtc.Length + _sequencer.Length + _graphics.Length
+                           + _attribute.Length + _palette.Length + 16];
+        int at = 0;
+
+        _crtc.CopyTo(state, at); at += _crtc.Length;
+        _sequencer.CopyTo(state, at); at += _sequencer.Length;
+        _graphics.CopyTo(state, at); at += _graphics.Length;
+        _attribute.CopyTo(state, at); at += _attribute.Length;
+        _palette.CopyTo(state, at); at += _palette.Length;
+
+        state[at++] = _miscOutput;
+        state[at++] = _pelMask;
+        state[at++] = (byte)DacBitsPerColour;
+        state[at++] = (byte)(_systemUnlocked ? 1 : 0);
+        state[at++] = (byte)(_extendedUnlocked ? 1 : 0);
+        state[at++] = (byte)(_sequencerUnlocked ? 1 : 0);
+        state[at++] = VideoMode;
+
+        return state;
+    }
+
+    /// <summary>Puts the registers back, and tells whoever draws that they changed.</summary>
+    public void RestoreRegisters(ReadOnlySpan<byte> state)
+    {
+        int at = 0;
+
+        state.Slice(at, _crtc.Length).CopyTo(_crtc); at += _crtc.Length;
+        state.Slice(at, _sequencer.Length).CopyTo(_sequencer); at += _sequencer.Length;
+        state.Slice(at, _graphics.Length).CopyTo(_graphics); at += _graphics.Length;
+        state.Slice(at, _attribute.Length).CopyTo(_attribute); at += _attribute.Length;
+        state.Slice(at, _palette.Length).CopyTo(_palette); at += _palette.Length;
+
+        _miscOutput = state[at++];
+        _pelMask = state[at++];
+        DacBitsPerColour = state[at++];
+        _systemUnlocked = state[at++] != 0;
+        _extendedUnlocked = state[at++] != 0;
+        _sequencerUnlocked = state[at++] != 0;
+
+        // The mode setter reprograms the standard registers from its table,
+        // which would undo everything just restored -- so the field is set
+        // directly and only the mode information rebuilt.
+        _videoMode = state[at];
+        ModeInfo = VgaModes.Get(_videoMode);
+
+        ModeChanged?.Invoke();
+    }
+
+    /// <summary>
     /// Restores the 16 CGA colours plus the standard 256-colour ramp, which is
     /// what the BIOS loads on a mode set. Programs that never touch the DAC --
     /// most 16-colour ones -- rely entirely on this.

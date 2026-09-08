@@ -195,6 +195,23 @@ public sealed class VgaMemory : IMemoryDevice
     /// memory and the whole picture is drawn. The bank register moves what
     /// the *processor* can reach, not what the monitor shows.
     /// </summary>
+    /// <summary>
+    /// A copy of the whole of video memory, for a snapshot.
+    ///
+    /// Two megabytes is a lot to carry, but a snapshot taken in a graphics
+    /// mode without it restores to a blank screen -- and the guest, having no
+    /// reason to redraw what it believes is already there, leaves it blank.
+    /// </summary>
+    public byte[] CaptureMemory() => (byte[])_vram.Clone();
+
+    /// <summary>Puts video memory back, and marks everything for redrawing.</summary>
+    public void RestoreMemory(ReadOnlySpan<byte> content)
+    {
+        content[..Math.Min(content.Length, _vram.Length)].CopyTo(_vram);
+        Array.Fill(_dirtyRows, true);
+        _anyDirty = true;
+    }
+
     public byte ReadLinear(uint address)
         => address < TotalSize ? _vram[address] : (byte)0;
 
