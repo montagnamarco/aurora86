@@ -159,6 +159,18 @@ public partial class MainWindow : Window
     /// </summary>
     private readonly HashSet<PhysicalKey> _keysHeld = new();
 
+    /// <summary>
+    /// Positions whose press was diverted to the text path, so that their
+    /// release is diverted too.
+    ///
+    /// Sending a release for a position that was never pressed is not
+    /// harmless: the guest tracks modifiers by counting presses against
+    /// releases, and a stray release of a key it never saw go down leaves it
+    /// convinced something is held. That surfaces later as a keyboard that
+    /// types capitals, or ignores everything, for no visible reason.
+    /// </summary>
+    private readonly HashSet<PhysicalKey> _divertedToText = new();
+
     protected override void OnKeyDown(KeyEventArgs e)
     {
         // A repeat of a key we already told the guest about: swallow it. The
@@ -186,6 +198,30 @@ public partial class MainWindow : Window
                 $"KeySymbol='{e.KeySymbol}' modificatori={e.KeyModifiers} " +
                 $"-> scancode={mapped:X2}{(ext ? " (esteso)" : "")}" +
                 (mapped == 0 ? "  NESSUNA POSIZIONE" : ""));
+        }
+
+        // A character composed with Alt goes by character, not by position.
+        //
+        // This is the backslash on an Italian Mac, and it defeats the rule
+        // below. It is typed Alt+Shift+7, and Digit7 is a position we map
+        // perfectly well -- so the position was sent, the event was marked
+        // handled, and the text path that knows how to type a backslash was
+        // never reached. The guest saw Alt, Shift and 7, which under KEYB IT
+        // means nothing at all: the key appeared to do nothing whatever.
+        //
+        // Alt as a plain modifier still has to reach the guest, or Alt+F
+        // would stop opening menus. What is diverted here is narrower: Alt
+        // held while the host reports an actual character, which is what
+        // composition looks like and what a bare Alt+letter does not.
+        if ((e.KeyModifiers & KeyModifiers.Alt) != 0
+            && !string.IsNullOrEmpty(e.KeySymbol)
+            && UsKeyboardLayout.KeyForCharacter(e.KeySymbol[0]).Code != 0)
+        {
+            _divertedToText.Add(e.PhysicalKey);
+
+            // Not handled: the text event that follows types the character.
+            base.OnKeyDown(e);
+            return;
         }
 
         // Send the key position, and let the guest decide what it means.
@@ -220,6 +256,13 @@ public partial class MainWindow : Window
         // it.
         Screen.Capture.NotifyKeyUp(e.PhysicalKey);
 
+        // A press that went by character has no position to release.
+        if (_divertedToText.Remove(e.PhysicalKey))
+        {
+            base.OnKeyUp(e);
+            return;
+        }
+
         if (SendKey(e.PhysicalKey, released: true)) e.Handled = true;
         else base.OnKeyUp(e);
     }
@@ -236,9 +279,15 @@ public partial class MainWindow : Window
     private void ReleaseHeldKeys()
     {
         foreach (PhysicalKey key in _keysHeld.ToArray())
+        {
+            // Again, a press that never went by position has no release to
+            // send -- not even here, where the point is to leave nothing held.
+            if (_divertedToText.Contains(key)) continue;
             SendKey(key, released: true);
+        }
 
         _keysHeld.Clear();
+        _divertedToText.Clear();
 
         // Tell the keyboard itself to let go too. It repeats the held key on
         // its own clock, and it has no other way of learning that the key is

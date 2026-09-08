@@ -333,10 +333,23 @@ public sealed class RedirectorServices(Machine machine)
     /// before DOS parses it -- Novell used it to turn "SERVER/VOL:" into
     /// something DOS could hold.
     ///
-    /// Declining leaves DOS's own parsing in place, which is what we want:
-    /// our names are ordinary DOS names.
+    /// We have nothing to rewrite: our names are ordinary DOS names. But the
+    /// way to say so is to answer successfully and leave the buffer alone,
+    /// NOT to decline.
+    ///
+    /// Declining looks right -- "we did not handle it, let DOS parse it
+    /// itself" -- and it is what this used to do. It is wrong, and DIR was
+    /// the proof: DOS does not fall back to its own parsing here. It takes
+    /// the unanswered call as a failed one, reports "invalid function" and
+    /// abandons the operation, so a directory listing died before FindFirst
+    /// was ever reached. The drive existed, answered its label, and then
+    /// refused to list anything.
     /// </summary>
-    private static bool QualifyFilename(CpuNs.Cpu cpu) => false;
+    private static bool QualifyFilename(CpuNs.Cpu cpu)
+    {
+        Succeed(cpu);
+        return true;
+    }
 
     // --- directory operations ---------------------------------------------------
 

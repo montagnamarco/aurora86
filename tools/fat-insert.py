@@ -14,10 +14,15 @@ Both copies of the FAT are written. DOS reads the first and checks the second,
 and a mismatch is what CHKDSK reports as a cross-linked file.
 
 Usage: fat-insert.py <image> <path\in\image> <source file>
+       fat-insert.py <image> --mkdir <path\in\image>
 """
 import struct, sys
 
-IMAGE, PATH_IN_IMAGE, SOURCE = sys.argv[1], sys.argv[2], sys.argv[3]
+MAKE_DIRECTORY = sys.argv[2] == '--mkdir'
+if MAKE_DIRECTORY:
+    IMAGE, PATH_IN_IMAGE, SOURCE = sys.argv[1], sys.argv[3], None
+else:
+    IMAGE, PATH_IN_IMAGE, SOURCE = sys.argv[1], sys.argv[2], sys.argv[3]
 
 f = open(IMAGE, 'r+b')
 mbr = f.read(512)
@@ -65,6 +70,53 @@ for part in parts[:-1]:
     if found is None: raise SystemExit(f"no such directory: {part}")
     directory_off = data_off + (found[2] - 2) * cluster
     directory_size = len(read_chain(found[2]))
+
+if MAKE_DIRECTORY:
+    # A directory is a file whose content is directory entries, and whose
+    # first two entries are "." and ".." -- not a convention DOS could do
+    # without: ".." is the only record of where the directory came from, and
+    # a CHDIR .. with it missing has nowhere to go.
+    name = parts[-1].upper()
+    f.seek(directory_off); d = bytearray(f.read(directory_size))
+    if any(v[0].upper() == name for v in entries(bytes(d))):
+        raise SystemExit(f"already there: {name}")
+
+    free = [c for c in range(2, (spf * bps) // 2) if entry(c) == 0][:1]
+    if not free: raise SystemExit("not enough free space")
+    set_entry(free[0], 0xFFFF)
+
+    # The parent's cluster number, which is 0 when the parent is the root:
+    # the root has no cluster of its own on FAT16, it sits in its own region
+    # before the data area, so ".." in a top-level directory points at zero.
+    parent = 0 if directory_off == root_off else (directory_off - data_off) // cluster + 2
+
+    block = bytearray(cluster)
+    dot = ('.'.ljust(8) + ' ' * 3).encode('latin1') + bytes([0x10]) + b'\0' * 10
+    dot += struct.pack('<HH', 0, 0) + struct.pack('<HI', free[0], 0)
+    dotdot = ('..'.ljust(8) + ' ' * 3).encode('latin1') + bytes([0x10]) + b'\0' * 10
+    dotdot += struct.pack('<HH', 0, 0) + struct.pack('<HI', parent, 0)
+    block[0:32] = dot
+    block[32:64] = dotdot
+    f.seek(data_off + (free[0] - 2) * cluster); f.write(block)
+
+    record = (name.ljust(8)[:8] + ' ' * 3).encode('latin1')
+    record += bytes([0x10]) + b'\0' * 10          # directory attribute
+    record += struct.pack('<HH', 0, 0)
+    record += struct.pack('<HI', free[0], 0)      # a directory's size is zero
+
+    for i in range(0, len(d), 32):
+        if d[i] in (0x00, 0xE5):
+            d[i:i+32] = record
+            break
+    else:
+        raise SystemExit("no free directory entry")
+
+    f.seek(directory_off); f.write(d)
+    for n in range(nfat):
+        f.seek(fat_off + n * spf * bps); f.write(fat)
+    f.close()
+    print(f"made directory {name} at cluster {free[0]}")
+    sys.exit()
 
 content = open(SOURCE, 'rb').read()
 needed = (len(content) + cluster - 1) // cluster
