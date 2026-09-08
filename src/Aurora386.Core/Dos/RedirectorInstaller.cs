@@ -228,12 +228,25 @@ public sealed class RedirectorInstaller(Machine machine)
                 && cds == redirector.CurrentDirectoryStructure
                 && driveCount == redirector.DriveCount)
             {
-                // Nothing moved. DOS has settled, so this is the moment the
-                // vector may safely be taken over -- and it has to be done
-                // again each time, because DOS takes INT 2Fh for itself part
-                // way through starting up, and anything loading later may do
-                // the same.
-                _machine.HookMultiplexForRedirector();
+                // Nothing moved -- but that alone is not enough, and this is
+                // the mistake that cost the redirector its whole reason for
+                // existing.
+                //
+                // DOS builds a small directory array first, one entry per
+                // physical drive, and that array sits perfectly still for a
+                // long stretch BEFORE CONFIG.SYS is read. "Nothing moved"
+                // therefore describes a DOS that has finished and a DOS that
+                // has not started in exactly the same words. Hooking in the
+                // second case stops CONFIG.SYS loading its device drivers --
+                // COUNTRY.SYS and DISPLAY.SYS fail and the machine never
+                // reaches COMMAND.COM at all.
+                //
+                // The command processor starting is the signal that tells the
+                // two apart, because CONFIG.SYS is finished by definition
+                // once DOS gets that far.
+                if (_machine.CommandProcessorStarted)
+                    _machine.HookMultiplexForRedirector();
+
                 return true;
             }
 

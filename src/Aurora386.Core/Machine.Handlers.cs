@@ -323,7 +323,7 @@ public sealed partial class Machine
     /// require. What is missing is only that DOS never routes a call to
     /// it.</para>
     /// </summary>
-    public bool RedirectorHooksMultiplex { get; set; }
+    public bool RedirectorHooksMultiplex { get; set; } = true;
 
     public void HookMultiplexForRedirector()
     {

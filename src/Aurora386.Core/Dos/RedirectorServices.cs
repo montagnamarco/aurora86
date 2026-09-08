@@ -261,7 +261,6 @@ public sealed class RedirectorServices(Machine machine)
         {
             0x01 => RemoveDirectory(cpu),
             0x03 => MakeDirectory(cpu),
-            0x05 => ChangeDirectory(cpu),
             0x06 => CloseFile(cpu),
             0x07 => CommitFile(cpu),
             0x08 => ReadFile(cpu),
@@ -273,6 +272,19 @@ public sealed class RedirectorServices(Machine machine)
             0x13 => RenameFile(cpu),
             0x16 => OpenFileCall(cpu),
             0x17 => CreateFileCall(cpu),
+            // 19h and 25h are both "change directory" -- the same request the
+            // 05h call makes, arriving by a different number. DOS 4 added 19h
+            // and DOS 5 added 25h, and each kept the older ones working, so
+            // which one a given version sends is not something to predict:
+            // MS-DOS 6.22 uses 25h to select a drive and 19h to walk into a
+            // directory, and answers neither by falling back to 05h.
+            //
+            // Leaving them out is what made a shared folder report "path not
+            // found" for its own root. The drive existed, the redirector was
+            // reached, and the very first thing DOS asked about it went
+            // unanswered.
+            0x05 or 0x19 or 0x25 => ChangeDirectory(cpu),
+
             0x1B => FindFirst(cpu),
             0x1C => FindNext(cpu),
             0x1E => SpecialOpen(cpu),

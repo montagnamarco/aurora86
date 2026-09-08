@@ -223,12 +223,65 @@ public sealed partial class Machine : IDisposable
         Ide.Register(Io);
         Redirector = new RedirectorServices(this);
         _redirectorInstaller = new RedirectorInstaller(this);
+        WatchForCommandProcessor();
         MouseServices = new MouseServices(this, Mouse);
         PointingDevice = new PointingDeviceServices(this);
         Video.Pointer = MouseServices.Pointer;
         Xms = new XmsManager(Memory);
 
         InstallBios();
+    }
+
+    /// <summary>
+    /// True once DOS has launched its command processor.
+    ///
+    /// This is the signal the redirector needs before it may take the INT 2Fh
+    /// vector, and finding one took a while. Hooking earlier stops CONFIG.SYS
+    /// loading its device drivers, and "the structures have not moved lately"
+    /// does not distinguish a finished DOS from one that has not started:
+    /// the small three-entry directory array DOS builds first sits perfectly
+    /// still for a long stretch before CONFIG.SYS is even read.
+    ///
+    /// COMMAND.COM starting is unambiguous. CONFIG.SYS is done by then --
+    /// that is what DOS does next -- so the drive table has reached its full
+    /// size and the vector is safe to share.
+    /// </summary>
+    public bool CommandProcessorStarted { get; private set; }
+
+    /// <summary>
+    /// Watches for the command processor being launched, which is an ordinary
+    /// INT 21h function 4B like any other program's.
+    /// </summary>
+    private void WatchForCommandProcessor()
+    {
+        Cpu.SoftwareInterruptIssued += vector =>
+        {
+            if (CommandProcessorStarted || vector != 0x21) return;
+            if ((byte)(Cpu.State.Eax >> 8) != 0x4B) return;
+
+            // The name is at DS:DX, and DOS launches it by a path that ends
+            // in COMMAND.COM whether or not a SHELL= line moved it.
+            uint at = Cpu.State.Ds.Base + Cpu.State.Dx;
+            Span<char> name = stackalloc char[16];
+            int length = 0;
+
+            for (uint i = 0; i < 64 && length < name.Length; i++)
+            {
+                byte character = Memory.ReadByte(at + i);
+                if (character == 0) break;
+
+                // Only the tail is needed, so the window slides.
+                if (length == name.Length)
+                {
+                    for (int j = 1; j < length; j++) name[j - 1] = name[j];
+                    length--;
+                }
+                name[length++] = char.ToUpperInvariant((char)character);
+            }
+
+            if (length >= 11 && name[..length].EndsWith("COMMAND.COM"))
+                CommandProcessorStarted = true;
+        };
     }
 
     /// <summary>

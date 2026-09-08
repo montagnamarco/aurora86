@@ -261,7 +261,13 @@ public sealed partial class Machine
         // finished building itself and the vector may be taken over. This is
         // also where a re-hook happens if something loading later displaced
         // us, which is why it is not done once and forgotten.
-        if (++_redirectorStableChecks >= RedirectorStableChecksNeeded)
+        //
+        // The command processor having started is the other half of the test,
+        // and the half that was missing: stillness alone cannot tell a
+        // finished DOS from one that has not begun, because the small
+        // directory array DOS builds first sits unchanged for a long stretch
+        // before CONFIG.SYS is read. Hooking then breaks CONFIG.SYS.
+        if (CommandProcessorStarted && ++_redirectorStableChecks >= RedirectorStableChecksNeeded)
             HookMultiplexForRedirector();
     }    /// <summary>Batches between attempts to find DOS's structures.</summary>
     private const int RedirectorInstallInterval = 200;
