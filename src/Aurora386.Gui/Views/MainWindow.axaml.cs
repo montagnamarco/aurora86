@@ -103,6 +103,7 @@ public partial class MainWindow : Window
         ViewModel.PickFolderAsync = PickFolderAsync;
         ViewModel.SaveScreenshotAsync = SaveScreenshotAsync;
         ViewModel.ShowDebugger = ShowDebugger;
+        ViewModel.ShowVideoInspector = ShowVideoInspector;
     }
 
     /// <summary>
@@ -110,6 +111,24 @@ public partial class MainWindow : Window
     /// than piling up copies.
     /// </summary>
     private DebuggerWindow? _debuggerWindow;
+
+    /// <summary>The video memory window, kept the same way as the debugger.</summary>
+    private VideoInspectorWindow? _videoWindow;
+
+    private void ShowVideoInspector(VideoInspectorViewModel model)
+    {
+        if (_videoWindow is null)
+        {
+            _videoWindow = new VideoInspectorWindow { DataContext = model };
+            _videoWindow.Closed += (_, _) => _videoWindow = null;
+            _videoWindow.Show(this);
+        }
+        else
+        {
+            _videoWindow.DataContext = model;
+            _videoWindow.Activate();
+        }
+    }
 
     private void ShowDebugger(DebuggerViewModel model)
     {

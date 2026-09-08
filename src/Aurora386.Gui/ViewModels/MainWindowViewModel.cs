@@ -472,6 +472,23 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         StatusText = "Debugger open (machine paused)";
     }
 
+    /// <summary>Opens the window that shows what is in video memory.</summary>
+    public Action<VideoInspectorViewModel>? ShowVideoInspector { get; set; }
+
+    [RelayCommand]
+    private void OpenVideoInspector()
+    {
+        if (ShowVideoInspector is null) return;
+
+        // Paused, like the debugger: reading two megabytes of video memory
+        // while the guest is writing it would show a picture that is half of
+        // one frame and half of another, which is worse than useless when the
+        // question is what the guest drew.
+        Session.Pause();
+        ShowVideoInspector(new VideoInspectorViewModel(Session));
+        StatusText = "Video memory open (machine paused)";
+    }
+
     [RelayCommand]
     private async Task Screenshot()
     {

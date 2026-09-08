@@ -469,7 +469,7 @@ public sealed class VgaRegisters : IIoDevice
     // The planar read/write logic in VgaMemory needs these on every single byte
     // touched, so they are plain indexed reads rather than anything clever.
 
-    public byte Sequencer(int index) => _sequencer[index & 7];
+    public byte Sequencer(int index) => ReadSequencer((byte)index);
     public byte Graphics(int index) => _graphics[index & 0x0F];
 
     /// <summary>Directly sets a sequencer register; used by the BIOS mode setup and by tests.</summary>
