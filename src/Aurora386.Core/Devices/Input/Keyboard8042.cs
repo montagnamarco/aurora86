@@ -99,6 +99,26 @@ public sealed class Keyboard8042 : IIoDevice
     /// <summary>The controller's command byte, exposed for diagnostics.</summary>
     public byte CommandByte => _commandByte;
 
+    /// <summary>
+    /// The controller's configuration, for a snapshot: the command byte and
+    /// the A20 line.
+    ///
+    /// The queues are deliberately left out. They hold keystrokes in flight,
+    /// and a snapshot taken mid-keystroke is better restored with an empty
+    /// buffer than with half a scan code the guest will misread. The command
+    /// byte is another matter: bit 0 is what enables the keyboard interrupt
+    /// at all, and losing it restores a machine that never reports a key.
+    /// </summary>
+    public byte[] Capture() => [_commandByte, (byte)(_memory.A20Enabled ? 1 : 0)];
+
+    /// <summary>Puts back what <see cref="Capture"/> took.</summary>
+    public void Restore(ReadOnlySpan<byte> state)
+    {
+        if (state.Length < 2) return;
+        _commandByte = state[0];
+        _memory.A20Enabled = state[1] != 0;
+    }
+
     /// <summary>Set when the controller has been asked to pulse CPU reset (Ctrl+Alt+Del).</summary>
     public bool ResetRequested { get; set; }
 

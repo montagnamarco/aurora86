@@ -107,6 +107,35 @@ public sealed partial class Cpu
         return TranslatePaged(linear, write);
     }
 
+    /// <summary>
+    /// Reads one byte the way the processor would, from a linear address --
+    /// through the page tables when paging is on, and without raising a fault
+    /// when the page is absent.
+    ///
+    /// This exists for debugging, and it earns its place: under Windows in
+    /// enhanced mode a segment base plus an offset is a linear address, not a
+    /// physical one, and reading it straight off the bus returns whatever
+    /// happens to sit at that physical address -- usually zeroes. Every
+    /// inspection of what the guest is executing needs this walk, and doing it
+    /// by hand in each debugging session is how one ends up reading the wrong
+    /// memory and drawing conclusions from it.
+    /// </summary>
+    /// <returns>The byte, or 0xFF when the page is not present.</returns>
+    public byte PeekLinear(uint linear)
+    {
+        if (!State.PagingEnabled) return _memory.ReadByte(linear);
+
+        // The walk by hand, because TranslatePaged raises a page fault on a
+        // missing page and an inspection must never disturb the machine.
+        uint directory = _memory.ReadDword((State.Cr3 & 0xFFFFF000) + ((linear >> 22) << 2));
+        if ((directory & 1) == 0) return 0xFF;
+
+        uint table = _memory.ReadDword((directory & 0xFFFFF000) + (((linear >> 12) & 0x3FF) << 2));
+        if ((table & 1) == 0) return 0xFF;
+
+        return _memory.ReadByte((table & 0xFFFFF000) | (linear & 0xFFF));
+    }
+
     // --- memory accesses ------------------------------------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

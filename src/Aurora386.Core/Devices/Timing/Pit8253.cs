@@ -1,3 +1,4 @@
+using System.IO;
 using Aurora386.Core.IO;
 
 using Aurora386.Core.Devices.Interrupts;
@@ -227,5 +228,60 @@ public sealed class Pit8253 : IIoDevice
             int reload = _channels[0].ReloadValue == 0 ? 65536 : _channels[0].ReloadValue;
             return (double)ClockHz / reload;
         }
+    }
+
+    /// <summary>
+    /// The three channels' state, for a snapshot.
+    ///
+    /// Without it a restored machine's channel 0 comes back at its power-on
+    /// divisor rather than the one the guest programmed, so time runs at the
+    /// wrong speed -- and a guest that had reprogrammed it for a faster tick
+    /// finds its clock suddenly slow.
+    /// </summary>
+    public byte[] Capture()
+    {
+        var buffer = new byte[3 * 16 + 8];
+        var writer = new BinaryWriter(new MemoryStream(buffer));
+
+        foreach (Channel channel in _channels)
+        {
+            writer.Write(channel.ReloadValue);
+            writer.Write(channel.Counter);
+            writer.Write(channel.AccessMode);
+            writer.Write(channel.OperatingMode);
+            writer.Write(channel.WaitingHighByte);
+            writer.Write(channel.ReadingHighByte);
+            writer.Write(channel.OutputHigh);
+            writer.Write(channel.Latched);
+            writer.Write(channel.LatchedValue);
+            writer.Write((uint)0);              // padding, to a round 16
+        }
+
+        writer.Write(Channel0Ticks);
+        return buffer;
+    }
+
+    /// <summary>Puts back what <see cref="Capture"/> took.</summary>
+    public void Restore(ReadOnlySpan<byte> state)
+    {
+        if (state.Length < 3 * 16 + 8) return;
+
+        var reader = new BinaryReader(new MemoryStream(state.ToArray()));
+
+        foreach (Channel channel in _channels)
+        {
+            channel.ReloadValue = reader.ReadUInt16();
+            channel.Counter = reader.ReadUInt16();
+            channel.AccessMode = reader.ReadByte();
+            channel.OperatingMode = reader.ReadByte();
+            channel.WaitingHighByte = reader.ReadBoolean();
+            channel.ReadingHighByte = reader.ReadBoolean();
+            channel.OutputHigh = reader.ReadBoolean();
+            channel.Latched = reader.ReadBoolean();
+            channel.LatchedValue = reader.ReadUInt16();
+            reader.ReadUInt32();
+        }
+
+        Channel0Ticks = reader.ReadInt64();
     }
 }

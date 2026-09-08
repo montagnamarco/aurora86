@@ -144,4 +144,61 @@ public class MachineSnapshotTests
             File.Delete(path);
         }
     }
+
+    /// <summary>
+    /// The interrupt masks survive a snapshot.
+    ///
+    /// This is the test that would have saved a long investigation. A
+    /// snapshot that omits the interrupt controllers restores them to their
+    /// power-on state, which is every line masked -- and a guest resumed from
+    /// it never receives another timer tick. What that looks like from
+    /// outside is a guest that has stopped part-way through whatever it was
+    /// doing, which invites the conclusion that whatever it was doing is
+    /// broken. It was the snapshot.
+    /// </summary>
+    [Fact]
+    public void TheInterruptMasksSurviveASnapshot()
+    {
+        using Machine machine = Build();
+
+        // The masks a guest sets when it wants the timer and the keyboard
+        // and nothing else.
+        machine.Io.WriteByte(0x21, 0xFC);
+        machine.Io.WriteByte(0xA1, 0xFF);
+
+        MachineSnapshot snapshot = MachineSnapshot.Capture(machine);
+
+        // Mask everything, the way a reset would.
+        machine.Io.WriteByte(0x21, 0xFF);
+        Assert.Equal(0xFF, machine.Interrupts.Master.Registers.Mask);
+
+        snapshot.RestoreTo(machine);
+
+        Assert.Equal(0xFC, machine.Interrupts.Master.Registers.Mask);
+    }
+
+    /// <summary>
+    /// And a machine restored from a snapshot still gets its timer ticks.
+    ///
+    /// The masks coming back is the mechanism; this is the thing that
+    /// actually matters, and it is checked separately because a snapshot
+    /// could restore every byte of the controller and still leave the timer
+    /// counting from a divisor the guest never asked for.
+    /// </summary>
+    [Fact]
+    public void ARestoredMachineStillReceivesTimerInterrupts()
+    {
+        using Machine machine = Build();
+
+        machine.Io.WriteByte(0x21, 0xFE);      // IRQ 0 through, the rest masked
+
+        MachineSnapshot snapshot = MachineSnapshot.Capture(machine);
+        machine.Io.WriteByte(0x21, 0xFF);
+        snapshot.RestoreTo(machine);
+
+        machine.Timer.Advance(100_000);
+
+        Assert.True(machine.Interrupts.HasPendingInterrupt,
+            "a restored machine must still hear its timer");
+    }
 }

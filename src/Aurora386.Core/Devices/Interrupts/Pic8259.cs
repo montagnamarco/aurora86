@@ -204,6 +204,48 @@ public sealed class Pic8259 : IIoDevice
     /// send an EOI, or it would close an interrupt that was never open.
     /// </summary>
     public bool HasInterruptInService => _serviceRegister != 0;
+
+    /// <summary>
+    /// The three registers, for a debugger: what is requested, what is
+    /// masked, and what is being serviced.
+    ///
+    /// A guest that has stopped responding is usually waiting for an
+    /// interrupt that never arrives, and there are only three reasons: the
+    /// line was never raised, it is masked, or an earlier one is still in
+    /// service because its end-of-interrupt was lost. Being able to read
+    /// these three bytes tells the three apart in one look.
+    /// </summary>
+    public (byte Request, byte Mask, byte InService) Registers
+        => (_requestRegister, _maskRegister, _serviceRegister);
+
+    /// <summary>
+    /// The whole of this controller's state, for a snapshot.
+    ///
+    /// A snapshot that leaves the interrupt controllers out restores a
+    /// machine whose masks are all ones -- the state a PIC powers up in --
+    /// and a guest waiting for its timer tick then waits forever. That is
+    /// indistinguishable from a hang caused by anything else, so it is worth
+    /// the eight bytes.
+    /// </summary>
+    public byte[] Capture() =>
+    [
+        _requestRegister, _serviceRegister, _maskRegister, _vectorBase,
+        (byte)_initStep, (byte)(_expectIcw4 ? 1 : 0), (byte)(_readIsr ? 1 : 0), 0,
+    ];
+
+    /// <summary>Puts back what <see cref="Capture"/> took.</summary>
+    public void Restore(ReadOnlySpan<byte> state)
+    {
+        if (state.Length < 8) return;
+
+        _requestRegister = state[0];
+        _serviceRegister = state[1];
+        _maskRegister = state[2];
+        _vectorBase = state[3];
+        _initStep = state[4];
+        _expectIcw4 = state[5] != 0;
+        _readIsr = state[6] != 0;
+    }
 }
 
 /// <summary>
@@ -260,4 +302,21 @@ public sealed class InterruptController
     /// call on top of a handler's frame returns into the middle of it.
     /// </summary>
     public bool HasInterruptInService => Master.HasInterruptInService || Slave.HasInterruptInService;
+
+    /// <summary>Both controllers' state, master first.</summary>
+    public byte[] Capture()
+    {
+        byte[] state = new byte[16];
+        Master.Capture().CopyTo(state, 0);
+        Slave.Capture().CopyTo(state, 8);
+        return state;
+    }
+
+    /// <summary>Puts back what <see cref="Capture"/> took.</summary>
+    public void Restore(ReadOnlySpan<byte> state)
+    {
+        if (state.Length < 16) return;
+        Master.Restore(state[..8]);
+        Slave.Restore(state[8..16]);
+    }
 }

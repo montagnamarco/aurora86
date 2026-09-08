@@ -53,6 +53,21 @@ public sealed class MachineSnapshot
     private readonly byte[] _videoMemory;
     private readonly byte[] _videoRegisters;
 
+    /// <summary>
+    /// The chips that decide whether the guest is ever interrupted again.
+    ///
+    /// A snapshot without them restores the interrupt controllers to their
+    /// power-on state, which is every line masked, and the timer to its
+    /// power-on divisor. The guest then sits in whatever idle loop it was in,
+    /// waiting for a tick that cannot arrive -- and the symptom, a picture
+    /// half drawn and a machine that ignores the keyboard, looks exactly like
+    /// a fault in whatever the guest was drawing at the time. This cost a
+    /// good deal of time to find, so it is worth the forty bytes.
+    /// </summary>
+    private readonly byte[] _interruptControllers;
+    private readonly byte[] _timer;
+    private readonly byte[] _keyboard;
+
     private MachineSnapshot(Machine machine)
     {
         CpuState state = machine.Cpu.State;
@@ -76,6 +91,10 @@ public sealed class MachineSnapshot
 
         _videoMemory = machine.VideoMemory.CaptureMemory();
         _videoRegisters = machine.VideoRegisters.CaptureRegisters();
+
+        _interruptControllers = machine.Interrupts.Capture();
+        _timer = machine.Timer.Capture();
+        _keyboard = machine.Keyboard.Capture();
     }
 
     /// <summary>Takes a snapshot of the machine as it stands.</summary>
@@ -105,6 +124,13 @@ public sealed class MachineSnapshot
 
         if (_videoMemory.Length > 0) machine.VideoMemory.RestoreMemory(_videoMemory);
         if (_videoRegisters.Length > 0) machine.VideoRegisters.RestoreRegisters(_videoRegisters);
+
+        // The keyboard controller owns A20, so it is restored after the bus:
+        // the other order would leave the line as the snapshot's own field
+        // said rather than as the controller had it.
+        if (_interruptControllers.Length > 0) machine.Interrupts.Restore(_interruptControllers);
+        if (_timer.Length > 0) machine.Timer.Restore(_timer);
+        if (_keyboard.Length > 0) machine.Keyboard.Restore(_keyboard);
 
         // Paging translations cached from the old contents of memory describe
         // an address space that no longer exists.
@@ -147,6 +173,13 @@ public sealed class MachineSnapshot
         file.Write(_videoMemory);
         file.Write(_videoRegisters.Length);
         file.Write(_videoRegisters);
+
+        file.Write(_interruptControllers.Length);
+        file.Write(_interruptControllers);
+        file.Write(_timer.Length);
+        file.Write(_timer);
+        file.Write(_keyboard.Length);
+        file.Write(_keyboard);
     }
 
     private MachineSnapshot(BinaryReader file)
@@ -199,6 +232,22 @@ public sealed class MachineSnapshot
         {
             _videoMemory = [];
             _videoRegisters = [];
+        }
+
+        // Same again for the device state, which came later still: a file
+        // that stops before it restores a machine whose interrupt
+        // controllers are as they power up.
+        if (file.BaseStream.Position < file.BaseStream.Length)
+        {
+            _interruptControllers = file.ReadBytes(file.ReadInt32());
+            _timer = file.ReadBytes(file.ReadInt32());
+            _keyboard = file.ReadBytes(file.ReadInt32());
+        }
+        else
+        {
+            _interruptControllers = [];
+            _timer = [];
+            _keyboard = [];
         }
     }
 
