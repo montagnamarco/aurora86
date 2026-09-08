@@ -94,11 +94,17 @@ public sealed class VgaMemory : IMemoryDevice
     private readonly byte[] _latches = new byte[4];
 
     /// <summary>
-    /// Dirty tracking, in scan-line-ish granularity. 512 slots covers a text
-    /// row count (25/43/50) as well as a 480-line graphics mode when rows are
-    /// bucketed; see <see cref="MarkDirty"/>.
+    /// Dirty tracking, one slot per scan line.
+    /// 
+    /// There are 1200 of them because that is the tallest mode this card
+    /// offers, and a slot costs a byte. It used to be 512, which covered
+    /// every text mode and a 480-line screen -- and silently dropped every
+    /// row above it, because a row past the end of the array is skipped
+    /// rather than reported. At 1024x768 that left the bottom third of the
+    /// screen never redrawn: written by the guest, correct in memory, and
+    /// never copied to the display.
     /// </summary>
-    private readonly bool[] _dirtyRows = new bool[512];
+    private readonly bool[] _dirtyRows = new bool[1200];
 
     private bool _anyDirty = true;
 
@@ -536,12 +542,22 @@ public sealed class VgaMemory : IMemoryDevice
                 // rather than the mode: a program can set a scan line longer
                 // than the picture and scroll a window across it, and a write
                 // outside that window belongs to no visible row at all.
+                // The same three sources the renderer uses, in the same
+                // order, and the middle one is the reason this is not just
+                // the VBE value: an S3 driver does not call 4F06, it writes
+                // the CRTC. Reading only the VBE value gave a stride of zero
+                // there, so rows were attributed by the mode's natural width
+                // while the picture was drawn at the card's -- and the rows
+                // marked dirty were not the rows that had changed.
                 int stride = Registers.VesaScanLineBytes > 0
                     ? Registers.VesaScanLineBytes
+                    : Registers.HasExtendedRowOffset ? Registers.ExtendedRowOffset
                     : mode.BytesPerRow;
                 if (stride <= 0) { Array.Fill(_dirtyRows, true); return; }
 
-                uint origin = (uint)Registers.VesaDisplayStart;
+                uint origin = Registers.VesaDisplayStart > 0
+                    ? (uint)Registers.VesaDisplayStart
+                    : Registers.ExtendedStartAddress * 4;
                 if (offset < origin) return;
 
                 uint svgaRow = (offset - origin) / (uint)stride;

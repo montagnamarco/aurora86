@@ -175,6 +175,31 @@ public sealed class VesaServices
         WriteDword(buffer + 40, LinearFrameBufferBase);
         WriteWord(buffer + 50, (ushort)mode.BytesPerRow);       // linear bytes per row
 
+        // VBE 2.0 repeats the colour layout for the linear frame buffer, at
+        // offsets 52 to 57, and a driver that uses the frame buffer reads
+        // those rather than the banked ones above.
+        //
+        // Leaving them zero does not fail: it says every colour field is
+        // nought bits wide, which is a description of a mode that can show
+        // one colour. That is not what a driver does with it, though -- it
+        // takes it at its word and lays out pixels accordingly, so what it
+        // draws is right where it should be and invisible.
+        if (mode.BitsPerPixel is 15 or 16)
+        {
+            Write(buffer + 52, 5);                              // red size
+            Write(buffer + 53, (byte)(mode.BitsPerPixel == 15 ? 10 : 11));
+            Write(buffer + 54, (byte)(mode.BitsPerPixel == 15 ? 5 : 6));
+            Write(buffer + 55, 5);                              // green position
+            Write(buffer + 56, 5);                              // blue size
+            Write(buffer + 57, 0);                              // blue position
+        }
+        else if (mode.BitsPerPixel >= 24)
+        {
+            Write(buffer + 52, 8); Write(buffer + 53, 16);
+            Write(buffer + 54, 8); Write(buffer + 55, 8);
+            Write(buffer + 56, 8); Write(buffer + 57, 0);
+        }
+
         cpu.State.Ax = 0x004F;
     }
 
