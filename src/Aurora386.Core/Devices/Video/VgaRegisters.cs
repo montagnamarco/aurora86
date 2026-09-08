@@ -757,6 +757,9 @@ public sealed class VgaRegisters : IIoDevice
     }
     public byte Attribute(int index) => _attribute[index & 0x1F];
 
+    /// <summary>Writes one attribute controller register, as INT 10h AH=10h does.</summary>
+    public void SetAttribute(int index, byte value) => _attribute[index & 0x1F] = value;
+
     /// <summary>Map Mask: bit N enables CPU writes to plane N.</summary>
     public byte MapMask => (byte)(_sequencer[SeqMapMask] & 0x0F);
 

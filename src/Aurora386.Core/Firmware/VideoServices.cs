@@ -143,6 +143,51 @@ public sealed class VideoServices
         var st = cpu.State;
         switch (st.GetReg8(0))
         {
+            // --- writing ---------------------------------------------------
+            //
+            // These were missing, and the omission is the sort that hides for
+            // a long time: a program that only reads the palette works
+            // perfectly, and one that writes it gets no error -- the call
+            // returns, the colours simply never change. Windows' S3 driver
+            // sets its desktop colours this way, and the result was a desktop
+            // painted entirely in colour zero, which the BIOS leaves black.
+
+            case 0x00:   // set one attribute register: BL index, BH value
+                _registers.SetAttribute(st.GetReg8(3), st.GetReg8(7));
+                return;
+
+            case 0x01:   // set the overscan colour, which is register 0x11
+                _registers.SetAttribute(0x11, st.GetReg8(7));
+                return;
+
+            case 0x02:   // set all sixteen and the overscan, from ES:DX
+            {
+                for (int i = 0; i < 16; i++)
+                    _registers.SetAttribute(i, cpu.ReadMemoryByte(CpuNs.SegReg.Es, st.Dx + (uint)i));
+                _registers.SetAttribute(0x11, cpu.ReadMemoryByte(CpuNs.SegReg.Es, st.Dx + 16u));
+                return;
+            }
+
+            case 0x10:   // set one DAC entry: BX index, DH red, CH green, CL blue
+                _registers.SetPaletteEntry(st.Bx, st.GetReg8(6), st.GetReg8(5), st.GetReg8(1));
+                return;
+
+            case 0x12:   // set a block of DAC entries: BX first, CX count, from ES:DX
+            {
+                for (int i = 0; i < st.Cx; i++)
+                {
+                    uint at = st.Dx + (uint)(i * 3);
+                    _registers.SetPaletteEntry(
+                        st.Bx + i,
+                        cpu.ReadMemoryByte(CpuNs.SegReg.Es, at),
+                        cpu.ReadMemoryByte(CpuNs.SegReg.Es, at + 1),
+                        cpu.ReadMemoryByte(CpuNs.SegReg.Es, at + 2));
+                }
+                return;
+            }
+
+            // --- reading ---------------------------------------------------
+
             case 0x07:   // read one attribute register BL -> BH
                 st.SetReg8(7, _registers.Attribute(st.GetReg8(3)));
                 return;
