@@ -272,24 +272,32 @@ public sealed class RedirectorServices(Machine machine)
             0x13 => RenameFile(cpu),
             0x16 => OpenFileCall(cpu),
             0x17 => CreateFileCall(cpu),
-            // 19h and 25h are both "change directory" -- the same request the
-            // 05h call makes, arriving by a different number. DOS 4 added 19h
-            // and DOS 5 added 25h, and each kept the older ones working, so
-            // which one a given version sends is not something to predict:
-            // MS-DOS 6.22 uses 25h to select a drive and 19h to walk into a
-            // directory, and answers neither by falling back to 05h.
-            //
-            // Leaving them out is what made a shared folder report "path not
-            // found" for its own root. The drive existed, the redirector was
-            // reached, and the very first thing DOS asked about it went
-            // unanswered.
-            0x05 or 0x19 or 0x25 => ChangeDirectory(cpu),
+            0x05 => ChangeDirectory(cpu),
 
             0x1B => FindFirst(cpu),
             0x1C => FindNext(cpu),
             0x1E => SpecialOpen(cpu),
             0x21 => SeekFromEnd(cpu),
             0x23 => QualifyFilename(cpu),
+
+            // 19h and 25h look as though they should be ours, and are not.
+            // Measuring them is the only way to tell.
+            //
+            // Both arrive with the SDA's current-CDS pointer set to
+            // FFFF:FFFF, which is DOS's way of saying "this call is not about
+            // a drive at all". 19h tells the redirector which directory DOS
+            // has just made current, and 25h which drive it has just
+            // selected; neither carries a path to verify, and treating them
+            // as "change directory" checks the previous drive's path against
+            // this drive's filesystem -- which fails for a reason that has
+            // nothing to do with either.
+            //
+            // They still have to be answered rather than declined. An
+            // unanswered function 11h is a failed one as far as DOS is
+            // concerned, and declining these two is what left a shared folder
+            // reporting "path not found" for its own root.
+            0x19 or 0x25 => AcknowledgeWithoutPath(cpu),
+
             0x2E => DoRedirection(cpu),
 
             // Deliberately not implemented, and why it is safe not to:
@@ -358,6 +366,19 @@ public sealed class RedirectorServices(Machine machine)
     /// refused to list anything.
     /// </summary>
     private static bool QualifyFilename(CpuNs.Cpu cpu)
+    {
+        Succeed(cpu);
+        return true;
+    }
+
+    /// <summary>
+    /// Subfunctions 19h and 25h: DOS telling the redirector what it has just
+    /// done, rather than asking it anything.
+    ///
+    /// There is nothing to do and nothing to check -- but saying so out loud
+    /// matters, because silence reads as failure.
+    /// </summary>
+    private static bool AcknowledgeWithoutPath(CpuNs.Cpu cpu)
     {
         Succeed(cpu);
         return true;
