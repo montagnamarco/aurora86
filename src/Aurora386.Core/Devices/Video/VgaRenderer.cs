@@ -752,15 +752,33 @@ public sealed class VgaRenderer
         VgaModeInfo mode = _registers.EffectiveMode;
         int depth = mode.BitsPerPixel;
 
-        // The stride need not be the visible width: a program can set a
-        // longer one and scroll a window across a picture wider than the
-        // screen, which is how side-scrolling works at resolutions where
-        // copying the whole screen every frame is out of the question.
+        // Three sources for the stride, in order of authority. A VBE call
+        // wins because it was an explicit request; then the card's own
+        // extended registers, which is where a driver programming the
+        // hardware directly puts it; then the mode's natural width.
+        //
+        // The middle one matters more than it looks: an S3 driver does not
+        // call 4F06, it writes the CRTC. Reading only the VBE value would
+        // leave such a driver's picture drawn at the wrong stride.
+        // The card's own value counts only when a driver has actually
+        // programmed the extended bits. The plain register keeps whatever the
+        // last BIOS mode set left in it, and reading that in a VBE mode gives
+        // an 800-pixel picture drawn with 640-byte rows -- a screen that
+        // shears diagonally, which is the third time today that same stale
+        // value has caused the same symptom.
         int bytesPerRow = _registers.VesaScanLineBytes > 0
             ? _registers.VesaScanLineBytes
+            : _registers.HasExtendedRowOffset ? _registers.ExtendedRowOffset
             : mode.BytesPerRow;
 
-        uint origin = (uint)_registers.VesaDisplayStart;
+        // And the same for the origin. The VGA's own start address is
+        // sixteen bits, enough for 64 KB; at 800x600 a screen is 480000
+        // bytes, so an S3 puts the missing bits in extended registers. A
+        // renderer that reads only the sixteen shows the top 81 rows of the
+        // picture and black below -- which is exactly what it looks like.
+        uint origin = _registers.VesaDisplayStart > 0
+            ? (uint)_registers.VesaDisplayStart
+            : _registers.ExtendedStartAddress * 4;
 
         for (int y = 0; y < Height; y++)
         {

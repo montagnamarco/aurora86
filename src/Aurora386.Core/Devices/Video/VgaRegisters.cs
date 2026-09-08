@@ -803,6 +803,40 @@ public sealed class VgaRegisters : IIoDevice
         => CursorAddress = (ushort)(row * TextColumns + column);
 
     /// <summary>Start address of the visible region; changing it scrolls in hardware.</summary>
+    /// <summary>
+    /// Where the display starts, with the extended bits an S3 adds.
+    ///
+    /// The VGA's own start address is sixteen bits, which reaches 64 KB --
+    /// enough when a screen was 64 KB. At 800x600 in 256 colours a screen is
+    /// 480000 bytes, so the address needs more bits, and the S3 put them in
+    /// two extended registers: two in 0x31 and two more in 0x51.
+    ///
+    /// Without them a driver can only ever show the first 64 KB of video
+    /// memory, which at 800x600 is the top 81 rows and nothing else.
+    /// </summary>
+    public uint ExtendedStartAddress =>
+        (uint)((_crtc[0x0C] << 8) | _crtc[0x0D])
+        | (uint)((_crtc[0x31] & 0x30) << 12)
+        | (uint)((_crtc[0x51] & 0x03) << 18);
+
+    /// <summary>
+    /// Bytes between one scan line and the next, with the ninth and tenth
+    /// bits an S3 adds -- 0x43 bit 2 and 0x51 bits 4-5. The VGA's own field
+    /// is eight bits, which stops at a logical width of 2040 bytes.
+    /// </summary>
+    /// <summary>
+    /// Whether a driver has programmed the extended bits of the row offset.
+    /// The plain register always holds something -- whatever the last mode
+    /// set left -- so its value alone says nothing about whether the card's
+    /// own geometry is in force.
+    /// </summary>
+    public bool HasExtendedRowOffset => (_crtc[0x43] & 0x04) != 0 || (_crtc[0x51] & 0x30) != 0;
+
+    public int ExtendedRowOffset =>
+        (_crtc[0x13]
+         | ((_crtc[0x43] & 0x04) << 6)
+         | ((_crtc[0x51] & 0x30) << 4)) * (Chain4 ? 8 : 2);
+
     public ushort StartAddress => (ushort)((_crtc[0x0C] << 8) | _crtc[0x0D]);
 
     /// <summary>
