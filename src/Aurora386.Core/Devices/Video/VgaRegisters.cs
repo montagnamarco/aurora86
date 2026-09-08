@@ -1142,7 +1142,7 @@ public sealed class VgaRegisters : IIoDevice
     public byte[] CaptureRegisters()
     {
         var state = new byte[_crtc.Length + _sequencer.Length + _graphics.Length
-                           + _attribute.Length + _palette.Length + 16];
+                           + _attribute.Length + _palette.Length + 32];
         int at = 0;
 
         _crtc.CopyTo(state, at); at += _crtc.Length;
@@ -1158,6 +1158,20 @@ public sealed class VgaRegisters : IIoDevice
         state[at++] = (byte)(_extendedUnlocked ? 1 : 0);
         state[at++] = (byte)(_sequencerUnlocked ? 1 : 0);
         state[at++] = VideoMode;
+
+        // The VBE state, which is not in any register: it lives here because
+        // a VBE mode is a request the card remembers rather than a set of
+        // register values. A snapshot without it restores a machine that has
+        // the guest's 800x600 pixels and believes it is in a VGA mode.
+        state[at++] = (byte)(VesaMode?.Number ?? 0);
+        state[at++] = (byte)((VesaMode?.Number ?? 0) >> 8);
+        state[at++] = (byte)(VesaLinearFrameBuffer ? 1 : 0);
+        state[at++] = (byte)VesaWindowBank;
+        state[at++] = (byte)VesaScanLineBytes;
+        state[at++] = (byte)(VesaScanLineBytes >> 8);
+        state[at++] = (byte)VesaDisplayStart;
+        state[at++] = (byte)(VesaDisplayStart >> 8);
+        state[at++] = (byte)(VesaDisplayStart >> 16);
 
         return state;
     }
@@ -1183,8 +1197,16 @@ public sealed class VgaRegisters : IIoDevice
         // The mode setter reprograms the standard registers from its table,
         // which would undo everything just restored -- so the field is set
         // directly and only the mode information rebuilt.
-        _videoMode = state[at];
+        _videoMode = state[at++];
         ModeInfo = VgaModes.Get(_videoMode);
+
+        ushort vesaNumber = (ushort)(state[at] | (state[at + 1] << 8)); at += 2;
+        VesaLinearFrameBuffer = state[at++] != 0;
+        VesaMode = vesaNumber == 0 ? null : VesaModes.Get(vesaNumber, VgaMemory.TotalSize);
+
+        VesaWindowBank = state[at++];
+        VesaScanLineBytes = state[at] | (state[at + 1] << 8); at += 2;
+        VesaDisplayStart = state[at] | (state[at + 1] << 8) | (state[at + 2] << 16);
 
         ModeChanged?.Invoke();
     }
