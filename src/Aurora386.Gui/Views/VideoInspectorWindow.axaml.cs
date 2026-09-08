@@ -1,5 +1,6 @@
 using System;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Aurora386.Gui.ViewModels;
@@ -32,7 +33,31 @@ public partial class VideoInspectorWindow : Window
         if (ViewModel is not { } model) return;
 
         model.PictureChanged += Redraw;
+
+        // Magnifying does not need the picture rebuilt, only stretched, so it
+        // has its own event: at ×16 a redraw of two megabytes for every step
+        // of the wheel would be felt.
+        model.ZoomChanged += ApplyZoom;
+
         Redraw();
+    }
+
+    /// <summary>
+    /// Stretches the bitmap to the current magnification.
+    ///
+    /// The stretch is done by sizing the control rather than by scaling the
+    /// bitmap, and the interpolation mode set in the markup is None: this
+    /// window exists to show what individual bytes hold, and a smoothed
+    /// magnification invents pixels that are not in memory.
+    /// </summary>
+    private void ApplyZoom()
+    {
+        if (ViewModel is not { } model) return;
+        if (this.FindControl<Image>("MemoryView") is not { } image) return;
+        if (model.PictureWidth <= 0) return;
+
+        image.Width = model.PictureWidth * model.Zoom;
+        image.Height = model.PictureHeight * model.Zoom;
     }
 
     private void Redraw()
@@ -78,7 +103,45 @@ public partial class VideoInspectorWindow : Window
 
         image.Source = null;
         image.Source = _bitmap;
-        image.Width = model.PictureWidth;
-        image.Height = model.PictureHeight;
+        ApplyZoom();
+    }
+
+    /// <summary>
+    /// The wheel magnifies, with the modifier key every other viewer uses --
+    /// plain scrolling still scrolls, because a picture taller than the
+    /// window is the normal case here.
+    /// </summary>
+    protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
+    {
+        if (ViewModel is { } model
+            && (e.KeyModifiers & (KeyModifiers.Control | KeyModifiers.Meta)) != 0)
+        {
+            if (e.Delta.Y > 0) model.ZoomInCommand.Execute(null);
+            else if (e.Delta.Y < 0) model.ZoomOutCommand.Execute(null);
+            e.Handled = true;
+            return;
+        }
+
+        base.OnPointerWheelChanged(e);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (ViewModel is { } model)
+        {
+            switch (e.Key)
+            {
+                case Key.OemPlus or Key.Add:
+                    model.ZoomInCommand.Execute(null); e.Handled = true; return;
+                case Key.OemMinus or Key.Subtract:
+                    model.ZoomOutCommand.Execute(null); e.Handled = true; return;
+                case Key.D0 or Key.NumPad0:
+                    model.ZoomResetCommand.Execute(null); e.Handled = true; return;
+                case Key.F5:
+                    model.RefreshCommand.Execute(null); e.Handled = true; return;
+            }
+        }
+
+        base.OnKeyDown(e);
     }
 }

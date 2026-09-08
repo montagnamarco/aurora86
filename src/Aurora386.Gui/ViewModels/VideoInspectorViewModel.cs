@@ -82,6 +82,31 @@ public sealed partial class VideoInspectorViewModel : ViewModelBase
     /// <summary>Raised when the picture has been redrawn.</summary>
     public event Action? PictureChanged;
 
+    /// <summary>
+    /// How many screen pixels one byte of video memory occupies.
+    ///
+    /// Whole numbers only, and nearest-neighbour rather than smoothing: this
+    /// window exists to show what individual bytes hold, and an interpolated
+    /// magnification invents pixels that are not there. At four times, a
+    /// single wrong byte in a field of thousands is visible; smoothed, it
+    /// would be a faint blur indistinguishable from the ones around it.
+    /// </summary>
+    [ObservableProperty] private int _zoom = 1;
+
+    /// <summary>Raised when the magnification changes but the picture has not.</summary>
+    public event Action? ZoomChanged;
+
+    partial void OnZoomChanged(int value) => ZoomChanged?.Invoke();
+
+    [RelayCommand]
+    private void ZoomIn() => Zoom = Math.Min(Zoom * 2, 16);
+
+    [RelayCommand]
+    private void ZoomOut() => Zoom = Math.Max(Zoom / 2, 1);
+
+    [RelayCommand]
+    private void ZoomReset() => Zoom = 1;
+
     /// <summary>The views, for the menu that chooses between them.</summary>
     public static VideoViewKind[] ViewKinds => Enum.GetValues<VideoViewKind>();
 
@@ -240,7 +265,8 @@ public sealed partial class VideoInspectorViewModel : ViewModelBase
         }
 
         ViewDescription = $"{pixelsPerRow}×{rows} from {ViewOffset:X6}, "
-                        + $"{stride} bytes per row, {ViewKind}";
+                        + $"{stride} bytes per row, {ViewKind}"
+                        + (Zoom > 1 ? $", ×{Zoom}" : "");
     }
 
     private uint PixelAt(Machine machine, uint rowStart, int x)
