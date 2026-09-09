@@ -59,9 +59,20 @@ public sealed class EmulatorSession : IDisposable
     /// </summary>
     public bool Unthrottled { get; set; }
 
+    /// <summary>
+    /// How a machine is made, used at start and again at every reset.
+    ///
+    /// A reset rebuilds the machine from nothing, and "nothing" has to mean
+    /// the same thing each time: the same memory size, the same processor,
+    /// the same disks. Keeping that recipe here rather than in whoever
+    /// pressed reset is what lets a saved configuration describe a machine
+    /// once and have every reset honour it.
+    /// </summary>
+    public Func<Machine> Factory { get; set; } = () => new Machine();
+
     public EmulatorSession()
     {
-        Machine = new Machine();
+        Machine = Factory();
     }
 
     /// <summary>
@@ -123,7 +134,7 @@ public sealed class EmulatorSession : IDisposable
         lock (_gate)
         {
             Machine.Dispose();
-            Machine = new Machine();
+            Machine = Factory();
         }
     }
 
