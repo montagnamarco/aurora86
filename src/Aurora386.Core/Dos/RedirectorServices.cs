@@ -365,8 +365,23 @@ public sealed class RedirectorServices(Machine machine)
     /// was ever reached. The drive existed, answered its label, and then
     /// refused to list anything.
     /// </summary>
-    private static bool QualifyFilename(CpuNs.Cpu cpu)
+    private bool QualifyFilename(CpuNs.Cpu cpu)
     {
+        // Which drive this concerns has to come from the name, not from the
+        // CDS pointer, and that is the whole difficulty of this call: it
+        // arrives BEFORE DOS has settled on a drive, with the pointer still
+        // set to FFFF:FFFF. Asking the CDS gives "no drive" every time.
+        //
+        // The name itself carries the letter, because DOS has already
+        // qualified it -- that is what it is showing us.
+        string qualified = ReadAsciiz(SwappableDataArea + DosStructures.SdaFirstFilename);
+        if (qualified.Length < 2 || qualified[1] != ':') return false;
+
+        int drive = char.ToUpperInvariant(qualified[0]) - 'A';
+        if (drive < 0 || !_drives.ContainsKey((byte)drive)) return false;
+
+        // Ours, and nothing to rewrite: our names are ordinary DOS names, so
+        // the qualified name already in the buffer is the right one.
         Succeed(cpu);
         return true;
     }

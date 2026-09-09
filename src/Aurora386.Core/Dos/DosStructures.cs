@@ -80,8 +80,13 @@ public static class DosStructures
     /// <summary>
     /// The name a search was asked for, already split into eleven bytes of
     /// name and extension with the wildcards expanded into question marks.
+    ///
+    /// Not 0x9E, which is where this used to say it was -- that is the
+    /// qualified filename above, and two fields cannot share one offset. The
+    /// mistake was harmless only because nothing read it yet, which is
+    /// exactly how such a thing survives to be found by whoever does.
     /// </summary>
-    public const int SdaSearchTemplate = 0x9E;
+    public const int SdaSearchTemplate = 0x35D;
 
     /// <summary>Where the CDS of the drive being worked on is pointed to from.</summary>
     public const int SdaCurrentCdsPointer = 0x282;
