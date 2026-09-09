@@ -385,7 +385,33 @@ all change. Pretending it were a `DiskImage` would have shown at the first
 `DIR`. The emulator carries a stand-in MSCDEX for a guest that has none; the
 moment a real driver (OAKCDROM, say) sends its first ATAPI packet, the
 stand-in and the redirector's copy of the disc both step aside, so that the
-disc has exactly one drive letter -- the driver's.
+disc has exactly one drive letter -- the driver's. Which letter that is, the
+emulator asks the guest (INT 2Fh AX=1500h) and shows in the status bar.
+
+### The third road: the same disk through the IDE registers
+
+The hard disk is reachable twice. DOS goes through INT 13h, as above.
+Windows -- the 32-bit disk access of 3.1, the protected-mode driver of 95
+-- bypasses the BIOS and drives the ATA registers at 0x1F0 directly:
+IDENTIFY DEVICE, READ/WRITE SECTORS one interrupt per sector, READ/WRITE
+MULTIPLE one per block, addresses as cylinder/head/sector or as a 28-bit
+sector number. `IdeController.Disk.cs` answers as the master of the primary
+cable, in front of the CD-ROM as slave, out of the same `DiskImage` the BIOS
+uses; a second disk gets the secondary cable (0x170, IRQ 15). Both doors
+open onto the same file, so what one writes the other reads.
+
+### Geometry, presented and real
+
+The BIOS's CHS interface has ten bits for the cylinder, so a disk past 1024
+cylinders (504 MB with 16 heads) is *presented* with the cylinders halved
+and the heads doubled, as many times as it takes, up to 255 heads -- the
+translation every BIOS of the mid-nineties did. The image keeps its real
+geometry; `DiskServices.PresentedGeometry` is what INT 13h 08h reports and
+what 02h/03h decode with, and the same presented geometry goes into the MBR
+and the BPB of every disk the emulator creates, because DOS turns sector
+numbers into CHS with the heads and sectors it reads from the BPB. The
+extended functions (41h-48h) address by sector number and need none of
+this; Windows 95 uses them when they exist.
 
 ### The ATAPI protocol, which is where the defects hide
 
@@ -471,6 +497,20 @@ drives.
 It is the mechanism that lets a folder of the host appear as a DOS drive,
 without inventing calls DOS does not know.
 
+The protocol was never documented by Microsoft, and every one of its
+conventions is a number that nothing checks: arguments in the Swappable
+Data Area at fixed offsets (the search attribute at 24Dh, the extended
+open's action at 2DDh), the drive identified by pointer arithmetic on the
+CDS array, the "remote" mark as bit 15 of the SFT's device-information
+word, "declined" spelt as carry set and AX=1 exactly as DOS's own handler
+would. Get one wrong and DOS does not complain; it walks the FAT of the
+wrong disk, or refuses a write before asking, or lists a file as the volume
+label. `RedirectorProtocolTests` pins each of them down, and section 13
+says how they were found. The attachment to DOS -- where the SDA and CDS
+are, which vector was displaced -- travels with a snapshot, because a guest
+restored without it has a hooked vector in memory and a redirector that
+knows nothing.
+
 ---
 
 ## 10. Project layout
@@ -495,14 +535,17 @@ Aurora386
 │   │   ├── System/           DMA 8237, system ports (61h, 92h)
 │   │   ├── Video/            VGA: registers, memory, fonts, renderer, pointer
 │   │   ├── Audio/            Sound Blaster 16, OPL3, mixer
-│   │   └── Network/          NE2000 and backends
+│   │   ├── Network/          NE2000, loopback, and Nat/ (the user-mode NAT)
+│   │   └── IsaPnp/           the ISA Plug and Play bus and the cards on it
 │   ├── Dos/                  redirector and file systems (host, ISO)
+│   ├── Configuration/        vm.json: one machine described in a file
 │   └── Diagnostics/          disassembler, DOS call log, disk write log
 │
 ├── src/Aurora386.Gui         Avalonia interface (window, menus, debugger)
 ├── src/Aurora386.Sdl         alternative SDL2 frontend
 ├── src/Aurora386.FatTool     tool for injecting files into images
-└── tests/Aurora386.Tests     840 tests
+├── tools/HardwareSuite       runs the protected-mode hardware vectors
+└── tests/Aurora386.Tests     1,200 tests
 ```
 
 The rule is **one folder per role, and the namespace follows the folder**:
@@ -563,8 +606,10 @@ the machine forever.
 
 ## 12. How it is verified
 
-The project has **840 unit tests** and runs the **SingleStepTests** suite for
-the 80386 -- 6,100 protected-mode cases captured from a real chip, and 1.76
+The project has **1,200 unit tests** (`dotnet test --filter "Speed!=Slow"`
+leaves out the one that boots DOS from an image and takes twelve minutes)
+and runs the **SingleStepTests** suite for the 80386 -- 6,100 protected-mode
+cases captured from a real chip, run by `tools/HardwareSuite`, and 1.76
 million real-mode ones -- after every change to the CPU. Some principles:
 
 **Test through the machine, not around it.** The FPU tests assemble real
@@ -609,6 +654,65 @@ the moment of the call, because that is the only place they exist -- DOS
 receives a pointer, not a name.
 
 The debugger window in the GUI shows the disassembly, the registers, memory
-and stack, with breakpoints on linear addresses; the plan extends it with a
-memory editor, a FAT-aware disk editor, watchpoints and descriptor-table
-views.
+and stack, with breakpoints (conditional too), watchpoints on memory and on
+ports, the descriptor tables and the I/O bitmap of the TSS, the ROM entry
+points and the DOS structures by name, and a FAT-aware view of the disks.
+
+For a headless bench the machine itself carries the instruments, and they
+are what found every redirector defect: `Cpu.SoftwareInterruptIssued` for
+every INT with its registers, `Io.PortAccessed` for every port, `Memory.
+SetWatchRanges` with `Watched` for who writes a byte (with CS:IP at that
+moment), `Cpu.ProcessorException` for every fault, `Redirector.Trace` and
+`TraceResult` for every redirector call and its answer, and `MachineSnapshot`
+to freeze the machine at the prompt once and restore it in a second for
+every experiment after. `Cpu.PeekLinear` reads through the page tables
+without disturbing anything, which is what a guest in enhanced mode needs.
+
+---
+
+## 14. The network: a NAT made of sockets
+
+The NE2000 is emulated faithfully down to its ring buffer, because a
+driver can observe all of that; where the frames go once they leave the
+card, no guest can see, so the wire is an interface (`INetworkBackend`)
+with two implementations. The loopback hands every frame straight back,
+which is enough for a driver's self-test. The NAT (`Devices/Network/Nat`)
+is a small TCP/IP stack: to the card it is a router at 10.0.2.2 that
+answers ARP, hands out 10.0.2.15 by DHCP, resolves names through the
+host's own resolver as 10.0.2.3, and turns every TCP connection and UDP
+exchange into an ordinary socket the host opens on the guest's behalf. TCP
+is *terminated*, not forwarded: the guest talks TCP to what it believes is
+the remote host, and `NatTcpConnection` plays that host -- sequence
+numbers, windows, retransmission -- while the bytes go through a connected
+socket. It needs no privileges and reaches wherever the host does; the
+price is that nothing outside can open a connection to the guest unless a
+port is forwarded. The sockets live behind `IHostNetwork`, so the whole
+stack is tested against a fake host, segment by segment. `NETWORK.md` has
+the details.
+
+---
+
+## 15. What Windows 95 asks first
+
+Windows 95 enumerates the machine three ways and expects all three to
+answer, and the machine already does, ahead of the guest itself:
+
+- **The PnP BIOS** (`Firmware/PnpBios.cs`): a `$PnP` header in the F000h
+  segment and an entry point called *far*, with its arguments on the stack
+  in the C convention, from real mode and from 16-bit protected mode with
+  the same code. It lists the board's devices as nodes with their
+  resources in the ISA Plug and Play tag format: interrupt controllers,
+  timer, DMA, keyboard, mouse port, COM1, both IDE channels, VGA, memory.
+- **ISA Plug and Play** (`Devices/IsaPnp`): the protocol on three ports by
+  which cards that start deaf are woken with a 32-byte key, isolated one
+  at a time by shifting out their 72-bit serial numbers, numbered, read
+  for what they can accept and told where to go. The Sound Blaster and the
+  NE2000 are such cards; they start active at their classic addresses so
+  DOS finds them, and move if configured.
+- **APM 1.2** (`Firmware/ApmBios.cs`): reached by INT 15h and by a
+  protected-mode entry in ROM; the one call that does something is the one
+  that turns everything off, which the front ends treat as the switch.
+
+The BIOS also answers INT 15h E801h and E820h, the memory map beyond the
+64 MB ceiling of the old call, and the extended INT 13h functions. What is
+still missing for 95 is the PCI bus; it is next.
