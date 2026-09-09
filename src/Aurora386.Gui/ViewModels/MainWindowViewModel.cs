@@ -268,6 +268,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             Drives.Add(new DriveIndicator(image));
 
         if (disc is not null) Drives.Add(new DriveIndicator(disc, letter));
+
+        // Shared folders, by the letter the guest reaches them as.
+        foreach ((byte drive, string folder) in Session.WithMachine(machine =>
+            machine.Redirector.MountedDrives
+                .Select(d => (d, machine.Redirector.GetMounted(d) as HostDirectoryFileSystem))
+                .Where(pair => pair.Item2 is not null)
+                .Select(pair => (pair.d, pair.Item2!.RootPath))
+                .ToList()))
+            Drives.Add(new DriveIndicator(drive, folder));
     }
 
     // --- the mouse ----------------------------------------------------------
@@ -1136,6 +1145,14 @@ public sealed partial class DriveIndicator : ObservableObject
     /// The CD drive. It has no BIOS drive number of its own, so it is given
     /// one past the hard disks purely so the indicator list can key on it.
     /// </summary>
+    /// <summary>A folder of the host, shared with the guest as a drive letter.</summary>
+    public DriveIndicator(byte drive, string folder)
+    {
+        DriveNumber = (byte)(0xE0 + drive);
+        Label = $"{(char)('A' + drive)}: folder";
+        MediaName = Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar));
+    }
+
     /// <param name="letter">The letter the guest gave the drive, once it has said; the label shows it.</param>
     public DriveIndicator(IsoImage disc, byte? letter = null)
     {
