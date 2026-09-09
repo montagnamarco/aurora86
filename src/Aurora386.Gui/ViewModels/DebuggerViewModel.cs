@@ -748,10 +748,124 @@ public sealed partial class DebuggerViewModel : ObservableObject
         StatusText = "Stepped over";
     }
 
+    /// <summary>
+    /// Runs until the current routine returns to whoever called it.
+    ///
+    /// There is no need to find the return address. A routine returns when
+    /// its RET pops that address, and that is the moment the stack pointer
+    /// rises above where it stood on entry: everything a routine pushes it
+    /// pops again before returning, so nothing else takes the pointer past
+    /// that line. An interrupt arriving meanwhile pushes and pops on the same
+    /// stack and lands back exactly at the line, never above it.
+    ///
+    /// This is what makes it work for code that never kept a frame pointer,
+    /// which is all of DOS and most of Windows -- a debugger that walked BP
+    /// chains would have nothing to walk.
+    /// </summary>
+    [RelayCommand]
+    private void StepOut()
+    {
+        _session.Pause();
+
+        (ushort ss, uint esp) = _session.WithMachine(machine =>
+        {
+            CpuState state = machine.Cpu.State;
+            return (state.Ss.Selector, state.Ss.Big ? state.Esp : (ushort)state.Esp);
+        });
+
+        RunUntil(machine =>
+        {
+            CpuState state = machine.Cpu.State;
+            if (state.Ss.Selector != ss) return false;     // another stack: a task switch, or a ring change
+            uint now = state.Ss.Big ? state.Esp : (ushort)state.Esp;
+            return now > esp;
+        }, budget: 200_000_000);
+
+        Refresh();
+        StatusText = "Returned to caller";
+    }
+
+    /// <summary>
+    /// A condition a breakpoint must also satisfy, such as "AH=4B" or
+    /// "CPL=3, MODE=V86". With no address breakpoints set, the condition
+    /// alone is the breakpoint: "stop wherever AH becomes 4B".
+    /// </summary>
+    [ObservableProperty] private string _breakConditionText = "";
+
+    /// <summary>
+    /// Turns "AH=4B", "CPL=3" or "MODE=V86" into a test on the processor,
+    /// several clauses separated by commas all having to hold.
+    ///
+    /// Values are hexadecimal without a prefix, because that is how every
+    /// number in this window is written and a condition that read them
+    /// differently would be a trap. The registers are the ones worth asking
+    /// about: an address breakpoint says where, and the usual question on
+    /// top of it is "but only when the call is this one".
+    /// </summary>
+    private static Func<CpuState, bool>? ParseCondition(string text)
+    {
+        var clauses = new List<Func<CpuState, bool>>();
+
+        foreach (string raw in text.Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            int eq = raw.IndexOf('=');
+            if (eq < 0) return null;
+
+            string name = raw[..eq].Trim().ToUpperInvariant();
+            string valueText = raw[(eq + 1)..].Trim().ToUpperInvariant();
+
+            if (name == "MODE")
+            {
+                Func<CpuState, bool>? mode = valueText switch
+                {
+                    "REAL" => s => !s.ProtectedMode,
+                    "PROT" or "PROTECTED" => s => s.ProtectedMode && !s.Virtual8086Mode,
+                    "V86" => s => s.Virtual8086Mode,
+                    _ => null,
+                };
+                if (mode is null) return null;
+                clauses.Add(mode);
+                continue;
+            }
+
+            if (!uint.TryParse(valueText, System.Globalization.NumberStyles.HexNumber, null, out uint value))
+                return null;
+
+            Func<CpuState, uint>? read = name switch
+            {
+                "EAX" => s => s.Eax, "EBX" => s => s.Ebx, "ECX" => s => s.Ecx, "EDX" => s => s.Edx,
+                "ESI" => s => s.Esi, "EDI" => s => s.Edi, "EBP" => s => s.Ebp, "ESP" => s => s.Esp,
+                "EIP" => s => s.Eip,
+                "AX" => s => s.Eax & 0xFFFF, "BX" => s => s.Ebx & 0xFFFF,
+                "CX" => s => s.Ecx & 0xFFFF, "DX" => s => s.Edx & 0xFFFF,
+                "AH" => s => (s.Eax >> 8) & 0xFF, "AL" => s => s.Eax & 0xFF,
+                "BH" => s => (s.Ebx >> 8) & 0xFF, "BL" => s => s.Ebx & 0xFF,
+                "CH" => s => (s.Ecx >> 8) & 0xFF, "CL" => s => s.Ecx & 0xFF,
+                "DH" => s => (s.Edx >> 8) & 0xFF, "DL" => s => s.Edx & 0xFF,
+                "CS" => s => s.Cs.Selector, "DS" => s => s.Ds.Selector,
+                "ES" => s => s.Es.Selector, "SS" => s => s.Ss.Selector,
+                "CPL" => s => (uint)(s.Cs.Selector & 3),
+                _ => null,
+            };
+            if (read is null) return null;
+
+            clauses.Add(s => read(s) == value);
+        }
+
+        return clauses.Count == 0 ? null : s => clauses.All(c => c(s));
+    }
+
     [RelayCommand]
     private void RunToBreakpoint()
     {
-        if (_breakpoints.Count == 0)
+        Func<CpuState, bool>? condition = ParseCondition(BreakConditionText);
+        if (BreakConditionText.Trim().Length > 0 && condition is null)
+        {
+            StatusText = "Condition not understood -- try AH=4B, CPL=3, MODE=V86";
+            return;
+        }
+
+        if (_breakpoints.Count == 0 && condition is null)
         {
             _session.Resume();
             StatusText = "Running (no breakpoints set)";
@@ -761,11 +875,15 @@ public sealed partial class DebuggerViewModel : ObservableObject
         RunUntil(machine =>
         {
             CpuState state = machine.Cpu.State;
-            return _breakpoints.Contains(state.Cs.Base + state.Eip);
+
+            // With no addresses, the condition is the whole breakpoint.
+            bool atAddress = _breakpoints.Count == 0
+                          || _breakpoints.Contains(state.Cs.Base + state.Eip);
+            return atAddress && (condition is null || condition(state));
         }, budget: 200_000_000);
 
         Refresh();
-        StatusText = "Stopped at breakpoint";
+        StatusText = condition is null ? "Stopped at breakpoint" : "Stopped: condition met";
     }
 
     /// <summary>
@@ -853,6 +971,22 @@ public sealed partial class DebuggerViewModel : ObservableObject
                              + $"{(task.Is386 ? "386" : "286")}  "
                              + $"ring 0 stack {task.Ss0:X4}:{task.Esp0:X8}"
                              + (task.Is386 && task.IoMapBase != 0 ? $"  I/O map at +{task.IoMapBase:X}" : ""));
+
+                // The ports the monitor intercepts. Usually a short list: a
+                // monitor picks the devices it must virtualise and leaves
+                // the rest to the program, because every trapped port costs
+                // a fault and a round trip through ring 0.
+                IReadOnlyList<(ushort First, ushort Last)> trapped = tables.ReadTrappedPorts();
+                if (trapped.Count > 0)
+                {
+                    static string Show((ushort First, ushort Last) r)
+                        => r.First == r.Last ? $"{r.First:X3}" : $"{r.First:X3}-{r.Last:X3}";
+
+                    string list = trapped.Count > 24
+                        ? string.Join(" ", trapped.Take(24).Select(Show)) + $"  ... {trapped.Count} ranges in all"
+                        : string.Join(" ", trapped.Select(Show));
+                    TableLines.Add($"  ports trapped by the I/O bitmap: {list}");
+                }
             }
 
             TableLines.Add("");
