@@ -209,6 +209,56 @@ public sealed class DescriptorTables
     }
 
     /// <summary>
+    /// The ports the current task may not touch directly, as ranges.
+    ///
+    /// A 386 task state ends in a bitmap with one bit per port: set means an
+    /// IN or OUT on that port faults instead of reaching the hardware, and
+    /// every port beyond the bitmap's end faults too. It is how a monitor
+    /// lets a program in ring 3 drive most of the machine itself while
+    /// keeping the few devices it virtualises for its own -- Windows in
+    /// enhanced mode traps the video registers this way and little else,
+    /// which is why the list is short and why it is worth reading.
+    ///
+    /// Reported as trapped ranges rather than raw bits, because the question
+    /// is always "which ports does the monitor catch", and a few ranges
+    /// answer it where eight kilobytes of bits do not.
+    /// </summary>
+    public IReadOnlyList<(ushort First, ushort Last)> ReadTrappedPorts()
+    {
+        if (ReadTaskState() is not { Is386: true } task) return [];
+
+        // A base inside the fixed fields points at nothing meaningful; a
+        // base at or past the limit leaves no bitmap, and then every port
+        // faults -- which Intel documents and which a guest can rely on to
+        // trap everything cheaply.
+        if (task.IoMapBase < 0x68) return [];
+        long bitmapBytes = (long)task.Limit + 1 - task.IoMapBase;
+        if (bitmapBytes <= 0) return [(0, 0xFFFF)];
+        if (bitmapBytes > 8192) bitmapBytes = 8192;
+
+        var ranges = new List<(ushort, ushort)>();
+        int start = -1;
+
+        for (int port = 0; port <= 0xFFFF; port++)
+        {
+            int byteIndex = port >> 3;
+            bool trapped = byteIndex >= bitmapBytes
+                || (_machine.Memory.ReadByte(task.Base + task.IoMapBase + (uint)byteIndex)
+                    & (1 << (port & 7))) != 0;
+
+            if (trapped && start < 0) start = port;
+            if (!trapped && start >= 0)
+            {
+                ranges.Add(((ushort)start, (ushort)(port - 1)));
+                start = -1;
+            }
+        }
+
+        if (start >= 0) ranges.Add(((ushort)start, 0xFFFF));
+        return ranges;
+    }
+
+    /// <summary>
     /// Translates a linear address through the guest's page tables, the way
     /// the processor would, and says where it stops when it cannot.
     /// </summary>
