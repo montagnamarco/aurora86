@@ -3,6 +3,8 @@ using Aurora386.Core.Firmware;
 using Aurora386.Core.Firmware.Fpu;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Diagnostics;
+using Aurora386.Core.Dos;
+using Aurora386.Core.Devices.Input;
 using Aurora386.Sdl.Frontend;
 
 // Emulator entry point. The command line says which disk images to attach and
@@ -19,6 +21,14 @@ var floppies = new List<string>();
 string? hardDisk = null;
 string? createDisk = null;
 long createSizeMb = 100;
+string? secondDisk = null;
+string? compactDisc = null;
+string? sharedFolder = null;
+string? bootOrder = null;
+string? snapshot = null;
+string? dosLogPath = null;
+string? writeLogPath = null;
+string? mouse = null;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -47,6 +57,47 @@ for (int i = 0; i < args.Length; i++)
         case "--ram":
             if (++i >= args.Length || !uint.TryParse(args[i], out ramMegabytes))
                 return Fail("--ram needs a number of megabytes");
+            break;
+
+        case "--hdd2":
+            if (++i >= args.Length) return Fail("--hdd2 needs a path");
+            secondDisk = args[i];
+            break;
+
+        case "--cd":
+            if (++i >= args.Length) return Fail("--cd needs a path");
+            compactDisc = args[i];
+            break;
+
+        case "--share":
+            if (++i >= args.Length) return Fail("--share needs a folder");
+            sharedFolder = args[i];
+            break;
+
+        case "--boot":
+            if (++i >= args.Length) return Fail("--boot needs a list of drives, like A,C");
+            bootOrder = args[i];
+            break;
+
+        case "--mouse":
+            if (++i >= args.Length || args[i] is not ("ps2" or "serial"))
+                return Fail("--mouse needs ps2 or serial");
+            mouse = args[i];
+            break;
+
+        case "--snapshot":
+            if (++i >= args.Length) return Fail("--snapshot needs a path");
+            snapshot = args[i];
+            break;
+
+        case "--doslog":
+            if (++i >= args.Length) return Fail("--doslog needs a path");
+            dosLogPath = args[i];
+            break;
+
+        case "--writelog":
+            if (++i >= args.Length) return Fail("--writelog needs a path");
+            writeLogPath = args[i];
             break;
 
         default:
@@ -103,6 +154,73 @@ if (hardDisk is not null)
     Console.WriteLine($"drive C: {Path.GetFileName(hardDisk)}");
 }
 
+// Everything the window can do, the command line can do too: a script that
+// boots a machine into a known state needs no hands on it, and a bug that
+// shows up only with a second disk or a shared folder needs a way to be
+// reproduced from one line.
+DiskImage? firstDisk = hardDisk is null ? null : machine.DiskServices.GetDrive(0x80);
+
+if (secondDisk is not null)
+{
+    if (!File.Exists(secondDisk)) return Fail($"immagine non trovata: {secondDisk}");
+    machine.AttachDisk(DiskImage.OpenHardDisk(secondDisk, 0x81));
+    Console.WriteLine($"disk 81h: {Path.GetFileName(secondDisk)} (DOS gives it the next letter)");
+}
+
+if (compactDisc is not null)
+{
+    if (!File.Exists(compactDisc)) return Fail($"immagine non trovata: {compactDisc}");
+    machine.AttachCompactDisc(IsoImage.Open(compactDisc));
+    Console.WriteLine($"cd-rom: {Path.GetFileName(compactDisc)}");
+}
+
+if (sharedFolder is not null)
+{
+    if (!Directory.Exists(sharedFolder)) return Fail($"cartella non trovata: {sharedFolder}");
+    machine.Redirector.Mount(4, new HostDirectoryFileSystem(sharedFolder));
+    Console.WriteLine($"drive E: {sharedFolder} (shared; needs LASTDRIVE=E or more in CONFIG.SYS)");
+}
+
+if (bootOrder is not null)
+{
+    // Letters, the way a BIOS setup screen shows them: A and B are the
+    // floppies, C onwards the hard disks by number.
+    var order = new List<byte>();
+    foreach (string piece in bootOrder.Split(',', StringSplitOptions.RemoveEmptyEntries))
+    {
+        string letter = piece.Trim();
+        if (letter.Length != 1 || char.ToUpperInvariant(letter[0]) is < 'A' or > 'Z')
+            return Fail($"--boot: '{piece}' is not a drive letter");
+        char drive = char.ToUpperInvariant(letter[0]);
+        order.Add(drive < 'C' ? (byte)(drive - 'A') : (byte)(0x80 + drive - 'C'));
+    }
+    machine.BootDrives = order;
+    Console.WriteLine($"boot order: {bootOrder.ToUpperInvariant()}");
+}
+
+if (mouse is not null)
+{
+    machine.MouseInterface = mouse == "ps2" ? MouseInterface.Ps2 : MouseInterface.Serial;
+    Console.WriteLine($"mouse: {mouse}");
+}
+
+// The logs go on last, once every disk they might name is attached, and
+// stay alive until the window closes.
+using DosCallLog? dosLog = dosLogPath is null ? null : DosCallLog.Attach(machine, dosLogPath);
+using DiskWriteLog? writeLog = writeLogPath is null || firstDisk is null ? null
+                              : DiskWriteLog.Attach(machine, firstDisk, writeLogPath);
+if (writeLogPath is not null && firstDisk is null)
+    Console.WriteLine("--writelog ignored: there is no hard disk to watch");
+
+// A saved state replaces the boot: it comes after every attachment, so
+// that the disks it expects are the ones it finds.
+if (snapshot is not null)
+{
+    if (!File.Exists(snapshot)) return Fail($"stato non trovato: {snapshot}");
+    MachineSnapshot.Load(snapshot).RestoreTo(machine);
+    Console.WriteLine($"restored: {Path.GetFileName(snapshot)}");
+}
+
 Console.WriteLine($"memory: {ramMegabytes} MB");
 Console.WriteLine();
 Console.WriteLine("keys:  Cmd+Q quit   Cmd+P pause   Cmd+R reset   Cmd+F full screen");
@@ -144,6 +262,14 @@ static void PrintUsage()
               --create-hdd <file>  create a new partitioned hard disk
               --size <MB>          size of the disk to create (default 100)
               --ram <MB>           installed memory (default 16)
+              --hdd2 <file>        second hard disk (81h; DOS gives it the next letter)
+              --cd <file>          CD-ROM image (ISO)
+              --share <folder>     a folder of this computer as drive E: (LASTDRIVE=E)
+              --boot <list>        boot order, like A,C or C,A (default: every drive by number)
+              --mouse ps2|serial   which port the mouse is on
+              --snapshot <file>    restore a saved state after attaching everything
+              --doslog <file>      log the DOS calls that move files, and the faults
+              --writelog <file>    log the files the guest writes on drive C:
           -h, --help               this message
 
         EXAMPLES
