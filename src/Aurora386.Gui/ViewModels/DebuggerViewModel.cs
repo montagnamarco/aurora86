@@ -138,6 +138,18 @@ public sealed partial class DebuggerViewModel : ObservableObject
         Add("FS", state.Fs.Selector, 4); Add("GS", state.Gs.Selector, 4);
 
         Add("CR0", state.Cr0);
+        Add("CR2", state.Cr2);
+        Add("CR3", state.Cr3);
+
+        // What mode the processor is in, which is the first thing to know
+        // and the hardest to work out from the registers alone: it is spread
+        // across a bit of CR0, a bit of EFLAGS, and the low two bits of CS.
+        //
+        // Getting it wrong sends an investigation off in the wrong direction
+        // entirely -- an address means something different in each mode, and
+        // a disassembly at the wrong width is not obviously wrong, it is just
+        // different instructions.
+        ModeText = DescribeMode(state, machine.Cpu.Flags);
 
         // The flag letters follow the convention every x86 debugger uses: an
         // upper-case letter when the flag is set, a dot when it is clear.
@@ -147,6 +159,29 @@ public sealed partial class DebuggerViewModel : ObservableObject
             f.Interrupt ? "I" : ".", f.Sign ? "S" : ".",
             f.Zero ? "Z" : ".", f.Adjust ? "A" : ".",
             f.Parity ? "P" : ".", f.Carry ? "C" : ".");
+    }
+
+    /// <summary>What mode the processor is in, in one line.</summary>
+    [ObservableProperty] private string _modeText = "";
+
+    private static string DescribeMode(CpuState state, LazyFlags flags)
+    {
+        string mode = state.Virtual8086Mode ? "virtual 8086"
+                    : state.ProtectedMode ? $"protected, ring {state.Cs.Selector & 3}"
+                    : "real";
+
+        // Paging is a property of protected mode, and saying so only when it
+        // applies keeps the line from claiming something impossible: a real
+        // mode machine with paging on is not a state that exists.
+        if (state.ProtectedMode && state.PagingEnabled) mode += ", paged";
+
+        // IOPL matters exactly when it is not 3, because at 3 nothing is
+        // privileged and it explains nothing. Below that it is often the
+        // whole reason an instruction faulted.
+        var iopl = (int)(((uint)flags.Stored >> 12) & 3);
+        string privilege = iopl < 3 ? $"  IOPL {iopl}" : "";
+
+        return $"{mode}{privilege}   IF {(flags.Interrupt ? "on" : "off")}";
     }
 
     private void RefreshDisassembly(Machine machine)

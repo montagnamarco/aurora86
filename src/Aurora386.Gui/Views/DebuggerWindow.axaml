@@ -96,6 +96,9 @@
           <TextBlock DockPanel.Dock="Bottom" Classes="mono" Margin="0,6,0,0"
                      Foreground="#DCDCAA" Text="{Binding FlagsText}"
                      ToolTip.Tip="Overflow Direction Interrupt Sign Zero Adjust Parity Carry" />
+          <TextBlock DockPanel.Dock="Bottom" Classes="mono" Margin="0,6,0,0"
+                     Foreground="#4EC9B0" TextWrapping="Wrap" Text="{Binding ModeText}"
+                     ToolTip.Tip="The mode decides what an address means, so it is the first thing to know and the hardest to read off the registers" />
           <ItemsControl ItemsSource="{Binding Registers}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="vm:RegisterEntry">
