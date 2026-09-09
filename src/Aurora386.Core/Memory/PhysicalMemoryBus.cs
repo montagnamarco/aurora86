@@ -116,6 +116,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         _ram = (byte*)NativeMemory.AllocZeroed(ramSize);
 
         _pageRam = new byte*[_pageCount];
+        _pageWatchedRam = new byte*[_pageCount];
         _pageDevice = new IMemoryDevice?[_pageCount];
         _pageDeviceBase = new uint[_pageCount];
         _pageReadOnly = new bool[_pageCount];
@@ -338,6 +339,16 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     private byte ReadByteSlow(uint address)
     {
         int index = (int)(address >> PageShift);
+
+        // A RAM page set aside for a read watch: report the read if it is
+        // inside a range, and serve the byte from where the page really is.
+        byte* watched = _pageWatchedRam[index];
+        if (watched is not null)
+        {
+            if (IsReadWatched(address)) ReadWatched?.Invoke(address);
+            return watched[address & PageMask];
+        }
+
         IMemoryDevice? device = _pageDevice[index];
         return device is null ? (byte)0xFF : device.ReadByte(address - _pageDeviceBase[index]);
     }
@@ -442,6 +453,80 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         => address - WatchAddress < WatchLength + extra
         || (_watchRanges.Length > 0 && InWatchRanges(address));
 
+    /// <summary>
+    /// Ranges watched for reads, kept apart from the write ranges because
+    /// watching a byte for reads and for writes are different questions:
+    /// "who overwrote this vector" and "who consults this table" rarely
+    /// have the same answer, and a list that mixed them would report both.
+    /// </summary>
+    private (uint Start, uint Length)[] _readWatchRanges = [];
+
+    /// <summary>
+    /// RAM pointers set aside for pages under a read watch. A watched page
+    /// is taken out of the fast table so that every access to it falls into
+    /// the slow path, which is the one place that can afford to look.
+    /// </summary>
+    private readonly byte*[] _pageWatchedRam;
+
+    /// <summary>
+    /// Replaces the set of ranges watched for reads.
+    ///
+    /// Reads are the hottest path in the interpreter, and the first version
+    /// of this checked the ranges on every one of them -- an array length
+    /// and a comparison, the same the write path pays, and surely cheap.
+    /// Measured, it cost between four and seven per cent of the whole
+    /// machine, for a feature used once a month. So the fast path is left
+    /// exactly as it was, and a watched page is instead unmapped from it:
+    /// accesses to that page take the slow path, which checks the ranges
+    /// and serves the byte from the pointer set aside. Nothing is paid
+    /// anywhere else, which is the only acceptable price on this path.
+    /// </summary>
+    public void SetReadWatchRanges(IEnumerable<(uint Start, uint Length)> ranges)
+    {
+        // Give every page back first, then take out the ones now covered.
+        for (int i = 0; i < _pageCount; i++)
+        {
+            if (_pageWatchedRam[i] is null) continue;
+            _pageRam[i] = _pageWatchedRam[i];
+            _pageWatchedRam[i] = null;
+        }
+
+        _readWatchRanges = ranges.Where(r => r.Length > 0).ToArray();
+
+        foreach ((uint start, uint length) in _readWatchRanges)
+        {
+            long first = start >> PageShift;
+            long last = (start + length - 1) >> PageShift;
+            for (long page = first; page <= last && page < _pageCount; page++)
+            {
+                if (_pageRam[page] is null) continue;       // a device, or nothing: already slow
+                _pageWatchedRam[page] = _pageRam[page];
+                _pageRam[page] = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Raised for every byte read inside a read-watched range, on the
+    /// emulation thread and inside the read itself.
+    ///
+    /// Instruction fetches come this way too. The processor's fetch cache
+    /// keeps only the page translation and still reads each byte through
+    /// the bus, so a watch on a page of code reports the processor running
+    /// it, byte by byte, as well as anything reading it as data. That makes
+    /// such a watch noisy -- and it also means "who executes this" is a
+    /// question this can answer, which no other watch can.
+    /// </summary>
+    public event Action<uint>? ReadWatched;
+
+    private bool IsReadWatched(uint address)
+    {
+        (uint Start, uint Length)[] ranges = _readWatchRanges;
+        for (int i = 0; i < ranges.Length; i++)
+            if (address - ranges[i].Start < ranges[i].Length) return true;
+        return false;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteByte(uint address, byte value)
     {
@@ -516,6 +601,17 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     private void WriteByteSlow(uint address, byte value)
     {
         int index = (int)(address >> PageShift);
+
+        // A page set aside for a read watch is still RAM, and still ROM if
+        // it was ROM: the watch changes which path an access takes, not
+        // what the page is.
+        byte* watched = _pageWatchedRam[index];
+        if (watched is not null)
+        {
+            if (!_pageReadOnly[index]) watched[address & PageMask] = value;
+            return;
+        }
+
         _pageDevice[index]?.WriteByte(address - _pageDeviceBase[index], value);
     }
 
