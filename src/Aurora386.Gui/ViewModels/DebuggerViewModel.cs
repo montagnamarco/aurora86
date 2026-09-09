@@ -219,6 +219,8 @@ public sealed partial class DebuggerViewModel : ObservableObject
             string text = decoded.Text;
             if (i == 0 && Annotate(decoded.Text, state) is { } note)
                 text += $"      ; {note}";
+            if (i == 0 && RomRoutine(state) is { } routine)
+                text += $"      ; {routine}";
 
             Disassembly.Add(new DisassemblyLine(
                 $"{state.Cs.Selector:X4}:{offset:X4}",
@@ -330,6 +332,49 @@ public sealed partial class DebuggerViewModel : ObservableObject
         };
     }
 
+    /// <summary>
+    /// The ROM's entry points by offset, read off the constants themselves
+    /// so that this list cannot drift from the ROM it describes. Two entries
+    /// that share an offset are shown together.
+    /// </summary>
+    private static readonly (ushort Offset, string Name)[] RomEntries =
+        typeof(Core.Firmware.BiosRom.Entry)
+            .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Where(f => f.IsLiteral && f.FieldType == typeof(ushort))
+            .Select(f => (Offset: (ushort)f.GetRawConstantValue()!, f.Name))
+            .GroupBy(e => e.Offset)
+            .Select(g => (g.Key, string.Join("/", g.Select(e => e.Name).OrderBy(n => n))))
+            .OrderBy(e => e.Key)
+            .ToArray();
+
+    /// <summary>
+    /// Which ROM routine the processor is in, when it is in the BIOS at
+    /// all: the nearest entry point at or before EIP, with the distance
+    /// past it.
+    ///
+    /// A stop inside the ROM is otherwise the least informative place to
+    /// stop -- F000:10B3 says nothing, "KeyboardIrq+3" says the machine is
+    /// three bytes into the keyboard interrupt, which is usually the whole
+    /// answer to why it is there.
+    /// </summary>
+    private static string? RomRoutine(CpuState state)
+    {
+        if (state.Cs.Base != 0xF0000) return null;
+
+        uint offset = state.Eip;
+        ushort at = 0;
+        string? name = null;
+
+        foreach ((ushort start, string entry) in RomEntries)
+        {
+            if (start > offset) break;
+            (at, name) = (start, entry);
+        }
+
+        if (name is null) return null;
+        return offset == at ? $"ROM {name}" : $"ROM {name}+{offset - at:X}";
+    }
+
     private void RefreshStack(Machine machine)
     {
         StackLines.Clear();
@@ -346,32 +391,57 @@ public sealed partial class DebuggerViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// What the memory view showed last time, so that the next refresh can
+    /// say what changed. Kept only while the view stays on one address:
+    /// moving elsewhere and back is a new view, not a change.
+    /// </summary>
+    private uint _viewedAddress = uint.MaxValue;
+    private readonly byte[] _viewedBytes = new byte[256];
+
     private void RefreshMemory()
     {
         MemoryLines.Clear();
 
         if (!TryParseAddress(MemoryAddressText, out uint linear)) return;
 
+        bool sameView = linear == _viewedAddress;
+        var current = new byte[256];
+
         _session.WithMachine(machine =>
         {
-            // Sixteen bytes per line, hex on the left and printable characters
-            // on the right: the layout every hex editor has used since DEBUG.
-            for (int row = 0; row < 16; row++)
-            {
-                uint rowAddress = linear + (uint)(row * 16);
-                var hex = new System.Text.StringBuilder();
-                var text = new System.Text.StringBuilder();
-
-                for (int column = 0; column < 16; column++)
-                {
-                    byte value = ReadForView(machine, rowAddress + (uint)column);
-                    hex.Append(value.ToString("X2")).Append(' ');
-                    text.Append(value >= 32 && value < 127 ? (char)value : '.');
-                }
-
-                MemoryLines.Add($"{rowAddress:X6}  {hex} {text}");
-            }
+            for (int i = 0; i < current.Length; i++)
+                current[i] = ReadForView(machine, linear + (uint)i);
         });
+
+        // Sixteen bytes per line, hex on the left and printable characters
+        // on the right: the layout every hex editor has used since DEBUG.
+        //
+        // A byte that changed since the last look is marked with a star in
+        // place of the space after it. The mark lives in the separator so
+        // that nothing moves: a column of hex that shifts when something
+        // changes is unreadable at exactly the moment it matters.
+        for (int row = 0; row < 16; row++)
+        {
+            uint rowAddress = linear + (uint)(row * 16);
+            var hex = new System.Text.StringBuilder();
+            var text = new System.Text.StringBuilder();
+
+            for (int column = 0; column < 16; column++)
+            {
+                int i = row * 16 + column;
+                byte value = current[i];
+                bool changed = sameView && value != _viewedBytes[i];
+
+                hex.Append(value.ToString("X2")).Append(changed ? '*' : ' ');
+                text.Append(value >= 32 && value < 127 ? (char)value : '.');
+            }
+
+            MemoryLines.Add($"{rowAddress:X6}  {hex} {text}");
+        }
+
+        current.CopyTo(_viewedBytes, 0);
+        _viewedAddress = linear;
     }
 
     /// <summary>
@@ -1036,7 +1106,16 @@ public sealed partial class DebuggerViewModel : ObservableObject
     public ObservableCollection<string> WatchLog { get; } = new();
 
     private readonly List<WatchpointEntry> _watches = new();
+    private readonly List<WatchpointEntry> _readWatches = new();
     private bool _watchHooked;
+
+    /// <summary>
+    /// Whether the next watchpoint reports reads rather than writes. "Who
+    /// consults this table" is a different question from "who overwrote
+    /// it", and a driver that walks away often does so because of
+    /// something it read.
+    /// </summary>
+    [ObservableProperty] private bool _watchReads;
 
     /// <summary>
     /// Watches a range of physical memory for writes.
@@ -1061,13 +1140,14 @@ public sealed partial class DebuggerViewModel : ObservableObject
 
         if (!uint.TryParse(WatchLengthText.Trim(), out uint length) || length == 0) length = 1;
 
-        var entry = new WatchpointEntry(address, length, $"{address:X6}+{length}");
-        _watches.Add(entry);
+        var entry = new WatchpointEntry(address, length,
+            WatchReads ? $"{address:X6}+{length} (reads)" : $"{address:X6}+{length}");
+        (WatchReads ? _readWatches : _watches).Add(entry);
         Watchpoints.Add(entry);
         ApplyWatchpoints();
 
         WatchAddressText = "";
-        StatusText = $"Watching {length} byte(s) at {address:X6}";
+        StatusText = $"Watching {length} byte(s) at {address:X6} for {(WatchReads ? "reads" : "writes")}";
     }
 
     [RelayCommand]
@@ -1076,6 +1156,7 @@ public sealed partial class DebuggerViewModel : ObservableObject
         if (entry is null) return;
 
         _watches.Remove(entry);
+        _readWatches.Remove(entry);
         Watchpoints.Remove(entry);
         ApplyWatchpoints();
     }
@@ -1086,12 +1167,14 @@ public sealed partial class DebuggerViewModel : ObservableObject
     private void ApplyWatchpoints() => _session.WithMachine(machine =>
     {
         machine.Memory.SetWatchRanges(_watches.Select(w => (w.Address, w.Length)));
+        machine.Memory.SetReadWatchRanges(_readWatches.Select(w => (w.Address, w.Length)));
 
-        // Hooked once and left: the handler does nothing while the list is
-        // empty, and subscribing twice would log every write twice.
+        // Hooked once and left: the handlers do nothing while the lists are
+        // empty, and subscribing twice would log every access twice.
         if (_watchHooked) return;
         _watchHooked = true;
         machine.Memory.Watched += OnWatchedWrite;
+        machine.Memory.ReadWatched += OnWatchedRead;
     });
 
     /// <summary>
@@ -1111,6 +1194,20 @@ public sealed partial class DebuggerViewModel : ObservableObject
         });
 
         WatchLog.Add($"{address:X6} <- {value:X2}   from {where}");
+        while (WatchLog.Count > 400) WatchLog.RemoveAt(0);
+    }
+
+    private void OnWatchedRead(uint address)
+    {
+        if (_readWatches.Count == 0) return;
+
+        string where = _session.WithMachine(machine =>
+        {
+            CpuState state = machine.Cpu.State;
+            return $"{state.Cs.Selector:X4}:{state.Eip:X8}";
+        });
+
+        WatchLog.Add($"{address:X6} -> read    from {where}");
         while (WatchLog.Count > 400) WatchLog.RemoveAt(0);
     }
 
@@ -1220,6 +1317,95 @@ public sealed partial class DebuggerViewModel : ObservableObject
 
         PortLog.Add($"{(write ? "OUT" : "IN ")} {port:X3} {(write ? "<-" : "->")} {value:X2}   from {where}");
         while (PortLog.Count > 400) PortLog.RemoveAt(0);
+    }
+
+    // --- log panel ---------------------------------------------------------------
+
+    /// <summary>The lines the logs produced that pass the filter, newest last.</summary>
+    public ObservableCollection<string> LogLines { get; } = new();
+
+    [ObservableProperty] private string _logFilterText = "";
+    [ObservableProperty] private bool _logRunning;
+
+    private readonly List<string> _allLogLines = new();
+    private Core.Diagnostics.DosCallLog? _dosLog;
+    private Core.Diagnostics.DiskWriteLog? _diskLog;
+
+    /// <summary>
+    /// Starts collecting the DOS calls that move files about, the faults the
+    /// processor raises, and the files the guest writes to disk -- one list,
+    /// in the order they happened.
+    ///
+    /// The three used to be reachable only through environment variables
+    /// naming files, which suits a long headless run and is useless for the
+    /// question a debugger is asked, which is "what did the guest just do".
+    /// Here they go to a list instead of a file, and the list can be
+    /// filtered.
+    ///
+    /// Started on request rather than always: resolving a sector to a file
+    /// name reads the volume's own tables on every write, and that is too
+    /// much to do to a machine that is merely running.
+    /// </summary>
+    [RelayCommand]
+    private void StartLog()
+    {
+        if (LogRunning) return;
+
+        _session.WithMachine(machine =>
+        {
+            _dosLog = Core.Diagnostics.DosCallLog.Attach(machine);
+            _dosLog.LineWritten += OnLogLine;
+
+            // The write log follows the first hard disk, where DOS lives. A
+            // second disk's writes go unlogged, and saying so beats a log
+            // that quietly shows half of them.
+            if (machine.DiskServices.GetDrive(0x80) is { } disk)
+            {
+                _diskLog = Core.Diagnostics.DiskWriteLog.Attach(machine, disk);
+                _diskLog.LineWritten += OnLogLine;
+            }
+        });
+
+        LogRunning = true;
+        StatusText = _diskLog is null
+            ? "Logging DOS calls and faults (no hard disk to watch writes on)"
+            : "Logging DOS calls, faults and disk writes";
+    }
+
+    [RelayCommand]
+    private void ClearLog()
+    {
+        _allLogLines.Clear();
+        LogLines.Clear();
+    }
+
+    /// <summary>
+    /// Keeps the lines that contain the filter, case-insensitively. "exec"
+    /// shows what ran, "fault" what went wrong, a file name who touched it.
+    /// </summary>
+    partial void OnLogFilterTextChanged(string value)
+    {
+        LogLines.Clear();
+        foreach (string line in _allLogLines)
+            if (PassesLogFilter(line)) LogLines.Add(line);
+    }
+
+    private bool PassesLogFilter(string line)
+        => LogFilterText.Length == 0
+        || line.Contains(LogFilterText, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Runs on the emulation thread, inside the call being logged, so it
+    /// keeps the line and does nothing else.
+    /// </summary>
+    private void OnLogLine(string line)
+    {
+        _allLogLines.Add(line);
+        while (_allLogLines.Count > 2000) _allLogLines.RemoveAt(0);
+
+        if (!PassesLogFilter(line)) return;
+        LogLines.Add(line);
+        while (LogLines.Count > 2000) LogLines.RemoveAt(0);
     }
 }
 

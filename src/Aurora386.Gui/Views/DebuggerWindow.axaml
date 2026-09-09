@@ -193,6 +193,8 @@
                 <TextBox Text="{Binding WatchLengthText}" Width="50"
                          FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
                          ToolTip.Tip="How many bytes to watch" />
+                <CheckBox IsChecked="{Binding WatchReads}" FontSize="11"
+                          ToolTip.Tip="Report reads of these bytes instead of writes">reads</CheckBox>
                 <Button Classes="tool" Command="{Binding AddWatchpointCommand}">Watch</Button>
                 <Button Classes="tool" Command="{Binding ClearWatchLogCommand}">Clear log</Button>
               </StackPanel>
@@ -247,6 +249,29 @@
               </ItemsControl>
               <ScrollViewer>
                 <ItemsControl ItemsSource="{Binding PortLog}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
+          <TabItem Header="Log" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <Button Classes="tool" Command="{Binding StartLogCommand}"
+                        ToolTip.Tip="Collect the DOS calls that move files, the processor's faults, and the files the guest writes -- one list, in order">Start</Button>
+                <TextBox Text="{Binding LogFilterText}" Width="170"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="filter: exec, fault, a file name" />
+                <Button Classes="tool" Command="{Binding ClearLogCommand}">Clear</Button>
+              </StackPanel>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding LogLines}">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
                       <TextBlock Classes="mono" Text="{Binding}" />
