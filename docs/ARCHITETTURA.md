@@ -383,6 +383,45 @@ quadruplicare la memoria.
 Il generatore di caratteri è **RAM, non ROM**: `MODE CON CP PREPARE` carica un
 font diverso, ed è così che il DOS italiano ottiene le lettere accentate.
 
+### Il motore S3: una scheda che disegna, e tre porte per entrarci
+
+Un driver SVGA non dipinge i pixel attraverso la finestra da 64 KB. Dice
+alla scheda dov'è un rettangolo e la scheda lo riempie; lo stesso per una
+copia (che è lo scorrimento), una linea, o un pennello 8×8 ripetuto sullo
+sfondo di una finestra. I registri sono quelli dell'IBM 8514/A -- `CUR_X`,
+`CUR_Y`, i due conteggi, i mix, il comando alla porta `9AE8h` -- e ogni S3
+li ha tenuti, con gli stessi codici operazione: 1 linea, 2 rettangolo, 6
+copia, 7 motivo.
+
+Il driver li raggiunge da tre porte, e quello di Windows usa la meno ovvia:
+
+```
+   porte 82E8h..E2E8h            OUT da ring 3: un fault che il monitor
+                                  deve intercettare -- lento
+
+   LFB + 16 MB                   mappati in memoria, alla maniera Trio64V+
+
+   A8000h..AFFFFh con CR53.4     mappati in memoria, alla maniera Trio64: la
+                                  metà alta della finestra VGA diventa
+                                  registri (coppie impacchettate a 8100h:
+                                  una scrittura a 32 bit imposta X e Y), la
+                                  metà bassa l'area di trasferimento immagine
+```
+
+Due lezioni pagate con le tracce. Prima: **i pixel possono venire dal
+processore**: col bit 8 del comando il motore prende il rettangolo e aspetta
+i dati -- ogni bit una scelta primo piano/sfondo per un glifo, ogni byte un
+pixel per un pennello -- scritti *dopo* il comando, con `REP MOVSD`
+nell'area di trasferimento. Seconda: la scheda è solo metà della storia:
+**il monitor decide a quali pagine il driver può arrivare.** Il VDD S3 di
+Windows mappa una pagina della zona A0000h-BFFFFh sull'hardware solo se la
+sua ombra del registro 6 del controllore grafico dice che la scheda la
+decodifica, e l'ombra si aggiorna soltanto dalle `OUT` intercettate. Un BIOS
+che impostava un modo VBE in modo nativo, senza una `OUT`, lasciava l'ombra
+a "testo a B8000h", e le scritture del driver ad A8000h finivano sulla
+pagina nulla del VMM. Ora la ROM programma i registri standard attraverso le
+porte anche per `4F02h`, come fa il BIOS di una scheda (`Entry.VesaProgram`).
+
 ---
 
 ## 9. Il DOS visto dall'emulatore

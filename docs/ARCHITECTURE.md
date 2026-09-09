@@ -468,6 +468,45 @@ composed over the frame** (`MousePointer`), not written into video memory
 as the DOS driver did, so that a program reading the screen back never finds
 the pointer in its text.
 
+### The S3 engine: a card that draws, and three doors into it
+
+An SVGA driver does not paint pixels through the 64 KB window. It tells the
+card where a rectangle is and the card fills it; the same for a copy (which
+is what scrolling is), a line, or an 8x8 brush tiled across a window's
+background. The registers are the IBM 8514/A's -- `CUR_X`, `CUR_Y`, the two
+axis counts, the mixes, the command at port `9AE8h` -- and every S3 kept
+them, with the same operation codes: 1 line, 2 rectangle, 6 copy, 7 pattern.
+
+The driver reaches them by three doors, and Windows' driver uses the least
+obvious one:
+
+```
+   ports 82E8h..E2E8h            OUT from ring 3: a fault the monitor
+                                  has to catch -- slow
+
+   LFB + 16 MB                   memory-mapped, the Trio64V+ way
+
+   A8000h..AFFFFh with CR53.4    memory-mapped, the Trio64 way: the upper
+                                  half of the VGA window becomes registers
+                                  (packed pairs at 8100h: one 32-bit write
+                                  sets X and Y), the lower half becomes the
+                                  image transfer area
+```
+
+Two lessons paid for in tracing. First, **pixels can come from the
+processor**: with bit 8 of the command set the engine takes the rectangle
+and waits for data -- each bit a foreground-or-background choice for a
+glyph, each byte a pixel for a brush -- written *after* the command, with
+`REP MOVSD` into the transfer area. Second, the card is only half of it:
+**the monitor decides which pages the driver can even reach.** Windows'
+S3 VDD maps a page of the A0000h-BFFFFh region to the hardware only if its
+own shadow of graphics controller register 6 says the card decodes it, and
+the shadow is fed exclusively by trapped `OUT`s. A BIOS that set a VBE mode
+natively, without one `OUT`, left the shadow saying "text at B8000h", and
+the driver's writes to A8000h landed on the VMM's null page. The ROM now
+programs the standard registers through the ports for `4F02h` too, as a
+card's BIOS does (`Entry.VesaProgram`).
+
 ---
 
 ## 9. DOS as the emulator sees it

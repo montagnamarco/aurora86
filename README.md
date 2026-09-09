@@ -37,7 +37,7 @@ task switching. Two suites generated from real hardware keep it honest:
 | Memory bus | Up to 128 MB, A20 gate, unreal mode, linear frame buffer above the RAM |
 | 8259 PIC (two), 8253 PIT, 8237 DMA, 8042 keyboard, CMOS/RTC | Complete |
 | VGA | Text and planar graphics modes, mode 13h, DAC; VESA 2.0 with a linear frame buffer |
-| S3 Trio64V+ | Extended CRTC registers, hardware cursor, 2D engine (BitBlt, fills, lines), MMIO |
+| S3 Trio64V+ | Extended CRTC registers, hardware cursor, 2D engine (BitBlt, fills, lines, pattern fills, pixels from the processor), MMIO at the LFB and in the A0000h window |
 | BIOS | Written in C#, hooked from a real ROM image; INT 10h/13h/15h/16h/1Ah, extended INT 13h (41h-48h), APM 1.2, E801h/E820h |
 | Plug and Play | PnP BIOS 1.0A with device nodes; ISA Plug and Play bus (isolation, CSN, configuration); APM power-off |
 | Floppy and hard disks | Images up to 7.8 GB, translated geometry past 1024 cylinders, media change line |
