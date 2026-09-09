@@ -25,7 +25,7 @@ namespace Aurora386.Core.Devices.Storage;
 /// already speaking SCSI internally and putting them on the cheap cable was
 /// mostly a matter of not translating.
 /// </summary>
-public sealed class IdeController : IIoDevice
+public sealed partial class IdeController : IIoDevice
 {
     private readonly Machine _machine;
     private readonly InterruptController _interrupts;
@@ -163,11 +163,16 @@ public sealed class IdeController : IIoDevice
         switch (Normalise(port))
         {
             case 0x1F0: return ReadData();
-            case 0x1F1: return _error;
-            case 0x1F2: return _sectorCount;
-            case 0x1F3: return _lbaLow;
-            case 0x1F4: return _lbaMid;
-            case 0x1F5: return _lbaHigh;
+            case 0x1F1: return AddressingDisk ? _diskError : _error;
+
+            // After a reset each device leaves its signature in these four
+            // registers, and the host reads them for whichever device it
+            // has selected: 01 01 00 00 for a disk, 01 01 14 EB for ATAPI.
+            // Once the host writes any of them the signature is gone.
+            case 0x1F2: return AddressingDisk && _diskSignaturePending ? (byte)0x01 : _sectorCount;
+            case 0x1F3: return AddressingDisk && _diskSignaturePending ? (byte)0x01 : _lbaLow;
+            case 0x1F4: return AddressingDisk && _diskSignaturePending ? (byte)0x00 : _lbaMid;
+            case 0x1F5: return AddressingDisk && _diskSignaturePending ? (byte)0x00 : _lbaHigh;
             case 0x1F6: return _driveHead;
 
             case 0x1F7:
@@ -199,9 +204,10 @@ public sealed class IdeController : IIoDevice
     {
         get
         {
-            // Only the CD-ROM is emulated on this cable so far. Selecting the
-            // master must therefore look like selecting a drive that is not
-            // there.
+            if (AddressingDisk) return _diskStatus;
+
+            // A master slot with no disk in it must look like a drive that
+            // is not there.
             if (!AddressingCompactDisc) return 0x00;
 
             return _status;
@@ -214,10 +220,10 @@ public sealed class IdeController : IIoDevice
         {
             case 0x1F0: WriteData(value); return;
             case 0x1F1: _features = value; return;
-            case 0x1F2: _sectorCount = value; return;
-            case 0x1F3: _lbaLow = value; return;
-            case 0x1F4: _lbaMid = value; return;
-            case 0x1F5: _lbaHigh = value; return;
+            case 0x1F2: _sectorCount = value; _diskSignaturePending = false; return;
+            case 0x1F3: _lbaLow = value; _diskSignaturePending = false; return;
+            case 0x1F4: _lbaMid = value; _diskSignaturePending = false; return;
+            case 0x1F5: _lbaHigh = value; _diskSignaturePending = false; return;
 
             case 0x1F6:
                 // Bit 4 selects master or slave; the rest is the head number
@@ -226,7 +232,11 @@ public sealed class IdeController : IIoDevice
                 _slaveSelected = (value & 0x10) != 0;
                 return;
 
-            case 0x1F7: ExecuteCommand(value); return;
+            case 0x1F7:
+                _diskSignaturePending = false;
+                if (AddressingDisk) ExecuteDiskCommand(value);
+                else ExecuteCommand(value);
+                return;
 
             case 0x3F6:
                 // Bit 2 is the software reset. A driver pulses it to find out
@@ -268,6 +278,7 @@ public sealed class IdeController : IIoDevice
 
     private void Reset()
     {
+        ResetDisk();
         _status = StatusReady | StatusSeekComplete;
         _error = 0x01;             // "no error", which for the reset diagnostic is 1
         _buffer = [];
@@ -286,6 +297,8 @@ public sealed class IdeController : IIoDevice
 
     private byte ReadData()
     {
+        if (AddressingDisk) return ReadDiskData();
+
         if (_bufferPosition >= _buffer.Length)
         {
             _status &= unchecked((byte)~StatusDataRequest);
@@ -322,6 +335,8 @@ public sealed class IdeController : IIoDevice
 
     private void WriteData(byte value)
     {
+        if (AddressingDisk) { WriteDiskData(value); return; }
+
         if (!_expectingPacket) return;
 
         if (_bufferPosition < _buffer.Length) _buffer[_bufferPosition++] = value;
