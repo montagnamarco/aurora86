@@ -94,6 +94,21 @@ public static class BiosRom
         public const ushort VesaModeList = 0x1840;
 
         /// <summary>
+        /// The Plug and Play BIOS installation check structure. It has to
+        /// sit on a 16-byte boundary somewhere in the F000h segment, because
+        /// that is where an operating system scans for "$PnP".
+        /// </summary>
+        public const ushort PnpHeader = 0x1A00;
+
+        /// <summary>
+        /// The Plug and Play entry point, reached by a far call rather than
+        /// an interrupt, with its arguments on the stack. The same code
+        /// serves real mode and 16-bit protected mode: the header gives
+        /// both entries as this one offset.
+        /// </summary>
+        public const ushort PlugAndPlay = 0x1A40;
+
+        /// <summary>
         /// The redirector's own INT 2Fh entry point, which chains.
         ///
         /// It has to exist separately from <see cref="Multiplex"/> because
@@ -230,6 +245,9 @@ public static class BiosRom
         Mouse = 0x33,
         MouseIrq = 0x74,
         Xms = 0x43,
+
+        /// <summary>The Plug and Play BIOS, called far rather than by INT.</summary>
+        PlugAndPlay = 0x50,
         Post = 0xFF,
     }
 
@@ -287,6 +305,43 @@ public static class BiosRom
             rom[table + 7] = 0x00;
             rom[table + 8] = 0x00;
             rom[table + 9] = 0x00;
+        }
+
+        // The Plug and Play BIOS: an installation check structure and an
+        // entry point that returns with RETF, since it is called far with
+        // its arguments on the stack in the C convention. Windows 95 looks
+        // for this before it looks at anything else on the board.
+        {
+            int header = Entry.PnpHeader;
+            // Cleared first: the fields left unset (event flag, OEM id) mean
+            // "none" as zeros, and the checksum slot must not count itself.
+            Array.Clear(rom, header, 0x21);
+            rom[header + 0] = (byte)'$';
+            rom[header + 1] = (byte)'P';
+            rom[header + 2] = (byte)'n';
+            rom[header + 3] = (byte)'P';
+            rom[header + 4] = 0x10;                  // version 1.0
+            rom[header + 5] = 0x21;                  // length of this structure
+            rom[header + 6] = 0x00;                  // control: no event notification
+            rom[header + 7] = 0x00;
+            // +8 is the checksum, filled in last.
+            // +9: event notification flag address, none.
+            WriteWord(rom, header + 0x0D, Entry.PlugAndPlay);   // real-mode entry offset
+            WriteWord(rom, header + 0x0F, 0xF000);              // real-mode entry segment
+            WriteWord(rom, header + 0x11, Entry.PlugAndPlay);   // protected-mode entry offset
+            WriteDword(rom, header + 0x13, Base);               // protected-mode code segment base
+            // +17: OEM device id, none.
+            WriteWord(rom, header + 0x1B, 0xF000);              // real-mode data segment
+            WriteDword(rom, header + 0x1D, Base);               // protected-mode data segment base
+
+            int sum = 0;
+            for (int i = 0; i < 0x21; i++) sum += rom[header + i];
+            rom[header + 8] = (byte)(-sum);
+
+            rom[Entry.PlugAndPlay + 0] = HookByte1;
+            rom[Entry.PlugAndPlay + 1] = HookByte2;
+            rom[Entry.PlugAndPlay + 2] = (byte)Handler.PlugAndPlay;
+            rom[Entry.PlugAndPlay + 3] = 0xCB;       // RETF
         }
 
         // The two VBE tables the information block points at rather than
@@ -746,5 +801,17 @@ public static class BiosRom
         rom[offset + 1] = HookByte2;
         rom[offset + 2] = (byte)handler;
         rom[offset + 3] = 0xCF;        // IRET
+    }
+
+    private static void WriteWord(byte[] rom, int offset, ushort value)
+    {
+        rom[offset] = (byte)value;
+        rom[offset + 1] = (byte)(value >> 8);
+    }
+
+    private static void WriteDword(byte[] rom, int offset, uint value)
+    {
+        WriteWord(rom, offset, (ushort)value);
+        WriteWord(rom, offset + 2, (ushort)(value >> 16));
     }
 }

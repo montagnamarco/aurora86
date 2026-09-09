@@ -136,6 +136,42 @@ public sealed partial class Cpu
         return _memory.ReadByte((table & 0xFFFFF000) | (linear & 0xFFF));
     }
 
+    /// <summary>
+    /// Where a far pointer that is not in any segment register points: a
+    /// paragraph in real and virtual-8086 mode, a descriptor's base in
+    /// protected mode. BIOS services that take their arguments on the stack
+    /// -- the Plug and Play BIOS -- receive buffers this way, and are called
+    /// from both modes with the same code.
+    /// </summary>
+    public uint FarPointerToLinear(ushort selector, uint offset)
+    {
+        if (!State.ProtectedMode || State.Virtual8086Mode) return ((uint)selector << 4) + offset;
+        return DescriptorBase(ReadDescriptor(selector)) + offset;
+    }
+
+    /// <summary>
+    /// Memory at a linear address, through the page tables when they are on.
+    /// Unlike <see cref="PeekLinear"/> these fault on an absent page, which
+    /// is right for a service writing into a buffer the caller handed it.
+    /// </summary>
+    public byte ReadLinearByte(uint linear) => _memory.ReadByte(TranslateLinear(linear, false));
+    public void WriteLinearByte(uint linear, byte value) => _memory.WriteByte(TranslateLinear(linear, true), value);
+
+    public ushort ReadLinearWord(uint linear) =>
+        (ushort)(ReadLinearByte(linear) | (ReadLinearByte(linear + 1) << 8));
+
+    public void WriteLinearWord(uint linear, ushort value)
+    {
+        WriteLinearByte(linear, (byte)value);
+        WriteLinearByte(linear + 1, (byte)(value >> 8));
+    }
+
+    public void WriteLinearDword(uint linear, uint value)
+    {
+        WriteLinearWord(linear, (ushort)value);
+        WriteLinearWord(linear + 2, (ushort)(value >> 16));
+    }
+
     // --- memory accesses ------------------------------------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

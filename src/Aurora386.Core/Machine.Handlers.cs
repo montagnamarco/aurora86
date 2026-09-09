@@ -53,6 +53,7 @@ public sealed partial class Machine
             case BiosRom.Handler.Coprocessor: Fpu.Handle(cpu); return;
             case BiosRom.Handler.RedirectorMultiplex: HandleRedirectorMultiplex(cpu); return;
             case BiosRom.Handler.Xms: Xms.Handle(cpu); return;
+            case BiosRom.Handler.PlugAndPlay: PlugAndPlay.Handle(cpu); return;
             case BiosRom.Handler.Mouse: MouseServices.Handle(cpu); return;
 
             // The ROM entry reads the byte and acknowledges both controllers.

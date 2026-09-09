@@ -86,6 +86,7 @@ public sealed partial class Machine : IDisposable
     public MouseServices MouseServices { get; }
     public PointingDeviceServices PointingDevice { get; }
     public XmsManager Xms { get; }
+    public PnpBios PlugAndPlay { get; }
 
     /// <summary>
     /// The software coprocessor. This machine has no 80387, so floating-point
@@ -228,6 +229,7 @@ public sealed partial class Machine : IDisposable
         PointingDevice = new PointingDeviceServices(this);
         Video.Pointer = MouseServices.Pointer;
         Xms = new XmsManager(Memory);
+        PlugAndPlay = new PnpBios(this);
 
         InstallBios();
     }
