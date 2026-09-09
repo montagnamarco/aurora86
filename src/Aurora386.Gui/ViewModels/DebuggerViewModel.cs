@@ -387,9 +387,53 @@ public sealed partial class DebuggerViewModel : ObservableObject
         for (int i = 0; i < 12; i++)
         {
             uint address = stackBase + pointer + (uint)(i * 2);
-            ushort value = machine.Memory.ReadWord(address);
-            StackLines.Add($"{state.Ss.Selector:X4}:{pointer + i * 2:X4}  {value:X4}");
+            ushort value = PeekWord(machine, address);
+            string note = ReturnAddressNote(machine, state, address, value);
+            StackLines.Add($"{state.Ss.Selector:X4}:{pointer + i * 2:X4}  {value:X4}{note}");
         }
+    }
+
+    /// <summary>A word read the way the processor would, through the page tables when they are on.</summary>
+    private static ushort PeekWord(Machine machine, uint linear)
+        => (ushort)(machine.Cpu.PeekLinear(linear) | (machine.Cpu.PeekLinear(linear + 1) << 8));
+
+    /// <summary>
+    /// Whether a word on the stack looks like a return address, judged the
+    /// only way it can be: by what stands just before the place it names.
+    ///
+    /// DOS code keeps no frame pointer, and most of Windows does not either,
+    /// so there is no chain of BPs to walk and a call stack in the usual
+    /// sense does not exist. What does exist is the evidence: a near return
+    /// address is preceded in CS by a CALL, a far one -- with its segment in
+    /// the next word -- by a far CALL at the place the pair names. Marking
+    /// the words that pass that test turns the raw stack into something
+    /// readable, without pretending to a certainty the data does not carry:
+    /// a value can look like a return address by accident, and a line here
+    /// says "looks like", not "is".
+    /// </summary>
+    private static string ReturnAddressNote(Machine machine, CpuState state, uint address, ushort value)
+    {
+        // Near: the word is an offset into CS. E8 rel16 is what a compiler
+        // emits and a hand-written CALL assembles to; FF /2 is the indirect
+        // form, recognised in the shapes without a displacement.
+        if (value >= 3 && machine.Cpu.PeekLinear(state.Cs.Base + value - 3u) == 0xE8)
+            return "   \u2190 after a near call";
+        if (value >= 2 && machine.Cpu.PeekLinear(state.Cs.Base + value - 2u) == 0xFF
+                       && (machine.Cpu.PeekLinear(state.Cs.Base + value - 1u) & 0x38) == 0x10)
+            return "   \u2190 after an indirect near call";
+
+        // Far: this word is the offset and the next is the segment. Only in
+        // real and virtual-8086 mode can a segment be turned into an address
+        // without the descriptor tables, so that is where it is tried.
+        if (!state.ProtectedMode || state.Virtual8086Mode)
+        {
+            ushort segment = PeekWord(machine, address + 2);
+            uint target = ((uint)segment << 4) + value;
+            if (value >= 5 && machine.Cpu.PeekLinear(target - 5) == 0x9A)
+                return $"   \u2190 after a far call to {segment:X4}:{value:X4}";
+        }
+
+        return "";
     }
 
     /// <summary>Set by the window: asks where to put a file being created.</summary>
