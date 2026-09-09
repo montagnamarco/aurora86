@@ -9,7 +9,7 @@
         x:DataType="vm:MainWindowViewModel"
         Width="900" Height="700"
         Background="#1E1E1E"
-        Title="Aurora386">
+        Title="{Binding WindowTitle}">
 
   <Window.Styles>
     <!-- The status bar lights. A real drive LED is dark until the head

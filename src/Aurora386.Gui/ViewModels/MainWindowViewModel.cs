@@ -594,6 +594,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// What the title bar says: the emulator, and the machine when one is
+    /// open. Two windows with two machines in them are told apart by this
+    /// and by nothing else.
+    /// </summary>
+    [ObservableProperty] private string _windowTitle = "Aurora386";
+
     /// <summary>The folder of the machine currently open, when it came from one.</summary>
     private string? _vmFolder;
     private VmConfiguration? _vmConfiguration;
@@ -648,6 +655,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         RefreshDriveList();
         Session.Start();
         RememberVm(folder);
+        WindowTitle = $"Aurora386 \u2014 {configuration.Name}";
         StatusText = $"Opened {configuration.Name}";
     }
 
@@ -704,6 +712,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _vmFolder = folder;
         _vmConfiguration = configuration;
         RememberVm(folder);
+        WindowTitle = $"Aurora386 \u2014 {configuration.Name}";
         StatusText = $"Saved {configuration.Name} to {Path.GetFileName(folder)}";
     }
 
@@ -818,6 +827,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             CpuModel = configuration.Cpu;
             MouseInterface = configuration.Mouse;
             RefreshDriveList();
+            WindowTitle = $"Aurora386 \u2014 {configuration.Name}";
             StatusText = $"Opened {configuration.Name}";
             return true;
         }
