@@ -103,6 +103,64 @@ public class RedirectorChainingTests
     }
 
     [Fact]
+    public void ADeclinedFunction11CallIsAnsweredTheWayDosItselfWould()
+    {
+        // Carry set and AX=1: what DOS's own INT 2Fh handler says to a
+        // function 11h nobody serves, and what every such call got before
+        // the vector was hooked. Leaving the registers as they arrived is
+        // not the same thing -- the caller passed carry clear, and DOS
+        // reads carry clear back as "resolved", which sent DIR on a shared
+        // drive down a path that ended in "path not found".
+        using var machine = new Machine();
+        InstallFakeDosMultiplexHandler(machine, 0xBEEF);
+        machine.RedirectorHooksMultiplex = true;
+        machine.HookMultiplexForRedirector();
+
+        Assert.Equal(0x0001, CallMultiplex(machine, 0x110A));   // lock region: never ours
+        Assert.True(machine.Cpu.Flags.Carry);
+
+        // Anything that is not function 11h still goes down the chain.
+        Assert.Equal(0xBEEF, CallMultiplex(machine, 0x1200));
+    }
+
+    [Fact]
+    public void HookingAgainBehindAProgramThatChainsToUsDoesNotMakeARing()
+    {
+        // KEYB, MSCDEX and friends hook INT 2Fh after we do, each saving our
+        // vector as its "previous". A second hook of ours in front of them
+        // would save them as our previous, and the chain would go round
+        // for ever. The guest froze on the first INT 2Fh COMMAND.COM made.
+        using var machine = new Machine();
+        InstallFakeDosMultiplexHandler(machine, 0xBEEF);
+        machine.RedirectorHooksMultiplex = true;
+        machine.HookMultiplexForRedirector();
+
+        // A resident program hooking in front of us: it chains to whatever
+        // the vector held, which is our entry point.
+        ushort ourOffset = machine.Memory.ReadWord(0x2F * 4);
+        ushort ourSegment = machine.Memory.ReadWord(0x2F * 4 + 2);
+        const uint Program = 0x02000;                 // 0200:0000
+        machine.Memory.WriteByte(Program + 0, 0x2E);  // JMP FAR CS:[0006]
+        machine.Memory.WriteByte(Program + 1, 0xFF);
+        machine.Memory.WriteByte(Program + 2, 0x2E);
+        machine.Memory.WriteWord(Program + 3, 0x0006);
+        machine.Memory.WriteByte(Program + 5, 0x90);
+        machine.Memory.WriteWord(Program + 6, ourOffset);
+        machine.Memory.WriteWord(Program + 8, ourSegment);
+        machine.Memory.WriteWord(0x2F * 4, 0x0000);
+        machine.Memory.WriteWord(0x2F * 4 + 2, 0x0200);
+
+        // The stability check would call this again and again.
+        machine.HookMultiplexForRedirector();
+        machine.HookMultiplexForRedirector();
+
+        // The program stays in front, and a call still reaches DOS.
+        Assert.Equal(0x0200, machine.Memory.ReadWord(0x2F * 4 + 2));
+        Assert.Equal(0xBEEF, CallMultiplex(machine, 0x1200));
+        Assert.Equal(0x0001, CallMultiplex(machine, 0x110A));
+    }
+
+    [Fact]
     public void TheSavedPointerIsInPlaceBeforeTheVectorIsTakenOver()
     {
         // Order matters, and getting it backwards is fatal rather than

@@ -114,6 +114,9 @@ public class RedirectorProtocolTests : IDisposable
         _machine.Memory.WriteByte(address + (uint)text.Length, 0);
     }
 
+    private void SetExtendedOpenAction(ushort action)
+        => _machine.Memory.WriteWord(SdaAddress + DosStructures.SdaExtendedOpenAction, action);
+
     private void SetSearchAttributes(RedirectedFileAttributes attributes)
         => _machine.Memory.WriteByte(SdaAddress + DosStructures.SdaSearchAttributes,
                                      (byte)attributes);
@@ -165,73 +168,151 @@ public class RedirectorProtocolTests : IDisposable
     // --- qualify (23h) --------------------------------------------------------------
 
     [Fact]
-    public void QualifyReadsTheNameFromDsSiAndWritesTheCanonicalFormToEsDi()
+    public void QualifyIsDeclinedSoThatDosCanonicalisesTheNameItself()
     {
-        // The name to qualify is in DS:SI; the canonical form goes to ES:DI.
-        // DIR on a shared drive lives or dies here: a qualify that declines
-        // is a qualify that failed, and DOS gives up before FindFirst.
+        // The name to qualify arrives in DS:SI. Answering it makes DOS treat
+        // the name as one without a CDS and reach for the 18h/19h family;
+        // declining -- which the multiplex hook turns into carry set -- makes
+        // DOS canonicalise against the drive's own CDS, which is the path
+        // every other subfunction here is written for.
         const uint namePointer = 0x5000;
-        const uint outPointer = 0x6000;
         WriteAsciiz(namePointer, "E:????????.???");
         MountShare();
-
-        _machine.Cpu.SetSegment(CpuNs.SegReg.Ds, 0);
-        (bool handled, bool carry, _) = Call(0x23, state =>
-        {
-            state.Si = (ushort)namePointer;
-            state.Di = (ushort)outPointer;
-        });
-
-        Assert.True(handled);
-        Assert.False(carry);
-        Assert.Equal("E:\\????????.???", ReadAsciizAt(outPointer));
-    }
-
-    [Fact]
-    public void QualifyOfADriveRootAddsTheBackslash()
-    {
-        const uint namePointer = 0x5000;
-        const uint outPointer = 0x6000;
-        WriteAsciiz(namePointer, "e:");
-        MountShare();
-
-        _machine.Cpu.SetSegment(CpuNs.SegReg.Ds, 0);
-        (_, bool carry, _) = Call(0x23, state =>
-        {
-            state.Si = (ushort)namePointer;
-            state.Di = (ushort)outPointer;
-        });
-
-        Assert.False(carry);
-        Assert.Equal("E:\\", ReadAsciizAt(outPointer));
-    }
-
-    [Fact]
-    public void QualifyDeclinesANameOnADriveThatIsNotOurs()
-    {
-        const uint namePointer = 0x5000;
-        WriteAsciiz(namePointer, "C:\\AUTOEXEC.BAT");
 
         _machine.Cpu.SetSegment(CpuNs.SegReg.Ds, 0);
         (bool handled, _, _) = Call(0x23, state =>
         {
             state.Si = (ushort)namePointer;
-            state.Di = (ushort)0x6000;
+            state.Di = 0x6000;
         });
 
-        Assert.False(handled);   // not ours: DOS handles it itself
+        Assert.False(handled);
     }
 
-    private string ReadAsciizAt(uint address)
+    [Fact]
+    public void FindFirstWithoutCdsTakesTheDriveFromTheName()
     {
-        var builder = new StringBuilder();
-        for (uint i = 0; i < 64; i++)
-        {
-            byte b = _machine.Memory.ReadByte(address + i);
-            if (b == 0) break;
-            builder.Append((char)b);
-        }
-        return builder.ToString();
+        // 19h arrives with the CDS pointer aimed nowhere; the qualified name
+        // in the SDA still says which drive, and that is enough.
+        HostDirectoryFileSystem share = MountShare();
+        File.WriteAllText(Path.Combine(_root, "HELLO.TXT"), "hi");
+        _machine.Memory.WriteWord(SdaAddress + DosStructures.SdaCurrentCdsPointer, 0xFFFF);
+        _machine.Memory.WriteWord(SdaAddress + DosStructures.SdaCurrentCdsPointer + 2, 0xFFFF);
+        SetFilename("E:\\*.*");
+        SetSearchAttributes(RedirectedFileAttributes.Archive);
+
+        (bool handled, bool carry, _) = Call(0x19);
+
+        Assert.True(handled);
+        Assert.False(carry);
+        Assert.Equal("HELLO   TXT", ReadFoundName());
+    }
+
+    [Fact]
+    public void ALabelOnlySearchReturnsTheLabelAndNoFiles()
+    {
+        MountShare();
+        WriteHostFile("A.TXT", "x");
+        SetFilename("E:\\????????.???");
+        SetSearchAttributes(RedirectedFileAttributes.VolumeLabel);
+
+        (_, bool carry, _) = Call(0x1B);
+        Assert.False(carry);
+        Assert.Equal(0x08, _machine.Memory.ReadByte(SdaAddress + DosStructures.SdaFoundDirectoryEntry + 11));
+
+        (_, carry, _) = Call(0x1C);          // and nothing after it
+        Assert.True(carry);
+    }
+
+    [Fact]
+    public void TheLabelIsFoundFromASubdirectoryToo()
+    {
+        MountShare();
+        Directory.CreateDirectory(Path.Combine(_root, "SUB"));
+        WriteHostFile(Path.Combine("SUB", "B.TXT"), "x");
+        SetFilename("E:\\SUB\\????????.???");
+        SetSearchAttributes(RedirectedFileAttributes.VolumeLabel);
+
+        (_, bool carry, _) = Call(0x1B);
+        Assert.False(carry);
+        Assert.Equal(0x08, _machine.Memory.ReadByte(SdaAddress + DosStructures.SdaFoundDirectoryEntry + 11));
+    }
+
+    [Fact]
+    public void ACreatedFileIsOpenForWriting()
+    {
+        // DOS refuses writes on a read-only SFT before asking anybody, so a
+        // create that records mode 0 gives a file that can only ever be
+        // empty.
+        MountShare();
+        SetFilename($"{(char)('A' + ShareDrive)}:\\NEW.TXT");
+        (_, bool carry, _) = Call(0x17, s => s.Cx = 0);
+        Assert.False(carry);
+        Assert.Equal(0x02, _machine.Memory.ReadWord(SftAddress + DosStructures.SftOpenMode) & 0x07);
+    }
+
+    [Fact]
+    public void AnExtendedOpenRecordsItsOwnMode()
+    {
+        MountShare();
+        WriteHostFile("RW.TXT", "x");
+        SetFilename($"{(char)('A' + ShareDrive)}:\\RW.TXT");
+        _machine.Memory.WriteWord(SdaAddress + DosStructures.SdaExtendedOpenMode, 0x0042);
+        _machine.Memory.WriteByte(SdaAddress + DosStructures.SdaOpenMode, 0x00);   // the classic field says read-only
+        (_, bool carry, _) = Call(0x2E, _ => SetExtendedOpenAction(0x01));
+        Assert.False(carry);
+        Assert.Equal(0x42, _machine.Memory.ReadWord(SftAddress + DosStructures.SftOpenMode));
+    }
+
+    [Fact]
+    public void DiskSpaceNeverMultipliesPastTwoGigabytes()
+    {
+        // Whatever the host disk holds, the product DIR computes in 32 bits
+        // must stay positive.
+        MountShare();
+        (_, bool carry, CpuNs.CpuState state) = Call(0x0C);
+        Assert.False(carry);
+        long total = (long)state.Ax * state.Cx * state.Bx;
+        long free = (long)state.Ax * state.Cx * state.Dx;
+        Assert.InRange(total, 1, int.MaxValue);
+        Assert.InRange(free, 0, int.MaxValue);
+        Assert.True(state.Ax <= 64);
+    }
+
+    // --- the search block ---------------------------------------------------------
+
+    [Fact]
+    public void FindFirstFillsTheSearchBlockWithDriveTemplateAndAttribute()
+    {
+        // DOS copies the first twelve bytes of this block back over the FCB
+        // that started an FCB search, so they must be the drive, the
+        // template and the attribute -- or COMMAND.COM's DIR loses its
+        // extension between the label search and the listing.
+        MountShare();
+        WriteHostFile("A.TXT", "x");
+        SetFilename("E:\\????????.???");
+        SetSearchAttributes(RedirectedFileAttributes.Directory | RedirectedFileAttributes.Archive);
+
+        (_, bool carry, _) = Call(0x1B);
+        Assert.False(carry);
+
+        uint block = SdaAddress + DosStructures.SdaFindFirstBlock;
+        Assert.Equal(0x85, _machine.Memory.ReadByte(block));          // E: is 5, bit 7 set
+        var template = new StringBuilder();
+        for (uint i = 1; i <= 11; i++) template.Append((char)_machine.Memory.ReadByte(block + i));
+        Assert.Equal("???????????", template.ToString());
+        Assert.Equal((byte)(RedirectedFileAttributes.Directory | RedirectedFileAttributes.Archive),
+                     _machine.Memory.ReadByte(block + 12));
+    }
+
+    [Theory]
+    [InlineData("????????.???", "???????????")]
+    [InlineData("*.TXT", "????????TXT")]
+    [InlineData("A*", "A???????   ")]
+    [InlineData("readme.md", "README  MD ")]
+    public void SearchTemplatesAreFcbShaped(string pattern, string expected)
+    {
+        Assert.Equal(expected, RedirectorServices.SearchTemplate(pattern));
     }
 
     // --- installation ---------------------------------------------------------------
@@ -584,15 +665,20 @@ public class RedirectorProtocolTests : IDisposable
         Assert.Equal(10u, ReadSft(DosStructures.SftFileSize));
         Assert.Equal(0u, ReadSft(DosStructures.SftFilePosition));
 
+        // The open mode is DOS's own, with bit 15 -- "opened through an
+        // FCB" -- clear. The remote mark lives in the device information
+        // word, not here.
         ushort mode = _machine.Memory.ReadWord(SftAddress + DosStructures.SftOpenMode);
-        Assert.True((mode & 0x8000) != 0);
+        Assert.True((mode & 0x8000) == 0);
     }
 
     [Fact]
-    public void TheDriveNumberGoesInTheLowBitsOfTheDeviceInformationWord()
+    public void TheDeviceInformationWordSaysRemoteAndNamesTheDrive()
     {
-        // And bit 15 must stay clear there: a set bit 15 means a character
-        // device, and DOS then treats the file as if it were CON.
+        // Bit 15 set is what sends every read, write and close to the
+        // redirector; clear, DOS walks the real disk's FAT with a cluster
+        // number from an SFT nobody filled, and reads sectors of C: over
+        // its own data. Bit 7 clear says a file, not a character device.
         MountShare();
         WriteHostFile("DATA.BIN", "x");
         SetFilename($"{(char)('A' + ShareDrive)}:\\DATA.BIN");
@@ -601,7 +687,8 @@ public class RedirectorProtocolTests : IDisposable
         ushort info = _machine.Memory.ReadWord(SftAddress + DosStructures.SftDeviceInfo);
 
         Assert.Equal(ShareDrive, info & 0x3F);
-        Assert.True((info & 0x8000) == 0);
+        Assert.True((info & 0x8000) != 0);
+        Assert.True((info & 0x0080) == 0);
     }
 
     [Fact]
@@ -776,7 +863,7 @@ public class RedirectorProtocolTests : IDisposable
 
         SetFilename($"{(char)('A' + ShareDrive)}:\\*.TMP");
 
-        Assert.False(Call(0x11).carry);
+        Assert.False(Call(0x13).carry);   // 13h deletes
         Assert.False(File.Exists(Path.Combine(_root, "A.TMP")));
         Assert.False(File.Exists(Path.Combine(_root, "B.TMP")));
         Assert.True(File.Exists(Path.Combine(_root, "KEEP.TXT")));
@@ -794,7 +881,7 @@ public class RedirectorProtocolTests : IDisposable
         SetFilename($"{(char)('A' + ShareDrive)}:\\OLD.TXT");
         SetSecondFilename($"{(char)('A' + ShareDrive)}:\\NEW.TXT");
 
-        Assert.False(Call(0x13).carry);
+        Assert.False(Call(0x11).carry);   // 11h renames
         Assert.True(File.Exists(Path.Combine(_root, "NEW.TXT")));
         Assert.False(File.Exists(Path.Combine(_root, "OLD.TXT")));
     }
@@ -889,7 +976,7 @@ public class RedirectorProtocolTests : IDisposable
         SetFilename($"{(char)('A' + ShareDrive)}:\\FRESH.TXT");
 
         // Action 0x10: create if it does not exist, fail if it does.
-        (_, bool carry, CpuNs.CpuState state) = Call(0x1E, s => s.Dx = 0x10);
+        (_, bool carry, CpuNs.CpuState state) = Call(0x2E, _ => SetExtendedOpenAction(0x10));
 
         Assert.False(carry);
         Assert.Equal(2, state.Cx);
@@ -904,7 +991,7 @@ public class RedirectorProtocolTests : IDisposable
         SetFilename($"{(char)('A' + ShareDrive)}:\\EXISTING.TXT");
 
         // Action 0x11: open if it exists, create if it does not.
-        (_, bool carry, CpuNs.CpuState state) = Call(0x1E, s => s.Dx = 0x11);
+        (_, bool carry, CpuNs.CpuState state) = Call(0x2E, _ => SetExtendedOpenAction(0x11));
 
         Assert.False(carry);
         Assert.Equal(1, state.Cx);

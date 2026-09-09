@@ -79,6 +79,14 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     public Action<byte, byte>? Trace { get; set; }
 
+    /// <summary>
+    /// The other half of <see cref="Trace"/>: the subfunction, whether it
+    /// was answered, and AX afterwards -- the error code when it failed.
+    /// Which call declined or failed, and with what, is the whole of what a
+    /// DOS error message hides.
+    /// </summary>
+    public Action<byte, bool, ushort>? TraceResult { get; set; }
+
     /// <summary>Address of the Swappable Data Area, learned at installation.</summary>
     public uint SwappableDataArea { get; private set; }
 
@@ -257,6 +265,13 @@ public sealed class RedirectorServices(Machine machine)
 
         if (!IsInstalled) return false;
 
+        bool handled = Dispatch(cpu, subfunction);
+        TraceResult?.Invoke(subfunction, handled, cpu.State.Ax);
+        return handled;
+    }
+
+    private bool Dispatch(CpuNs.Cpu cpu, byte subfunction)
+    {
         return subfunction switch
         {
             0x01 => RemoveDirectory(cpu),
@@ -268,37 +283,33 @@ public sealed class RedirectorServices(Machine machine)
             0x0C => GetDiskSpace(cpu),
             0x0E => SetFileAttributes(cpu),
             0x0F => GetFileAttributes(cpu),
-            0x11 => DeleteFile(cpu),
-            0x13 => RenameFile(cpu),
+            // 11h renames and 13h deletes -- the reverse of what one would
+            // guess from DOS's own numbering, where 41h deletes and 56h
+            // renames. Having them swapped made DEL rename a file to the
+            // garbage in the second name buffer, and report "access denied".
+            0x11 => RenameFile(cpu),
+            0x13 => DeleteFile(cpu),
             0x16 => OpenFileCall(cpu),
             0x17 => CreateFileCall(cpu),
             0x05 => ChangeDirectory(cpu),
 
+            // 18h and 19h are create and findfirst "without CDS": the same
+            // operations, reached when DOS has no CDS entry for the name --
+            // a UNC name, or one a redirector chose to canonicalise itself
+            // through 23h. The drive then comes from the name, which
+            // TryResolve falls back to.
+            0x18 => CreateFileCall(cpu),
+            0x19 => FindFirst(cpu),
             0x1B => FindFirst(cpu),
             0x1C => FindNext(cpu),
-            0x1E => SpecialOpen(cpu),
             0x21 => SeekFromEnd(cpu),
             0x23 => QualifyFilename(cpu),
 
-            // 19h and 25h look as though they should be ours, and are not.
-            // Measuring them is the only way to tell.
-            //
-            // Both arrive with the SDA's current-CDS pointer set to
-            // FFFF:FFFF, which is DOS's way of saying "this call is not about
-            // a drive at all". 19h tells the redirector which directory DOS
-            // has just made current, and 25h which drive it has just
-            // selected; neither carries a path to verify, and treating them
-            // as "change directory" checks the previous drive's path against
-            // this drive's filesystem -- which fails for a reason that has
-            // nothing to do with either.
-            //
-            // They still have to be answered rather than declined. An
-            // unanswered function 11h is a failed one as far as DOS is
-            // concerned, and declining these two is what left a shared folder
-            // reporting "path not found" for its own root.
-            0x19 or 0x25 => AcknowledgeWithoutPath(cpu),
-
-            0x2E => DoRedirection(cpu),
+            // 2Eh, not 1Eh, is the extended open of INT 21h AH=6Ch, which
+            // COMMAND.COM uses for TYPE and COPY. 1Eh is "do redirection",
+            // the INT 21h 5Fxx family, which is declined below. Having them
+            // the other way round answered every TYPE with "not supported".
+            0x2E => SpecialOpen(cpu),
 
             // Deliberately not implemented, and why it is safe not to:
             //
@@ -311,13 +322,17 @@ public sealed class RedirectorServices(Machine machine)
             //   1Dh  close all files for a process, used at abnormal
             //        termination; leaving a handle open costs nothing here
             //        because we hold no host resources between calls.
-            //   1Fh  print redirection, 20h flush all buffers, 22h process
-            //        termination, 24h-27h the extended open/lock family.
+            //   1Eh  do redirection (INT 21h 5Fxx), 1Fh printer setup, 20h
+            //        flush all buffers, 22h process termination, 24h-27h the
+            //        printer family; 25h arrives at the end of every command
+            //        and is exactly as unanswered without a redirector loaded.
             //
-            // Declining rather than failing is important: DOS treats "no
-            // answer" as "this operation is not available on this drive" and
-            // reports it sensibly, whereas an invented error code propagates
-            // to the program as a real failure.
+            // Declining is what DOS's own INT 2Fh handler does for every
+            // function 11h it is asked: carry set and AX=1. The multiplex
+            // hook produces that answer, so that a declined call looks the
+            // same as it did before the vector was taken over. What it must
+            // not do is leave the registers as they were: the caller passed
+            // carry clear, and DOS reads carry clear back as success.
             _ => false,
         };
     }
@@ -342,12 +357,6 @@ public sealed class RedirectorServices(Machine machine)
     /// the redirector is broken, whereas a clean "not supported" is a normal
     /// answer that every network utility knows how to print.
     /// </summary>
-    private bool DoRedirection(CpuNs.Cpu cpu)
-    {
-        Fail(cpu, DosStructures.ErrorNotSupported);
-        return true;
-    }
-
     /// <summary>
     /// Subfunction 23h: qualify a filename. A redirector may rewrite a name
     /// before DOS parses it -- Novell used it to turn "SERVER/VOL:" into
@@ -367,55 +376,21 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private bool QualifyFilename(CpuNs.Cpu cpu)
     {
-        // The name to qualify arrives in DS:SI, and the canonical form is
-        // written back to ES:DI. This is where the last attempt went wrong:
-        // it read the name from the SDA, which at this point holds something
-        // else entirely, saw garbage, and declined -- and a declined 23h is
-        // a failed one, so DIR on a shared drive died with "path not found"
-        // before FindFirst was ever reached. Measuring DS:SI is what showed
-        // it: the register held "E:????????.???" while the SDA held nothing
-        // of the sort.
+        // DS:SI is the name to canonicalise, ES:DI a buffer for the result.
+        // Answering with a canonical name is what a redirector for names DOS
+        // cannot parse does -- Novell's "SERVER/VOL:" -- and it has a cost:
+        // DOS then treats the name as one with no CDS entry, and reaches for
+        // the "without CDS" variants of every call, current directory
+        // included. Our names are ordinary DOS names on an ordinary drive
+        // letter with a CDS of its own, so the right answer is the one DOS's
+        // default handler gives: not resolved, carry set, and DOS
+        // canonicalises the name itself against that drive's CDS.
         //
-        // The drive has to come from the name, because this call arrives
-        // before DOS has settled on a current drive -- the CDS pointer is
-        // still FFFF:FFFF and every attempt to read the drive from it gives
-        // "none".
-        uint source = ((uint)cpu.State.Ds.Selector << 4) + cpu.State.Si;
-        string name = ReadAsciiz(source);
-        if (name.Length < 2 || name[1] != ':') return false;
-
-        int drive = char.ToUpperInvariant(name[0]) - 'A';
-        if (drive < 0 || !_drives.ContainsKey((byte)drive)) return false;
-
-        // Canonicalise into ES:DI. DOS wants an absolute path: drive, colon,
-        // backslash, then the path with any "." and ".." already resolved --
-        // which, since this is our own drive and the name DOS hands us is
-        // already the resolved one, means little more than making sure the
-        // root has its backslash. Anything past the colon that is not a
-        // separator is a relative name, and there is no current directory to
-        // resolve it against here, so it is taken from the root.
-        string rest = name[2..];
-        string canonical = rest.StartsWith('\\')
-            ? $"{char.ToUpperInvariant(name[0])}:{rest}"
-            : $"{char.ToUpperInvariant(name[0])}:\\{rest}";
-
-        uint destination = ((uint)cpu.State.Es.Selector << 4) + cpu.State.Di;
-        WriteAsciiz(destination, canonical);
-        Succeed(cpu);
-        return true;
-    }
-
-    /// <summary>
-    /// Subfunctions 19h and 25h: DOS telling the redirector what it has just
-    /// done, rather than asking it anything.
-    ///
-    /// There is nothing to do and nothing to check -- but saying so out loud
-    /// matters, because silence reads as failure.
-    /// </summary>
-    private static bool AcknowledgeWithoutPath(CpuNs.Cpu cpu)
-    {
-        Succeed(cpu);
-        return true;
+        // Two wrong answers preceded this one, both measured. Reading the
+        // name from the SDA found garbage there (it is in DS:SI), and
+        // declining by leaving the registers alone was read as success,
+        // because the carry DOS passed in was clear.
+        return false;
     }
 
     // --- directory operations ---------------------------------------------------
@@ -506,8 +481,11 @@ public sealed class RedirectorServices(Machine machine)
         // label by asking for a file with the volume-label attribute in the
         // root, and there is nothing else it could ask -- which is why a
         // redirector that ignores this returns a listing with no label line.
+        // Not only in the root: DIR asks for the label from whatever
+        // directory is current, through an FCB search on that directory,
+        // and prints whatever comes back first. A real disk answers with
+        // the root's label; so does this.
         if ((attributeMask & (byte)RedirectedFileAttributes.VolumeLabel) != 0
-            && directory == "\\"
             && !string.IsNullOrEmpty(fs.VolumeLabel))
         {
             matches.Add(new RedirectedFileInfo
@@ -553,8 +531,18 @@ public sealed class RedirectorServices(Machine machine)
         // because a program is free to simply stop calling findnext.
         PruneSearches(searchId);
 
-        WriteSearchBlock(searchId);
+        WriteSearchBlock(searchId, DriveNumberOf(cpu, fs), pattern, attributeMask);
         return EmitNextMatch(cpu, searchId);
+    }
+
+    /// <summary>The number of the drive a call is about: from the CDS pointer, or from the name when there is none.</summary>
+    private byte DriveNumberOf(CpuNs.Cpu cpu, IRedirectedFileSystem fs)
+    {
+        byte drive = CurrentDrive();
+        if (drive != 0xFF) return drive;
+        foreach ((byte number, IRedirectedFileSystem mounted) in _drives)
+            if (ReferenceEquals(mounted, fs)) return number;
+        return 0;
     }
 
     /// <summary>
@@ -585,16 +573,62 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private const int SearchIdOffset = 13;
 
-    private void WriteSearchBlock(ushort searchId)
+    private void WriteSearchBlock(ushort searchId, byte drive, string pattern, byte attributeMask)
     {
         uint block = SwappableDataArea + DosStructures.SdaFindFirstBlock;
 
-        // Byte 0 is the drive number with bit 7 set, which is how DOS knows
-        // a search belongs to a redirector rather than to a local disk. Get
-        // it wrong and findnext is never routed here at all: DOS handles it
-        // with the FAT code, on a drive that has no FAT.
-        _machine.Memory.WriteByte(block, 0x80);
+        // Byte 0 is the drive number (A: is 1) with bit 7 set, which is how
+        // DOS knows a search belongs to a redirector rather than to a local
+        // disk. Get it wrong and findnext is never routed here at all: DOS
+        // handles it with the FAT code, on a drive that has no FAT.
+        _machine.Memory.WriteByte(block, (byte)(0x80 | (drive + 1)));
+
+        // Bytes 1-11 are the search template in FCB form and byte 12 the
+        // attribute mask, and they are not decoration. A search started
+        // through an FCB -- which is how COMMAND.COM's DIR lists files --
+        // ends with DOS copying these twelve bytes back over the FCB's own
+        // drive, name and extension. Leave them zero and the FCB's
+        // extension becomes three NULs; DIR then builds its next search with
+        // "leave the extension as it is", hands DOS an FCB no name could
+        // match, and reports "path not found" for a directory it had just
+        // listed the label of. It only ever worked after a search on a local
+        // drive had left a real template behind in the same block.
+        string template = SearchTemplate(pattern);
+        for (int i = 0; i < 11; i++)
+            _machine.Memory.WriteByte(block + 1 + (uint)i, (byte)template[i]);
+        _machine.Memory.WriteByte(block + 12, attributeMask);
+
         _machine.Memory.WriteWord(block + SearchIdOffset, searchId);
+    }
+
+    /// <summary>
+    /// A pattern as an eleven-character FCB template: name padded to eight,
+    /// extension to three, and "*" spelt out as question marks to the end
+    /// of its field, which is how DOS itself writes wildcards.
+    /// </summary>
+    internal static string SearchTemplate(string pattern)
+    {
+        int dot = pattern.IndexOf('.');
+        string name = dot < 0 ? pattern : pattern[..dot];
+        string extension = dot < 0 ? "" : pattern[(dot + 1)..];
+        return Expand(name, 8) + Expand(extension, 3);
+
+        static string Expand(string part, int width)
+        {
+            var builder = new StringBuilder(width);
+            foreach (char c in part)
+            {
+                if (builder.Length == width) break;
+                if (c == '*')
+                {
+                    while (builder.Length < width) builder.Append('?');
+                    break;
+                }
+                builder.Append(char.ToUpperInvariant(c));
+            }
+            while (builder.Length < width) builder.Append(' ');
+            return builder.ToString();
+        }
     }
 
     private bool EmitNextMatch(CpuNs.Cpu cpu, ushort searchId)
@@ -766,6 +800,13 @@ public sealed class RedirectorServices(Machine machine)
         if ((attributes & RedirectedFileAttributes.VolumeLabel) != 0)
             return (mask & (byte)RedirectedFileAttributes.VolumeLabel) != 0;
 
+        // The mask is inclusive -- hidden, system and directory entries
+        // appear only if asked for, ordinary files always -- with one
+        // exception DOS has kept since 2.0: a mask of exactly the volume
+        // label bit means "labels only". DIR relies on it: it asks with
+        // that mask and prints the first name it gets as the label.
+        if (mask == (byte)RedirectedFileAttributes.VolumeLabel) return false;
+
         const byte selective = (byte)(RedirectedFileAttributes.Hidden
                                     | RedirectedFileAttributes.System
                                     | RedirectedFileAttributes.Directory);
@@ -791,7 +832,7 @@ public sealed class RedirectorServices(Machine machine)
             return true;
         }
 
-        FillSftForOpenFile(cpu, fs, path, info);
+        FillSftForOpenFile(cpu, fs, path, info, ClassicOpenMode());
         Succeed(cpu);
         return true;
     }
@@ -828,7 +869,7 @@ public sealed class RedirectorServices(Machine machine)
             Size = 0,
         };
 
-        FillSftForOpenFile(cpu, fs, path, info);
+        FillSftForOpenFile(cpu, fs, path, info, ReadWriteMode);
         Succeed(cpu);
         return true;
     }
@@ -851,9 +892,11 @@ public sealed class RedirectorServices(Machine machine)
     {
         if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
 
-        // The action code sits in the low nibble pair of DX: bits 0-3 say
-        // what to do when the file exists, bits 4-7 when it does not.
-        ushort action = cpu.State.Dx;
+        // The action code: bits 0-3 say what to do when the file exists,
+        // bits 4-7 when it does not. DOS keeps it in the SDA, not in DX;
+        // DOS 6.22 also sets a bit above those for the ordinary opens it
+        // routes through here, which changes nothing.
+        ushort action = _machine.Memory.ReadWord(SwappableDataArea + DosStructures.SdaExtendedOpenAction);
         bool openIfExists = (action & 0x01) != 0;
         bool replaceIfExists = (action & 0x02) != 0;
         bool createIfMissing = (action & 0x10) != 0;
@@ -909,7 +952,7 @@ public sealed class RedirectorServices(Machine machine)
             return true;
         }
 
-        FillSftForOpenFile(cpu, fs, path, info);
+        FillSftForOpenFile(cpu, fs, path, info, ExtendedOpenMode());
         Succeed(cpu);
         return true;
     }
@@ -923,31 +966,53 @@ public sealed class RedirectorServices(Machine machine)
     /// redirector to maintain a side table keyed by SFT address -- which
     /// would break the moment DOS moved an entry.
     /// </summary>
+    /// <summary>The open mode of an ordinary open (16h), as DOS left it in the SDA.</summary>
+    private ushort ClassicOpenMode() =>
+        _machine.Memory.ReadByte(SwappableDataArea + DosStructures.SdaOpenMode);
+
+    /// <summary>The open mode of an extended open (2Eh), from its own field in the SDA.</summary>
+    private ushort ExtendedOpenMode() =>
+        _machine.Memory.ReadWord(SwappableDataArea + DosStructures.SdaExtendedOpenMode);
+
+    /// <summary>A file just created is open for reading and writing: that is what create means.</summary>
+    private const ushort ReadWriteMode = 0x02;
+
+    /// <param name="mode">
+    /// The open mode to record in the SFT. It matters more than it looks:
+    /// DOS checks the access bits itself on every write, before calling
+    /// anybody, and a file recorded as read-only is refused with "access
+    /// denied" without the redirector hearing of it. Reading the mode from
+    /// the classic open's field for every kind of open left every created
+    /// file at zero bytes.
+    /// </param>
     private void FillSftForOpenFile(CpuNs.Cpu cpu, IRedirectedFileSystem fs,
-                                    string path, RedirectedFileInfo info)
+                                    string path, RedirectedFileInfo info, ushort mode)
     {
         uint sft = cpu.State.Di;
-        byte drive = CurrentDrive();
+        byte drive = DriveNumberOf(cpu, fs);
 
         uint fileId = _nextFileId++;
         _openFiles[fileId] = new OpenFile { FileSystem = fs, Path = path, Drive = drive };
 
-        // Bit 15 of the open mode marks the file as belonging to a network
-        // rather than a local disk. DOS reads it back on every subsequent
-        // read and write to decide whether to come to us or to touch the FAT.
-        ushort mode = _machine.Memory.ReadByte(SwappableDataArea + DosStructures.SdaOpenMode);
-        cpu.WriteMemoryWord(CpuNs.SegReg.Es, sft + DosStructures.SftOpenMode,
-                            (ushort)((mode & 0x7F) | 0x8000));
+        // Bit 15 of the open mode means "opened through an FCB", which
+        // this was not; the rest is the mode as given.
+        cpu.WriteMemoryWord(CpuNs.SegReg.Es, sft + DosStructures.SftOpenMode, (ushort)(mode & 0x7F));
 
         cpu.WriteMemoryWord(CpuNs.SegReg.Es, sft + DosStructures.SftHandleCount, 1);
         cpu.WriteMemoryByte(CpuNs.SegReg.Es, sft + DosStructures.SftAttributes,
                             (byte)info.Attributes);
 
-        // The device information word. The drive number goes in the low six
-        // bits; bit 7 clear says this is a file rather than a character
-        // device, and bit 15 must be clear for the same reason.
+        // The device information word is where "remote" lives: bit 15. DOS
+        // reads it on every read, write, seek and close to decide whether
+        // to come to us or to walk the FAT, and the FAT it walks otherwise
+        // is the real disk's, with the cluster number it finds in an SFT we
+        // never filled -- which is how a TYPE on a shared folder came to
+        // read sectors of C: over the top of DOS's own data and leave the
+        // machine with no current drive. Bit 6 says the file has not been
+        // written; bit 7 clear says it is a file and not a character device;
+        // the low six bits are the drive.
         cpu.WriteMemoryWord(CpuNs.SegReg.Es, sft + DosStructures.SftDeviceInfo,
-                            (ushort)(drive & 0x3F));
+                            (ushort)(0x8040 | (drive & 0x3F)));
 
         WriteDword(cpu, sft + DosStructures.SftDeviceDriverPointer, fileId);
 
@@ -1275,7 +1340,12 @@ public sealed class RedirectorServices(Machine machine)
         int sectorsPerCluster = 1;
         long totalClusters = total / (bytesPerSector * sectorsPerCluster);
 
-        while (totalClusters > 0xFFFF && sectorsPerCluster < 128)
+        // The three numbers multiply to the size, in 32-bit arithmetic
+        // inside DIR and CHKDSK: 65535 clusters of 64 sectors of 512 bytes
+        // is just under 2 GB, and one doubling more takes the product past
+        // what a signed 32-bit number holds, which DIR shows as "0 bytes
+        // free". A host disk of a terabyte is reported as a full 2 GB one.
+        while (totalClusters > 0xFFFF && sectorsPerCluster < 64)
         {
             sectorsPerCluster *= 2;
             totalClusters = total / (bytesPerSector * sectorsPerCluster);
@@ -1309,12 +1379,31 @@ public sealed class RedirectorServices(Machine machine)
         fileSystem = null!;
         path = "";
 
+        string qualified = ReadAsciiz(SwappableDataArea + DosStructures.SdaFirstFilename);
+
+        // The drive is where the CDS pointer aims. When it aims nowhere at
+        // all -- FFFF:FFFF, which is how the "without CDS" calls arrive --
+        // the qualified name still carries the letter, and that is the
+        // drive. A pointer that aims at some other drive, or into the middle
+        // of an entry, is not the same case: that call is not ours, or the
+        // structures have moved, and the name must not be used to guess.
         IRedirectedFileSystem? found = DriveFromCds();
+        if (found is null && CdsPointerIsAbsent()) found = DriveFromName(qualified);
         if (found is null) return false;
 
         fileSystem = found;
-        path = StripDriveLetter(ReadAsciiz(SwappableDataArea + DosStructures.SdaFirstFilename));
+        path = StripDriveLetter(qualified);
         return true;
+    }
+
+    private bool CdsPointerIsAbsent() =>
+        ReadDwordPhysical(SwappableDataArea + DosStructures.SdaCurrentCdsPointer) == 0xFFFFFFFF;
+
+    private IRedirectedFileSystem? DriveFromName(string qualified)
+    {
+        if (qualified.Length < 2 || qualified[1] != ':') return null;
+        int drive = char.ToUpperInvariant(qualified[0]) - 'A';
+        return drive is >= 0 and < 26 ? _drives.GetValueOrDefault((byte)drive) : null;
     }
 
     private IRedirectedFileSystem? DriveFromCds()

@@ -52,10 +52,29 @@ public static class DosStructures
     /// The attribute mask for a search or a create -- which of hidden, system
     /// and directory the caller is willing to see.
     /// </summary>
-    public const int SdaSearchAttributes = 0x4D;
+    // 24Dh, not 4Dh: the 4Dh this used to say sits inside the error
+    // bookkeeping at the top of the SDA and always read as zero, so a DIR
+    // asking for the volume label (mask 08h) got the files instead, and the
+    // first of them was printed as the label. Measured against the trace of
+    // a live DOS 6.22 and against dosemu's table for DOS 4 and later.
+    public const int SdaSearchAttributes = 0x24D;
 
     /// <summary>The open mode for function 111Eh: read, write or both.</summary>
-    public const int SdaOpenMode = 0x4E;
+    // Likewise 24Eh: it follows the search attribute.
+    public const int SdaOpenMode = 0x24E;
+
+    /// <summary>
+    /// The three words the extended open (112Eh) takes its arguments from:
+    /// the action code of INT 21h AX=6C00h (what to do if the file exists,
+    /// what to do if it does not), the attributes for a file to be created,
+    /// and the open mode. Not in DX, CX and BX, however much the INT 21h
+    /// call put them there: measured on DOS 6.22, DX held a leftover, and
+    /// an existing file opened by TYPE was refused as "already exists".
+    /// Offsets as dosemu has them for DOS 4 and later.
+    /// </summary>
+    public const int SdaExtendedOpenAction = 0x2DD;
+    public const int SdaExtendedOpenAttributes = 0x2DF;
+    public const int SdaExtendedOpenMode = 0x2E1;
 
     /// <summary>
     /// The fully qualified name of the file being operated on, as DOS

@@ -240,18 +240,23 @@ public sealed partial class Machine
         // Function 11h that we declined: a subfunction we do not implement,
         // or a drive that is not ours.
         //
-        // This must NOT be chained on, and the reason is not obvious. Passing
-        // it to DOS's own INT 2Fh handler looks like the polite thing to do,
-        // and on a machine with a second redirector loaded it would be right.
-        // But DOS is not a redirector: it holds this vector for its own
-        // unrelated functions, and it does not expect to be asked to service
-        // function 11h -- it was DOS that issued the call in the first place.
-        // Handing it back produces exactly the tangle it sounds like, and the
-        // machine stops partway through booting.
+        // The answer has to be the one DOS's own INT 2Fh handler gives for
+        // a function 11h nobody serves: carry set and AX=1, "invalid
+        // function". That is what every such call got before the vector was
+        // hooked, and DOS is written for it -- a declined 23h makes it
+        // canonicalise the name itself, a declined 25h is ignored. Leaving
+        // the registers as they arrived is not the same thing, though it
+        // looks like the polite way to say "nobody was listening": the
+        // carry DOS passed in was clear, and clear reads as success. That
+        // one difference sent DIR on a shared drive down the "no CDS" path
+        // with a name that was never resolved, and it reported "path not
+        // found" for a directory that was there.
         //
-        // Returning without answering leaves AX as it arrived, which is how
-        // INT 2Fh says nobody was listening, and is what DOS would have seen
-        // before we hooked the vector at all.
+        // Produced here rather than by chaining to the displaced handler:
+        // the effect is identical, and the chain would cross DOS while it
+        // is inside the very INT 21h call that asked.
+        cpu.State.Ax = 0x0001;
+        cpu.SetCarryInStackedFlags(true);
     }
 
     /// <summary>
@@ -327,9 +332,75 @@ public sealed partial class Machine
     /// </summary>
     public bool RedirectorHooksMultiplex { get; set; } = true;
 
+    /// <summary>
+    /// What the redirector knows about the DOS it is attached to, for a
+    /// snapshot. The guest's memory carries the hooked vector and the
+    /// marked CDS entries, but three things live only on this side: where
+    /// DOS keeps its structures, the vector the hook displaced (its copy in
+    /// ROM is not part of RAM), and the fact that COMMAND.COM has started.
+    /// A snapshot restored without them boots a guest whose shared folders
+    /// answer nothing, because every call about them is declined.
+    /// </summary>
+    internal byte[] CaptureDosState()
+    {
+        using var buffer = new MemoryStream();
+        using var writer = new BinaryWriter(buffer);
+        writer.Write(CommandProcessorStarted);
+        writer.Write(Redirector.SwappableDataArea);
+        writer.Write(Redirector.CurrentDirectoryStructure);
+        writer.Write(Redirector.DriveCount);
+        writer.Write(_previousMultiplexVector);
+        writer.Flush();
+        return buffer.ToArray();
+    }
+
+    internal void RestoreDosState(byte[] data)
+    {
+        if (data.Length == 0) return;
+        using var reader = new BinaryReader(new MemoryStream(data));
+        CommandProcessorStarted = reader.ReadBoolean();
+        uint sda = reader.ReadUInt32();
+        uint cds = reader.ReadUInt32();
+        byte driveCount = reader.ReadByte();
+        _previousMultiplexVector = reader.ReadUInt32();
+        _multiplexHooked = _previousMultiplexVector != 0;
+
+        // Attaching again re-marks whatever is mounted now in the restored
+        // CDS, which also covers a folder mounted after the snapshot was
+        // taken.
+        if (sda != 0 && cds != 0) Redirector.AttachToDos(sda, cds, driveCount);
+
+        // The far jump at the end of the multiplex entry reads its target
+        // from ROM, and ROM is not in the snapshot.
+        if (_previousMultiplexVector != 0)
+        {
+            Memory.WriteRomWord(BiosRom.Base + BiosRom.Entry.PreviousMultiplexVector, (ushort)_previousMultiplexVector);
+            Memory.WriteRomWord(BiosRom.Base + BiosRom.Entry.PreviousMultiplexVector + 2, (ushort)(_previousMultiplexVector >> 16));
+        }
+    }
+
+    /// <summary>
+    /// Whether the vector has been taken over for the DOS the redirector is
+    /// attached to. Once is all it takes, and twice is fatal: the moment
+    /// something else hooks INT 2Fh in front of us -- KEYB, MSCDEX, any
+    /// resident program loaded from AUTOEXEC.BAT -- its saved "previous"
+    /// vector is ours. Hooking again then saves that program as our
+    /// previous, and the chain becomes a ring: it jumps to us, we jump to
+    /// it, and the first INT 2Fh the guest makes never returns. The machine
+    /// froze on COMMAND.COM's own AE00h call, with the tick counter still.
+    /// </summary>
+    private bool _multiplexHooked;
+
+    /// <summary>Forgets the hook, for a DOS that has been rebooted or rebuilt: the next attachment hooks afresh.</summary>
+    internal void ForgetMultiplexHook()
+    {
+        _multiplexHooked = false;
+        _previousMultiplexVector = 0;
+    }
+
     public void HookMultiplexForRedirector()
     {
-        if (!RedirectorHooksMultiplex) return;
+        if (!RedirectorHooksMultiplex || _multiplexHooked) return;
 
         ushort offset = Memory.ReadWord(0x2F * 4);
         ushort segment = Memory.ReadWord(0x2F * 4 + 2);
@@ -342,6 +413,7 @@ public sealed partial class Machine
         if (current == ours) return;
 
         _previousMultiplexVector = current;
+        _multiplexHooked = true;
 
         // The jump at the end of our entry point reads its target from here.
         // It lives in the ROM image, which only the emulator writes to.

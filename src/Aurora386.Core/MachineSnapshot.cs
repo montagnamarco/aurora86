@@ -68,6 +68,9 @@ public sealed class MachineSnapshot
     private readonly byte[] _timer;
     private readonly byte[] _keyboard;
 
+    /// <summary>The redirector's attachment to DOS; see <see cref="Machine.CaptureDosState"/>.</summary>
+    private readonly byte[] _dosState;
+
     private MachineSnapshot(Machine machine)
     {
         CpuState state = machine.Cpu.State;
@@ -95,6 +98,7 @@ public sealed class MachineSnapshot
         _interruptControllers = machine.Interrupts.Capture();
         _timer = machine.Timer.Capture();
         _keyboard = machine.Keyboard.Capture();
+        _dosState = machine.CaptureDosState();
     }
 
     /// <summary>Takes a snapshot of the machine as it stands.</summary>
@@ -131,6 +135,9 @@ public sealed class MachineSnapshot
         if (_interruptControllers.Length > 0) machine.Interrupts.Restore(_interruptControllers);
         if (_timer.Length > 0) machine.Timer.Restore(_timer);
         if (_keyboard.Length > 0) machine.Keyboard.Restore(_keyboard);
+
+        // After the memory, because attaching marks the CDS entries in it.
+        machine.RestoreDosState(_dosState);
 
         // Paging translations cached from the old contents of memory describe
         // an address space that no longer exists.
@@ -180,6 +187,9 @@ public sealed class MachineSnapshot
         file.Write(_timer);
         file.Write(_keyboard.Length);
         file.Write(_keyboard);
+
+        file.Write(_dosState.Length);
+        file.Write(_dosState);
     }
 
     private MachineSnapshot(BinaryReader file)
@@ -249,6 +259,13 @@ public sealed class MachineSnapshot
             _timer = [];
             _keyboard = [];
         }
+
+        // And the redirector's attachment, later again. A file without it
+        // restores a guest whose shared folders have to be found afresh,
+        // which for a DOS already at its prompt never happens.
+        _dosState = file.BaseStream.Position < file.BaseStream.Length
+            ? file.ReadBytes(file.ReadInt32())
+            : [];
     }
 
     /// <summary>Reads a snapshot back from a file.</summary>

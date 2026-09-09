@@ -88,6 +88,12 @@ public sealed partial class Machine
                 Keyboard.ResetRequested = false;
                 SystemControl.ResetRequested = false;
                 Cpu.Reset();
+
+                // The DOS that is about to boot is a new one: it has not
+                // started its command processor, and its INT 2Fh is not
+                // hooked, whatever the last one had.
+                CommandProcessorStarted = false;
+                ForgetMultiplexHook();
             }
         }
     }

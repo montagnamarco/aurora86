@@ -252,6 +252,11 @@ public sealed class RedirectorInstaller(Machine machine)
 
             redirector.AttachToDos(sda, cds, driveCount);
 
+            // A DOS whose structures have moved is a different DOS -- one
+            // still building itself, or one that has rebooted -- and the
+            // hook it gets must be a fresh one.
+            _machine.ForgetMultiplexHook();
+
             // Deliberately NOT hooking the vector here. The addresses have
             // just changed, which means DOS is still building itself -- and
             // hooking INT 2Fh while it is doing that stops CONFIG.SYS from

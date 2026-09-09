@@ -202,3 +202,59 @@ public class MachineSnapshotTests
             "a restored machine must still hear its timer");
     }
 }
+
+public class MachineSnapshotRedirectorTests
+{
+    /// <summary>
+    /// The redirector's attachment to DOS travels with the snapshot. Without
+    /// it a restored guest at the DOS prompt has a hooked INT 2Fh vector in
+    /// memory and a redirector on this side that knows nothing, so every
+    /// call about a shared folder is declined: DIR says "invalid function"
+    /// on a drive that was working when the snapshot was taken.
+    /// </summary>
+    [Fact]
+    public void TheRedirectorsAttachmentSurvivesASnapshot()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "aurora-snap-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string file = Path.Combine(root, "stato.bin");
+        try
+        {
+            using var source = new Aurora386.Core.Machine();
+            source.RunInstructions(200);
+            source.Redirector.Mount(4, new Aurora386.Core.Dos.HostDirectoryFileSystem(root));
+            source.Redirector.AttachToDos(0x1480, 0xE1E0, 26);
+
+            // A vector to displace, standing in for DOS's own handler.
+            source.Memory.WriteWord(0x2F * 4, 0x1234);
+            source.Memory.WriteWord(0x2F * 4 + 2, 0x0116);
+            source.HookMultiplexForRedirector();
+
+            Aurora386.Core.MachineSnapshot.Capture(source).Save(file);
+
+            using var target = new Aurora386.Core.Machine();
+            target.RunInstructions(200);
+            target.Redirector.Mount(4, new Aurora386.Core.Dos.HostDirectoryFileSystem(root));
+            Aurora386.Core.MachineSnapshot.Load(file).RestoreTo(target);
+
+            Assert.True(target.Redirector.IsInstalled);
+            Assert.Equal(0x1480u, target.Redirector.SwappableDataArea);
+            Assert.Equal(0xE1E0u, target.Redirector.CurrentDirectoryStructure);
+            Assert.Equal(26, target.Redirector.DriveCount);
+
+            // The vector in memory is ours, and the jump behind it still
+            // knows where DOS's handler was.
+            Assert.Equal(Aurora386.Core.Firmware.BiosRom.Entry.RedirectorMultiplex, target.Memory.ReadWord(0x2F * 4));
+            Assert.Equal(0x1234, target.Memory.ReadWord(Aurora386.Core.Firmware.BiosRom.Base + Aurora386.Core.Firmware.BiosRom.Entry.PreviousMultiplexVector));
+            Assert.Equal(0x0116, target.Memory.ReadWord(Aurora386.Core.Firmware.BiosRom.Base + Aurora386.Core.Firmware.BiosRom.Entry.PreviousMultiplexVector + 2));
+
+            // And the drive is marked in the restored CDS.
+            ushort flags = target.Memory.ReadWord(0xE1E0 + 4 * 88 + 0x43);
+            Assert.Equal(0xC000, flags & 0xC000);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+}
