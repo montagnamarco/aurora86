@@ -75,6 +75,7 @@ public sealed partial class Machine
             AdvanceDevices(steps);
             TryInstallRedirector();
             TryReclaimMouseVector();
+            TryRefreshCompactDiscLetter();
 
             // The pointer's position is brought up to date here, on the
             // emulation thread, and never from the renderer: the renderer
@@ -231,6 +232,23 @@ public sealed partial class Machine
 
     private const int MouseVectorCheckInterval = 50;
     private int _mouseVectorCountdown = 1;
+
+    /// <summary>
+    /// Every so often, once DOS is up and a disc is in, asks the guest which
+    /// letter the CD-ROM has. Rarely, because each question borrows the CPU
+    /// for an INT 2Fh in the guest; the answer only changes when a driver
+    /// loads, which is a once-per-boot event.
+    /// </summary>
+    private void TryRefreshCompactDiscLetter()
+    {
+        if (CompactDisc is null || !CommandProcessorStarted) return;
+        if (--_discLetterCountdown > 0) return;
+        _discLetterCountdown = CompactDiscLetterInterval;
+        QueryCompactDiscLetter();
+    }
+
+    private const int CompactDiscLetterInterval = 2000;
+    private int _discLetterCountdown = CompactDiscLetterInterval;
 
     private void TryInstallRedirector()
     {

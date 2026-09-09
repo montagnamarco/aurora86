@@ -170,6 +170,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             machine.DiskServices.DriveAccessed += OnDriveAccessed;
 
+            // The guest decides the CD-ROM's letter, and says so only once
+            // its driver has loaded; the indicator follows.
+            machine.CompactDiscLetterChanged += _ => Dispatcher.UIThread.Post(RefreshDriveList);
+
             // APM power-off: the guest has shut down and asked for the power
             // to go. The machine stops where it is, like a PC whose power
             // supply obeyed; Start turns it back on from cold.
@@ -257,13 +261,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         List<DiskImage> attached = Session.WithMachine(
             machine => machine.DiskServices.AttachedDrives.ToList());
 
-        IsoImage? disc = Session.WithMachine(machine => machine.CompactDisc);
+        (IsoImage? disc, byte? letter) = Session.WithMachine(machine => (machine.CompactDisc, machine.CompactDiscLetter));
 
         Drives.Clear();
         foreach (DiskImage image in attached)
             Drives.Add(new DriveIndicator(image));
 
-        if (disc is not null) Drives.Add(new DriveIndicator(disc));
+        if (disc is not null) Drives.Add(new DriveIndicator(disc, letter));
     }
 
     // --- the mouse ----------------------------------------------------------
@@ -1130,10 +1134,11 @@ public sealed partial class DriveIndicator : ObservableObject
     /// The CD drive. It has no BIOS drive number of its own, so it is given
     /// one past the hard disks purely so the indicator list can key on it.
     /// </summary>
-    public DriveIndicator(IsoImage disc)
+    /// <param name="letter">The letter the guest gave the drive, once it has said; the label shows it.</param>
+    public DriveIndicator(IsoImage disc, byte? letter = null)
     {
         DriveNumber = 0xF0;
-        Label = "CD";
+        Label = letter is null ? "CD" : $"CD {(char)('A' + letter.Value)}:";
         MediaName = disc.SourcePath is null
             ? disc.VolumeLabel
             : Path.GetFileName(disc.SourcePath);

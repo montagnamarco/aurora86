@@ -273,6 +273,43 @@ public sealed class RedirectorInstaller(Machine machine)
     }
 
     /// <summary>
+    /// Asks the guest which letter its CD-ROM has, through INT 2Fh AX=1500h
+    /// -- the MSCDEX installation check, which answers with the drive count
+    /// in BX and the first letter in CX. Whoever holds the vector answers:
+    /// the guest's own MSCDEX if it is loaded, the emulator's stand-in
+    /// otherwise, so what comes back is the letter the guest actually uses,
+    /// which is what a status bar should show.
+    ///
+    /// Null when the question cannot be asked -- protected mode, DOS busy,
+    /// DOS not found yet -- or when the answer is "no CD-ROM drives".
+    /// </summary>
+    public byte? QueryCompactDiscLetter(RedirectorServices redirector)
+    {
+        if (_machine.Cpu.State.ProtectedMode) return null;
+        if (!redirector.IsInstalled || IsDosBusy(redirector)) return null;
+
+        SavedContext saved = SaveContext();
+        byte[] savedMemory = ReadRoutineArea();
+        byte[] savedStack = ReadStackArea();
+        try
+        {
+            //   B8 00 15    MOV AX,1500
+            //   CD 2F       INT 2Fh
+            //   F4          HLT
+            RunRoutine([0xB8, 0x00, 0x15, 0xCD, 0x2F, 0xF4]);
+            CpuNs.CpuState state = _machine.Cpu.State;
+            if (!state.Halted || state.Bx == 0) return null;
+            return (byte)state.Cx;
+        }
+        finally
+        {
+            WriteRoutineArea(savedMemory);
+            WriteStackArea(savedStack);
+            RestoreContext(saved);
+        }
+    }
+
+    /// <summary>
     /// True while DOS is inside an INT 21h call of its own.
     ///
     /// The critical error flag is checked alongside InDOS because DOS raises

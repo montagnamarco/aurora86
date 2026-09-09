@@ -101,6 +101,28 @@ public sealed partial class Machine : IDisposable
 
     internal void RequestPowerOff() => PowerOffRequested?.Invoke();
     public IsaPnpBus IsaPlugAndPlay { get; }
+
+    /// <summary>
+    /// The letter the guest gives the CD-ROM, as last asked of it, counting
+    /// from zero for A:; null until DOS is up or when there is no drive.
+    /// It is the guest's answer, not the emulator's guess: MSCDEX decides
+    /// once it has seen how many disks there are.
+    /// </summary>
+    public byte? CompactDiscLetter { get; private set; }
+
+    public event Action<byte?>? CompactDiscLetterChanged;
+
+    /// <summary>Asks the guest now, and reports a change. Null when the guest cannot be asked.</summary>
+    public byte? QueryCompactDiscLetter()
+    {
+        byte? letter = _redirectorInstaller.QueryCompactDiscLetter(Redirector);
+        if (letter != CompactDiscLetter)
+        {
+            CompactDiscLetter = letter;
+            CompactDiscLetterChanged?.Invoke(letter);
+        }
+        return letter;
+    }
     public ApmBios PowerManagement { get; }
 
     /// <summary>
