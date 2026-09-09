@@ -211,15 +211,123 @@ public sealed partial class DebuggerViewModel : ObservableObject
                 break;
             }
 
+            // The first line is the one about to run, and only there are the
+            // registers the ones the instruction will see. An annotation on
+            // any other line would be describing a call with whatever
+            // happens to be in AH now, which is worse than no annotation:
+            // it looks like knowledge.
+            string text = decoded.Text;
+            if (i == 0 && Annotate(decoded.Text, state) is { } note)
+                text += $"      ; {note}";
+
             Disassembly.Add(new DisassemblyLine(
                 $"{state.Cs.Selector:X4}:{offset:X4}",
                 decoded.Bytes,
-                decoded.Text,
+                text,
                 IsCurrent: i == 0,
                 HasBreakpoint: _breakpoints.Contains(linear)));
 
             offset += (uint)Math.Max(1, decoded.Length);
         }
+    }
+
+    /// <summary>
+    /// What a software interrupt is about to ask for, when it can be worked
+    /// out from the registers.
+    ///
+    /// "int 21" says nothing; "int 21 ; open file" says what the guest is
+    /// doing. Reading a trace without this means looking up AH by hand for
+    /// every line, which is exactly the sort of work that stops an
+    /// investigation being worth starting.
+    ///
+    /// Only the calls worth naming are here. A table of all 21h would be
+    /// mostly noise -- what matters is recognising the handful a guest is
+    /// doing over and over when something is wrong.
+    /// </summary>
+    private static string? Annotate(string text, CpuState state)
+    {
+        if (!text.StartsWith("int ")) return null;
+        if (!byte.TryParse(text[4..].Trim(), System.Globalization.NumberStyles.HexNumber,
+                           null, out byte vector))
+            return null;
+
+        var ah = (byte)(state.Eax >> 8);
+        var ax = (ushort)state.Eax;
+
+        return vector switch
+        {
+            0x10 => ax switch
+            {
+                0x4F00 => "VESA: card information",
+                0x4F01 => "VESA: mode information",
+                0x4F02 => $"VESA: set mode {state.Bx & 0x1FF:X3}",
+                0x4F05 => "VESA: window control",
+                0x4F06 => "VESA: scan line length",
+                0x4F07 => "VESA: display start",
+                _ => ah switch
+                {
+                    0x00 => $"video: set mode {(byte)state.Eax:X2}",
+                    0x0E => "video: write character",
+                    0x13 => "video: write string",
+                    _ => "video",
+                },
+            },
+
+            0x13 => ah switch
+            {
+                0x02 => "disk: read sectors",
+                0x03 => "disk: write sectors",
+                0x08 => "disk: drive parameters",
+                _ => "disk",
+            },
+
+            0x21 => ah switch
+            {
+                0x09 => "DOS: print string",
+                0x25 => $"DOS: set vector {(byte)state.Eax:X2}",
+                0x30 => "DOS: version",
+                0x35 => $"DOS: get vector {(byte)state.Eax:X2}",
+                0x3C => "DOS: create file",
+                0x3D => "DOS: open file",
+                0x3E => "DOS: close file",
+                0x3F => "DOS: read file",
+                0x40 => "DOS: write file",
+                0x41 => "DOS: delete file",
+                0x42 => "DOS: seek",
+                0x43 => "DOS: file attributes",
+                0x44 => "DOS: device control",
+                0x47 => "DOS: current directory",
+                0x48 => "DOS: allocate memory",
+                0x4B => "DOS: run program",
+                0x4C => "DOS: exit",
+                0x4E => "DOS: find first",
+                0x4F => "DOS: find next",
+                0x52 => "DOS: list of lists",
+                _ => $"DOS: function {ah:X2}",
+            },
+
+            0x2F => ax switch
+            {
+                0x1123 => "redirector: qualify name",
+                0x111B => "redirector: find first",
+                0x111C => "redirector: find next",
+                0x1600 => "Windows: installation check",
+                0x1689 => "Windows: about to idle",
+                _ => (ax >> 8) == 0x11 ? $"redirector: {(byte)ax:X2}" : "multiplex",
+            },
+
+            0x31 => ax switch
+            {
+                0x0500 => "DPMI: free memory information",
+                0x0501 => "DPMI: allocate memory",
+                0x0703 => "DPMI: discardable pages",
+                _ => $"DPMI: {ax:X4}",
+            },
+
+            0x28 => "DOS: idle",
+            0x33 => "mouse",
+            _ => null,
+        };
     }
 
     private void RefreshStack(Machine machine)
