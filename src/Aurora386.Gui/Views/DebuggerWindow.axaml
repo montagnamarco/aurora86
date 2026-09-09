@@ -146,6 +146,12 @@
                          FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
                          Watermark="B8 00 4C or &quot;text&quot;" ToolTip.Tip="Hex bytes, or a quoted string" />
                 <Button Classes="tool" Command="{Binding WriteMemoryCommand}">Write</Button>
+                <TextBox Text="{Binding MemorySaveLengthText}" Width="60"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="length"
+                         ToolTip.Tip="How many bytes to save, in hex, from the address the view is on" />
+                <Button Classes="tool" Command="{Binding SaveMemoryCommand}"
+                        ToolTip.Tip="Write that many bytes to a file">Save</Button>
               </StackPanel>
               <ScrollViewer>
                 <ItemsControl ItemsSource="{Binding MemoryLines}">
@@ -330,6 +336,18 @@
                 <Button Classes="tool" Command="{Binding WriteDiskCommand}">Write</Button>
                 <TextBlock Text="{Binding DiskStatusText}" VerticalAlignment="Center"
                            FontSize="11" Opacity="0.7" />
+              </StackPanel>
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <TextBlock Text="file" VerticalAlignment="Center" FontSize="11" />
+                <TextBox Text="{Binding DiskFileText}" Width="220"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="\DOS\COMMAND.COM"
+                         ToolTip.Tip="A path on the first filesystem of this disk. Long names are not looked at: the 8.3 entry is the one that owns the clusters." />
+                <Button Classes="tool" Command="{Binding GoToFileCommand}"
+                        ToolTip.Tip="Jump the sector view to where this file begins">Go to file</Button>
+                <Button Classes="tool" Command="{Binding ExportFileCommand}"
+                        ToolTip.Tip="Copy this file out of the image, following its cluster chain">Export</Button>
               </StackPanel>
               <ItemsControl DockPanel.Dock="Top" ItemsSource="{Binding DiskStructure}"
                             Margin="0,0,0,6">

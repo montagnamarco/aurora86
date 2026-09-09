@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -391,6 +392,53 @@ public sealed partial class DebuggerViewModel : ObservableObject
         }
     }
 
+    /// <summary>Set by the window: asks where to put a file being created.</summary>
+    public Func<string, string, Task<string?>>? PickSaveAsync { get; set; }
+
+    /// <summary>How many bytes <see cref="SaveMemory"/> writes, in hex like every number here.</summary>
+    [ObservableProperty] private string _memorySaveLengthText = "100";
+
+    /// <summary>
+    /// Writes a run of memory to a file, starting at the address the view
+    /// is on and reading it the way the view does -- through the guest's
+    /// page tables when that box is ticked.
+    ///
+    /// A file is what the rest of the world can look at. The debugger's own
+    /// view shows a screenful; a program the guest loaded, a table it built,
+    /// a buffer it is about to send somewhere, are all larger than that and
+    /// are better examined with tools made for the purpose.
+    /// </summary>
+    [RelayCommand]
+    private async Task SaveMemory()
+    {
+        if (PickSaveAsync is null) return;
+
+        if (!TryParseAddress(MemoryAddressText, out uint linear))
+        {
+            StatusText = "Address not understood";
+            return;
+        }
+
+        if (!uint.TryParse(MemorySaveLengthText.Trim(), System.Globalization.NumberStyles.HexNumber,
+                           null, out uint length) || length == 0)
+        {
+            StatusText = "Length not understood -- hex, like 1000";
+            return;
+        }
+
+        string? path = await PickSaveAsync("Save memory to a file", $"memory-{linear:X6}.bin");
+        if (path is null) return;
+
+        var bytes = new byte[length];
+        _session.WithMachine(machine =>
+        {
+            for (uint i = 0; i < length; i++) bytes[i] = ReadForView(machine, linear + i);
+        });
+
+        System.IO.File.WriteAllBytes(path, bytes);
+        StatusText = $"Wrote {length:X} byte(s) from {linear:X6} to {System.IO.Path.GetFileName(path)}";
+    }
+
     /// <summary>
     /// What the memory view showed last time, so that the next refresh can
     /// say what changed. Kept only while the view stays on one address:
@@ -572,6 +620,84 @@ public sealed partial class DebuggerViewModel : ObservableObject
     {
         DiskSectorText = Math.Max(0, _diskSectorNumber - 1).ToString();
         RefreshDisk();
+    }
+
+    /// <summary>A path on the disk, like \DOS\COMMAND.COM, for the two commands below.</summary>
+    [ObservableProperty] private string _diskFileText = "";
+
+    /// <summary>
+    /// The volume a path is looked up in: the first partition carrying a
+    /// filesystem. One partition per disk is every arrangement this
+    /// emulator produces, and the one DOS boots from besides.
+    /// </summary>
+    private static long? FirstVolume(DiskInspector inspector)
+    {
+        foreach (DiskInspector.Partition partition in inspector.ReadPartitions())
+            if (inspector.ReadBootParameters(partition.FirstSector) is not null)
+                return partition.FirstSector;
+        return null;
+    }
+
+    /// <summary>
+    /// Jumps the sector view to where a file begins, by its path.
+    ///
+    /// Doing this by hand means reading the root directory, finding the
+    /// entry, taking its cluster, converting that to a sector, and doing it
+    /// all again for each directory on the way -- which is why nobody does
+    /// it, and why a disk editor without this is used only for boot sectors.
+    /// </summary>
+    [RelayCommand]
+    private void GoToFile()
+    {
+        DiskInspector? inspector = OpenInspector();
+        if (inspector is null) { DiskStatusText = "No disk"; return; }
+        if (FirstVolume(inspector) is not { } volume) { DiskStatusText = "No filesystem on this disk"; return; }
+
+        if (inspector.FindFile(volume, DiskFileText) is not { } file)
+        {
+            DiskStatusText = $"{DiskFileText}: not found";
+            return;
+        }
+
+        // An empty file owns no cluster at all, and the entry says so with
+        // a zero: there is no sector to go to.
+        if (file.FirstCluster < 2)
+        {
+            DiskStatusText = $"{DiskFileText}: empty, no clusters";
+            return;
+        }
+
+        DiskSectorText = inspector.ClusterToSector(volume, file.FirstCluster).ToString();
+        RefreshDisk();
+        DiskStatusText = $"{DiskFileText}: cluster {file.FirstCluster}, {file.Size} bytes"
+                       + (file.IsDirectory ? " (directory)" : "");
+    }
+
+    /// <summary>
+    /// Copies a file out of the image to the host, by its path, following
+    /// its cluster chain and stopping at the size the directory declares.
+    /// The other direction -- putting a file in -- needs free clusters
+    /// found and both tables updated, and is left to the FAT tool, which
+    /// already does it and is tested for it.
+    /// </summary>
+    [RelayCommand]
+    private async Task ExportFile()
+    {
+        if (PickSaveAsync is null) return;
+
+        DiskInspector? inspector = OpenInspector();
+        if (inspector is null) { DiskStatusText = "No disk"; return; }
+        if (FirstVolume(inspector) is not { } volume) { DiskStatusText = "No filesystem on this disk"; return; }
+
+        byte[]? content = inspector.ReadFile(volume, DiskFileText);
+        if (content is null) { DiskStatusText = $"{DiskFileText}: not found, or a directory"; return; }
+
+        string name = DiskFileText.Split('\\', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "file.bin";
+        string? path = await PickSaveAsync($"Export {name}", name);
+        if (path is null) return;
+
+        System.IO.File.WriteAllBytes(path, content);
+        DiskStatusText = $"Exported {name}: {content.Length} bytes";
     }
 
     /// <summary>
