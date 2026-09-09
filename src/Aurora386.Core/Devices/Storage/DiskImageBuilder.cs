@@ -85,6 +85,86 @@ public static class DiskImageBuilder
         File.WriteAllBytes(path, image);
     }
 
+    /// <summary>
+    /// Appends the footer that turns a raw image into a fixed-size VHD.
+    ///
+    /// The format is the raw sectors followed by one 512-byte descriptor, and
+    /// that ordering is the whole trick: everything before the footer is
+    /// exactly what a raw image would be, so the same file can be handed to
+    /// something that knows the format and to something that does not.
+    ///
+    /// Worth having because both macOS and Windows mount a VHD by
+    /// double-clicking it. A disk the guest wrote can then be opened on the
+    /// host without the emulator running, which is the difference between an
+    /// image and a file somebody can actually use.
+    ///
+    /// Every field is big-endian, which no PC format is: the format came from
+    /// Connectix, whose product ran on the Macintosh.
+    /// </summary>
+    public static void AppendVhdFooter(string path)
+    {
+        long size = new FileInfo(path).Length;
+        long cylinders = size / (SectorsPerTrack * Heads * SectorSize);
+
+        var footer = new byte[512];
+
+        WriteAscii(footer, 0, "conectix", 8);           // the spelling is the format's own
+        WriteBigEndian32(footer, 8, 2);                 // features: reserved bit only
+        WriteBigEndian32(footer, 12, 0x0001_0000);      // format version 1.0
+
+        // Where the data begins, which for a fixed disk is nowhere: the
+        // footer describes the whole file, so this is all ones.
+        for (int i = 16; i < 24; i++) footer[i] = 0xFF;
+
+        WriteBigEndian32(footer, 24, 0);                // timestamp: seconds since 2000
+        WriteAscii(footer, 28, "aur3", 4);              // creating application
+        WriteBigEndian32(footer, 32, 0x0001_0000);      // its version
+        WriteAscii(footer, 36, "Wi2k", 4);              // creating host, from the format's list
+
+        WriteBigEndian64(footer, 40, size);             // original size
+        WriteBigEndian64(footer, 48, size);             // current size
+
+        WriteBigEndian16(footer, 56, (int)cylinders);
+        footer[58] = Heads;
+        footer[59] = SectorsPerTrack;
+
+        WriteBigEndian32(footer, 60, 2);                // disk type: fixed
+
+        // A unique identifier. Two disks sharing one confuse anything that
+        // tracks them by identity rather than by path, so it is generated
+        // rather than fixed.
+        Guid.NewGuid().ToByteArray().CopyTo(footer, 68);
+
+        // The checksum is over the whole footer with the checksum field
+        // zeroed, which is why it is computed last.
+        uint sum = 0;
+        foreach (byte b in footer) sum += b;
+        WriteBigEndian32(footer, 64, ~sum);
+
+        using var file = new FileStream(path, FileMode.Append, FileAccess.Write);
+        file.Write(footer);
+    }
+
+    private static void WriteBigEndian16(byte[] buffer, int at, int value)
+    {
+        buffer[at] = (byte)(value >> 8);
+        buffer[at + 1] = (byte)value;
+    }
+
+    private static void WriteBigEndian32(byte[] buffer, int at, uint value)
+    {
+        buffer[at] = (byte)(value >> 24);
+        buffer[at + 1] = (byte)(value >> 16);
+        buffer[at + 2] = (byte)(value >> 8);
+        buffer[at + 3] = (byte)value;
+    }
+
+    private static void WriteBigEndian64(byte[] buffer, int at, long value)
+    {
+        for (int i = 0; i < 8; i++)
+            buffer[at + i] = (byte)(value >> (56 - i * 8));
+    }
+
     private static void WriteMasterBootRecord(byte[] image, long cylinders,
                                               uint firstSector, uint partitionSectors)
     {

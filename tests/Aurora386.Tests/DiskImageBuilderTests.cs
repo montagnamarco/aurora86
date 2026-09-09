@@ -124,6 +124,58 @@ public class DiskImageBuilderTests
         finally { File.Delete(path); }
     }
 
+    /// <summary>
+    /// A VHD footer leaves the image usable as a raw one.
+    ///
+    /// The format is deliberately the raw sectors followed by one descriptor,
+    /// and this test pins down what that buys: the same file opens either
+    /// way. The geometry is derived by dividing the size, and the division
+    /// truncates, so the extra sector cannot move a cylinder boundary --
+    /// which is the only way the footer could have changed what the emulator
+    /// sees.
+    /// </summary>
+    [Fact]
+    public void AVhdFooterDoesNotDisturbTheImageBeneathIt()
+    {
+        string path = TempPath();
+        try
+        {
+            DiskImageBuilder.CreateFat16(path, 20_000_000, "VHD");
+            long before = new FileInfo(path).Length;
+            byte[] rawBefore = File.ReadAllBytes(path);
+
+            DiskImageBuilder.AppendVhdFooter(path);
+
+            long after = new FileInfo(path).Length;
+            Assert.Equal(before + 512, after);
+
+            // Everything before the footer is untouched.
+            byte[] withFooter = File.ReadAllBytes(path);
+            Assert.Equal(rawBefore, withFooter[..(int)before]);
+
+            // And the footer says what it should.
+            string cookie = System.Text.Encoding.ASCII.GetString(withFooter, (int)before, 8);
+            Assert.Equal("conectix", cookie);
+
+            // The checksum is the complement of the sum of every other byte.
+            uint sum = 0;
+            for (int i = 0; i < 512; i++)
+            {
+                if (i is >= 64 and < 68) continue;      // the checksum field itself
+                sum += withFooter[before + i];
+            }
+
+            uint stored = (uint)(withFooter[before + 64] << 24 | withFooter[before + 65] << 16
+                               | withFooter[before + 66] << 8 | withFooter[before + 67]);
+            Assert.Equal(~sum, stored);
+
+            // The disk still opens, with the geometry it had.
+            using var image = Aurora386.Core.Devices.Storage.DiskImage.OpenHardDisk(path);
+            Assert.Equal(before / DiskImageBuilder.SectorSize, image.TotalSectors);
+        }
+        finally { File.Delete(path); }
+    }
+
     [Fact]
     public void TheLabelIsWrittenWhereDosLooksForIt()
     {
