@@ -200,6 +200,116 @@ public sealed class DiskInspector
         return volumeStart + bpb.FirstDataSector + (cluster - 2) * bpb.SectorsPerCluster;
     }
 
+    /// <summary>Where a file lives, found by its path: its first cluster and its size.</summary>
+    public readonly record struct FileLocation(long FirstCluster, uint Size, bool IsDirectory);
+
+    /// <summary>
+    /// Finds a file by its DOS path within the volume -- "\DOS\COMMAND.COM"
+    /// -- and says where it starts.
+    ///
+    /// This is the direction <see cref="DescribeSector"/> does not go. That
+    /// one answers "what is at this sector"; the question a person brings to
+    /// a disk editor is the other way round, "where is this file", and
+    /// answering it by hand means reading the root directory, finding the
+    /// cluster, converting it to a sector, and doing it again for every
+    /// directory on the way. Long names are ignored: DOS never sees them
+    /// either, and the eight-plus-three entry is the one that owns the
+    /// clusters.
+    /// </summary>
+    public FileLocation? FindFile(long volumeStart, string path)
+    {
+        if (ReadBootParameters(volumeStart) is not { } bpb) return null;
+
+        // The root directory is a fixed run of sectors before the data area;
+        // every directory below it is a file whose content is entries, and
+        // is read the way any file is, cluster by cluster.
+        IEnumerable<long> sectors = Enumerable.Range(0, (int)bpb.RootDirectorySectors)
+            .Select(i => volumeStart + bpb.RootDirectorySector + i);
+
+        FileLocation? found = null;
+        foreach (string part in path.Split('\\', StringSplitOptions.RemoveEmptyEntries))
+        {
+            found = FindEntry(sectors, part);
+            if (found is not { } entry) return null;
+
+            sectors = entry.IsDirectory
+                ? ReadClusterChain(volumeStart, entry.FirstCluster)
+                    .SelectMany(cluster => Enumerable.Range(0, bpb.SectorsPerCluster)
+                        .Select(i => ClusterToSector(volumeStart, cluster) + i))
+                : [];                                   // a file: nothing lies beneath it
+        }
+
+        return found;
+    }
+
+    private FileLocation? FindEntry(IEnumerable<long> sectors, string name)
+    {
+        string wanted = ToEightThree(name);
+
+        foreach (long sector in sectors)
+        {
+            byte[] data = ReadSector(sector);
+            for (int at = 0; at + 32 <= data.Length; at += 32)
+            {
+                byte first = data[at];
+                if (first == 0) return null;                    // the end of the directory
+                if (first == 0xE5) continue;                    // deleted
+
+                // Bit 3 marks a volume label, and every piece of a long name
+                // sets it too, which is what makes skipping them one test.
+                byte attributes = data[at + 11];
+                if ((attributes & 0x08) != 0) continue;
+
+                if (System.Text.Encoding.ASCII.GetString(data, at, 11) != wanted) continue;
+
+                long cluster = data[at + 26] | (data[at + 27] << 8);
+                uint size = (uint)(data[at + 28] | (data[at + 29] << 8)
+                                 | (data[at + 30] << 16) | (data[at + 31] << 24));
+                return new FileLocation(cluster, size, (attributes & 0x10) != 0);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// "command.com" as the directory stores it: upper case, the stem padded
+    /// to eight and the extension to three, no dot. Not a display convention
+    /// but the storage format itself, which is why the comparison is on the
+    /// stored form and not the typed one.
+    /// </summary>
+    private static string ToEightThree(string name)
+    {
+        name = name.ToUpperInvariant();
+        int dot = name.IndexOf('.');
+        string stem = dot < 0 ? name : name[..dot];
+        string extension = dot < 0 ? "" : name[(dot + 1)..];
+        return stem.PadRight(8)[..8] + extension.PadRight(3)[..3];
+    }
+
+    /// <summary>
+    /// The whole of a file, by its path, or null when there is no such file
+    /// or it is a directory. Follows the chain and stops at the size the
+    /// directory entry declares, because the last cluster is full of
+    /// whatever was there before.
+    /// </summary>
+    public byte[]? ReadFile(long volumeStart, string path)
+    {
+        if (FindFile(volumeStart, path) is not { IsDirectory: false } file) return null;
+        if (ReadBootParameters(volumeStart) is not { } bpb) return null;
+
+        var output = new MemoryStream();
+        foreach (long cluster in ReadClusterChain(volumeStart, file.FirstCluster))
+        {
+            long first = ClusterToSector(volumeStart, cluster);
+            for (int i = 0; i < bpb.SectorsPerCluster && output.Length < file.Size; i++)
+                output.Write(ReadSector(first + i));
+        }
+
+        output.SetLength(Math.Min(output.Length, file.Size));
+        return output.ToArray();
+    }
+
     /// <summary>Follows the FAT chain from a cluster, stopping at the end or on a loop.</summary>
     public IReadOnlyList<long> ReadClusterChain(long volumeStart, long first, int limit = 100_000)
     {
