@@ -31,10 +31,43 @@ public sealed class CompactDiscServices(Machine machine)
     private readonly Machine _machine = machine;
 
     /// <summary>
-    /// The drive letter the disc appears as. D: by convention, because C: is
-    /// the hard disk and MSCDEX assigns the first free letter after it.
+    /// The drive letter the disc appears as, counting from zero for A:.
+    ///
+    /// D: by convention, because C: is the hard disk and MSCDEX takes the
+    /// first letter after the ones DOS has already given out. That is a
+    /// convention and not a rule, which matters as soon as there is a second
+    /// hard disk: DOS gives it D:, MSCDEX would then have to take E:, and a
+    /// CD-ROM that insisted on D: would be answering for a drive that is
+    /// already a disk.
+    ///
+    /// The default is therefore computed rather than fixed. Setting it
+    /// explicitly still wins, because somebody who has arranged their drives
+    /// a particular way knows better than this arithmetic does.
     /// </summary>
-    public byte DriveLetter { get; set; } = 3;   // 0 = A:
+    public byte DriveLetter
+    {
+        get => _driveLetter ?? DefaultDriveLetter();
+        set => _driveLetter = value;
+    }
+
+    private byte? _driveLetter;
+
+    /// <summary>
+    /// The first letter after the hard disks: C: plus one for each disk past
+    /// the first.
+    ///
+    /// This counts disks and not partitions, and that is a real limitation
+    /// rather than an oversight -- a disk carrying two partitions takes two
+    /// letters and pushes the disc along one more. Reading the partition
+    /// tables here would be the honest answer; counting disks is right for
+    /// every arrangement this emulator can currently produce, since the
+    /// images it makes carry one partition each.
+    /// </summary>
+    private byte DefaultDriveLetter()
+    {
+        int disks = _machine.DiskServices.HardDiskCount;
+        return (byte)(2 + Math.Max(disks, 1));   // 2 = C:, so one disk gives D:
+    }
 
     /// <summary>True when a disc is in the drive.</summary>
     private bool HasDisc => _machine.CompactDisc is not null;

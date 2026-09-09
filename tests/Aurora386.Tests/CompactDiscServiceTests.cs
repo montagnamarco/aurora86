@@ -215,4 +215,45 @@ public class CompactDiscServiceTests
         Assert.Equal(machine.CompactDiscServices.DriveLetter,
                      machine.Memory.ReadByte((uint)(Segment << 4) + 0x20));
     }
+
+    /// <summary>
+    /// The disc's letter moves along when there is a second hard disk.
+    ///
+    /// D: is a convention, not a rule: DOS hands out letters to the disks
+    /// first and MSCDEX takes the next one. A CD-ROM that insisted on D:
+    /// with two disks attached would be answering for a drive that is
+    /// already a disk -- and the guest, asking that letter about a disc,
+    /// gets "not ready reading drive D" over a perfectly good disk.
+    /// </summary>
+    [Fact]
+    public void TheDiscTakesTheLetterAfterTheDisks()
+    {
+        string first = Path.Combine(Path.GetTempPath(), $"aurora-{Guid.NewGuid():N}.img");
+        string second = Path.Combine(Path.GetTempPath(), $"aurora-{Guid.NewGuid():N}.img");
+        try
+        {
+            Aurora386.Core.Devices.Storage.DiskImageBuilder.CreateFat16(first, 20_000_000);
+            Aurora386.Core.Devices.Storage.DiskImageBuilder.CreateFat16(second, 20_000_000);
+
+            using var machine = new Machine();
+
+            machine.AttachDisk(
+                Aurora386.Core.Devices.Storage.DiskImage.OpenHardDisk(first, 0x80));
+            Assert.Equal(3, machine.CompactDiscServices.DriveLetter);    // D:
+
+            machine.AttachDisk(
+                Aurora386.Core.Devices.Storage.DiskImage.OpenHardDisk(second, 0x81));
+            Assert.Equal(4, machine.CompactDiscServices.DriveLetter);    // E:
+
+            // And an explicit choice still wins: somebody who has arranged
+            // their drives a particular way knows better than the arithmetic.
+            machine.CompactDiscServices.DriveLetter = 6;
+            Assert.Equal(6, machine.CompactDiscServices.DriveLetter);
+        }
+        finally
+        {
+            File.Delete(first);
+            File.Delete(second);
+        }
+    }
 }
