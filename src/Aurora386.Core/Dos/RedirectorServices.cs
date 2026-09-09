@@ -367,21 +367,40 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private bool QualifyFilename(CpuNs.Cpu cpu)
     {
-        // Which drive this concerns has to come from the name, not from the
-        // CDS pointer, and that is the whole difficulty of this call: it
-        // arrives BEFORE DOS has settled on a drive, with the pointer still
-        // set to FFFF:FFFF. Asking the CDS gives "no drive" every time.
+        // The name to qualify arrives in DS:SI, and the canonical form is
+        // written back to ES:DI. This is where the last attempt went wrong:
+        // it read the name from the SDA, which at this point holds something
+        // else entirely, saw garbage, and declined -- and a declined 23h is
+        // a failed one, so DIR on a shared drive died with "path not found"
+        // before FindFirst was ever reached. Measuring DS:SI is what showed
+        // it: the register held "E:????????.???" while the SDA held nothing
+        // of the sort.
         //
-        // The name itself carries the letter, because DOS has already
-        // qualified it -- that is what it is showing us.
-        string qualified = ReadAsciiz(SwappableDataArea + DosStructures.SdaFirstFilename);
-        if (qualified.Length < 2 || qualified[1] != ':') return false;
+        // The drive has to come from the name, because this call arrives
+        // before DOS has settled on a current drive -- the CDS pointer is
+        // still FFFF:FFFF and every attempt to read the drive from it gives
+        // "none".
+        uint source = ((uint)cpu.State.Ds.Selector << 4) + cpu.State.Si;
+        string name = ReadAsciiz(source);
+        if (name.Length < 2 || name[1] != ':') return false;
 
-        int drive = char.ToUpperInvariant(qualified[0]) - 'A';
+        int drive = char.ToUpperInvariant(name[0]) - 'A';
         if (drive < 0 || !_drives.ContainsKey((byte)drive)) return false;
 
-        // Ours, and nothing to rewrite: our names are ordinary DOS names, so
-        // the qualified name already in the buffer is the right one.
+        // Canonicalise into ES:DI. DOS wants an absolute path: drive, colon,
+        // backslash, then the path with any "." and ".." already resolved --
+        // which, since this is our own drive and the name DOS hands us is
+        // already the resolved one, means little more than making sure the
+        // root has its backslash. Anything past the colon that is not a
+        // separator is a relative name, and there is no current directory to
+        // resolve it against here, so it is taken from the root.
+        string rest = name[2..];
+        string canonical = rest.StartsWith('\\')
+            ? $"{char.ToUpperInvariant(name[0])}:{rest}"
+            : $"{char.ToUpperInvariant(name[0])}:\\{rest}";
+
+        uint destination = ((uint)cpu.State.Es.Selector << 4) + cpu.State.Di;
+        WriteAsciiz(destination, canonical);
         Succeed(cpu);
         return true;
     }
@@ -1307,6 +1326,8 @@ public sealed class RedirectorServices(Machine machine)
     /// <summary>
     /// The drive this call concerns, or 0xFF when it cannot be worked out.
     /// </summary>
+    public byte CurrentDriveForTrace => CurrentDrive();
+
     private byte CurrentDrive()
     {
         uint pointer = ReadDwordPhysical(SwappableDataArea + DosStructures.SdaCurrentCdsPointer);

@@ -162,6 +162,78 @@ public class RedirectorProtocolTests : IDisposable
         => (uint)(_machine.Memory.ReadWord(SftAddress + offset)
                 | (_machine.Memory.ReadWord(SftAddress + offset + 2) << 16));
 
+    // --- qualify (23h) --------------------------------------------------------------
+
+    [Fact]
+    public void QualifyReadsTheNameFromDsSiAndWritesTheCanonicalFormToEsDi()
+    {
+        // The name to qualify is in DS:SI; the canonical form goes to ES:DI.
+        // DIR on a shared drive lives or dies here: a qualify that declines
+        // is a qualify that failed, and DOS gives up before FindFirst.
+        const uint namePointer = 0x5000;
+        const uint outPointer = 0x6000;
+        WriteAsciiz(namePointer, "E:????????.???");
+        MountShare();
+
+        _machine.Cpu.SetSegment(CpuNs.SegReg.Ds, 0);
+        (bool handled, bool carry, _) = Call(0x23, state =>
+        {
+            state.Si = (ushort)namePointer;
+            state.Di = (ushort)outPointer;
+        });
+
+        Assert.True(handled);
+        Assert.False(carry);
+        Assert.Equal("E:\\????????.???", ReadAsciizAt(outPointer));
+    }
+
+    [Fact]
+    public void QualifyOfADriveRootAddsTheBackslash()
+    {
+        const uint namePointer = 0x5000;
+        const uint outPointer = 0x6000;
+        WriteAsciiz(namePointer, "e:");
+        MountShare();
+
+        _machine.Cpu.SetSegment(CpuNs.SegReg.Ds, 0);
+        (_, bool carry, _) = Call(0x23, state =>
+        {
+            state.Si = (ushort)namePointer;
+            state.Di = (ushort)outPointer;
+        });
+
+        Assert.False(carry);
+        Assert.Equal("E:\\", ReadAsciizAt(outPointer));
+    }
+
+    [Fact]
+    public void QualifyDeclinesANameOnADriveThatIsNotOurs()
+    {
+        const uint namePointer = 0x5000;
+        WriteAsciiz(namePointer, "C:\\AUTOEXEC.BAT");
+
+        _machine.Cpu.SetSegment(CpuNs.SegReg.Ds, 0);
+        (bool handled, _, _) = Call(0x23, state =>
+        {
+            state.Si = (ushort)namePointer;
+            state.Di = (ushort)0x6000;
+        });
+
+        Assert.False(handled);   // not ours: DOS handles it itself
+    }
+
+    private string ReadAsciizAt(uint address)
+    {
+        var builder = new StringBuilder();
+        for (uint i = 0; i < 64; i++)
+        {
+            byte b = _machine.Memory.ReadByte(address + i);
+            if (b == 0) break;
+            builder.Append((char)b);
+        }
+        return builder.ToString();
+    }
+
     // --- installation ---------------------------------------------------------------
 
     [Fact]
