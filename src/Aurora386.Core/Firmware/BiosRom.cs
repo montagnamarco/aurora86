@@ -109,6 +109,14 @@ public static class BiosRom
         public const ushort PlugAndPlay = 0x1A40;
 
         /// <summary>
+        /// The APM protected-mode entry point, for the 16-bit and 32-bit
+        /// interfaces alike: a far call with the function in AX, answered by
+        /// the same handler as INT 15h AH=53h and returned with RETF, which
+        /// pops whatever size of return address the caller's segment pushed.
+        /// </summary>
+        public const ushort AdvancedPowerManagement = 0x1A50;
+
+        /// <summary>
         /// The redirector's own INT 2Fh entry point, which chains.
         ///
         /// It has to exist separately from <see cref="Multiplex"/> because
@@ -248,6 +256,9 @@ public static class BiosRom
 
         /// <summary>The Plug and Play BIOS, called far rather than by INT.</summary>
         PlugAndPlay = 0x50,
+
+        /// <summary>APM through its protected-mode entry, called far with the function in AX.</summary>
+        AdvancedPowerManagement = 0x53,
         Post = 0xFF,
     }
 
@@ -342,6 +353,11 @@ public static class BiosRom
             rom[Entry.PlugAndPlay + 1] = HookByte2;
             rom[Entry.PlugAndPlay + 2] = (byte)Handler.PlugAndPlay;
             rom[Entry.PlugAndPlay + 3] = 0xCB;       // RETF
+
+            rom[Entry.AdvancedPowerManagement + 0] = HookByte1;
+            rom[Entry.AdvancedPowerManagement + 1] = HookByte2;
+            rom[Entry.AdvancedPowerManagement + 2] = (byte)Handler.AdvancedPowerManagement;
+            rom[Entry.AdvancedPowerManagement + 3] = 0xCB;
         }
 
         // The two VBE tables the information block points at rather than

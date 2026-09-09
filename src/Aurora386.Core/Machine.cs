@@ -88,7 +88,17 @@ public sealed partial class Machine : IDisposable
     public PointingDeviceServices PointingDevice { get; }
     public XmsManager Xms { get; }
     public PnpBios PlugAndPlay { get; }
+
+    /// <summary>
+    /// The guest asked for the power to go off, through APM. Nothing here
+    /// stops the processor -- that is the front end's decision, and it may
+    /// want to show "It is now safe to turn off your computer" first.
+    /// </summary>
+    public event Action? PowerOffRequested;
+
+    internal void RequestPowerOff() => PowerOffRequested?.Invoke();
     public IsaPnpBus IsaPlugAndPlay { get; }
+    public ApmBios PowerManagement { get; }
 
     /// <summary>
     /// The software coprocessor. This machine has no 80387, so floating-point
@@ -240,6 +250,7 @@ public sealed partial class Machine : IDisposable
         Video.Pointer = MouseServices.Pointer;
         Xms = new XmsManager(Memory);
         PlugAndPlay = new PnpBios(this);
+        PowerManagement = new ApmBios(this);
 
         InstallBios();
     }

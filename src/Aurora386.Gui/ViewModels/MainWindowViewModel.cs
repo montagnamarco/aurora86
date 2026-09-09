@@ -170,6 +170,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             machine.DiskServices.DriveAccessed += OnDriveAccessed;
 
+            // APM power-off: the guest has shut down and asked for the power
+            // to go. The machine stops where it is, like a PC whose power
+            // supply obeyed; Start turns it back on from cold.
+            machine.PowerOffRequested += () => Dispatcher.UIThread.Post(() =>
+            {
+                Session.Stop();
+                PowerLedOn = false;
+                StatusText = "The guest turned the power off";
+            });
+
             // AURORA_DOSLOG records the DOS calls that move files about --
             // rename, create, delete, exec -- which is what says how far an
             // installer got. Unlike the write log it needs no disk, so it is

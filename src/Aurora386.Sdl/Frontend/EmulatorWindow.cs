@@ -41,6 +41,14 @@ public sealed unsafe class EmulatorWindow : IDisposable
     {
         _machine = machine;
         _sdl = Silk.NET.SDL.Sdl.GetApi();
+
+        // APM power-off from the guest ends the run, as it would on a real
+        // machine with a power supply the BIOS can switch.
+        _machine.PowerOffRequested += () =>
+        {
+            Console.WriteLine("the guest turned the power off");
+            _running = false;
+        };
     }
 
     public void Run()

@@ -54,6 +54,7 @@ public sealed partial class Machine
             case BiosRom.Handler.RedirectorMultiplex: HandleRedirectorMultiplex(cpu); return;
             case BiosRom.Handler.Xms: Xms.Handle(cpu); return;
             case BiosRom.Handler.PlugAndPlay: PlugAndPlay.Handle(cpu); return;
+            case BiosRom.Handler.AdvancedPowerManagement: PowerManagement.Handle(cpu, fromEntryPoint: true); return;
             case BiosRom.Handler.Mouse: MouseServices.Handle(cpu); return;
 
             // The ROM entry reads the byte and acknowledges both controllers.
@@ -407,6 +408,92 @@ public sealed partial class Machine
         cpu.State.SetReg8(4, 0x08);
     }
 
+    /// <summary>
+    /// INT 15h AH=E8h: the memory map, in the two shapes that outlived the
+    /// 64 MB limit of AH=88h. E801h gives two numbers, memory between 1 and
+    /// 16 MB and memory above 16 MB; E820h gives a list of ranges with what
+    /// each one is, which is how a modern loader learns where it may put
+    /// things. Windows 95 uses the first, Windows 98 and everything since
+    /// the second.
+    /// </summary>
+    private void HandleMemoryMap(CpuNs.Cpu cpu)
+    {
+        switch (cpu.State.GetReg8(0))   // AL
+        {
+            case 0x01:
+            {
+                uint extended = Memory.RamSize > 0x100000 ? Memory.RamSize - 0x100000 : 0;
+                // Below 16 MB in KB, capped at 15 MB (the ISA hole is where
+                // the 16th would be); above 16 MB in 64 KB blocks. Both
+                // pairs, because callers read whichever they were told to.
+                uint lowKb = Math.Min(extended, 15u * 1024 * 1024) / 1024;
+                uint highBlocks = Memory.RamSize > 0x1000000 ? (Memory.RamSize - 0x1000000) / 65536 : 0;
+                cpu.State.Ax = cpu.State.Cx = (ushort)lowKb;
+                cpu.State.Bx = cpu.State.Dx = (ushort)highBlocks;
+                cpu.SetCarryInStackedFlags(false);
+                return;
+            }
+
+            case 0x20:
+            {
+                const uint Smap = 0x534D4150;   // 'SMAP'
+                if (cpu.State.Edx != Smap || cpu.State.Ecx < 20)
+                {
+                    cpu.State.SetReg8(4, 0x86);
+                    cpu.SetCarryInStackedFlags(true);
+                    return;
+                }
+
+                var ranges = MemoryMap();
+                uint index = cpu.State.Ebx;
+                if (index >= ranges.Count)
+                {
+                    cpu.State.SetReg8(4, 0x86);
+                    cpu.SetCarryInStackedFlags(true);
+                    return;
+                }
+
+                (ulong start, ulong length, uint type) = ranges[(int)index];
+                uint buffer = cpu.FarPointerToLinear(cpu.State.Es.Selector, cpu.State.Edi);
+                cpu.WriteLinearDword(buffer + 0, (uint)start);
+                cpu.WriteLinearDword(buffer + 4, (uint)(start >> 32));
+                cpu.WriteLinearDword(buffer + 8, (uint)length);
+                cpu.WriteLinearDword(buffer + 12, (uint)(length >> 32));
+                cpu.WriteLinearDword(buffer + 16, type);
+
+                cpu.State.Eax = Smap;
+                cpu.State.Ecx = 20;
+                // EBX is the continuation: the next index, or zero after the
+                // last entry, which is how the caller knows to stop.
+                cpu.State.Ebx = index + 1 < ranges.Count ? index + 1 : 0;
+                cpu.SetCarryInStackedFlags(false);
+                return;
+            }
+
+            default:
+                cpu.State.SetReg8(4, 0x86);
+                cpu.SetCarryInStackedFlags(true);
+                return;
+        }
+    }
+
+    /// <summary>
+    /// The physical address space as ranges: type 1 is memory the operating
+    /// system may use, type 2 is spoken for -- the BIOS data area at the
+    /// top of conventional memory, the ROM, the frame buffer.
+    /// </summary>
+    public IReadOnlyList<(ulong Start, ulong Length, uint Type)> MemoryMap()
+    {
+        var map = new List<(ulong, ulong, uint)>();
+        ulong ebda = (ulong)ExtendedBiosDataSegment << 4;
+        map.Add((0, ebda, 1));
+        map.Add((ebda, 0xA0000 - ebda, 2));
+        map.Add((0xF0000, 0x10000, 2));
+        if (Memory.RamSize > 0x100000) map.Add((0x100000, Memory.RamSize - 0x100000, 1));
+        map.Add((LinearFrameBufferBase, (ulong)VgaMemory.TotalSize + 0x10000, 2));
+        return map;
+    }
+
     private void HandleSystemServices(CpuNs.Cpu cpu)
     {
         byte function = cpu.State.GetReg8(4);   // AH
@@ -423,6 +510,14 @@ public sealed partial class Machine
                     ? (Memory.RamSize - 0x100000) / 1024 : 0;
                 cpu.State.Ax = (ushort)Math.Min(extendedKb, 0xFFFF);
                 cpu.SetCarryInStackedFlags(false);
+                return;
+
+            case 0x53:
+                PowerManagement.Handle(cpu, fromEntryPoint: false);
+                return;
+
+            case 0xE8:
+                HandleMemoryMap(cpu);
                 return;
 
             case 0x4F:
