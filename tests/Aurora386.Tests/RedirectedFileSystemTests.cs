@@ -403,3 +403,43 @@ public class RedirectedFileSystemTests : IDisposable
     public void TheVolumeLabelComesFromTheDisc()
         => Assert.Equal("GAMEDISC", OpenDisc().VolumeLabel);
 }
+
+public class SharedFolderLettersTests
+{
+    private static Aurora386.Core.Devices.Storage.IsoImage Disc()
+    {
+        var bytes = new byte[100 * Aurora386.Core.Devices.Storage.IsoImage.SectorSize];
+        int pvd = Aurora386.Core.Devices.Storage.IsoImage.PrimaryVolumeDescriptorSector * Aurora386.Core.Devices.Storage.IsoImage.SectorSize;
+        bytes[pvd] = 1;
+        System.Text.Encoding.ASCII.GetBytes("CD001").CopyTo(bytes, pvd + 1);
+        return new Aurora386.Core.Devices.Storage.IsoImage(new MemoryStream(bytes));
+    }
+
+    [Fact]
+    public void TheFirstFolderTakesEOnAOneDiskMachine()
+    {
+        using var machine = new Aurora386.Core.Machine();
+        machine.AttachDisk(Aurora386.Core.Devices.Storage.DiskImage.CreateInMemory(0x80, 4, 16, 63));
+        Assert.Equal(4, machine.NextSharedFolderDrive());
+    }
+
+    [Fact]
+    public void FoldersStepPastTheCdRomAndEachOther()
+    {
+        using var machine = new Aurora386.Core.Machine();
+        machine.AttachDisk(Aurora386.Core.Devices.Storage.DiskImage.CreateInMemory(0x80, 4, 16, 63));
+        machine.AttachDisk(Aurora386.Core.Devices.Storage.DiskImage.CreateInMemory(0x81, 4, 16, 63));
+        machine.AttachCompactDisc(Disc());                  // two disks: the disc is E:
+        Assert.Equal(4, machine.CompactDiscServices.DriveLetter);
+
+        Assert.Equal(5, machine.NextSharedFolderDrive());   // F:
+        string root = Path.Combine(Path.GetTempPath(), "aurora-share-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            machine.Redirector.Mount(5, new Aurora386.Core.Dos.HostDirectoryFileSystem(root));
+            Assert.Equal(6, machine.NextSharedFolderDrive());   // G:
+        }
+        finally { Directory.Delete(root, true); }
+    }
+}

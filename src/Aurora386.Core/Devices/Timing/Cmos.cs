@@ -62,6 +62,16 @@ public sealed class Cmos : IIoDevice
         // the pair above.
         _registers[0x30] = _registers[0x17];
         _registers[0x31] = _registers[0x18];
+
+        // Memory above 16 MB, in 64 KB units, in the pair the AT BIOSes
+        // settled on when the 16-bit count above ran out at 64 MB. A guest
+        // that reads the CMOS directly -- some memory managers do -- finds
+        // the rest of a 128 MB machine here; everything else asks INT 15h
+        // E801h, which says the same thing.
+        uint above16Mb = totalBytes > 0x1000000 ? (totalBytes - 0x1000000) / 65536 : 0;
+        ushort blocks = (ushort)Math.Min(above16Mb, 0xFFFF);
+        _registers[0x34] = (byte)blocks;
+        _registers[0x35] = (byte)(blocks >> 8);
     }
 
     public void Register(IoBus io) => io.Register(0x70, 2, this);

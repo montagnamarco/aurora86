@@ -24,7 +24,7 @@ string? createDisk = null;
 long createSizeMb = 100;
 string? secondDisk = null;
 string? compactDisc = null;
-string? sharedFolder = null;
+var sharedFolders = new List<(byte? Drive, string Path)>();
 string? bootOrder = null;
 string? snapshot = null;
 string? dosLogPath = null;
@@ -79,9 +79,21 @@ for (int i = 0; i < args.Length; i++)
             break;
 
         case "--share":
+        {
+            // A folder, or a letter and a folder: "--share F:/some/folder".
+            // Without a letter the next free one after the disks is used,
+            // E: on a one-disk machine. The option repeats for more folders.
             if (++i >= args.Length) return Fail("--share needs a folder");
-            sharedFolder = args[i];
+            string spec = args[i];
+            byte? letter = null;
+            if (spec.Length > 2 && spec[1] == ':' && char.IsAsciiLetter(spec[0]) && !Directory.Exists(spec))
+            {
+                letter = (byte)(char.ToUpperInvariant(spec[0]) - 'A');
+                spec = spec[2..];
+            }
+            sharedFolders.Add((letter, spec));
             break;
+        }
 
         case "--boot":
             if (++i >= args.Length) return Fail("--boot needs a list of drives, like A,C");
@@ -153,8 +165,8 @@ if (createDisk is not null)
     hardDisk ??= createDisk;
 }
 
-if (ramMegabytes is < 1 or > 64)
-    return Fail("la RAM deve essere fra 1 e 64 megabyte");
+if (ramMegabytes is < 1 or > 128)
+    return Fail("la RAM deve essere fra 1 e 128 megabyte");
 
 // A machine folder describes the whole machine; anything else on the
 // command line is added on top of what the file says.
@@ -209,11 +221,13 @@ if (compactDisc is not null)
     Console.WriteLine($"cd-rom: {Path.GetFileName(compactDisc)}");
 }
 
-if (sharedFolder is not null)
+foreach ((byte? requested, string folder) in sharedFolders)
 {
-    if (!Directory.Exists(sharedFolder)) return Fail($"cartella non trovata: {sharedFolder}");
-    machine.Redirector.Mount(4, new HostDirectoryFileSystem(sharedFolder));
-    Console.WriteLine($"drive E: {sharedFolder} (shared; needs LASTDRIVE=E or more in CONFIG.SYS)");
+    if (!Directory.Exists(folder)) return Fail($"cartella non trovata: {folder}");
+    byte drive = requested ?? machine.NextSharedFolderDrive();
+    machine.Redirector.Mount(drive, new HostDirectoryFileSystem(folder));
+    char letter = (char)('A' + drive);
+    Console.WriteLine($"drive {letter}: {folder} (shared; needs LASTDRIVE={letter} or more in CONFIG.SYS)");
 }
 
 if (network == "nat" || (network is null && forwards.Count > 0))
@@ -307,11 +321,12 @@ static void PrintUsage()
           -d, --hdd <file>         hard disk image (drive C:)
               --create-hdd <file>  create a new partitioned hard disk
               --size <MB>          size of the disk to create (default 100)
-              --ram <MB>           installed memory (default 16)
+              --ram <MB>           installed memory, 1 to 128 (default 16)
               --vm <folder>        a machine folder (vm.json); other options add to it
               --hdd2 <file>        second hard disk (81h; DOS gives it the next letter)
               --cd <file>          CD-ROM image (ISO)
-              --share <folder>     a folder of this computer as drive E: (LASTDRIVE=E)
+              --share [X:]<folder> a folder of this computer as a drive: the next free
+                                   letter after the disks, or X:; repeatable
               --boot <list>        boot order, like A,C or C,A (default: every drive by number)
               --mouse ps2|serial   which port the mouse is on
               --net nat|none       put the NE2000 on a NAT network (guest 10.0.2.15)

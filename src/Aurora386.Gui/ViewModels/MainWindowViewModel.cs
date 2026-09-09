@@ -632,12 +632,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         try
         {
-            bool letterExists = Session.WithMachine(machine =>
-                machine.Redirector.Mount(SharedFolderDrive, new HostDirectoryFileSystem(path)));
+            (bool letterExists, byte drive) = Session.WithMachine(machine =>
+            {
+                byte next = machine.NextSharedFolderDrive();
+                return (machine.Redirector.Mount(next, new HostDirectoryFileSystem(path)), next);
+            });
 
             RefreshDriveList();
 
-            char letter = (char)('A' + SharedFolderDrive);
+            char letter = (char)('A' + drive);
 
             // DOS decides how many drive letters exist when it starts, from
             // LASTDRIVE in CONFIG.SYS, and defaults to barely more than the
@@ -949,7 +952,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// The letter the shared folder gets. E: keeps clear of the floppies, the
     /// hard disk and the CD-ROM, which between them can reach D:.
     /// </summary>
-    private const byte SharedFolderDrive = 4;
 
     /// <summary>
     /// Picks the next free hard disk number. The BIOS numbers hard disks from

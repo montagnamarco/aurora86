@@ -144,6 +144,27 @@ public sealed partial class Machine
     public void UnmountRedirectedDrive(byte drive) => Redirector.Unmount(drive);
 
     /// <summary>
+    /// The letter the next shared folder should take: the first one after
+    /// the hard disks and the CD-ROM, never below E:, and never one that is
+    /// already shared. Letters are numbers from zero here, so E: is 4.
+    ///
+    /// Counting the CD-ROM is what keeps a second folder from landing on the
+    /// letter MSCDEX is about to claim: with two disks the disc takes E:,
+    /// and a folder mounted there would be answered by two things at once.
+    /// </summary>
+    public byte NextSharedFolderDrive()
+    {
+        int first = 2 + Math.Max(DiskServices.HardDiskCount, 1);      // the letter after the disks
+        if (CompactDisc is not null) first = Math.Max(first, CompactDiscServices.DriveLetter + 1);
+        first = Math.Max(first, 4);
+
+        var taken = Redirector.MountedDrives.ToHashSet();
+        if (CompactDisc is not null) taken.Add(CompactDiscServices.DriveLetter);
+        while (taken.Contains((byte)first)) first++;
+        return (byte)first;
+    }
+
+    /// <summary>
     /// Fills in the diskette parameter table that INT 1Eh points at.
     ///
     /// Most of the eleven bytes are timings for a drive we do not simulate --

@@ -61,6 +61,28 @@ public class SystemServicesTests
     }
 
     [Fact]
+    public void AHundredAndTwentyEightMegabytesAreReportedEverywhereTheyShouldBe()
+    {
+        using Machine machine = Boot(128 * 1024 * 1024);
+
+        // INT 15h E801h: 15 MB below the hole, then (128 - 16) MB in 64 KB blocks.
+        machine.Cpu.State.Ax = 0xE801;
+        Assert.False(Int15(machine));
+        Assert.Equal(15 * 1024, machine.Cpu.State.Ax);
+        Assert.Equal((128 - 16) * 16, machine.Cpu.State.Bx);
+
+        // The CMOS: the 16-bit count above 1 MB saturates, the pair above
+        // 16 MB carries the rest.
+        byte Cmos(byte register) { machine.Io.WriteByte(0x70, register); return machine.Io.ReadByte(0x71); }
+        Assert.Equal(0xFFFF, Cmos(0x30) | (Cmos(0x31) << 8));
+        Assert.Equal((128 - 16) * 16, Cmos(0x34) | (Cmos(0x35) << 8));
+
+        // And the map counts every byte of it as usable.
+        var usable = machine.MemoryMap().Where(e => e.Type == 1).Sum(e => (long)e.Length);
+        Assert.Equal(128L * 1024 * 1024 - (0xA0000 - 0x9FC00) - 0x60000, usable);
+    }
+
+    [Fact]
     public void E820WalksTheMapAndEndsWithZeroContinuation()
     {
         using Machine machine = Boot(32 * 1024 * 1024);
