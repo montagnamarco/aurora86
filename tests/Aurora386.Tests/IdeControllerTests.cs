@@ -394,4 +394,70 @@ public class IdeControllerTests
         SendPacket(machine, 0x00);
         Assert.Equal(0x00, machine.Io.ReadByte(0x1F7) & 0x01);      // and then all is well
     }
+
+    /// <summary>
+    /// The secondary channel answers on its own ports, and the primary does
+    /// not answer on them.
+    ///
+    /// A PC has two IDE cables and they are the same registers at two
+    /// addresses. Getting that wrong is not subtle in its consequences and is
+    /// very subtle to spot: a controller that decoded only the primary
+    /// addresses would leave the second cable silent, and one that answered
+    /// both from the same registers would have two drives sharing one set of
+    /// them -- a read from either returning whatever the other last set up.
+    /// </summary>
+    [Fact]
+    public void TheSecondaryChannelHasItsOwnPorts()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+
+        var secondary = new IdeController(machine, machine.Interrupts,
+                                          IdeController.Channel.Secondary);
+        secondary.Register(machine.Io);
+
+        // The sector-count register is as good as any: it holds what it is
+        // given and nothing else touches it.
+        machine.Io.WriteByte(0x1F2, 0x11);      // primary
+        machine.Io.WriteByte(0x172, 0x22);      // secondary
+
+        Assert.Equal(0x11, machine.Io.ReadByte(0x1F2));
+        Assert.Equal(0x22, machine.Io.ReadByte(0x172));
+    }
+
+    /// <summary>
+    /// The secondary channel interrupts on IRQ 15, not IRQ 14.
+    ///
+    /// The two cables have a line each, and a controller that raised the
+    /// primary's line for both would have the driver acknowledging one
+    /// interrupt while the other stayed asserted -- which stops the machine
+    /// as thoroughly as no interrupt at all.
+    /// </summary>
+    [Fact]
+    public void TheSecondaryChannelInterruptsOnItsOwnLine()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+
+        var secondary = new IdeController(machine, machine.Interrupts,
+                                          IdeController.Channel.Secondary);
+        secondary.Register(machine.Io);
+
+        // Let both lines through, so that whichever is raised shows up.
+        machine.Io.WriteByte(0x21, 0xBF);       // master: IRQ 6 masked only
+        machine.Io.WriteByte(0xA1, 0x00);       // slave: everything through
+
+        // An unsupported command is the shortest path to an interrupt: the
+        // drive aborts and interrupts to say so.
+        // Bit 4 of the drive/head register picks the slave, which is where
+        // the drive is: 0xA0 is the master and does not interrupt at all.
+        machine.Io.WriteByte(0x176, 0xB0);
+        machine.Io.WriteByte(0x177, 0xFF);      // a command no drive has
+
+        // IRQ 15 is the slave controller's line 7.
+        Assert.True((machine.Interrupts.Slave.Registers.Request & 0x80) != 0,
+            "the secondary channel must interrupt on IRQ 15");
+        Assert.True((machine.Interrupts.Master.Registers.Request & 0x40) == 0,
+            "and not on IRQ 14, which belongs to the primary");
+    }
 }

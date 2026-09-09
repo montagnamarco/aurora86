@@ -70,26 +70,59 @@ public sealed class IdeController : IIoDevice
     // Error bits. For ATAPI the top nibble carries a sense key instead.
     private const byte ErrorAbort = 0x04;
 
-    public IdeController(Machine machine, InterruptController interrupts)
+    /// <summary>
+    /// Which cable this is. A PC has two, and they differ only in the three
+    /// numbers below -- the registers, the behaviour and the drives are the
+    /// same, which is why one class serves both.
+    /// </summary>
+    public enum Channel
+    {
+        /// <summary>0x1F0/0x3F6 on IRQ 14, where the boot disk lives.</summary>
+        Primary,
+
+        /// <summary>0x170/0x376 on IRQ 15, the second cable.</summary>
+        Secondary,
+    }
+
+    private readonly ushort _commandBase;
+    private readonly ushort _controlBase;
+    private readonly int _irq;
+
+    public IdeController(Machine machine, InterruptController interrupts,
+                         Channel channel = Channel.Primary)
     {
         _machine = machine;
         _interrupts = interrupts;
+        Cable = channel;
+
+        (_commandBase, _controlBase, _irq) = channel == Channel.Primary
+            ? ((ushort)0x1F0, (ushort)0x3F6, 14)
+            : ((ushort)0x170, (ushort)0x376, 15);
     }
 
+    /// <summary>Which cable this controller answers for.</summary>
+    public Channel Cable { get; }
+
     /// <summary>
-    /// Registers on the primary channel's ports.
+    /// Registers on this channel's ports.
     ///
-    /// 0x1F0 to 0x1F7 are the command block; 0x3F6 is the control block, whose
-    /// only interesting register is the one that lets software read the status
-    /// without acknowledging the interrupt. The secondary channel at 0x170 is
-    /// not claimed: nothing we emulate is on it, and answering for ports that
-    /// have nothing behind them makes software wait on a drive that will never
-    /// be ready.
+    /// The command block is eight registers from the base -- 0x1F0 on the
+    /// primary cable, 0x170 on the secondary -- and the control block two
+    /// more at 0x3F6 or 0x376, whose only interesting register is the one
+    /// that lets software read the status without acknowledging the
+    /// interrupt.
+    ///
+    /// A channel with nothing on it should not be registered at all. Software
+    /// probes both cables and reads the status: an unclaimed port floats to
+    /// 0xFF, which has the busy bit set, and a driver reads that as "a drive
+    /// is here and is thinking about it" -- so it waits, and waits. Silence
+    /// is the answer that means "empty", and the bus gives it for free to
+    /// ports nobody claimed.
     /// </summary>
     public void Register(IoBus io)
     {
-        io.Register(0x1F0, 8, this);
-        io.Register(0x3F6, 2, this);
+        io.Register(_commandBase, 8, this);
+        io.Register(_controlBase, 2, this);
     }
 
     /// <summary>
@@ -109,9 +142,25 @@ public sealed class IdeController : IIoDevice
     /// </summary>
     private bool AddressingCompactDisc => _slaveSelected;
 
+    /// <summary>
+    /// Turns this channel's port into the primary channel's equivalent, so
+    /// that the decoding below can be written with the numbers every
+    /// reference book uses.
+    ///
+    /// The two cables are the same registers at two addresses, and writing
+    /// the decoding twice -- or with arithmetic in every case label -- would
+    /// obscure that rather than express it.
+    /// </summary>
+    private ushort Normalise(ushort port)
+    {
+        if (port - _commandBase < 8) return (ushort)(0x1F0 + (port - _commandBase));
+        if (port - _controlBase < 2) return (ushort)(0x3F6 + (port - _controlBase));
+        return port;
+    }
+
     public byte ReadByte(ushort port)
     {
-        switch (port)
+        switch (Normalise(port))
         {
             case 0x1F0: return ReadData();
             case 0x1F1: return _error;
@@ -125,7 +174,7 @@ public sealed class IdeController : IIoDevice
                 // Reading the status register acknowledges the interrupt. This
                 // is the register software polls, so the acknowledgement has
                 // to happen here rather than anywhere more obvious.
-                _interrupts.LowerIrq(14);
+                _interrupts.LowerIrq(_irq);
                 return CurrentStatus;
 
             // The alternate status register: the same value, without the
@@ -161,7 +210,7 @@ public sealed class IdeController : IIoDevice
 
     public void WriteByte(ushort port, byte value)
     {
-        switch (port)
+        switch (Normalise(port))
         {
             case 0x1F0: WriteData(value); return;
             case 0x1F1: _features = value; return;
@@ -199,14 +248,14 @@ public sealed class IdeController : IIoDevice
     /// </summary>
     public ushort ReadWord(ushort port)
     {
-        if (port != 0x1F0) return (ushort)(ReadByte(port) | (ReadByte((ushort)(port + 1)) << 8));
+        if (Normalise(port) != 0x1F0) return (ushort)(ReadByte(port) | (ReadByte((ushort)(port + 1)) << 8));
 
         return (ushort)(ReadData() | (ReadData() << 8));
     }
 
     public void WriteWord(ushort port, ushort value)
     {
-        if (port != 0x1F0)
+        if (Normalise(port) != 0x1F0)
         {
             WriteByte(port, (byte)value);
             WriteByte((ushort)(port + 1), (byte)(value >> 8));
@@ -949,7 +998,7 @@ public sealed class IdeController : IIoDevice
     /// </summary>
     private void RaiseInterrupt()
     {
-        _interrupts.LowerIrq(14);
-        _interrupts.RaiseIrq(14);
+        _interrupts.LowerIrq(_irq);
+        _interrupts.RaiseIrq(_irq);
     }
 }
