@@ -34,14 +34,15 @@ public class S3AcceleratorTests
     }
 
     /// <summary>
-    /// Writes one of the engine's sixteen-bit registers. The high byte goes
-    /// first: the low one is what completes the pair and, for the command
-    /// register, what starts the operation.
+    /// Writes one of the engine's sixteen-bit registers the way a word OUT
+    /// reaches it through the bus: low byte first, then the high one, which
+    /// completes the pair and, for the command register, starts the
+    /// operation.
     /// </summary>
     private static void Write(Machine machine, ushort port, ushort value)
     {
-        machine.Io.WriteByte((ushort)(port + 1), (byte)(value >> 8));
         machine.Io.WriteByte(port, (byte)value);
+        machine.Io.WriteByte((ushort)(port + 1), (byte)(value >> 8));
     }
 
     private static byte Pixel(Machine machine, int x, int y)
@@ -57,7 +58,7 @@ public class S3AcceleratorTests
         Write(machine, 0x96E8, 99);        // width - 1
         Write(machine, 0x92E8, 49);        // height - 1
         Write(machine, 0xA6E8, 0x0F);      // colour
-        Write(machine, 0x9AE8, 0x6000);    // fill
+        Write(machine, 0x9AE8, 0x4000);    // fill
 
         Assert.Equal(0x0F, Pixel(machine, 50, 40));      // inside
 
@@ -80,7 +81,7 @@ public class S3AcceleratorTests
         Write(machine, 0x96E8, 99);
         Write(machine, 0x92E8, 49);
         Write(machine, 0xA6E8, 0x0F);
-        Write(machine, 0x9AE8, 0x6000);
+        Write(machine, 0x9AE8, 0x4000);
 
         Write(machine, 0x86E8, 10);        // source
         Write(machine, 0x82E8, 20);
@@ -108,7 +109,7 @@ public class S3AcceleratorTests
         Write(machine, 0x96E8, 99);
         Write(machine, 0x92E8, 0);
         Write(machine, 0xA6E8, 0x0F);
-        Write(machine, 0x9AE8, 0x6000);
+        Write(machine, 0x9AE8, 0x4000);
 
         // Copy the ten rows from 100 up to 99: overlapping, and the driver
         // asks for increasing Y so each row is read before it is written.
@@ -132,7 +133,7 @@ public class S3AcceleratorTests
         Write(machine, 0x82E8, 100);
         Write(machine, 0x96E8, 50);        // length
         Write(machine, 0xA6E8, 0x0C);
-        Write(machine, 0x9AE8, 0x40A0);    // line, horizontal, increasing
+        Write(machine, 0x9AE8, 0x20A0);    // line, horizontal, increasing
 
         Assert.Equal(0x0C, Pixel(machine, 300, 100));
         Assert.Equal(0x0C, Pixel(machine, 350, 100));
@@ -155,7 +156,7 @@ public class S3AcceleratorTests
         Write(machine, 0x96E8, 49);
         Write(machine, 0x92E8, 9);
         Write(machine, 0xA6E8, 0x0A);
-        Write(machine, 0x9AE8, 0x6000);
+        Write(machine, 0x9AE8, 0x4000);
 
         Assert.Equal(0x00, Pixel(machine, 390, 205));   // outside the clip
         Assert.Equal(0x0A, Pixel(machine, 410, 205));   // inside
@@ -170,7 +171,7 @@ public class S3AcceleratorTests
         // card.
         using Machine machine = InSvgaMode();
 
-        Write(machine, 0x9AE8, 0x6000);
+        Write(machine, 0x9AE8, 0x4000);
 
         Assert.Equal(0x00, machine.Io.ReadByte(0x9AE8) & 0x02);
     }
@@ -183,8 +184,8 @@ public class S3AcceleratorTests
 
         Write(machine, 0x96E8, 9);
         Write(machine, 0x92E8, 9);
-        Write(machine, 0x9AE8, 0x6000);
-        Write(machine, 0x9AE8, 0x6000);
+        Write(machine, 0x9AE8, 0x4000);
+        Write(machine, 0x9AE8, 0x4000);
 
         Assert.Equal(before + 2, machine.Accelerator.OperationsPerformed);
     }
@@ -217,8 +218,8 @@ public class S3RasterOperationTests
 
     private static void Write(Machine machine, ushort port, ushort value)
     {
-        machine.Io.WriteByte((ushort)(port + 1), (byte)(value >> 8));
         machine.Io.WriteByte(port, (byte)value);
+        machine.Io.WriteByte((ushort)(port + 1), (byte)(value >> 8));
     }
 
     private static byte Pixel(Machine machine, int x, int y)
@@ -232,7 +233,7 @@ public class S3RasterOperationTests
         Write(machine, 0x96E8, 49);
         Write(machine, 0x92E8, 49);
         Write(machine, 0xA6E8, colour);
-        Write(machine, 0x9AE8, 0x6000);
+        Write(machine, 0x9AE8, 0x4000);
     }
 
     [Fact]
@@ -261,11 +262,11 @@ public class S3RasterOperationTests
 
         Fill(machine, 0x0F);
 
-        Write(machine, 0xBAE8, 0x05);      // exclusive or
+        Write(machine, 0xBAE8, 0x25);      // exclusive or, foreground colour
         Fill(machine, 0x0F);
         Assert.Equal(0x00, Pixel(machine, 20, 20));
 
-        Write(machine, 0x9AE8, 0x6000);    // and again
+        Write(machine, 0x9AE8, 0x4000);    // and again
         Assert.Equal(0x0F, Pixel(machine, 20, 20));
     }
 
@@ -279,7 +280,7 @@ public class S3RasterOperationTests
 
         Fill(machine, 0x0F);
 
-        Write(machine, 0xBAE8, 0x07);      // replacement
+        Write(machine, 0xBAE8, 0x27);      // replacement, foreground colour
         Write(machine, 0xAAE8, 0x0F);      // only the low nibble
         Fill(machine, 0xF3);
 
@@ -336,13 +337,13 @@ public class S3RasterOperationTests
     [Fact]
     public void TheMixCanAlsoLeaveTheDestinationAlone()
     {
-        // Operation 0xA, which sounds useless until you notice it is how a
+        // Mix 3, which sounds useless until you notice it is how a
         // driver measures a shape without drawing it.
         using Machine machine = InSvgaMode();
 
         Fill(machine, 0x0F);
 
-        Write(machine, 0xBAE8, 0x0A);
+        Write(machine, 0xBAE8, 0x23);
         Fill(machine, 0x0C);
 
         Assert.Equal(0x0F, Pixel(machine, 20, 20));
@@ -350,15 +351,16 @@ public class S3RasterOperationTests
 }
 
 /// <summary>
-/// Patterns: an 8x8 motif tiled across the screen that decides, pixel by
-/// pixel, whether the foreground or the background colour is used.
-///
-/// It is how a window's grey background, a hatched fill and a dotted line all
-/// get drawn in one operation instead of two passes with a mask between them.
-/// The tiling is anchored to the screen rather than to the rectangle, which
-/// is what makes two adjoining fills line up instead of showing a seam.
+/// Pixels from the processor. Bit 8 of the command -- PCDATA -- makes the
+/// engine take a rectangle and then wait for its contents through the pixel
+/// transfer port, drawing as the data arrives. In mask mode every bit picks
+/// the foreground mix or the background one, which is how a glyph is drawn
+/// in one pass; in colour mode every unit is a pixel, which is how a brush
+/// is uploaded to off-screen memory. The pattern fill then tiles such a
+/// brush across a window's background, anchored to the screen so that two
+/// adjoining fills line up instead of showing a seam.
 /// </summary>
-public class S3PatternTests
+public class S3ProcessorDataTests
 {
     private static Machine InSvgaMode()
     {
@@ -376,108 +378,251 @@ public class S3PatternTests
 
     private static void Write(Machine machine, ushort port, ushort value)
     {
-        machine.Io.WriteByte((ushort)(port + 1), (byte)(value >> 8));
         machine.Io.WriteByte(port, (byte)value);
+        machine.Io.WriteByte((ushort)(port + 1), (byte)(value >> 8));
     }
 
     private static byte Pixel(Machine machine, int x, int y)
         => machine.VideoMemory.ReadLinear((uint)(y * 640 + x));
 
-    private static void Fill(Machine machine, int x, int y,
-                             ushort foreground, ushort background)
+    /// <summary>A rectangle expecting data from the processor, 16-bit units, low byte first.</summary>
+    private static void Expect(Machine machine, int x, int y, int width, int height, ushort command)
     {
         Write(machine, 0x86E8, (ushort)x);
         Write(machine, 0x82E8, (ushort)y);
-        Write(machine, 0x96E8, 15);
-        Write(machine, 0x92E8, 15);
-        Write(machine, 0xA6E8, foreground);
-        Write(machine, 0xA2E8, background);
-        Write(machine, 0x9AE8, 0x6000);
+        Write(machine, 0x96E8, (ushort)(width - 1));
+        Write(machine, 0x92E8, (ushort)(height - 1));
+        Write(machine, 0x9AE8, command);
     }
 
     [Fact]
-    public void WithoutAPatternAFillIsSolid()
-    {
-        // The pattern starts as all ones, so a driver that has not set one is
-        // drawing solid and the same code path serves both. A zero pattern by
-        // default would make every fill paint the background colour, which
-        // looks like the engine ignoring the foreground register.
-        using Machine machine = InSvgaMode();
-
-        Fill(machine, 0, 0, 0x0F, 0x00);
-
-        for (int x = 0; x < 8; x++)
-            Assert.Equal(0x0F, Pixel(machine, x, 0));
-    }
-
-    [Fact]
-    public void APatternAlternatesTheTwoColours()
+    public void AMaskPicksForegroundOrBackgroundPerBit()
     {
         using Machine machine = InSvgaMode();
+        Write(machine, 0xA6E8, 0x0F);
+        Write(machine, 0xA2E8, 0x04);
+        Write(machine, 0xBAE8, 0x0027);              // foreground: the colour register, replace
+        Write(machine, 0xB6E8, 0x0007);              // background: the colour register, replace
+        Write(machine, 0xBEE8, 0xA080);              // pixel control: the mask comes from the processor
 
-        // A chequerboard: 0xAA and 0x55 on alternate rows.
-        for (int i = 0; i < 4; i++) Write(machine, 0xE2E8, 0xAA55);
+        Expect(machine, 0, 32, 16, 1, 0x53B1);      // fill, PCDATA, 16-bit, low byte first
+        Write(machine, 0xE2E8, 0x55AA);              // low byte 0xAA first: 10101010
 
-        Fill(machine, 0, 32, 0x0F, 0x04);
-
-        // 0xAA is 10101010, so the first row starts with the foreground.
         Assert.Equal(0x0F, Pixel(machine, 0, 32));
         Assert.Equal(0x04, Pixel(machine, 1, 32));
         Assert.Equal(0x0F, Pixel(machine, 2, 32));
+        Assert.Equal(0x04, Pixel(machine, 8, 32));   // then 0x55: 01010101
+        Assert.Equal(0x0F, Pixel(machine, 9, 32));
     }
 
     [Fact]
-    public void SuccessiveRowsUseSuccessivePatternBytes()
+    public void ColourDataIsThePixelsThemselves()
     {
         using Machine machine = InSvgaMode();
-        for (int i = 0; i < 4; i++) Write(machine, 0xE2E8, 0xAA55);
+        Write(machine, 0xBAE8, 0x0047);              // colour source: the processor's data
+        Write(machine, 0xBEE8, 0xA000);
 
-        Fill(machine, 0, 32, 0x0F, 0x04);
+        Expect(machine, 10, 10, 4, 1, 0x53B1);
+        Write(machine, 0xE2E8, 0x2211);
+        Write(machine, 0xE2E8, 0x4433);
 
-        // 0x55 is 01010101: the row below starts with the background instead,
-        // which is what makes it a chequerboard rather than stripes.
-        Assert.Equal(0x04, Pixel(machine, 0, 33));
-        Assert.Equal(0x0F, Pixel(machine, 1, 33));
+        Assert.Equal(0x11, Pixel(machine, 10, 10));
+        Assert.Equal(0x22, Pixel(machine, 11, 10));
+        Assert.Equal(0x33, Pixel(machine, 12, 10));
+        Assert.Equal(0x44, Pixel(machine, 13, 10));
+        Assert.Equal(0x00, Pixel(machine, 14, 10));
     }
 
     [Fact]
-    public void ThePatternIsAnchoredToTheScreenNotToTheRectangle()
+    public void EachRowStartsOnAFreshUnit()
     {
-        // Two fills side by side have to line up. Anchoring the tiling to the
-        // rectangle would restart the motif at each one and leave a visible
-        // seam where they meet.
+        // A three-pixel row in 16-bit units takes two units: the second
+        // half of the second unit is padding, and the next row starts on
+        // the third unit. A driver's bitmap rows are padded the same way.
         using Machine machine = InSvgaMode();
-        for (int i = 0; i < 4; i++) Write(machine, 0xE2E8, 0xAA55);
+        Write(machine, 0xBAE8, 0x0047);
+        Write(machine, 0xBEE8, 0xA000);
 
-        Fill(machine, 0, 100, 0x0F, 0x04);
-        Fill(machine, 16, 100, 0x0F, 0x04);
+        Expect(machine, 0, 50, 3, 2, 0x53B1);
+        Write(machine, 0xE2E8, 0x0201);
+        Write(machine, 0xE2E8, 0xFF03);              // 0xFF is padding
+        Write(machine, 0xE2E8, 0x0504);
+        Write(machine, 0xE2E8, 0xFF06);
 
-        // Column 16 is column 0 of the motif again, so it matches column 0.
-        Assert.Equal(Pixel(machine, 0, 100), Pixel(machine, 16, 100));
-        Assert.Equal(Pixel(machine, 1, 100), Pixel(machine, 17, 100));
+        Assert.Equal(0x03, Pixel(machine, 2, 50));
+        Assert.Equal(0x04, Pixel(machine, 0, 51));
+        Assert.Equal(0x06, Pixel(machine, 2, 51));
+        Assert.Equal(0x00, Pixel(machine, 3, 51));
     }
 
     [Fact]
-    public void ThePatternRepeatsEveryEightRows()
+    public void DataAfterTheRectangleIsFullIsIgnored()
     {
         using Machine machine = InSvgaMode();
-        for (int i = 0; i < 4; i++) Write(machine, 0xE2E8, 0xAA55);
+        Write(machine, 0xBAE8, 0x0047);
+        Write(machine, 0xBEE8, 0xA000);
 
-        Fill(machine, 0, 200, 0x0F, 0x04);
+        Expect(machine, 0, 60, 2, 1, 0x53B1);
+        Write(machine, 0xE2E8, 0x0201);
+        Write(machine, 0xE2E8, 0x0403);
 
-        Assert.Equal(Pixel(machine, 0, 200), Pixel(machine, 0, 208));
+        Assert.Equal(0x00, Pixel(machine, 2, 60));
+        Assert.Equal(0x00, Pixel(machine, 0, 61));
     }
 
     [Fact]
-    public void ResettingThePatternMakesFillsSolidAgain()
+    public void WithTheByteOrderBitClearTheHighByteComesFirst()
     {
         using Machine machine = InSvgaMode();
-        for (int i = 0; i < 4; i++) Write(machine, 0xE2E8, 0x0000);
+        Write(machine, 0xBAE8, 0x0047);
+        Write(machine, 0xBEE8, 0xA000);
 
-        machine.Accelerator.ResetPattern();
-        Fill(machine, 0, 300, 0x0F, 0x04);
+        Expect(machine, 0, 70, 2, 1, 0x43B1);       // bit 12 clear
+        Write(machine, 0xE2E8, 0x2211);
 
-        Assert.Equal(0x0F, Pixel(machine, 0, 300));
-        Assert.Equal(0x0F, Pixel(machine, 1, 300));
+        Assert.Equal(0x22, Pixel(machine, 0, 70));
+        Assert.Equal(0x11, Pixel(machine, 1, 70));
+    }
+
+    [Fact]
+    public void APatternFillTilesAnEightByEightBrushAnchoredToTheScreen()
+    {
+        using Machine machine = InSvgaMode();
+
+        // The brush: an 8x8 chequerboard uploaded off-screen at (0, 400).
+        Write(machine, 0xBAE8, 0x0047);
+        Write(machine, 0xBEE8, 0xA000);
+        Expect(machine, 0, 400, 8, 8, 0x53B1);
+        for (int row = 0; row < 8; row++)
+            for (int pair = 0; pair < 4; pair++)
+                Write(machine, 0xE2E8, (row & 1) == 0 ? (ushort)0x040F : (ushort)0x0F04);
+
+        // Then painted over a rectangle that starts at an odd column.
+        Write(machine, 0xBAE8, 0x0067);              // colour source: the screen, replace
+        Write(machine, 0x86E8, 0);                   // the brush
+        Write(machine, 0x82E8, 400);
+        Write(machine, 0x8EE8, 3);                   // the destination
+        Write(machine, 0x8AE8, 100);
+        Write(machine, 0x96E8, 19);
+        Write(machine, 0x92E8, 3);
+        Write(machine, 0x9AE8, 0xE0F3);              // pattern fill
+
+        Assert.Equal(0x04, Pixel(machine, 3, 100));  // column 3 of the motif
+        Assert.Equal(0x0F, Pixel(machine, 4, 100));
+        Assert.Equal(0x04, Pixel(machine, 11, 100)); // eight columns on, the same
+        Assert.Equal(0x0F, Pixel(machine, 3, 101));  // the row below is inverted
+        Assert.Equal(0x00, Pixel(machine, 23, 100)); // outside
+    }
+}
+
+/// <summary>
+/// The engine reached through memory instead of ports, the way the S3
+/// Windows driver reaches it. With bit 4 of CR53 set the upper half of the
+/// VGA window at A0000h stops being video memory and becomes the engine's
+/// registers: the classic ones at their port numbers, and from A8100h the
+/// Trio64's packed pairs, where one doubleword write sets a coordinate pair
+/// or a width and a height. The driver's fills came out as nothing at all
+/// before this existed: the writes landed in video memory and the engine
+/// never heard of them.
+/// </summary>
+public class S3MemoryMappedEngineTests
+{
+    private static Machine InSvgaMode()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        machine.Cpu.State.Halted = false;
+
+        machine.Cpu.State.Ax = 0x4F02;
+        machine.Cpu.State.Bx = 0x101;
+        machine.VideoServices.Handle(machine.Cpu);
+
+        machine.Accelerator.ResetClip(640, 480);
+        return machine;
+    }
+
+    private static void EnableMmio(Machine machine, bool on)
+    {
+        machine.Io.WriteByte(0x3D4, 0x39);          // unlock the extended registers
+        machine.Io.WriteByte(0x3D5, 0xA5);
+        machine.Io.WriteByte(0x3D4, 0x53);
+        machine.Io.WriteByte(0x3D5, (byte)(on ? 0x10 : 0x00));
+    }
+
+    private static byte Pixel(Machine machine, int x, int y)
+        => machine.VideoMemory.ReadLinear((uint)(y * 640 + x));
+
+    [Fact]
+    public void PackedRegistersFillARectangle()
+    {
+        using Machine machine = InSvgaMode();
+        EnableMmio(machine, true);
+
+        machine.Memory.WriteDword(0xA8100, (10u << 16) | 20);      // ALT_CURXY: x 10 high, y 20 low
+        machine.Memory.WriteDword(0xA8148, (99u << 16) | 49);      // ALT_PCNT: width 100 high, height 50 low
+        machine.Memory.WriteWord(0xA8136, 0x0027);                 // FRGD_MIX: foreground colour, replace
+        machine.Memory.WriteWord(0xAA6E8, 0x0F);                   // the colour, at its port number
+        machine.Memory.WriteWord(0xA8118, 0x40F3);                 // rectangle fill, as the driver writes it
+
+        Assert.Equal(0x0F, Pixel(machine, 10, 20));
+        Assert.Equal(0x0F, Pixel(machine, 109, 69));
+        Assert.Equal(0x00, Pixel(machine, 110, 69));
+        Assert.Equal(0x00, Pixel(machine, 109, 70));
+    }
+
+    [Fact]
+    public void TheWindowIsVideoMemoryAgainWhenTheBitIsClear()
+    {
+        using Machine machine = InSvgaMode();
+        EnableMmio(machine, true);
+        EnableMmio(machine, false);
+
+        machine.Memory.WriteWord(0xA8118, 0x40F3);       // a command that must not run
+        Assert.Equal(0xF3, machine.VideoMemory.ReadLinear(0x8118));
+        Assert.Equal(0x40, machine.VideoMemory.ReadLinear(0x8119));
+    }
+
+    [Fact]
+    public void TheLowerHalfIsNotTheScreenWhileTheEngineIsMapped()
+    {
+        using Machine machine = InSvgaMode();
+        EnableMmio(machine, true);
+
+        machine.Memory.WriteByte(0xA0000, 0x77);          // image transfer area, not pixel 0
+        Assert.Equal(0x00, machine.VideoMemory.ReadLinear(0));
+    }
+
+    [Fact]
+    public void ARegisterReadsBackWhatWasWritten()
+    {
+        using Machine machine = InSvgaMode();
+        EnableMmio(machine, true);
+
+        machine.Memory.WriteDword(0xA8100, (321u << 16) | 123);
+        Assert.Equal(123, machine.Memory.ReadWord(0xA8100));     // Y
+        Assert.Equal(321, machine.Memory.ReadWord(0xA8102));     // X
+
+        // The multifunction read-back at BEE8h: select the top clip and read.
+        machine.Memory.WriteWord(0xA8138, 0x0044);
+        machine.Memory.WriteWord(0xA8146, 0x0001);
+        Assert.Equal(0x0044, machine.Memory.ReadWord(0xABEE8));
+    }
+
+    [Fact]
+    public void ThePortsAreTheSameEngine()
+    {
+        using Machine machine = InSvgaMode();
+        EnableMmio(machine, true);
+
+        // Coordinates through memory, the command through the port.
+        machine.Memory.WriteDword(0xA8100, (5u << 16) | 5);
+        machine.Memory.WriteDword(0xA8148, (9u << 16) | 9);
+        machine.Memory.WriteWord(0xA8136, 0x0027);
+        machine.Memory.WriteWord(0xAA6E8, 0x0C);
+        machine.Io.WriteWord(0x9AE8, 0x40F3);
+
+        Assert.Equal(0x0C, Pixel(machine, 5, 5));
+        Assert.Equal(0x0C, Pixel(machine, 14, 14));
+        Assert.Equal(0x00, Pixel(machine, 15, 15));
     }
 }

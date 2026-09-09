@@ -162,6 +162,9 @@ public sealed partial class Machine : IDisposable
     /// </summary>
     public uint MmioBase { get; private set; }
 
+    /// <summary>The Trio64V+ memory-mapped registers sit this far above the linear frame buffer.</summary>
+    public const uint TrioMmioOffset = 0x1000000;
+
     public Machine(uint ramSize = 16 * 1024 * 1024)
     {
         // The addressable space is larger than the RAM, because the linear
@@ -171,9 +174,13 @@ public sealed partial class Machine : IDisposable
         // directly above the installed RAM, which is the same reasoning
         // applied to a machine whose memory size is known.
         uint frameBufferBase = Math.Max(ramSize, 16u * 1024 * 1024);
-        // Lo spazio indirizzabile comprende il frame buffer e i 64 KB di
-        // registri mappati subito sopra.
-        Memory = new PhysicalMemoryBus(ramSize, frameBufferBase + VgaMemory.TotalSize + 0x10000);
+        // The addressable space reaches past the frame buffer to the 64 KB
+        // of engine registers a Trio64V+ keeps at the frame buffer's base
+        // plus 16 MB. A write past the end of the bus is dropped silently,
+        // and that silence is what a display driver drawing through those
+        // registers looked like: icons drawn by the processor, and nothing
+        // where the engine should have filled.
+        Memory = new PhysicalMemoryBus(ramSize, frameBufferBase + TrioMmioOffset + 0x10000);
         LinearFrameBufferBase = frameBufferBase;
         Io = new IoBus();
 
@@ -223,6 +230,7 @@ public sealed partial class Machine : IDisposable
         // register writes.
         Accelerator = new S3Accelerator(VideoMemory, VideoRegisters);
         Accelerator.Register(Io);
+        VideoMemory.Engine = Accelerator.Mmio;
 
         // The engine's registers again, mapped as memory directly above the
         // frame buffer. A protected-mode driver writes there rather than to
@@ -232,6 +240,13 @@ public sealed partial class Machine : IDisposable
         MmioBase = LinearFrameBufferBase + VgaMemory.TotalSize;
         Memory.MapDevice(MmioBase, 0x10000, Accelerator.Mmio);
         VideoRegisters.MmioBase = MmioBase;
+
+        // And where the Trio64V+ actually puts them: 16 MB above the
+        // linear frame buffer, whatever the card's memory size. The S3
+        // Windows driver for that chip writes there without asking, and
+        // without being told to by any register; the emulator learnt this
+        // from a trace of a driver that filled nothing.
+        Memory.MapDevice(LinearFrameBufferBase + TrioMmioOffset, 0x10000, Accelerator.Mmio);
 
         // The 8237 DMA pair and the Sound Blaster 16 that streams through it.
         // Registering the card also claims the OPL3's own ports at 0x388.

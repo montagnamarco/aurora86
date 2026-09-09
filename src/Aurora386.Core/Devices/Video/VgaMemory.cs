@@ -112,6 +112,16 @@ public sealed class VgaMemory : IMemoryDevice
 
     public VgaMemory(VgaRegisters registers) => Registers = registers;
 
+    /// <summary>
+    /// The graphics engine's memory-mapped registers, which take over the
+    /// upper half of the window at A0000h while CR53 bit 4 is set. Null
+    /// on a plain VGA.
+    /// </summary>
+    public IMemoryDevice? Engine { get; set; }
+
+    /// <summary>Whether this offset in the window belongs to the engine right now.</summary>
+    private bool EngineOwns(uint offset) => offset < 0x10000 && Engine is not null && Registers.MemoryMappedEngine;
+
     /// <summary>The latch contents, for tests and for the debugger.</summary>
     public ReadOnlySpan<byte> Latches => _latches;
 
@@ -252,6 +262,8 @@ public sealed class VgaMemory : IMemoryDevice
     {
         if (offset >= Size) return 0xFF;
 
+        if (EngineOwns(offset)) return offset >= 0x8000 ? Engine!.ReadByte(offset) : (byte)0xFF;
+
         // In a VBE mode the window at 0xA0000 is a moveable 64 KB porthole
         // onto video memory rather than the planar aperture: the bank
         // register says which slice, and the planes are not in the path at
@@ -335,6 +347,14 @@ public sealed class VgaMemory : IMemoryDevice
     public void WriteByte(uint offset, byte value)
     {
         if (offset >= Size) return;
+
+        // With the engine mapped in, the upper 32 KB are its registers and
+        // the lower 32 KB the image transfer area, not the screen.
+        if (EngineOwns(offset))
+        {
+            Engine!.WriteByte(offset, value);
+            return;
+        }
 
         if (Registers.VesaMode is { IsPlanar: false } && offset < 0x10000)
         {

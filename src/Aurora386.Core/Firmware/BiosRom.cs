@@ -62,6 +62,21 @@ public static class BiosRom
         /// also the default set.</summary>
         public const ushort VgaTables = 0x1300;
 
+        /// <summary>
+        /// The VESA mode set's share of the port writes: for INT 10h AX=4F02h
+        /// the standard VGA registers are programmed through the ports with
+        /// the table of the nearest VGA mode -- 13h for a packed-pixel mode,
+        /// 12h for a planar one, the mode itself for a return to VGA --
+        /// before the native handler sets the VBE mode proper. Without it a
+        /// monitor's shadow of the graphics controller still said what the
+        /// last VGA mode set left there. Windows' S3 display driver sets
+        /// BIOS mode 6 and then VBE mode 103h, and its virtual display
+        /// device, believing from mode 6 that the adapter decoded B8000h,
+        /// gave the driver's memory-mapped engine registers at A8000h a page
+        /// of nothing.
+        /// </summary>
+        public const ushort VesaProgram = 0x16E0;
+
         /// <summary>Where the INT 10h entry jumps: the mode-set and palette
         /// routines are chosen here before the native handler runs.</summary>
         public const ushort VideoDispatch = 0x1700;
@@ -536,8 +551,11 @@ public static class BiosRom
         a.Jmp("hook");
         a.Label("not_mode");
         a.B(0x80, 0xFC, 0x10);              // CMP AH,10h
-        a.Jcc(0x75, "hook");                // JNE
+        a.Jcc(0x75, "not_palette");         // JNE
         a.CallNear(Entry.VgaPalette);
+        a.Jmp("hook");
+        a.Label("not_palette");
+        a.CallNear(Entry.VesaProgram);      // does nothing unless AX = 4F02h
         a.Label("hook");
         a.B(HookByte1, HookByte2, (byte)Handler.Video);
         a.B(0xCF);                          // IRET
@@ -545,6 +563,7 @@ public static class BiosRom
         if (a.Position > Entry.VgaPalette) throw new InvalidOperationException("video dispatch overruns the palette routine");
 
         WriteVgaProgram(rom);
+        WriteVesaProgram(rom);
         WriteVgaTables(rom);
         WriteVgaPalette(rom);
     }
@@ -741,6 +760,37 @@ public static class BiosRom
         if (o > Entry.VgaTables) throw new InvalidOperationException("VGA routine overruns its tables");
     }
 
+    /// <summary>
+    /// Real-mode code, entered with the INT 10h registers. For AX = 4F02h
+    /// it runs <see cref="Entry.VgaProgram"/> with the mode whose register
+    /// set best describes the VBE mode in BX: the mode number itself when
+    /// BX names a VGA mode (a program going back to text), 12h for the
+    /// planar 16-colour mode 102h, 13h for everything else -- one byte per
+    /// pixel or more, graphics, decoded at A0000h. Every register is
+    /// preserved for the native handler that follows.
+    /// </summary>
+    private static void WriteVesaProgram(byte[] rom)
+    {
+        var a = new Asm(rom, Entry.VesaProgram);
+        a.B(0x3D, 0x02, 0x4F);              // CMP AX,4F02h
+        a.Jcc(0x75, "done");                // JNE
+        a.B(0x50);                          // PUSH AX
+        a.B(0x88, 0xD8);                    // MOV AL,BL
+        a.B(0xF6, 0xC7, 0x01);              // TEST BH,1  (a VBE mode number is 100h or more)
+        a.Jcc(0x74, "program");             // JZ: a VGA mode, AL already holds it
+        a.B(0xB0, 0x13);                    // MOV AL,13h
+        a.B(0x80, 0xFB, 0x02);              // CMP BL,02h  (102h is the planar one)
+        a.Jcc(0x75, "program");             // JNE
+        a.B(0xB0, 0x12);                    // MOV AL,12h
+        a.Label("program");
+        a.CallNear(Entry.VgaProgram);
+        a.B(0x58);                          // POP AX
+        a.Label("done");
+        a.B(0xC3);                          // RET
+        a.Resolve();
+        if (a.Position > Entry.VideoDispatch) throw new InvalidOperationException("VESA routine overruns the video dispatch");
+    }
+
     private static void WriteVgaTables(byte[] rom)
     {
         int o = Entry.VgaTables;
@@ -753,9 +803,10 @@ public static class BiosRom
             foreach (byte b in set.Graphics) rom[o++] = b;
             foreach (byte b in set.Attribute) rom[o++] = b;
         }
-        foreach (byte mode in new byte[] { 0x00, 0x01, 0x02, 0x03, 0x07, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13 })
+        foreach (byte mode in new byte[] { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13 })
             Put(mode, Devices.Video.VgaRegisterTables.For(mode));
         Put(0xFF, Devices.Video.VgaRegisterTables.For(0x03));   // end marker, and the default
+        if (o > Entry.VesaProgram) throw new InvalidOperationException("VGA tables overrun the VESA routine");
     }
 
     /// <summary>

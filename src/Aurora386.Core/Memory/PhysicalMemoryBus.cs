@@ -181,14 +181,24 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
             NativeMemory.Clear(_ram + 0x100000, (nuint)(_ramSize - 0x100000));
     }
 
-    /// <summary>Puts back RAM captured by <see cref="CaptureRam"/>.</summary>
+    /// <summary>
+    /// Puts back RAM captured by <see cref="CaptureRam"/>. The ROM pages are
+    /// left alone: the firmware belongs to the emulator running now, not to
+    /// the one that took the snapshot, and a snapshot restored into a newer
+    /// build would otherwise quietly bring the old BIOS back with it.
+    /// </summary>
     public void RestoreRam(ReadOnlySpan<byte> content)
     {
         if (content.Length != _ramSize)
             throw new ArgumentException("The snapshot was taken from a machine with different RAM.",
                                         nameof(content));
 
-        content.CopyTo(new Span<byte>(_ram, (int)_ramSize));
+        for (int page = 0; page < _pageCount && ((uint)page << PageShift) < _ramSize; page++)
+        {
+            if (_pageReadOnly[page]) continue;
+            uint at = (uint)page << PageShift;
+            content.Slice((int)at, PageSize).CopyTo(new Span<byte>(_ram + at, PageSize));
+        }
     }
 
     /// <summary>

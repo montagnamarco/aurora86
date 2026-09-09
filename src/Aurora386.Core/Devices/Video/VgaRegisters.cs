@@ -546,6 +546,15 @@ public sealed class VgaRegisters : IIoDevice
     /// </summary>
     public uint MmioBase { get; set; }
 
+    /// <summary>
+    /// Bit 4 of CR53: the engine's registers appear in the window at
+    /// A8000h-AFFFFh, and the 32 KB below become the image transfer area,
+    /// in place of video memory. The S3 Windows driver switches this on
+    /// around every drawing operation and off again for the processor's
+    /// own writes to the screen.
+    /// </summary>
+    public bool MemoryMappedEngine => (_crtc[0x53] & 0x10) != 0;
+
     // --- the hardware cursor --------------------------------------------------
     //
     // Registers 0x45 to 0x4E. The card draws a 64x64 pointer over the picture
@@ -713,9 +722,14 @@ public sealed class VgaRegisters : IIoDevice
 
         switch (index)
         {
-            // 0x36 reports how the card is configured. Bits 5-6 say how much
-            // memory: 0 is 4 MB, 1 is 3, 2 is 2, 3 is 1. This card has two.
-            case 0x36: return (byte)(0x40 | (_crtc[0x36] & 0x1F));
+            // 0x36 reports how the card is configured. Bits 7-5 say how
+            // much memory, in a three-bit code: 000 is 4 MB, 010 is 3, 100
+            // is 2, 110 is 1, 111 is half a megabyte. This card has two.
+            // It used to answer 010, read as two under a two-bit reading of
+            // the field, and the S3 Windows driver, believing it had three
+            // megabytes, kept its brushes and its cursor in the third:
+            // every window background came out black.
+            case 0x36: return (byte)(0x80 | (_crtc[0x36] & 0x1F));
 
             // --- the linear aperture -------------------------------------
             //

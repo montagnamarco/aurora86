@@ -52,11 +52,14 @@ public sealed class S3Accelerator : IIoDevice
     private ushort _command;                     // 0x9AE8
 
     /// <summary>
-    /// The raster operation, from 0xBAE8. It powers on as plain replacement,
-    /// because a zero here would mean "clear" and a driver that had not set
-    /// it yet would find every draw painting black.
+    /// The raster operation, from 0xBAE8: the mix in the low four bits and,
+    /// in bits 6-5, where the colour comes from -- the background register,
+    /// the foreground one, the processor or the screen. It powers on as
+    /// plain replacement in the foreground colour, because a zero here would
+    /// mean "clear" and a driver that had not set it yet would find every
+    /// draw painting black.
     /// </summary>
-    private ushort _mix = 0x07;
+    private ushort _mix = 0x27;
 
     /// <summary>The same for pixels the pattern leaves as background, from 0xB6E8.</summary>
     private ushort _backgroundMix = 0x07;
@@ -69,6 +72,13 @@ public sealed class S3Accelerator : IIoDevice
 
     /// <summary>Operations performed, which the tests read.</summary>
     public long OperationsPerformed { get; private set; }
+
+    /// <summary>
+    /// Diagnostics: every command as it executes, with the operation bits
+    /// and the rectangle it names. What a driver asks the engine to do is
+    /// the only evidence there is when the screen comes out wrong.
+    /// </summary>
+    public Action<ushort, int, int, int, int, ushort, ushort, ushort>? CommandTrace { get; set; }
 
     /// <summary>
     /// The same registers, reached through memory instead of I/O ports.
@@ -86,10 +96,111 @@ public sealed class S3Accelerator : IIoDevice
     /// </summary>
     public sealed class MemoryMappedRegisters(S3Accelerator engine) : IMemoryDevice
     {
-        public byte ReadByte(uint offset) => engine.ReadByte((ushort)offset);
+        private readonly Dictionary<uint, byte> _pendingLow = [];
 
+        public byte ReadByte(uint offset)
+        {
+            ushort word = engine.ReadMmioWord((ushort)(offset & 0xFFFE));
+            return (offset & 1) != 0 ? (byte)(word >> 8) : (byte)word;
+        }
+
+        public ushort ReadWord(uint offset) => engine.ReadMmioWord((ushort)(offset & 0xFFFE));
+
+        public uint ReadDword(uint offset) =>
+            (uint)(engine.ReadMmioWord((ushort)(offset & 0xFFFC)) | (engine.ReadMmioWord((ushort)((offset & 0xFFFC) + 2)) << 16));
+
+        // Bytes arrive low first, and every register here is sixteen bits
+        // wide or a pair of them: the low byte waits for its partner. Below
+        // 0x8000 is the image transfer area, where anything written is
+        // pixel data for the operation in progress.
         public void WriteByte(uint offset, byte value)
-            => engine.WriteByte((ushort)offset, value);
+        {
+            if (offset < 0x8000) { engine.PushDataByte(value); return; }
+            uint address = offset & 0xFFFE;
+            if ((offset & 1) == 0)
+            {
+                _pendingLow[address] = value;
+                return;
+            }
+            engine.WriteMmioWord((ushort)address, (ushort)(_pendingLow.GetValueOrDefault(address) | (value << 8)));
+        }
+
+        public void WriteWord(uint offset, ushort value)
+        {
+            if (offset < 0x8000) { engine.PushDataByte((byte)value); engine.PushDataByte((byte)(value >> 8)); return; }
+            engine.WriteMmioWord((ushort)(offset & 0xFFFE), value);
+        }
+
+        public void WriteDword(uint offset, uint value)
+        {
+            if (offset < 0x8000) { for (int i = 0; i < 4; i++) engine.PushDataByte((byte)(value >> (8 * i))); return; }
+            engine.WriteMmioWord((ushort)(offset & 0xFFFC), (ushort)value);
+            engine.WriteMmioWord((ushort)((offset & 0xFFFC) + 2), (ushort)(value >> 16));
+        }
+    }
+
+    /// <summary>
+    /// A register written through memory. Above 0x8200 the offset is the
+    /// port number and the register is the same one; from 0x8100 to 0x81FF
+    /// sit the Trio64's packed registers, pairs of 16-bit values at
+    /// doubleword addresses so that a driver sets a coordinate pair or a
+    /// width and height with one 32-bit write: current Y and X, destination
+    /// Y and X, the command, the colours, the mixes, the clip rectangle, the
+    /// pixel control and the two miscellaneous registers, the two axis
+    /// counts, the pattern position. The S3 Windows driver uses nothing
+    /// else for drawing.
+    /// </summary>
+    internal void WriteMmioWord(ushort offset, ushort value)
+    {
+        switch (offset)
+        {
+            case 0x8100: _currentY = value; return;
+            case 0x8102: _currentX = value; return;
+            case 0x8108: _destinationY = value; return;
+            case 0x810A: _destinationX = value; return;
+            case 0x8110: return;                        // error term: the line takes endpoints here
+            case 0x8118: _command = value; Execute(); return;
+            case 0x811A: return;                        // short stroke vectors
+            case 0x8120: _background = value; return;
+            case 0x8124: _foreground = value; return;
+            case 0x8128: _writeMask = value; return;
+            case 0x812C: _readMask = value; return;
+            case 0x8130: _colourCompare = value; return;
+            case 0x8134: _backgroundMix = value; return;
+            case 0x8136: _mix = value; return;
+            case 0x8138: _clipTop = (ushort)(value & 0x0FFF); return;
+            case 0x813A: _clipLeft = (ushort)(value & 0x0FFF); return;
+            case 0x813C: _clipBottom = (ushort)(value & 0x0FFF); return;
+            case 0x813E: _clipRight = (ushort)(value & 0x0FFF); return;
+            case 0x8140: _pixelControl = value; return;
+            case 0x8142: _multiMisc2 = (ushort)(value & 0x0FFF); return;
+            case 0x8144: _multiMisc = (ushort)(value & 0x0FFF); return;
+            case 0x8146: _readSelect = value & 0x0F; return;
+            case 0x8148: _height = value; return;       // ALT_PCNT: the minor count low, the major high
+            case 0x814A: _width = value; return;
+            case 0x814C: _patternY = value; return;      // ALT_PAT: Y low, X high, like the others
+            case 0x814E: _patternX = value; return;
+        }
+
+        // The high halves of 32-bit writes to the classic registers -- a
+        // driver writing its colour with a doubleword -- land on odd port
+        // numbers plus two, which no register answers to.
+        if (offset >= 0x8200 && (offset & 3) == 0 || offset is 0x82E8 or 0x86E8 or 0x8AE8 or 0x8EE8 or 0x92E8 or 0x96E8 or 0x9AE8 or 0x9EE8
+            or 0xA2E8 or 0xA6E8 or 0xAAE8 or 0xAEE8 or 0xB2E8 or 0xB6E8 or 0xBAE8 or 0xBEE8 or 0xE2E8 or 0xE2EA)
+            WriteRegister(offset, value);
+    }
+
+    internal ushort ReadMmioWord(ushort offset)
+    {
+        return offset switch
+        {
+            0x8100 => _currentY,
+            0x8102 => _currentX,
+            0x8138 => _clipTop, 0x813A => _clipLeft, 0x813C => _clipBottom, 0x813E => _clipRight,
+            0x8140 => _pixelControl, 0x8142 => _multiMisc2, 0x8144 => _multiMisc,
+            0x8148 => _height, 0x814A => _width,
+            _ => ReadRegister(offset),
+        };
     }
 
     /// <summary>The engine's register file, addressed as memory.</summary>
@@ -113,36 +224,77 @@ public sealed class S3Accelerator : IIoDevice
 
     public byte ReadByte(ushort port)
     {
-        // 0x9AE8 read is the status register, and only one bit of it matters
-        // to a driver: bit 9 says the engine is busy. Ours never is -- the
-        // operation completed before the write that started it returned --
-        // so a driver's wait loop finds it idle immediately, which is the
-        // fastest possible card.
-        if (port is 0x9AE8 or 0x9AE9)
-            return port == 0x9AE8 ? (byte)0x00 : (byte)0x00;
+        ushort word = ReadRegister((ushort)(port & ~1));
+        return (port & 1) != 0 ? (byte)(word >> 8) : (byte)word;
+    }
 
-        return 0xFF;
+    public ushort ReadWord(ushort port) => ReadRegister((ushort)(port & ~1));
+
+    /// <summary>
+    /// The registers a driver reads back. 0x9AE8 is the status: bit 9 says
+    /// the engine is busy, and ours never is -- the operation completed
+    /// before the write that started it returned -- so a wait loop finds it
+    /// idle at once. 0xBEE8 returns whichever multifunction register the
+    /// read-select register named, and the selection advances after each
+    /// read, as the Trio64 does; the S3 Windows driver reads a register
+    /// back at start-up to satisfy itself that the engine is there.
+    /// </summary>
+    private ushort ReadRegister(ushort port)
+    {
+        switch (port)
+        {
+            case 0x9AE8: return 0x0000;
+            case 0x82E8: return _currentY;
+            case 0x86E8: return _currentX;
+            case 0x96E8: return _width;
+            case 0xBEE8: return ReadMultifunction();
+            default: return 0xFFFF;
+        }
+    }
+
+    private ushort ReadMultifunction()
+    {
+        int selected = _readSelect;
+        _readSelect = (_readSelect + 1) & 0x0F;
+        return selected switch
+        {
+            0 => _height,
+            1 => _clipTop,
+            2 => _clipLeft,
+            3 => _clipBottom,
+            4 => _clipRight,
+            5 => _pixelControl,
+            6 => _multiMisc2,
+            7 => _multiMisc,
+            _ => 0,
+        };
     }
 
     public void WriteByte(ushort port, byte value)
     {
-        // The ports are sixteen bits and drivers write them as words, which
-        // arrive here as two bytes. The high half is kept until the low one
-        // completes the pair.
-        bool high = (port & 1) != 0;
+        // The ports are sixteen bits and drivers write them as words. A word
+        // written through the bus arrives here as two bytes, the low one
+        // first; the low half is kept until the high one completes the pair,
+        // and the register is written then, as the chip does.
         ushort address = (ushort)(port & ~1);
-
-        if (high)
+        if ((port & 1) == 0)
         {
-            _pendingHigh[address] = value;
+            _pendingLow[address] = value;
             return;
         }
 
-        ushort word = (ushort)(value | (_pendingHigh.GetValueOrDefault(address) << 8));
+        ushort word = (ushort)(_pendingLow.GetValueOrDefault(address) | (value << 8));
         WriteRegister(address, word);
     }
 
-    private readonly Dictionary<ushort, byte> _pendingHigh = [];
+    public void WriteWord(ushort port, ushort value) => WriteRegister((ushort)(port & ~1), value);
+
+    private readonly Dictionary<ushort, byte> _pendingLow = [];
+    private int _readSelect;
+    private ushort _multiMisc;
+    private ushort _multiMisc2;
+    private ushort _patternX;
+    private ushort _patternY;
 
     private void WriteRegister(ushort port, ushort value)
     {
@@ -174,13 +326,17 @@ public sealed class S3Accelerator : IIoDevice
             case 0xBEE8: WriteMultifunction(value); return;
 
             // 0xE2E8 is the pixel data port: everything the processor sends
-            // the engine arrives here. For a pattern that is eight bytes, one
-            // per row, and the port takes them a word at a time.
-            case 0xE2E8: LoadPatternWord(value); return;
+            // the engine arrives here, a word at a time, or a doubleword
+            // when the high half comes through 0xE2EA.
+            case 0xE2E8:
+            case 0xE2EA:
+                PushDataByte((byte)value);
+                PushDataByte((byte)(value >> 8));
+                return;
 
             // Writing the command register is what starts the operation. Every
             // other register is set up first and then this one fires.
-            case 0x9AE8: _command = value; _patternRow = 0; Execute(); return;
+            case 0x9AE8: _command = value; Execute(); return;
         }
     }
 
@@ -203,10 +359,19 @@ public sealed class S3Accelerator : IIoDevice
             // compare condition among other things.
             case 0xA: _pixelControl = (ushort)data; return;
 
+            case 0x0: _height = (ushort)data; return;   // MIN_AXIS_PCNT again, by another door
             case 0x1: _clipTop = (ushort)data; return;
             case 0x2: _clipLeft = (ushort)data; return;
             case 0x3: _clipBottom = (ushort)data; return;
             case 0x4: _clipRight = (ushort)data; return;
+
+            // The two miscellaneous registers and the read-select. Nothing
+            // here changes what is drawn, but a driver writes them and reads
+            // them back, and a card that answers with 0xFFFF is a card the
+            // driver decides is not there.
+            case 0xD: _multiMisc2 = (ushort)data; return;
+            case 0xE: _multiMisc = (ushort)data; return;
+            case 0xF: _readSelect = data & 0x0F; return;
         }
     }
 
@@ -221,12 +386,22 @@ public sealed class S3Accelerator : IIoDevice
     private void Execute()
     {
         int operation = (_command >> 13) & 7;
+        CommandTrace?.Invoke(_command, _currentX, _currentY, _width + 1, _height + 1, _foreground, _mix, _pixelControl);
+        _transfer = null;
+        _unitBytes = 0;
 
+        // The encoding is the 8514/A's, kept by every S3: 1 draws a line, 2
+        // fills a rectangle, 3 fills a polygon (a rectangle here: the
+        // polygon form differs only in how the edges are given), 6 copies
+        // a rectangle, 7 fills with a pattern taken from the screen. It
+        // used to say 2 was the line and 3 the fill, and a driver's every
+        // fill came out as a line along its top edge.
         switch (operation)
         {
-            case 2: DrawLine(); break;
-            case 3: FillRectangle(); break;
+            case 1: DrawLine(); break;
+            case 2 or 3: FillRectangle(); break;
             case 6: CopyRectangle(); break;
+            case 7: PatternFill(); break;
         }
 
         OperationsPerformed++;
@@ -239,74 +414,154 @@ public sealed class S3Accelerator : IIoDevice
     /// </summary>
     private void FillRectangle()
     {
-        // The command's bit 5 says which direction Y goes and bit 7 which way
-        // X goes. A driver filling a plain rectangle sets both to increasing;
-        // the other directions exist for the copy, where overlap matters.
+        // Bit 8 -- "PCDATA" -- says the pixels come from the processor: the
+        // engine takes the rectangle and then waits for data through the
+        // pixel transfer port or the image transfer area, painting as it
+        // arrives. It is how a driver uploads a brush, draws text from a
+        // glyph bitmap or copies an image in: the rectangle is the frame,
+        // the processor supplies what goes in it.
+        if ((_command & 0x0100) != 0)
+        {
+            _transfer = new Transfer(_currentX, _currentY, _width + 1, _height + 1,
+                                     (_command & 0x0020) != 0, (_command & 0x0080) != 0,
+                                     (_pixelControl & 0x00C0) == 0x0080);
+            return;
+        }
+
         int width = _width + 1;
         int height = _height + 1;
 
         for (int y = 0; y < height; y++)
             for (int x = 0; x < width; x++)
+                PutPixel(_currentX + x, _currentY + y, ForegroundSource(_currentX + x, _currentY + y), _mix);
+    }
+
+    /// <summary>
+    /// The colour a foreground pixel takes: bits 6-5 of the mix register
+    /// say whether it is the background colour, the foreground colour, the
+    /// processor's data or what is already on the screen at the source.
+    /// </summary>
+    private ushort ForegroundSource(int x, int y) => ((_mix >> 5) & 3) switch
+    {
+        0 => _background,
+        3 => GetPixel(x, y),
+        _ => _foreground,
+    };
+
+    private ushort BackgroundSource(int x, int y) => ((_backgroundMix >> 5) & 3) switch
+    {
+        1 => _foreground,
+        3 => GetPixel(x, y),
+        _ => _background,
+    };
+
+    // --- data from the processor ------------------------------------------------
+
+    /// <summary>
+    /// A rectangle waiting for its pixels from the processor. The cursor
+    /// walks it in the command's directions, one pixel per unit of data in
+    /// colour mode and one per bit in mask mode, where each bit picks the
+    /// foreground mix or the background one -- which is how a font glyph
+    /// is drawn in one pass.
+    /// </summary>
+    private sealed class Transfer(int left, int top, int width, int height, bool rightwards, bool downwards, bool mask)
+    {
+        public readonly bool Mask = mask;
+        private int _column, _row;
+
+        public bool Done => _row >= height;
+        public bool RowStarting => _column == 0;
+
+        /// <summary>The next pixel's position, or null when the rectangle is full.</summary>
+        public (int X, int Y)? Next()
+        {
+            if (Done) return null;
+            int x = rightwards ? left + _column : left - _column;
+            int y = downwards ? top + _row : top - _row;
+            if (++_column >= width) { _column = 0; _row++; }
+            return (x, y);
+        }
+    }
+
+    private Transfer? _transfer;
+    private uint _unit;
+    private int _unitBytes;
+
+    /// <summary>
+    /// The width of one unit of processor data, in bytes: bits 10-9 of the
+    /// command say whether the driver sends bytes, words or doublewords.
+    /// Each row of the rectangle starts on a fresh unit; whatever is left of
+    /// the previous one is thrown away, which is the padding a driver's
+    /// bitmap rows carry.
+    /// </summary>
+    private int UnitBytes => ((_command >> 9) & 3) switch { 0 => 1, 1 => 2, _ => 4 };
+
+    /// <summary>
+    /// One byte of data from the processor, by whichever door it came
+    /// through. Bytes are gathered into a unit and the unit is consumed
+    /// whole; bit 12 of the command -- BYTSEQ -- says whether the low byte
+    /// of a unit is the first pixel or the last.
+    /// </summary>
+    internal void PushDataByte(byte value)
+    {
+        if (_transfer is null || _transfer.Done) return;
+
+        _unit |= (uint)value << (8 * _unitBytes);
+        if (++_unitBytes < UnitBytes) return;
+
+        uint unit = _unit;
+        int bytes = _unitBytes;
+        _unit = 0;
+        _unitBytes = 0;
+        ConsumeUnit(unit, bytes);
+    }
+
+    private void ConsumeUnit(uint unit, int bytes)
+    {
+        bool lowFirst = (_command & 0x1000) != 0;
+        int pixelBytes = _transfer!.Mask ? 1 : BytesPerPixel;
+        uint pixel = 0;
+        int pixelFilled = 0;
+
+        for (int i = 0; i < bytes; i++)
+        {
+            int index = lowFirst ? i : bytes - 1 - i;
+            byte b = (byte)(unit >> (8 * index));
+
+            if (_transfer.Mask)
             {
-                // With a pattern, each pixel takes the foreground or the
-                // background colour according to a bit of an 8x8 motif tiled
-                // across the screen. It is how a window's grey background,
-                // a hatched fill or a dotted line get drawn in one operation
-                // instead of two passes with a mask between them.
-                //
-                // The tiling is anchored to the screen rather than to the
-                // rectangle, which is what makes two adjoining fills line up
-                // instead of showing a seam.
-                bool set = PatternBitAt(_currentX + x, _currentY + y);
-
-                PutPixel(_currentX + x, _currentY + y,
-                         set ? _foreground : _background,
-                         set ? _mix : _backgroundMix);
+                for (int bit = 7; bit >= 0; bit--)
+                {
+                    if (!PlotFromProcessor(((b >> bit) & 1) != 0, null)) return;
+                    if (_transfer.RowStarting) return;      // the row ended: the rest of the unit is padding
+                }
+                continue;
             }
+
+            pixel |= (uint)b << (8 * pixelFilled);
+            if (++pixelFilled < pixelBytes) continue;
+
+            bool more = PlotFromProcessor(true, (ushort)pixel);
+            pixel = 0;
+            pixelFilled = 0;
+            if (!more || _transfer.RowStarting) return;
+        }
     }
 
-    /// <summary>
-    /// Whether the 8x8 pattern has its bit set at this screen position.
-    ///
-    /// A pattern of all ones -- which is what a driver leaves when it is not
-    /// using one -- makes every pixel the foreground, so a plain fill comes
-    /// out of the same code with nothing special about it.
-    /// </summary>
-    private bool PatternBitAt(int x, int y)
-        => ((_pattern[y & 7] >> (7 - (x & 7))) & 1) != 0;
-
-    /// <summary>
-    /// The 8x8 pattern, one byte per row. All ones by default: a driver that
-    /// has not set one is drawing solid, and a zero pattern would make every
-    /// fill paint the background colour instead.
-    /// </summary>
-    private readonly byte[] _pattern = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
-
-    /// <summary>Which row of the pattern the next word through the data port fills.</summary>
-    private int _patternRow;
-
-    /// <summary>
-    /// Takes two rows of the pattern from one word through the data port.
-    ///
-    /// The counter is reset by the command register rather than by any
-    /// separate signal, which is the sort of implicit sequencing that makes
-    /// these registers awkward to read and cheap to build: the driver writes
-    /// the command, then the data, and the engine knows where it is by
-    /// counting.
-    /// </summary>
-    private void LoadPatternWord(ushort value)
+    /// <summary>Paints the next pixel of the transfer; false when the rectangle is full.</summary>
+    private bool PlotFromProcessor(bool foreground, ushort? data)
     {
-        if (_patternRow >= 8) return;
+        if (_transfer!.Next() is not { } at) return false;
 
-        _pattern[_patternRow++] = (byte)(value >> 8);
-        if (_patternRow < 8) _pattern[_patternRow++] = (byte)value;
-    }
+        if (data is { } colour && ((_mix >> 5) & 3) == 2)
+            PutPixel(at.X, at.Y, colour, _mix);
+        else if (foreground)
+            PutPixel(at.X, at.Y, ForegroundSource(at.X, at.Y), _mix);
+        else
+            PutPixel(at.X, at.Y, BackgroundSource(at.X, at.Y), _backgroundMix);
 
-    /// <summary>Puts the pattern back to solid, which is where a driver leaves it.</summary>
-    public void ResetPattern()
-    {
-        Array.Fill(_pattern, (byte)0xFF);
-        _patternRow = 0;
+        if (_transfer.Done) _transfer = null;
+        return _transfer is not null;
     }
 
     /// <summary>
@@ -342,6 +597,29 @@ public sealed class S3Accelerator : IIoDevice
     }
 
     /// <summary>
+    /// The pattern fill: an 8x8 tile of pixels already on the screen,
+    /// repeated over the destination rectangle. A Windows driver keeps its
+    /// brushes off-screen as pixels and paints a window's background with
+    /// one of these, which is why the pattern comes from video memory and
+    /// not from the data port. The source is where the current position
+    /// points, the destination where the destination registers point, and
+    /// the tile is anchored to the screen rather than to the rectangle, so
+    /// that two adjoining fills line up instead of showing a seam.
+    /// </summary>
+    private void PatternFill()
+    {
+        int width = _width + 1;
+        int height = _height + 1;
+
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+            {
+                ushort pixel = GetPixel(_currentX + ((_destinationX + x) & 7), _currentY + ((_destinationY + y) & 7));
+                PutPixel(_destinationX + x, _destinationY + y, pixel, _mix);
+            }
+    }
+
+    /// <summary>
     /// Draws a line, by Bresenham's algorithm -- which is what the hardware
     /// implements too, since it needs no division and no fractions.
     ///
@@ -364,7 +642,7 @@ public sealed class S3Accelerator : IIoDevice
 
         for (int i = 0; i <= steps; i++)
         {
-            PutPixel(x, y, _foreground);
+            PutPixel(x, y, ForegroundSource(x, y), _mix);
             if (horizontal) x += step; else y += step;
         }
     }
@@ -453,24 +731,32 @@ public sealed class S3Accelerator : IIoDevice
     /// was underneath exactly as it was. No saving of the background, no
     /// second buffer.
     /// </summary>
+    /// <summary>
+    /// The sixteen mixes of the 8514/A, in its own numbering, which every
+    /// S3 kept: 3 leaves the destination alone, 5 is the exclusive or of the
+    /// rubber band, 7 the plain replacement. A Windows driver draws text
+    /// with the background mix set to 3, so that only the glyph's own
+    /// pixels touch the screen; a table in another order painted the
+    /// background too, and every word came out as a black block.
+    /// </summary>
     private static ushort ApplyMix(ushort source, ushort destination, ushort mix) => (mix & 0x0F) switch
     {
-        0x0 => 0,                                            // clear
-        0x1 => (ushort)(destination & source),
-        0x2 => (ushort)(destination & ~source),
-        0x3 => source,
-        0x4 => (ushort)(~destination & source),
+        0x0 => (ushort)~destination,
+        0x1 => 0,                                            // clear
+        0x2 => 0xFFFF,                                       // set
+        0x3 => destination,                                  // leave it alone
+        0x4 => (ushort)~source,
         0x5 => (ushort)(destination ^ source),               // the rubber band
-        0x6 => (ushort)(destination | source),
+        0x6 => (ushort)~(destination ^ source),
         0x7 => source,                                       // replace: the common case
-        0x8 => (ushort)~(destination | source),
-        0x9 => (ushort)~(destination ^ source),
-        0xA => destination,                                  // leave it alone
-        0xB => (ushort)(destination | ~source),
-        0xC => (ushort)~source,
-        0xD => (ushort)(~destination | source),
-        0xE => (ushort)~(destination & source),
-        _ => 0xFFFF,                                         // set
+        0x8 => (ushort)(~source | ~destination),
+        0x9 => (ushort)(source | ~destination),
+        0xA => (ushort)(~source | destination),
+        0xB => (ushort)(source | destination),
+        0xC => (ushort)(source & destination),
+        0xD => (ushort)(source & ~destination),
+        0xE => (ushort)(~source & destination),
+        _ => (ushort)(~source & ~destination),
     };
 
     private ushort GetPixel(int x, int y)

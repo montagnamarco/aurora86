@@ -258,3 +258,33 @@ public class MachineSnapshotRedirectorTests
         }
     }
 }
+
+/// <summary>
+/// What a snapshot's memory does and does not carry.
+/// </summary>
+public class SnapshotRamTests
+{
+    /// <summary>
+    /// The ROM is the emulator's, not the snapshot's. A snapshot taken by
+    /// an older build and restored into a newer one used to bring the old
+    /// BIOS back with it, so a fix in the ROM was invisible to every bench
+    /// that started from a saved state.
+    /// </summary>
+    [Fact]
+    public void RestoringRamLeavesTheRomAlone()
+    {
+        using var bus = new Aurora386.Core.Memory.PhysicalMemoryBus(1024 * 1024, 1024 * 1024);
+        bus.MapRom(0xF0000, new byte[] { 0x11, 0x22, 0x33 });
+        bus.WriteByte(0x1000, 0xAA);
+
+        byte[] captured = bus.CaptureRam();
+        captured[0xF0000] = 0x99;              // an older firmware in the snapshot
+        captured[0x1000] = 0xBB;               // and different RAM
+
+        bus.RestoreRam(captured);
+
+        Assert.Equal(0x11, bus.ReadByte(0xF0000));
+        Assert.Equal(0xBB, bus.ReadByte(0x1000));
+    }
+}
+

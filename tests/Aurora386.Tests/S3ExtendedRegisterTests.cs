@@ -117,12 +117,13 @@ public class S3ExtendedRegisterTests
     [Fact]
     public void TheCardReportsItsMemorySize()
     {
-        // Bits 6-5 of register 0x36 say how much: 2 means two megabytes,
-        // which is what a Trio64 shipped with and what 1024x768 at 16-bit
-        // colour needs.
+        // Bits 7-5 of register 0x36 say how much, as a three-bit code: 100
+        // means two megabytes, which is what a Trio64 shipped with and what
+        // 1024x768 at 16-bit colour needs. (010 would be three, and a driver
+        // that believed it would put its brushes where no memory is.)
         using Machine machine = Started();
 
-        Assert.Equal(2, (Read(machine, 0x36) >> 5) & 3);
+        Assert.Equal(4, (Read(machine, 0x36) >> 5) & 7);
     }
 
     [Fact]

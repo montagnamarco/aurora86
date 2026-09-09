@@ -477,3 +477,82 @@ public class DacWidthWriteTests
         Assert.Equal((byte)0x20, machine.VideoRegisters.GetPaletteColor(1).R);
     }
 }
+
+/// <summary>
+/// The VBE mode set's port writes, done by the ROM with the processor so
+/// that a monitor shadowing the ports sees them.
+/// </summary>
+public class VesaRomTests
+{
+    private static Machine Started()
+    {
+        var machine = new Machine();
+        machine.RunInstructions(3000);
+        machine.Cpu.State.Halted = false;
+        return machine;
+    }
+
+    /// <summary>
+    /// Runs a real-mode program through the processor, so that the ROM's
+    /// own code -- not just the native handler -- takes part.
+    /// </summary>
+    private static void Run(Machine machine, byte[] program)
+    {
+        uint code = 0x20100;
+        for (int i = 0; i < program.Length; i++) machine.Memory.WriteByte(code + (uint)i, program[i]);
+        machine.Memory.WriteByte(code + (uint)program.Length, 0xF4);   // HLT
+        machine.Cpu.SetSegment(SegReg.Cs, 0x2000);
+        machine.Cpu.State.Eip = 0x0100;
+        machine.Cpu.SetSegment(SegReg.Ss, 0x3000);
+        machine.Cpu.State.Esp = 0xFFFE;
+        machine.Cpu.State.Halted = false;
+        for (int i = 0; i < 20000 && !machine.Cpu.State.Halted; i++) machine.RunInstructions(1);
+        Assert.True(machine.Cpu.State.Halted, "the program did not reach its HLT");
+    }
+
+    /// <summary>
+    /// A VBE mode set programs the standard VGA registers through the
+    /// ports, as a card's BIOS does, and not only the native mode state. A
+    /// monitor that shadows the ports learns of the change only that way:
+    /// Windows' virtual display device decides from its copy of graphics
+    /// controller register 6 which pages the adapter decodes, and after
+    /// BIOS mode 6 that copy said B8000h until the VBE mode set corrected
+    /// it -- which it did not, and the S3 driver's engine registers at
+    /// A8000h were mapped to nothing.
+    /// </summary>
+    [Fact]
+    public void AVbeModeSetProgramsTheGraphicsControllerThroughThePorts()
+    {
+        using Machine machine = Started();
+
+        Run(machine, [0xB8, 0x06, 0x00, 0xCD, 0x10]);                    // MOV AX,0006h / INT 10h
+        Assert.Equal(0x0F, machine.VideoRegisters.Graphics(6));          // graphics, decoded at B8000h
+
+        Run(machine, [0xB8, 0x02, 0x4F, 0xBB, 0x03, 0x81, 0xCD, 0x10]);  // MOV AX,4F02h / MOV BX,8103h / INT 10h
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.Equal((ushort)0x103, machine.VideoRegisters.VesaMode!.Value.Number);
+        Assert.Equal(0x05, machine.VideoRegisters.Graphics(6));          // graphics, decoded at A0000h, 64 KB
+        Assert.Equal(0x0E, machine.VideoRegisters.Sequencer(4));         // chain 4, one byte per pixel
+
+        Run(machine, [0xB8, 0x02, 0x4F, 0xBB, 0x02, 0x01, 0xCD, 0x10]);  // mode 102h: planar
+        Assert.Equal(0x05, machine.VideoRegisters.Graphics(6));
+        Assert.Equal(0x06, machine.VideoRegisters.Sequencer(4));
+
+        Run(machine, [0xB8, 0x02, 0x4F, 0xBB, 0x03, 0x00, 0xCD, 0x10]);  // back to text through VBE
+        Assert.Null(machine.VideoRegisters.VesaMode);
+        Assert.Equal(0x0E, machine.VideoRegisters.Graphics(6));
+    }
+
+    [Fact]
+    public void TheVbeModeSetPreservesTheRegistersForTheNativeHandler()
+    {
+        using Machine machine = Started();
+
+        // 4F03h afterwards must still see the mode the native handler set,
+        // which it only does if AX and BX reached it intact.
+        Run(machine, [0xB8, 0x02, 0x4F, 0xBB, 0x01, 0x41, 0xCD, 0x10,    // 4F02h, mode 4101h
+                      0xB8, 0x03, 0x4F, 0xCD, 0x10]);                    // 4F03h
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.Equal(0x4101, machine.Cpu.State.Bx);
+    }
+}
