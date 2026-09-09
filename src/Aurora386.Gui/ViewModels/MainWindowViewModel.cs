@@ -107,7 +107,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _audio = new AudioOutput(Session);
         _audio.Start();
 
-        AttachDefaultHardDisk();
+        // The machine that was open last, if it is still where it was; the
+        // default disk otherwise.
+        if (!TryReopenLastVm()) AttachDefaultHardDisk();
 
         // Four refreshes a second is enough for a human to read, and cheap
         // enough that it never competes with the emulation thread.
@@ -645,6 +647,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         RefreshDriveList();
         Session.Start();
+        RememberVm(folder);
         StatusText = $"Opened {configuration.Name}";
     }
 
@@ -700,7 +703,131 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _vmFolder = folder;
         _vmConfiguration = configuration;
+        RememberVm(folder);
         StatusText = $"Saved {configuration.Name} to {Path.GetFileName(folder)}";
+    }
+
+    /// <summary>
+    /// Saves the machine's whole state -- memory, processor, devices, screen
+    /// -- to a file: in the machine's own folder, under snapshot/, when it
+    /// has one, and wherever is chosen otherwise.
+    ///
+    /// The point is the ten minutes a boot into Windows costs. A state saved
+    /// at the desktop comes back in a fraction of a second, and an
+    /// experiment that needs the same starting point twenty times gets it
+    /// twenty times for the price of one boot.
+    /// </summary>
+    [RelayCommand]
+    private async Task SaveState()
+    {
+        string? path;
+        if (_vmFolder is not null)
+        {
+            string folder = Path.Combine(_vmFolder, "snapshot");
+            Directory.CreateDirectory(folder);
+            path = Path.Combine(folder, $"{DateTime.Now:yyyyMMdd-HHmmss}.state");
+        }
+        else
+        {
+            if (PickSaveAsync is null) return;
+            path = await PickSaveAsync("Save the machine's state", "machine.state");
+            if (path is null) return;
+        }
+
+        // Paused, not stopped: the emulation thread keeps its place and the
+        // capture sees a machine between two instructions, not one halfway
+        // through a batch.
+        bool wasRunning = Session.IsRunning;
+        Session.Pause();
+        try
+        {
+            Session.WithMachine(machine => Aurora386.Core.MachineSnapshot.Capture(machine).Save(path));
+            StatusText = $"State saved to {Path.GetFileName(path)}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not save the state: {ex.Message}";
+        }
+        finally
+        {
+            if (wasRunning) Session.Resume();
+        }
+    }
+
+    /// <summary>
+    /// Puts a saved state back into the machine. The disks are whatever is
+    /// attached now, not what was attached then: a state carries memory and
+    /// devices, and expects to find the same disks it left.
+    /// </summary>
+    [RelayCommand]
+    private async Task RestoreState()
+    {
+        if (PickFileAsync is null) return;
+
+        string? path = await PickFileAsync("Restore a saved state", ["state"]);
+        if (path is null) return;
+
+        bool wasRunning = Session.IsRunning;
+        Session.Pause();
+        try
+        {
+            Session.WithMachine(machine => Aurora386.Core.MachineSnapshot.Load(path).RestoreTo(machine));
+            RefreshDriveList();
+            StatusText = $"State restored from {Path.GetFileName(path)}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not restore the state: {ex.Message}";
+        }
+        finally
+        {
+            if (wasRunning) Session.Resume();
+        }
+    }
+
+    private static void RememberVm(string folder)
+    {
+        UserSettings settings = UserSettings.Load();
+        settings.LastVmFolder = folder;
+        settings.Save();
+    }
+
+    /// <summary>
+    /// Opens the machine that was open when the emulator last closed.
+    ///
+    /// Only when its folder is still there with a vm.json in it, and only if
+    /// it builds: a machine whose disk has since been deleted is not a reason
+    /// for the window not to appear, so any failure here means "no", and the
+    /// default disk is attached instead.
+    /// </summary>
+    private bool TryReopenLastVm()
+    {
+        string? folder = UserSettings.Load().LastVmFolder;
+        if (folder is null || !File.Exists(Path.Combine(folder, VmConfiguration.FileName)))
+            return false;
+
+        try
+        {
+            VmConfiguration configuration = VmConfiguration.Load(folder);
+            Session.Factory = configuration.BuildMachine;
+            Session.Reset();
+            HookMachineEvents();
+
+            _vmFolder = folder;
+            _vmConfiguration = configuration;
+            CpuModel = configuration.Cpu;
+            MouseInterface = configuration.Mouse;
+            RefreshDriveList();
+            StatusText = $"Opened {configuration.Name}";
+            return true;
+        }
+        catch (Exception)
+        {
+            Session.Factory = () => new Aurora386.Core.Machine();
+            Session.Reset();
+            HookMachineEvents();
+            return false;
+        }
     }
 
     /// <summary>
