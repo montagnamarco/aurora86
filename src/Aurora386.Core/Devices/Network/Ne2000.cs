@@ -105,8 +105,15 @@ public sealed class Ne2000 : IIoDevice
     private readonly byte[] _registers = new byte[4 * 16];
     private readonly byte[] _macAddress = new byte[6];
     private readonly InterruptController _interrupts;
-    private readonly ushort _basePort;
-    private readonly int _irqLine;
+    private ushort _basePort;
+    private int _irqLine;
+    private IoBus? _io;
+
+    public ushort BasePort => _basePort;
+    public int IrqLine => _irqLine;
+
+    /// <summary>Whether the card answers on the bus: a Plug and Play card can be switched off.</summary>
+    public bool Enabled { get; private set; } = true;
 
     private byte _commandRegister = CmdStop;
     private int _remoteAddress;
@@ -144,7 +151,21 @@ public sealed class Ne2000 : IIoDevice
 
     public ReadOnlySpan<byte> MacAddress => _macAddress;
 
-    public void Register(IoBus io) => io.Register(_basePort, 0x20, this);
+    public void Register(IoBus io)
+    {
+        _io = io;
+        if (Enabled) io.Register(_basePort, 0x20, this);
+    }
+
+    /// <summary>Moves the card to the address and interrupt Plug and Play configuration gave it.</summary>
+    public void Relocate(ushort basePort, int irqLine, bool enabled)
+    {
+        if (Enabled) _io?.Unregister(_basePort, 0x20, this);
+        _basePort = basePort;
+        _irqLine = irqLine;
+        Enabled = enabled;
+        if (Enabled) _io?.Register(_basePort, 0x20, this);
+    }
 
     /// <summary>
     /// Returns the card to its power-on state.

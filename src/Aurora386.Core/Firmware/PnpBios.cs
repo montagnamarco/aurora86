@@ -30,8 +30,8 @@ public sealed class PnpBios
     private const ushort InvalidHandle = 0x83;
     private const ushort SystemNotDocked = 0x87;
 
-    /// <summary>The read data port ISA Plug and Play cards answer on, once there are any.</summary>
-    public const ushort IsaReadDataPort = 0x203;
+    /// <summary>The read data port ISA Plug and Play cards answer on.</summary>
+    public const ushort IsaReadDataPort = Devices.IsaPnp.IsaPnpBus.DefaultReadDataPort;
 
     private readonly Machine _machine;
     private readonly List<byte[]> _nodes;
@@ -109,7 +109,7 @@ public sealed class PnpBios
     private ushort GetIsaConfiguration(CpuNs.Cpu cpu, uint buffer)
     {
         cpu.WriteLinearByte(buffer + 0, 0x01);               // structure revision
-        cpu.WriteLinearByte(buffer + 1, 0x00);               // cards found: none yet
+        cpu.WriteLinearByte(buffer + 1, (byte)_machine.IsaPlugAndPlay.AssignedCount);   // cards given a number so far
         cpu.WriteLinearWord(buffer + 2, IsaReadDataPort);
         cpu.WriteLinearWord(buffer + 4, 0x0000);             // reserved
         return Success;

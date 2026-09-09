@@ -44,6 +44,17 @@ public sealed class IoBus
     }
 
     /// <summary>
+    /// Takes a device off a range of ports, which then read as an empty
+    /// bus. A Plug and Play card moved to a new address must stop answering
+    /// at the old one, or two cards end up at the address it left.
+    /// </summary>
+    public void Unregister(ushort firstPort, int count, IIoDevice device)
+    {
+        for (int i = 0; i < count; i++)
+            if (ReferenceEquals(_devices[firstPort + i], device)) _devices[firstPort + i] = null;
+    }
+
+    /// <summary>
     /// Raised on every port access, for diagnostics.
     ///
     /// It exists because a driver looking for its card does it by reading and

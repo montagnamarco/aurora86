@@ -7,6 +7,7 @@ using Aurora386.Core.Devices.Interrupts;
 using Aurora386.Core.Devices.Timing;
 using Aurora386.Core.Devices.System;
 using Aurora386.Core.Devices.Network;
+using Aurora386.Core.Devices.IsaPnp;
 using Aurora386.Core.Devices.Audio;
 using Aurora386.Core.Devices.Video;
 using Aurora386.Core.Dos;
@@ -87,6 +88,7 @@ public sealed partial class Machine : IDisposable
     public PointingDeviceServices PointingDevice { get; }
     public XmsManager Xms { get; }
     public PnpBios PlugAndPlay { get; }
+    public IsaPnpBus IsaPlugAndPlay { get; }
 
     /// <summary>
     /// The software coprocessor. This machine has no 80387, so floating-point
@@ -210,6 +212,14 @@ public sealed partial class Machine : IDisposable
         // host's network until somebody deliberately asks it to.
         Network = new Ne2000(Interrupts, new LoopbackBackend());
         Network.Register(Io);
+
+        // Both cards are Plug and Play as well as being at their usual
+        // addresses: DOS finds them where it expects, and Windows 95 finds
+        // them by asking the bus, and may move them.
+        IsaPlugAndPlay = new IsaPnpBus();
+        IsaPlugAndPlay.Add(IsaPnpCards.ForSoundBlaster16(SoundBlaster));
+        IsaPlugAndPlay.Add(IsaPnpCards.ForNe2000(Network));
+        IsaPlugAndPlay.Register(Io);
 
         Cpu = new CpuNs.Cpu(Memory, Io) { Interrupts = Interrupts };
 

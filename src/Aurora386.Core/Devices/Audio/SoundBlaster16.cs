@@ -47,7 +47,12 @@ public sealed class SoundBlaster16 : IIoDevice
     public Opl3 Fm { get; }
 
     /// <summary>Base I/O port; jumper-selectable on real cards, 0x220 almost always.</summary>
-    public ushort BasePort { get; }
+    public ushort BasePort { get; private set; }
+
+    /// <summary>Whether the card answers on the bus at all: a Plug and Play card can be switched off.</summary>
+    public bool Enabled { get; private set; } = true;
+
+    private IoBus? _io;
 
     /// <summary>The IRQ line the card asserts when a DMA block completes.</summary>
     public int Irq { get; set; } = 5;
@@ -176,13 +181,35 @@ public sealed class SoundBlaster16 : IIoDevice
 
     public void Register(IoBus io)
     {
+        _io = io;
+
         // The card's own block. 0x220-0x223 are the FM registers mirrored
         // here; 0x224/0x225 the mixer; the rest the DSP.
-        io.Register(BasePort, 16, this);
+        if (Enabled) io.Register(BasePort, 16, this);
 
         // The mixer and FM chip also answer at their traditional addresses,
         // which is where software that predates the SB16 looks for them.
         Fm.Register(io);
+    }
+
+    /// <summary>
+    /// Moves the card, the way Plug and Play configuration does: off the
+    /// ports it had, onto the new ones, with the interrupt and DMA channels
+    /// it was given. The mixer's own copy of those follows, since a driver
+    /// reads them back from there to learn what the card was set to.
+    /// </summary>
+    public void Relocate(ushort basePort, int irq, int dma8, int dma16, bool enabled)
+    {
+        if (Enabled) _io?.Unregister(BasePort, 16, this);
+        BasePort = basePort;
+        Irq = irq;
+        Dma8 = dma8;
+        Dma16 = dma16;
+        Mixer.Irq = irq;
+        Mixer.Dma8 = dma8;
+        Mixer.Dma16 = dma16;
+        Enabled = enabled;
+        if (Enabled) _io?.Register(BasePort, 16, this);
     }
 
     // --- port interface --------------------------------------------------------
