@@ -76,6 +76,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public Func<string, IReadOnlyList<string>, Task<string?>>? PickFileAsync { get; set; }
 
     /// <summary>
+    /// Asks the user where to put a file being created, rather than which
+    /// existing one to open. A separate callback because it is a different
+    /// dialogue with different rules: it may name a file that does not exist,
+    /// and it is the place that warns about overwriting one that does.
+    /// </summary>
+    public Func<string, string, Task<string?>>? PickSaveAsync { get; set; }
+
+    /// <summary>
     /// Asks the user for a folder. Supplied by the window, which is the only
     /// part that knows how to put a picker on the screen.
     /// </summary>
@@ -580,6 +588,45 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             StatusText = $"Could not share that folder: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Makes a new hard disk image and attaches it.
+    ///
+    /// Formatted rather than blank, because blank is the answer to a
+    /// different question. A blank image is what somebody wants who is about
+    /// to run FDISK to learn how partitioning works; a formatted one is what
+    /// somebody wants who needs a second drive, and that is almost always the
+    /// question being asked. FORMAT is still there for anyone who wants to do
+    /// it themselves.
+    /// </summary>
+    [RelayCommand]
+    private async Task CreateDisk()
+    {
+        if (PickSaveAsync is null) return;
+
+        string? path = await PickSaveAsync("Create a hard disk image", "disk.img");
+        if (path is null) return;
+
+        try
+        {
+            const long size = 512L * 1024 * 1024;
+            DiskImageBuilder.CreateFat16(path, size, "AURORA");
+
+            byte drive = NextHardDiskNumber();
+            AttachImage(path, drive, readOnly: false);
+            RefreshDriveList();
+
+            // The letter is not ours to decide: DOS assigns it, counting the
+            // partitions it finds. Saying which disk it is avoids promising a
+            // letter that turns out to be somebody else's.
+            StatusText = $"{Path.GetFileName(path)} created and attached as disk {drive:X2}h "
+                       + "-- restart the guest for DOS to give it a letter";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not create that image: {ex.Message}";
         }
     }
 

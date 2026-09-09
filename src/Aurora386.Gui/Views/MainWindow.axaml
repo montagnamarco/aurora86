@@ -193,6 +193,15 @@
           </StackPanel>
         </Button>
 
+        <!-- A new disk: the stack of platters with a plus beside it. -->
+        <Button Classes="tool" Command="{Binding CreateDiskCommand}"
+                ToolTip.Tip="Make a new hard disk image, formatted and ready, and attach it">
+          <StackPanel>
+            <Path Classes="icon" Data="M 3,7 A 6,3 0 1 0 15,7 A 6,3 0 1 0 3,7 M 3,7 L 3,15 A 6,3 0 0 0 15,15 L 15,7 M 19,9 L 19,17 M 15,13 L 23,13" />
+            <TextBlock Classes="toollabel" Text="New disk" />
+          </StackPanel>
+        </Button>
+
         <!-- Eject: the triangle-over-bar found on every optical drive. -->
         <Button Classes="tool" ToolTip.Tip="Take out a floppy or the disc">
           <StackPanel>

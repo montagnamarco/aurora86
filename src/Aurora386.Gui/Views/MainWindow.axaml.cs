@@ -100,6 +100,7 @@ public partial class MainWindow : Window
         if (ViewModel is null) return;
 
         ViewModel.PickFileAsync = PickFileAsync;
+        ViewModel.PickSaveAsync = PickSaveAsync;
         ViewModel.PickFolderAsync = PickFolderAsync;
         ViewModel.SaveScreenshotAsync = SaveScreenshotAsync;
         ViewModel.ShowDebugger = ShowDebugger;
@@ -406,6 +407,30 @@ public partial class MainWindow : Window
             new FolderPickerOpenOptions { Title = title, AllowMultiple = false });
 
         return chosen.Count > 0 ? chosen[0].Path.LocalPath : null;
+    }
+
+    /// <summary>
+    /// Asks where to put a file about to be created. The platform's own save
+    /// dialogue handles the awkward parts -- warning about overwriting,
+    /// appending the extension, refusing a folder the user cannot write to.
+    /// </summary>
+    private async Task<string?> PickSaveAsync(string title, string suggestedName)
+    {
+        IStorageProvider? storage = StorageProvider;
+        if (storage is null) return null;
+
+        IStorageFile? chosen = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = title,
+            SuggestedFileName = suggestedName,
+            DefaultExtension = "img",
+            FileTypeChoices =
+            [
+                new FilePickerFileType("Disk images") { Patterns = ["*.img"] },
+            ],
+        });
+
+        return chosen?.Path.LocalPath;
     }
 
     private async Task<string?> PickFileAsync(string title, IReadOnlyList<string> extensions)
