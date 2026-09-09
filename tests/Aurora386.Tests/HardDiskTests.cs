@@ -37,13 +37,16 @@ public class HardDiskTests : IDisposable
     }
 
     [Fact]
-    public void GeometryStaysWithinTheChsLimits()
+    public void GeometryStaysWithinTheAtaLimitsAndIsPresentedWithinTheBiosOnes()
     {
-        // Beyond 1024 cylinders the BIOS's CHS addressing simply cannot
-        // reach: the cylinder field is ten bits wide. Cap the geometry rather
-        // than producing one that describes sectors nothing can address.
+        // The disk may have up to 16383 cylinders, the most an IDE drive
+        // reports; the BIOS's CHS field has ten bits, so what it presents
+        // is translated to 1024 cylinders and more heads.
         HardDiskImage.Geometry g = HardDiskImage.Geometry.ForSize(2L * 1024 * 1024 * 1024);
-        Assert.True(g.Cylinders <= 1024);
+        Assert.Equal(4161, g.Cylinders);                 // 2 GiB over 16 x 63 x 512
+        HardDiskImage.Geometry presented = g.Presented();
+        Assert.Equal((520, 128, 63), (presented.Cylinders, presented.Heads, presented.SectorsPerTrack));
+        Assert.True(presented.TotalSectors <= g.TotalSectors);
     }
 
     [Fact]

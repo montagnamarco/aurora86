@@ -21,6 +21,34 @@ public static class HardDiskImage
     public readonly record struct Geometry(int Cylinders, int Heads, int SectorsPerTrack)
     {
         public long TotalSectors => (long)Cylinders * Heads * SectorsPerTrack;
+
+        /// <summary>
+        /// The geometry the BIOS shows for this disk. The CHS interface has
+        /// ten bits for the cylinder, so past 1024 the cylinders are halved
+        /// and the heads doubled, as often as it takes, up to 255 heads --
+        /// the "bit shift" translation every BIOS of the mid-nineties did,
+        /// and why a 2 GB disk had 64 heads in the setup screen. Halving
+        /// rounds down, so the presented disk is never larger than the real
+        /// one. Everything written on the disk that mentions geometry --
+        /// the partition table, the BPB -- must use this one, because DOS
+        /// turns sector numbers into CHS with the heads and sectors of the
+        /// BPB and hands them to the BIOS.
+        /// </summary>
+        public Geometry Presented()
+        {
+            int cylinders = Cylinders, heads = Heads;
+            while (cylinders > 1024 && heads < 128)
+            {
+                cylinders /= 2;
+                heads *= 2;
+            }
+            if (cylinders > 1024)
+            {
+                heads = 255;
+                cylinders = (int)Math.Min(1024, TotalSectors / (255L * SectorsPerTrack));
+            }
+            return new Geometry(cylinders, heads, SectorsPerTrack);
+        }
         public long TotalBytes => TotalSectors * SectorSize;
 
         /// <summary>
@@ -35,7 +63,12 @@ public static class HardDiskImage
             int cylinders = (int)(bytes / (heads * sectorsPerTrack * SectorSize));
 
             if (cylinders < 1) cylinders = 1;
-            if (cylinders > 1024) cylinders = 1024;   // classic CHS limit
+
+            // 16383 is the most an IDE drive can report, and with 16 heads
+            // and 63 sectors it is 7.8 GB. The BIOS's own limit of 1024
+            // cylinders is met by translation when it hands the geometry
+            // out, not by shrinking the disk.
+            if (cylinders > 16383) cylinders = 16383;
 
             return new Geometry(cylinders, heads, sectorsPerTrack);
         }
@@ -60,12 +93,26 @@ public static class HardDiskImage
     /// active primary partition formatted FAT16 -- that is, a disk ready to
     /// have DOS installed onto it.
     /// </summary>
+    /// <summary>The most a FAT16 volume can hold: 65525 clusters of 32 KB.</summary>
+    public const long MaxFat16Bytes = 2_147_483_648L;
+
     public static Geometry Create(string path, long sizeBytes, bool bootable = true)
     {
-        Geometry geometry = Geometry.ForSize(sizeBytes);
+        if (sizeBytes > MaxFat16Bytes)
+            throw new ArgumentException(
+                "A FAT16 volume holds at most 2 GB. Larger disks need FAT32, which is not written yet.",
+                nameof(sizeBytes));
+
+        Geometry physical = Geometry.ForSize(sizeBytes);
 
         using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
-        stream.SetLength(geometry.TotalBytes);
+        stream.SetLength(physical.TotalBytes);
+
+        // Everything below describes the disk as the BIOS presents it, which
+        // for a disk past 1024 cylinders is not the disk itself. The image
+        // keeps its physical size; the partition ends where the presented
+        // geometry does, a fraction of a track short at worst.
+        Geometry geometry = physical.Presented();
 
         // The partition starts at track 1: the first sector of head 0 is the
         // MBR, and by convention the partition begins on the following track,
@@ -85,7 +132,7 @@ public static class HardDiskImage
 
         WriteEmptyFatTables(stream, partitionStartSector, bootSector);
 
-        return geometry;
+        return physical;
     }
 
     /// <summary>

@@ -72,15 +72,21 @@ public static class DiskImageBuilder
         long totalSectors = cylinders * SectorsPerTrack * Heads;
         var image = new byte[totalSectors * SectorSize];
 
+        // What the BIOS will present, which past 1024 cylinders is fewer of
+        // them and more heads; the partition table and the BPB describe
+        // that disk, because that is the one DOS addresses.
+        HardDiskImage.Geometry presented =
+            new HardDiskImage.Geometry((int)cylinders, Heads, SectorsPerTrack).Presented();
+
         // The partition starts one track in. That is not an alignment
         // nicety: the master boot record lives in the first sector, and DOS
         // has always begun the first partition at the start of the second
         // track rather than immediately after it.
         const uint firstSector = SectorsPerTrack;
-        uint partitionSectors = (uint)(totalSectors - firstSector);
+        uint partitionSectors = (uint)(presented.TotalSectors - firstSector);
 
-        WriteMasterBootRecord(image, cylinders, firstSector, partitionSectors);
-        WriteFat16Volume(image, firstSector * SectorSize, partitionSectors, label);
+        WriteMasterBootRecord(image, presented, firstSector, partitionSectors);
+        WriteFat16Volume(image, firstSector * SectorSize, partitionSectors, label, presented.Heads);
 
         File.WriteAllBytes(path, image);
     }
@@ -165,7 +171,7 @@ public static class DiskImageBuilder
             buffer[at + i] = (byte)(value >> (56 - i * 8));
     }
 
-    private static void WriteMasterBootRecord(byte[] image, long cylinders,
+    private static void WriteMasterBootRecord(byte[] image, HardDiskImage.Geometry geometry,
                                               uint firstSector, uint partitionSectors)
     {
         const int entry = 0x1BE;
@@ -181,8 +187,8 @@ public static class DiskImageBuilder
         // an encoding that ran out of room in 1994 and was kept anyway: DOS
         // reads the 32-bit sector counts below, and the CHS fields are what
         // it checks them against when they disagree.
-        long lastCylinder = cylinders - 1;
-        image[entry + 5] = Heads - 1;
+        long lastCylinder = geometry.Cylinders - 1;
+        image[entry + 5] = (byte)(geometry.Heads - 1);
         image[entry + 6] = (byte)(SectorsPerTrack | ((lastCylinder >> 2) & 0xC0));
         image[entry + 7] = (byte)(lastCylinder & 0xFF);
 
@@ -193,7 +199,7 @@ public static class DiskImageBuilder
         image[0x1FF] = 0xAA;
     }
 
-    private static void WriteFat16Volume(byte[] image, long at, uint sectors, string label)
+    private static void WriteFat16Volume(byte[] image, long at, uint sectors, string label, int heads)
     {
         // Cluster size is chosen so that the table stays within 16-bit
         // entries: a volume with more than 65524 clusters is not FAT16 at
@@ -225,7 +231,7 @@ public static class DiskImageBuilder
         image[at + 21] = 0xF8;                          // fixed disk
         WriteWord(image, at + 22, sectorsPerFat);
         WriteWord(image, at + 24, SectorsPerTrack);
-        WriteWord(image, at + 26, Heads);
+        WriteWord(image, at + 26, (ushort)heads);
         WriteDword(image, at + 28, SectorsPerTrack);    // sectors before the partition
         WriteDword(image, at + 32, sectors);
 

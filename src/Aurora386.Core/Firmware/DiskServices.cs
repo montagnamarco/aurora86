@@ -94,11 +94,17 @@ public sealed class DiskServices
             case 0x15: GetDiskType(cpu, drive); return;
             case 0x16: DetectDiskChange(cpu, drive); return;
 
-            case 0x41:
-                // Installation check for the extended (LBA) disk functions.
-                // We do not implement them: DOS 6.22 only ever uses classic CHS.
-                Fail(cpu, 0x01);
-                return;
+            // The extended functions of the Enhanced Disk Drive
+            // specification, which address sectors by number rather than by
+            // cylinder, head and sector. Everything from Windows 95 on uses
+            // them when they exist; DOS 6.22 never asks. Hard disks only:
+            // nothing ever addressed a floppy this way.
+            case 0x41 when drive >= 0x80: CheckExtensions(cpu, drive); return;
+            case 0x42 when drive >= 0x80: ExtendedRead(cpu, drive); return;
+            case 0x43 when drive >= 0x80: ExtendedWrite(cpu, drive); return;
+            case 0x44 when drive >= 0x80: ExtendedVerify(cpu, drive); return;
+            case 0x47 when drive >= 0x80: ExtendedSeek(cpu, drive); return;
+            case 0x48 when drive >= 0x80: ExtendedGetParameters(cpu, drive); return;
 
             default:
                 Fail(cpu, 0x01);   // invalid function
@@ -136,6 +142,32 @@ public sealed class DiskServices
         cpu.State.SetReg8(4, _lastStatus);   // AH = the stored status, not an error code
     }
 
+    /// <summary>
+    /// The geometry the BIOS presents for a disk, which is not always the
+    /// disk's own. The CHS interface has ten bits for the cylinder, so a
+    /// disk with more than 1024 is shown with the cylinders halved and the
+    /// heads doubled, as many times as it takes, up to 255 heads -- the
+    /// "bit shift" translation every BIOS of the mid-nineties did, and the
+    /// reason a 2 GB disk had 64 heads in the setup screen. Below the limit
+    /// the geometry is the disk's own, so nothing changes for small disks.
+    /// </summary>
+    public static (int Cylinders, int Heads, int SectorsPerTrack) PresentedGeometry(DiskImage image)
+    {
+        if (image.DriveNumber < 0x80) return (image.Cylinders, image.Heads, image.SectorsPerTrack);
+        HardDiskImage.Geometry presented =
+            new HardDiskImage.Geometry(image.Cylinders, image.Heads, image.SectorsPerTrack).Presented();
+        return (presented.Cylinders, presented.Heads, presented.SectorsPerTrack);
+    }
+
+    /// <summary>The sector number a CHS address names under the presented geometry, or -1 if it is off the disk.</summary>
+    private static long LinearOf(DiskImage image, int cylinder, int head, int sector)
+    {
+        (int cylinders, int heads, int sectorsPerTrack) = PresentedGeometry(image);
+        if (cylinder < 0 || cylinder >= cylinders || head < 0 || head >= heads
+            || sector < 1 || sector > sectorsPerTrack) return -1;
+        return ((long)cylinder * heads + head) * sectorsPerTrack + (sector - 1);
+    }
+
     private void ReadSectors(CpuNs.Cpu cpu, byte drive)
     {
         DiskImage? image = GetDrive(drive);
@@ -146,7 +178,8 @@ public sealed class DiskServices
 
         // The destination buffer is ES:BX in the caller's address space.
         var buffer = new byte[count * DiskImage.SectorSize];
-        if (!image.ReadSectors(cylinder, head, sector, count, buffer))
+        long linear = LinearOf(image, cylinder, head, sector);
+        if (linear < 0 || !image.ReadLinear(linear, count, buffer))
         {
             Fail(cpu, 0x04);   // sector not found
             return;
@@ -175,7 +208,8 @@ public sealed class DiskServices
         for (int i = 0; i < buffer.Length; i++)
             buffer[i] = cpu.ReadMemoryByte(SegReg.Es, (uint)(source + i));
 
-        if (!image.WriteSectors(cylinder, head, sector, count, buffer))
+        long linear = LinearOf(image, cylinder, head, sector);
+        if (linear < 0 || !image.WriteLinear(linear, count, buffer))
         {
             Fail(cpu, 0x04);
             return;
@@ -195,7 +229,7 @@ public sealed class DiskServices
         if (image is null) { Fail(cpu, 0x80); return; }
 
         (int cylinder, int head, int sector, int count) = DecodeChs(cpu);
-        if (!image.IsValidChs(cylinder, head, sector)) { Fail(cpu, 0x04); return; }
+        if (LinearOf(image, cylinder, head, sector) < 0) { Fail(cpu, 0x04); return; }
 
         cpu.State.SetReg8(0, (byte)count);
         Succeed(cpu);
@@ -221,8 +255,9 @@ public sealed class DiskServices
 
         // The geometry comes back in a packed encoding: the two high bits of
         // the cylinder count are folded into the top bits of CL.
-        int lastCylinder = image.Cylinders - 1;
-        byte cl = (byte)((image.SectorsPerTrack & 0x3F) | ((lastCylinder >> 2) & 0xC0));
+        (int cylinders, int heads, int sectorsPerTrack) = PresentedGeometry(image);
+        int lastCylinder = cylinders - 1;
+        byte cl = (byte)((sectorsPerTrack & 0x3F) | ((lastCylinder >> 2) & 0xC0));
         cpu.State.SetReg8(1, cl);                              // CL
         cpu.State.SetReg8(5, (byte)(lastCylinder & 0xFF));     // CH
         // Watch the 8-bit register indices here. The order is
@@ -231,7 +266,7 @@ public sealed class DiskServices
         // in the latter. Swapping the two makes software believe the disk has a
         // single head, and the MS-DOS setup then writes its files to the wrong
         // sectors, leaving a disk that will not boot.
-        cpu.State.SetReg8(6, (byte)(image.Heads - 1));         // DH: last head number
+        cpu.State.SetReg8(6, (byte)(heads - 1));               // DH: last head number
 
         // DL reports how many drives of the same kind are installed: floppies
         // and hard disks are counted separately.
@@ -395,6 +430,150 @@ public sealed class DiskServices
     {
         _bda.DiskStatus = status;
         _bda.HardDiskStatus = status;
+    }
+
+    // --- the extended functions -------------------------------------------------
+
+    private static void CheckExtensions(CpuNs.Cpu cpu, byte drive)
+    {
+        if (cpu.State.Bx != 0x55AA) { FailPlain(cpu, 0x01); return; }
+        cpu.State.Bx = 0xAA55;
+        cpu.State.SetReg8(4, 0x01);        // AH: version 1.x of the specification
+        cpu.State.Cx = 0x0001;             // bit 0: the fixed disk access functions 42h-44h, 47h, 48h
+        cpu.SetCarryInStackedFlags(false);
+    }
+
+    /// <summary>
+    /// The disk address packet at DS:SI: its size, a reserved byte, the
+    /// number of sectors, the buffer as offset then segment, and the sector
+    /// number as a 64-bit quantity of which anything past 32 bits is beyond
+    /// the disks here.
+    /// </summary>
+    private readonly record struct AddressPacket(int Count, ushort BufferOffset, ushort BufferSegment, long Sector);
+
+    private static bool ReadPacket(CpuNs.Cpu cpu, out AddressPacket packet)
+    {
+        uint at = cpu.State.Si;
+        byte size = cpu.ReadMemoryByte(SegReg.Ds, at);
+        packet = default;
+        if (size < 0x10) return false;
+
+        int count = cpu.ReadMemoryWord(SegReg.Ds, at + 2);
+        ushort offset = cpu.ReadMemoryWord(SegReg.Ds, at + 4);
+        ushort segment = cpu.ReadMemoryWord(SegReg.Ds, at + 6);
+        long sector = cpu.ReadMemoryDword(SegReg.Ds, at + 8) | ((long)cpu.ReadMemoryDword(SegReg.Ds, at + 12) << 32);
+        packet = new AddressPacket(count, offset, segment, sector);
+        return true;
+    }
+
+    private static void WritePacketCount(CpuNs.Cpu cpu, int transferred) =>
+        cpu.WriteMemoryWord(SegReg.Ds, cpu.State.Si + 2u, (ushort)transferred);
+
+    private void ExtendedRead(CpuNs.Cpu cpu, byte drive)
+    {
+        DiskImage? image = GetDrive(drive);
+        if (image is null) { Fail(cpu, 0x80); return; }
+        if (!ReadPacket(cpu, out AddressPacket packet) || packet.Count > 127) { Fail(cpu, 0x01); return; }
+
+        var buffer = new byte[packet.Count * DiskImage.SectorSize];
+        if (!image.ReadLinear(packet.Sector, packet.Count, buffer))
+        {
+            WritePacketCount(cpu, 0);
+            Fail(cpu, 0x04);
+            return;
+        }
+
+        uint destination = cpu.FarPointerToLinear(packet.BufferSegment, packet.BufferOffset);
+        for (int i = 0; i < buffer.Length; i++) cpu.WriteLinearByte(destination + (uint)i, buffer[i]);
+
+        DriveAccessed?.Invoke(drive, false);
+        WritePacketCount(cpu, packet.Count);
+        _lastStatus = 0;
+        Succeed(cpu);
+    }
+
+    private void ExtendedWrite(CpuNs.Cpu cpu, byte drive)
+    {
+        DiskImage? image = GetDrive(drive);
+        if (image is null) { Fail(cpu, 0x80); return; }
+        if (image.ReadOnly) { Fail(cpu, 0x03); return; }
+        if (!ReadPacket(cpu, out AddressPacket packet) || packet.Count > 127) { Fail(cpu, 0x01); return; }
+
+        var buffer = new byte[packet.Count * DiskImage.SectorSize];
+        uint source = cpu.FarPointerToLinear(packet.BufferSegment, packet.BufferOffset);
+        for (int i = 0; i < buffer.Length; i++) buffer[i] = cpu.ReadLinearByte(source + (uint)i);
+
+        if (!image.WriteLinear(packet.Sector, packet.Count, buffer))
+        {
+            WritePacketCount(cpu, 0);
+            Fail(cpu, 0x04);
+            return;
+        }
+
+        DriveAccessed?.Invoke(drive, true);
+        WritePacketCount(cpu, packet.Count);
+        _lastStatus = 0;
+        Succeed(cpu);
+    }
+
+    private void ExtendedVerify(CpuNs.Cpu cpu, byte drive)
+    {
+        DiskImage? image = GetDrive(drive);
+        if (image is null) { Fail(cpu, 0x80); return; }
+        if (!ReadPacket(cpu, out AddressPacket packet)) { Fail(cpu, 0x01); return; }
+        if (packet.Sector < 0 || packet.Sector + packet.Count > image.TotalSectors)
+        {
+            WritePacketCount(cpu, 0);
+            Fail(cpu, 0x04);
+            return;
+        }
+        Succeed(cpu);
+    }
+
+    private void ExtendedSeek(CpuNs.Cpu cpu, byte drive)
+    {
+        // There is no head to move; the sector is either on the disk or not.
+        DiskImage? image = GetDrive(drive);
+        if (image is null) { Fail(cpu, 0x80); return; }
+        if (!ReadPacket(cpu, out AddressPacket packet)) { Fail(cpu, 0x01); return; }
+        if (packet.Sector < 0 || packet.Sector >= image.TotalSectors) { Fail(cpu, 0x04); return; }
+        Succeed(cpu);
+    }
+
+    /// <summary>
+    /// The drive parameters in the extended form: the buffer at DS:SI says
+    /// how big it is, and gets the size actually written back, then flags,
+    /// the physical geometry, the total number of sectors and the bytes per
+    /// sector. Version 1.1 callers leave room for a pointer to the
+    /// controller's configuration table, and get "none".
+    /// </summary>
+    private void ExtendedGetParameters(CpuNs.Cpu cpu, byte drive)
+    {
+        DiskImage? image = GetDrive(drive);
+        if (image is null) { Fail(cpu, 0x80); return; }
+
+        uint at = cpu.State.Si;
+        ushort size = cpu.ReadMemoryWord(SegReg.Ds, at);
+        if (size < 0x1A) { Fail(cpu, 0x01); return; }
+
+        bool extended = size >= 0x1E;
+        cpu.WriteMemoryWord(SegReg.Ds, at + 0, (ushort)(extended ? 0x1E : 0x1A));
+        cpu.WriteMemoryWord(SegReg.Ds, at + 2, 0x0002);              // the geometry below is valid
+        cpu.WriteMemoryDword(SegReg.Ds, at + 4, (uint)image.Cylinders);
+        cpu.WriteMemoryDword(SegReg.Ds, at + 8, (uint)image.Heads);
+        cpu.WriteMemoryDword(SegReg.Ds, at + 12, (uint)image.SectorsPerTrack);
+        cpu.WriteMemoryDword(SegReg.Ds, at + 16, (uint)image.TotalSectors);
+        cpu.WriteMemoryDword(SegReg.Ds, at + 20, 0);
+        cpu.WriteMemoryWord(SegReg.Ds, at + 24, DiskImage.SectorSize);
+        if (extended) cpu.WriteMemoryDword(SegReg.Ds, at + 26, 0xFFFFFFFF);   // no configuration table
+        Succeed(cpu);
+    }
+
+    /// <summary>A refusal that does not disturb the stored status, for calls that were never about a transfer.</summary>
+    private static void FailPlain(CpuNs.Cpu cpu, byte errorCode)
+    {
+        cpu.State.SetReg8(4, errorCode);
+        cpu.SetCarryInStackedFlags(true);
     }
 
     private static (int Cylinder, int Head, int Sector, int Count) DecodeChs(CpuNs.Cpu cpu)

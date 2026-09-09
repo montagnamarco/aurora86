@@ -149,9 +149,23 @@ public sealed class DiskImage : IDisposable
     public bool ReadSectors(int cylinder, int head, int sector, int count, Span<byte> destination)
     {
         if (!IsValidChs(cylinder, head, sector)) return false;
+        return ReadLinear(ToLinearSector(cylinder, head, sector), count, destination);
+    }
 
-        long linear = ToLinearSector(cylinder, head, sector);
-        if (linear + count > TotalSectors) return false;
+    public bool WriteSectors(int cylinder, int head, int sector, int count, ReadOnlySpan<byte> source)
+    {
+        if (!IsValidChs(cylinder, head, sector)) return false;
+        return WriteLinear(ToLinearSector(cylinder, head, sector), count, source);
+    }
+
+    /// <summary>
+    /// Reads by sector number, which is what the extended BIOS functions
+    /// and the IDE registers in LBA mode address by. CHS is a way of
+    /// spelling the same number.
+    /// </summary>
+    public bool ReadLinear(long linear, int count, Span<byte> destination)
+    {
+        if (linear < 0 || count < 0 || linear + count > TotalSectors) return false;
 
         _stream.Seek(linear * SectorSize, SeekOrigin.Begin);
         int wanted = count * SectorSize;
@@ -159,18 +173,24 @@ public sealed class DiskImage : IDisposable
         return read == wanted;
     }
 
-    public bool WriteSectors(int cylinder, int head, int sector, int count, ReadOnlySpan<byte> source)
+    public bool WriteLinear(long linear, int count, ReadOnlySpan<byte> source)
     {
         if (ReadOnly) return false;
-        if (!IsValidChs(cylinder, head, sector)) return false;
-
-        long linear = ToLinearSector(cylinder, head, sector);
-        if (linear + count > TotalSectors) return false;
+        if (linear < 0 || count < 0 || linear + count > TotalSectors) return false;
 
         _stream.Seek(linear * SectorSize, SeekOrigin.Begin);
         _stream.Write(source[..(count * SectorSize)]);
         _stream.Flush();
         return true;
+    }
+
+    /// <summary>An image backed by a file of the given size, for tests of disks too big to hold in memory.</summary>
+    public static DiskImage CreateSparseFile(string path, byte driveNumber, int cylinders, int heads, int sectorsPerTrack)
+    {
+        long size = (long)cylinders * heads * sectorsPerTrack * SectorSize;
+        var stream = new FileStream(path, FileMode.Create, FileAccess.ReadWrite, FileShare.Read);
+        stream.SetLength(size);
+        return new DiskImage(stream, driveNumber, cylinders, heads, sectorsPerTrack) { SourcePath = path };
     }
 
     public void Dispose()
