@@ -142,6 +142,7 @@ public sealed class VgaRegisters : IIoDevice
         {
             _videoMode = value;
             ModeInfo = VgaModes.Get(value);
+            RegistersChanged();
             // A BIOS mode set programs the whole controller, so the registers
             // are made to agree with the table here as well: memory decoding
             // and rendering both read the registers, not the mode number.
@@ -170,6 +171,29 @@ public sealed class VgaRegisters : IIoDevice
     public VgaModeInfo EffectiveMode
     {
         get
+        {
+            // Computed once per change of the registers it depends on, not
+            // once per access. Every read and write of video memory asks
+            // for it to know how the bytes are laid out, and a Windows
+            // driver blitting a window makes hundreds of thousands of those
+            // per frame; re-deriving the mode from the CRTC each time was a
+            // measurable share of the machine's time in enhanced mode.
+            if (_effectiveVersion == _registersVersion) return _effectiveMode;
+            _effectiveMode = ComputeEffectiveMode();
+            _effectiveVersion = _registersVersion;
+            return _effectiveMode;
+        }
+    }
+
+    private VgaModeInfo _effectiveMode;
+    private int _effectiveVersion = -1;
+    private int _registersVersion;
+
+    /// <summary>Called by every write that can change what the mode looks like.</summary>
+    private void RegistersChanged() => _registersVersion++;
+
+    private VgaModeInfo ComputeEffectiveMode()
+    {
         {
             // A VBE mode overrides everything the VGA registers say: the
             // planar hardware is not in the path at all, and the CRTC values
@@ -309,6 +333,7 @@ public sealed class VgaRegisters : IIoDevice
         VesaMode = mode;
         VesaLinearFrameBuffer = linearFrameBuffer;
         VesaWindowBank = 0;
+        RegistersChanged();
 
         // A mode set puts the scan line back to the visible width and the
         // display start back to the beginning. A program that had set up a
@@ -318,15 +343,18 @@ public sealed class VgaRegisters : IIoDevice
         ModeChanged?.Invoke();
     }
 
-    public int TextColumns { get; set; } = 80;
-    public int TextRows { get; set; } = 25;
+    public int TextColumns { get => _textColumns; set { _textColumns = value; RegistersChanged(); } }
+    private int _textColumns = 80;
+    public int TextRows { get => _textRows; set { _textRows = value; RegistersChanged(); } }
+    private int _textRows = 25;
 
     /// <summary>
     /// Height of the character cell in scanlines. 16 is the VGA default; the
     /// 43- and 50-row text modes get there by switching to a 14- or 8-line
     /// font rather than by changing the raster, which stays at 400 lines.
     /// </summary>
-    public int CharacterHeight { get; set; } = 16;
+    public int CharacterHeight { get => _characterHeight; set { _characterHeight = value; RegistersChanged(); } }
+    private int _characterHeight = 16;
 
     /// <summary>
     /// A font the guest has loaded into the character generator, replacing
@@ -473,10 +501,10 @@ public sealed class VgaRegisters : IIoDevice
     public byte Graphics(int index) => _graphics[index & 0x0F];
 
     /// <summary>Directly sets a sequencer register; used by the BIOS mode setup and by tests.</summary>
-    public void SetSequencer(int index, byte value) => _sequencer[index & 7] = value;
+    public void SetSequencer(int index, byte value) { _sequencer[index & 7] = value; RegistersChanged(); }
 
     /// <summary>Directly sets a graphics controller register.</summary>
-    public void SetGraphics(int index, byte value) => _graphics[index & 0x0F] = value;
+    public void SetGraphics(int index, byte value) { _graphics[index & 0x0F] = value; RegistersChanged(); }
 
     /// <summary>Directly sets a CRTC register.</summary>
     public void SetCrtc(int index, byte value) => WriteCrtc((byte)index, value);
@@ -637,6 +665,7 @@ public sealed class VgaRegisters : IIoDevice
     {
         byte at = (byte)(index & 0x1F);
 
+        RegistersChanged();
         if (at < 0x05) { _sequencer[at] = value; return; }
 
         if (at == 0x08)
@@ -732,6 +761,7 @@ public sealed class VgaRegisters : IIoDevice
 
     private void WriteCrtc(byte index, byte value)
     {
+        RegistersChanged();
         if (index < 0x30) { _crtc[index] = value; return; }
 
         // The two lock registers themselves are always writable, or there
@@ -1062,6 +1092,7 @@ public sealed class VgaRegisters : IIoDevice
                 // are the card's own configuration and a write to them goes
                 // nowhere -- which is precisely what the Super VGA driver
                 // tests for.
+                RegistersChanged();
                 if ((_graphicsIndex & 0x0F) == 0x0F)
                 {
                     _graphics[0x0F] = (byte)(value & 0x07);
@@ -1199,6 +1230,7 @@ public sealed class VgaRegisters : IIoDevice
         // directly and only the mode information rebuilt.
         _videoMode = state[at++];
         ModeInfo = VgaModes.Get(_videoMode);
+        RegistersChanged();
 
         ushort vesaNumber = (ushort)(state[at] | (state[at + 1] << 8)); at += 2;
         VesaLinearFrameBuffer = state[at++] != 0;

@@ -1,3 +1,10 @@
+// Decoding of the ModR/M and SIB bytes: which register or memory operand
+// an instruction names, in 16-bit and 32-bit addressing. The one surprise
+// is the 386's own: a SIB byte with no index register still applies its
+// scale factor to the base, which later processors stopped doing and the
+// hardware suite insists on. Independent of the processor mode; the
+// segment the address is read through is resolved elsewhere.
+
 namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu

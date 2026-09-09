@@ -1,3 +1,12 @@
+// The instruction loop: prefixes, the one-byte opcode table, and the
+// dispatch to everything else. Every mode passes through here -- real,
+// protected, virtual 8086 -- and the mode shows only in what the helpers
+// do with a segment or a privilege, never in the loop itself. Faults raised
+// while executing come back as CpuException and are turned into the
+// interrupt the processor would take; see Cpu.Interrupts.cs. The guide
+// docs/REAL-VS-PROTECTED-MODE.md explains why an instruction's meaning
+// changes with the mode while its bytes do not.
+
 namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu

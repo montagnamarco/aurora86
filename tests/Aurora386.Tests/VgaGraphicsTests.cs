@@ -924,3 +924,37 @@ public class CgaGraphicsModeTests
         Assert.Equal(80, two.VideoRegisters.EffectiveMode.BytesPerRow);
     }
 }
+
+public class EffectiveModeCacheTests
+{
+    [Fact]
+    public void TheEffectiveModeFollowsTheRegistersWrittenThroughThePorts()
+    {
+        // A mode programmed by hand: graphics bit on while the BIOS mode
+        // byte still says text, which is what a driver that pokes the CRTC
+        // itself looks like. Every write must be seen by the next read.
+        var registers = new VgaRegisters();
+        registers.SetGraphics(6, 0x01);               // miscellaneous: graphics
+        registers.WriteByte(0x3D4, 0x01);             // horizontal display end
+        registers.WriteByte(0x3D5, 79);               // 80 characters: 640 pixels
+        Assert.Equal(VgaMemoryLayout.Planar4, registers.EffectiveMode.Layout);
+        Assert.Equal(640, registers.EffectiveMode.PixelWidth);
+
+        registers.WriteByte(0x3D5, 99);               // 800 pixels
+        Assert.Equal(800, registers.EffectiveMode.PixelWidth);
+
+        registers.WriteByte(0x3CE, 0x05);             // graphics mode register
+        registers.WriteByte(0x3CF, 0x40);             // linear 8-bit
+        Assert.Equal(VgaMemoryLayout.Linear8, registers.EffectiveMode.Layout);
+        Assert.Equal(400, registers.EffectiveMode.PixelWidth);
+    }
+
+    [Fact]
+    public void RepeatedReadsWithoutWritesGiveTheSameAnswer()
+    {
+        var registers = new VgaRegisters();
+        registers.SetGraphics(6, 0x01);
+        VgaModeInfo first = registers.EffectiveMode;
+        for (int i = 0; i < 1000; i++) Assert.Equal(first, registers.EffectiveMode);
+    }
+}

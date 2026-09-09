@@ -1,3 +1,9 @@
+// The string instructions -- MOVS, CMPS, SCAS, LODS, STOS, INS, OUTS --
+// and the REP prefixes. One iteration per Step: REP is restartable by
+// design, an interrupt between iterations is exactly what the processor
+// allows, and it keeps the loop from stalling the machine on a long copy.
+// The direction flag decides which way the index registers move.
+
 namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu

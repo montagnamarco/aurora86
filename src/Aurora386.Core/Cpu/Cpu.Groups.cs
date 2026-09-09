@@ -1,3 +1,9 @@
+// The opcodes whose meaning is completed by the ModR/M reg field: group 3
+// (TEST, NOT, NEG, MUL, DIV), group 4 and 5 (INC, DEC, CALL, JMP, PUSH
+// through memory). The far CALL and JMP forms in group 5 are where real
+// mode and protected mode part ways, through the segment loads of
+// Cpu.Protected.cs.
+
 namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu

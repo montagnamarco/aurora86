@@ -1,3 +1,9 @@
+// Paging: the two-level walk from a linear address to a physical one, the
+// TLB that caches it, the accessed and dirty bits, and the faults --
+// including write protection at ring 0, which the 486 honours when CR0.WP
+// is set and the 386 did not. Only on when CR0.PG is set, which for the
+// guests here means Windows in enhanced mode.
+
 namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu

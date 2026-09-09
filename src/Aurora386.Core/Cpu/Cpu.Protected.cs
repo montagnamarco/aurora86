@@ -1,3 +1,11 @@
+// Protected mode: loading a selector through the GDT or LDT into the
+// descriptor cache, gates for interrupts and calls, entering and leaving
+// virtual 8086 mode, IRET with its privilege rules. The descriptor cache
+// is what makes unreal mode work -- a limit loaded here survives the
+// return to real mode -- and the IOPL rules in IRET are the ones Windows'
+// DOS extender depends on. docs/REAL-VS-PROTECTED-MODE.md walks through
+// each of these with the bugs that were found getting Windows to run.
+
 namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu

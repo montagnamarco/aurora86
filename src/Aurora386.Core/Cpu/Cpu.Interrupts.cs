@@ -1,3 +1,11 @@
+// Where interrupts and exceptions enter: the hardware line from the 8259,
+// the INT instruction, and every fault raised while executing. Real mode
+// pushes flags, CS and IP and reads a vector from the table at address
+// zero; protected mode goes through the IDT's gates, with a privilege
+// check and possibly a stack switch, in Cpu.Protected.cs. Virtual 8086
+// mode is the odd one: every interrupt leaves V86 for the monitor, which
+// is how Windows' VMM sees everything a DOS program does.
+
 namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu

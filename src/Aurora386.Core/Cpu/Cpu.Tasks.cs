@@ -1,3 +1,9 @@
+// Hardware task switching: the TSS in its 286 and 386 shapes, saving the
+// outgoing task and loading the incoming one, the busy bit, the back
+// link for nested tasks. Windows 3.x uses it for the V86 monitor's stack
+// switches rather than for multitasking, and the I/O permission bitmap
+// in the TSS is how it traps a DOS program's port accesses.
+
 namespace Aurora386.Core.Cpu;
 
 /// <summary>

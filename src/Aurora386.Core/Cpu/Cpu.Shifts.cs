@@ -1,3 +1,8 @@
+// Shifts and rotates, one and two operand: SHL, SHR, SAR, ROL, ROR, RCL,
+// RCR, and the 386's SHLD/SHRD. The count is masked to five bits on every
+// processor from the 286 on, which is one of the differences software used
+// to tell an 8086 apart. Flags follow the lazy scheme of LazyFlags.cs.
+
 namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu

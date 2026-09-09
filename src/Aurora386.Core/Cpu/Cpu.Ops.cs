@@ -1,5 +1,13 @@
 using System.Runtime.CompilerServices;
 
+
+// The arithmetic and logic of the one-byte opcodes: ADD through CMP, the
+// accumulator forms, INC and DEC (which leave the carry alone), MUL and
+// DIV, the flag instructions, IN and OUT with their IOPL check, and the
+// segment loads that decide between a real-mode paragraph and a protected-
+// mode selector. Mode-sensitive only where a segment or a port is touched;
+// the rest is the same on every processor since the 8086.
+
 namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu

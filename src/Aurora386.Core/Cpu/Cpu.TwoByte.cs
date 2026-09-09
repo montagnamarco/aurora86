@@ -1,3 +1,9 @@
+// The 0F-prefixed opcodes: the 386's conditional sets and jumps, bit
+// operations, the system instructions (LGDT, LIDT, LMSW, the control and
+// debug registers), the 486's BSWAP, CMPXCHG, XADD, INVLPG and CPUID, and
+// one opcode that is not an instruction at all -- 0F FF, the hook through
+// which the BIOS written in C# is reached, recognised only inside the ROM.
+
 namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu

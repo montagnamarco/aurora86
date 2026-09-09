@@ -1,3 +1,8 @@
+// The decimal adjust instructions: DAA, DAS, AAA, AAS, AAM, AAD. Relics of
+// the 8080 that nothing from the nineties uses, kept because the hardware
+// suite exercises them, undefined flags and all. AAM with a zero divisor
+// raises the divide error, like a DIV.
+
 namespace Aurora386.Core.Cpu;
 
 public sealed partial class Cpu

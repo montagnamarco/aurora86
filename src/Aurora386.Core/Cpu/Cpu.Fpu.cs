@@ -1,5 +1,11 @@
 using Aurora386.Core.Cpu.Fpu;
 
+
+// The coprocessor escape opcodes D8-DF as the integer unit sees them:
+// decode the operand, then hand the instruction to the software x87 in
+// Firmware/Fpu, or raise the device-not-available fault when it is
+// switched off. The 387's state and arithmetic live there, not here.
+
 namespace Aurora386.Core.Cpu;
 
 /// <summary>
