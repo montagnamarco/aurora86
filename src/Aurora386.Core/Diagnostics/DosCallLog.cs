@@ -18,18 +18,46 @@ namespace Aurora386.Core.Diagnostics;
 /// </summary>
 public sealed class DosCallLog : IDisposable
 {
-    private readonly StreamWriter _output;
+    private readonly TextWriter _output;
 
-    public DosCallLog(string path)
+    /// <summary>A log written to a file, one line per call.</summary>
+    public DosCallLog(string path) : this(new StreamWriter(path) { AutoFlush = true }) { }
+
+    /// <summary>
+    /// A log that keeps nothing on disk and only raises <see cref="LineWritten"/>.
+    ///
+    /// For a window that wants to show the calls as they happen. Writing a
+    /// file nobody asked for, in a place nobody chose, would be the wrong
+    /// side effect for a debugger panel to have.
+    /// </summary>
+    public DosCallLog() : this(TextWriter.Null) { }
+
+    private DosCallLog(TextWriter output)
     {
-        _output = new StreamWriter(path) { AutoFlush = true };
-        _output.WriteLine("# DOS calls that move files about");
+        _output = output;
+        Emit("# DOS calls that move files about");
     }
 
-    /// <summary>Watch a machine and record the calls as they go by.</summary>
-    public static DosCallLog Attach(Machine machine, string path)
+    /// <summary>
+    /// Raised with every line as it is written, on the emulation thread.
+    /// A subscriber that does anything slow here slows the guest being
+    /// watched, which is the one thing a log must not do.
+    /// </summary>
+    public event Action<string>? LineWritten;
+
+    private void Emit(string line)
     {
-        var log = new DosCallLog(path);
+        _output.WriteLine(line);
+        LineWritten?.Invoke(line);
+    }
+
+    /// <summary>
+    /// Watch a machine and record the calls as they go by -- to a file when a
+    /// path is given, otherwise only through <see cref="LineWritten"/>.
+    /// </summary>
+    public static DosCallLog Attach(Machine machine, string? path = null)
+    {
+        var log = path is null ? new DosCallLog() : new DosCallLog(path);
 
         machine.Cpu.SoftwareInterruptIssued += vector =>
         {
@@ -81,13 +109,13 @@ public sealed class DosCallLog : IDisposable
         if (line == _lastFault)
         {
             if (++_faultRepeats is 10 or 1000 or 100000)
-                _output.WriteLine($"         ... same fault × {_faultRepeats}");
+                Emit($"         ... same fault × {_faultRepeats}");
             return;
         }
 
         _lastFault = line;
         _faultRepeats = 1;
-        _output.WriteLine(line);
+        Emit(line);
     }
 
     private void Note(CpuNs.Cpu cpu)
@@ -97,25 +125,25 @@ public sealed class DosCallLog : IDisposable
         switch (function)
         {
             case 0x56:   // rename: DS:DX is the old name, ES:DI the new one
-                _output.WriteLine($"rename   {ReadString(cpu, cpu.State.Ds.Selector, cpu.State.Dx)}"
+                Emit($"rename   {ReadString(cpu, cpu.State.Ds.Selector, cpu.State.Dx)}"
                                 + $" -> {ReadString(cpu, cpu.State.Es.Selector, cpu.State.Di)}");
                 break;
 
             case 0x4B:   // exec: the one call that hands control to another program
-                _output.WriteLine($"exec     {ReadString(cpu, cpu.State.Ds.Selector, cpu.State.Dx)}"
+                Emit($"exec     {ReadString(cpu, cpu.State.Ds.Selector, cpu.State.Dx)}"
                                 + $" (subfunction {cpu.State.GetReg8(0):X2})");
                 break;
 
             case 0x3C:
-                _output.WriteLine($"create   {ReadString(cpu, cpu.State.Ds.Selector, cpu.State.Dx)}");
+                Emit($"create   {ReadString(cpu, cpu.State.Ds.Selector, cpu.State.Dx)}");
                 break;
 
             case 0x41:
-                _output.WriteLine($"delete   {ReadString(cpu, cpu.State.Ds.Selector, cpu.State.Dx)}");
+                Emit($"delete   {ReadString(cpu, cpu.State.Ds.Selector, cpu.State.Dx)}");
                 break;
 
             case 0x4C:
-                _output.WriteLine($"exit     code {cpu.State.GetReg8(0)}");
+                Emit($"exit     code {cpu.State.GetReg8(0)}");
                 break;
         }
     }

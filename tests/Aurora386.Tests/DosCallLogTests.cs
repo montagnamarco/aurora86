@@ -98,4 +98,36 @@ public class DosCallLogTests
 
         Assert.Empty(lines);
     }
+
+    /// <summary>
+    /// A log with no file still hands every line to whoever is listening.
+    ///
+    /// This is what a debugger panel needs: the calls as they happen, without
+    /// a file being written somewhere nobody chose. The exit call is used
+    /// because it is the simplest to provoke -- one register, no memory.
+    /// </summary>
+    [Fact]
+    public void ALogWithoutAFileStillRaisesEveryLine()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(200);
+        machine.Cpu.State.Halted = false;
+
+        var seen = new List<string>();
+        using DosCallLog log = DosCallLog.Attach(machine);
+        log.LineWritten += seen.Add;
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0);
+        machine.Cpu.SetSegment(SegReg.Ss, 0);
+        machine.Cpu.State.Esp = 0x7000;
+        machine.Cpu.State.Eip = 0x2000;
+        machine.Cpu.State.Eax = 0x4C07;             // exit, code 7
+        machine.Memory.WriteByte(0x2000, 0xCD);
+        machine.Memory.WriteByte(0x2001, 0x21);
+        machine.Cpu.Step();
+
+        string line = Assert.Single(seen);
+        Assert.StartsWith("exit", line);
+        Assert.Contains("7", line);
+    }
 }

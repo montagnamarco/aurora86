@@ -96,4 +96,43 @@ public class DiskWriteLogTests
         // file; reporting a name for it would be an invention.
         Assert.Empty(WriteAt(0, 0, 2));
     }
+
+    /// <summary>
+    /// A log with no file still hands every line to whoever is listening,
+    /// which is what a debugger panel needs. The sector is one the tests
+    /// above already know belongs to COMMAND.COM, so the line is checked in
+    /// full rather than merely counted.
+    /// </summary>
+    [Fact]
+    public void ALogWithoutAFileStillRaisesEveryLine()
+    {
+        string copy = Path.GetTempFileName();
+        try
+        {
+            File.Copy(TestImage, copy, overwrite: true);
+
+            using var machine = new Machine();
+            machine.AttachDisk(DiskImage.OpenHardDisk(copy));
+            machine.RunInstructions(200);
+
+            DiskImage disk = machine.DiskServices.GetDrive(0x80)!;
+            var seen = new List<string>();
+            using DiskWriteLog log = DiskWriteLog.Attach(machine, disk);
+            log.LineWritten += seen.Add;
+
+            machine.Cpu.State.Halted = false;
+            machine.Cpu.SetSegment(SegReg.Es, 0);
+            machine.Cpu.State.Bx = 0x6000;
+            machine.Cpu.State.SetReg8(4, 0x03);            // AH: write
+            machine.Cpu.State.SetReg8(0, 1);               // AL: one sector
+            machine.Cpu.State.SetReg8(5, 0);               // CH: cylinder 0
+            machine.Cpu.State.SetReg8(1, 45);              // CL: sector 45
+            machine.Cpu.State.SetReg8(6, 10);              // DH: head 10 -- COMMAND.COM lives here
+            machine.Cpu.State.SetReg8(2, 0x80);            // DL: first hard disk
+            machine.DiskServices.Handle(machine.Cpu);
+
+            Assert.Equal(@"C:\COMMAND.COM", Assert.Single(seen));
+        }
+        finally { File.Delete(copy); }
+    }
 }

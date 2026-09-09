@@ -20,7 +20,7 @@ namespace Aurora386.Core.Diagnostics;
 public sealed class DiskWriteLog : IDisposable
 {
     private readonly DiskImage _image;
-    private readonly StreamWriter _output;
+    private readonly TextWriter _output;
     private readonly Dictionary<uint, string> _owners = new();
 
     private uint _dataStart;
@@ -29,17 +29,43 @@ public sealed class DiskWriteLog : IDisposable
     private string? _last;
     private long _sinceRemap;
 
+    /// <summary>A log written to a file, one line per file the guest touches.</summary>
     public DiskWriteLog(DiskImage image, string path)
+        : this(image, new StreamWriter(path) { AutoFlush = true }) { }
+
+    /// <summary>
+    /// A log that keeps nothing on disk and only raises <see cref="LineWritten"/>,
+    /// for a window that wants to show the writes as they happen.
+    /// </summary>
+    public DiskWriteLog(DiskImage image) : this(image, TextWriter.Null) { }
+
+    private DiskWriteLog(DiskImage image, TextWriter output)
     {
         _image = image;
-        _output = new StreamWriter(path) { AutoFlush = true };
-        _output.WriteLine("# files written by the guest, in order");
+        _output = output;
+        Emit("# files written by the guest, in order");
     }
 
-    /// <summary>Attach to a machine and record every write it makes to the hard disk.</summary>
-    public static DiskWriteLog Attach(Machine machine, DiskImage image, string path)
+    /// <summary>
+    /// Raised with every line as it is written, on the emulation thread.
+    /// Anything slow here slows the guest being watched.
+    /// </summary>
+    public event Action<string>? LineWritten;
+
+    private void Emit(string line)
     {
-        var log = new DiskWriteLog(image, path);
+        _output.WriteLine(line);
+        LineWritten?.Invoke(line);
+    }
+
+    /// <summary>
+    /// Attach to a machine and record every write it makes to the hard disk
+    /// -- to a file when a path is given, otherwise only through
+    /// <see cref="LineWritten"/>.
+    /// </summary>
+    public static DiskWriteLog Attach(Machine machine, DiskImage image, string? path = null)
+    {
+        var log = path is null ? new DiskWriteLog(image) : new DiskWriteLog(image, path);
 
         machine.DiskServices.SectorTransferred += (drive, write, cylinder, head, sector, count) =>
         {
@@ -65,7 +91,7 @@ public sealed class DiskWriteLog : IDisposable
 
         if (owner != _last)
         {
-            _output.WriteLine(owner);
+            Emit(owner);
             _last = owner;
         }
     }
