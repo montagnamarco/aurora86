@@ -216,6 +216,42 @@
             </DockPanel>
           </TabItem>
 
+          <TabItem Header="Ports" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <TextBox Text="{Binding PortWatchText}" Width="110"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="3C0 or 3C0-3CF"
+                         ToolTip.Tip="One port or a range, in hex. Both reads and writes are recorded: a driver that walks away usually does so because of something it read." />
+                <Button Classes="tool" Command="{Binding AddPortWatchCommand}">Watch</Button>
+                <Button Classes="tool" Command="{Binding ClearPortLogCommand}">Clear log</Button>
+              </StackPanel>
+              <ItemsControl DockPanel.Dock="Top" ItemsSource="{Binding PortWatches}"
+                            Margin="0,0,0,6">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                      <TextBlock Classes="mono" Text="{Binding}" VerticalAlignment="Center" />
+                      <Button Classes="tool" FontSize="10"
+                              Command="{Binding $parent[ItemsControl].((vm:DebuggerViewModel)DataContext).RemovePortWatchCommand}"
+                              CommandParameter="{Binding}">remove</Button>
+                    </StackPanel>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding PortLog}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
           <TabItem Header="Trace" FontSize="11">
             <DockPanel Margin="0,6,0,0">
               <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"

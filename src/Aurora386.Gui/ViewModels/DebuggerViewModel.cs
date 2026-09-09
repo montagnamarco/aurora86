@@ -836,6 +836,114 @@ public sealed partial class DebuggerViewModel : ObservableObject
         WatchLog.Add($"{address:X6} <- {value:X2}   from {where}");
         while (WatchLog.Count > 400) WatchLog.RemoveAt(0);
     }
+
+    // --- port watchpoints ------------------------------------------------------
+
+    [ObservableProperty] private string _portWatchText = "";
+
+    /// <summary>Ports being watched, as a first and last pair.</summary>
+    private readonly List<(ushort First, ushort Last)> _portWatches = new();
+
+    public ObservableCollection<string> PortWatches { get; } = new();
+
+    /// <summary>The most recent port accesses seen, newest last.</summary>
+    public ObservableCollection<string> PortLog { get; } = new();
+
+    private bool _portHooked;
+
+    /// <summary>
+    /// Watches an I/O port, or a range of them written "3C0-3CF".
+    ///
+    /// This answers a question no memory watchpoint can: a device is driven
+    /// by writes that leave nothing behind to inspect afterwards. What order
+    /// a driver programmed the registers in, what it read back before
+    /// deciding the card was not one it knew -- those exist only as traffic,
+    /// and are gone the moment they happen.
+    ///
+    /// Reads are recorded as well as writes, which is the difference from the
+    /// memory watchpoints. A write says what a driver decided; a read is what
+    /// it decided it on, and a driver that walks away usually does so because
+    /// of something it read.
+    /// </summary>
+    [RelayCommand]
+    private void AddPortWatch()
+    {
+        string text = PortWatchText.Trim();
+        if (text.Length == 0) return;
+
+        int dash = text.IndexOf('-');
+        string firstText = dash < 0 ? text : text[..dash];
+        string lastText = dash < 0 ? text : text[(dash + 1)..];
+
+        if (!ushort.TryParse(firstText.Trim(), System.Globalization.NumberStyles.HexNumber,
+                             null, out ushort first)
+            || !ushort.TryParse(lastText.Trim(), System.Globalization.NumberStyles.HexNumber,
+                                null, out ushort last))
+        {
+            StatusText = "Port not understood -- try 3C0 or 3C0-3CF";
+            return;
+        }
+
+        if (last < first) (first, last) = (last, first);
+
+        _portWatches.Add((first, last));
+        PortWatches.Add(first == last ? $"{first:X3}" : $"{first:X3}-{last:X3}");
+        HookPorts();
+
+        PortWatchText = "";
+        StatusText = first == last
+            ? $"Watching port {first:X3}"
+            : $"Watching ports {first:X3} to {last:X3}";
+    }
+
+    [RelayCommand]
+    private void RemovePortWatch(string? entry)
+    {
+        int index = entry is null ? -1 : PortWatches.IndexOf(entry);
+        if (index < 0) return;
+
+        PortWatches.RemoveAt(index);
+        _portWatches.RemoveAt(index);
+    }
+
+    [RelayCommand]
+    private void ClearPortLog() => PortLog.Clear();
+
+    private void HookPorts() => _session.WithMachine(machine =>
+    {
+        if (_portHooked) return;
+        _portHooked = true;
+        machine.Io.PortAccessed += OnPortAccessed;
+    });
+
+    /// <summary>
+    /// Records a watched port access. Like the memory handler this runs on the
+    /// emulation thread and does as little as it can: the ports being watched
+    /// are usually the busiest in the machine.
+    /// </summary>
+    private void OnPortAccessed(ushort port, bool write, byte value)
+    {
+        if (_portWatches.Count == 0) return;
+
+        bool watched = false;
+        foreach ((ushort first, ushort last) in _portWatches)
+        {
+            if (port < first || port > last) continue;
+            watched = true;
+            break;
+        }
+
+        if (!watched) return;
+
+        string where = _session.WithMachine(machine =>
+        {
+            CpuState state = machine.Cpu.State;
+            return $"{state.Cs.Selector:X4}:{state.Eip:X8}";
+        });
+
+        PortLog.Add($"{(write ? "OUT" : "IN ")} {port:X3} {(write ? "<-" : "->")} {value:X2}   from {where}");
+        while (PortLog.Count > 400) PortLog.RemoveAt(0);
+    }
 }
 
 public sealed record DisassemblyLine(
