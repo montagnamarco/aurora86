@@ -111,6 +111,7 @@ public sealed partial class Machine
         // The first hard disk is also the master on the IDE cable, where
         // Windows looks for it directly. Same image, two doors.
         if (image.DriveNumber == 0x80) Ide.AttachHardDisk(image);
+        if (image.DriveNumber == 0x81) IdeSecondary.AttachHardDisk(image);
 
         // The parameter table describes whichever floppy is in drive A:, so
         // it has to follow the disk that is actually there.

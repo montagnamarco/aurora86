@@ -140,7 +140,7 @@ public sealed partial class IdeController : IIoDevice
     /// of the period put it: the hard disk went on as master, and the drives
     /// shared the one cable the motherboard had.
     /// </summary>
-    private bool AddressingCompactDisc => _slaveSelected;
+    private bool AddressingCompactDisc => _slaveSelected && Cable == Channel.Primary;
 
     /// <summary>
     /// Turns this channel's port into the primary channel's equivalent, so

@@ -439,9 +439,9 @@ public class IdeControllerTests
         using var machine = new Machine();
         machine.RunInstructions(200);
 
-        var secondary = new IdeController(machine, machine.Interrupts,
-                                          IdeController.Channel.Secondary);
-        secondary.Register(machine.Io);
+        // The machine's own second cable, with the second hard disk as its
+        // master; the CD-ROM lives on the first cable and nowhere else.
+        machine.AttachDisk(DiskImage.CreateInMemory(0x81, 10, 16, 63));
 
         // Let both lines through, so that whichever is raised shows up.
         machine.Io.WriteByte(0x21, 0xBF);       // master: IRQ 6 masked only
@@ -449,9 +449,7 @@ public class IdeControllerTests
 
         // An unsupported command is the shortest path to an interrupt: the
         // drive aborts and interrupts to say so.
-        // Bit 4 of the drive/head register picks the slave, which is where
-        // the drive is: 0xA0 is the master and does not interrupt at all.
-        machine.Io.WriteByte(0x176, 0xB0);
+        machine.Io.WriteByte(0x176, 0xA0);      // the master, where the disk is
         machine.Io.WriteByte(0x177, 0xFF);      // a command no drive has
 
         // IRQ 15 is the slave controller's line 7.

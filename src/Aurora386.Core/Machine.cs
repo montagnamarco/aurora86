@@ -77,6 +77,9 @@ public sealed partial class Machine : IDisposable
     /// </summary>
     public IdeController Ide { get; }
 
+    /// <summary>The secondary IDE channel (170h, IRQ 15), home of the second hard disk.</summary>
+    public IdeController IdeSecondary { get; }
+
     /// <summary>
     /// The DOS network redirector: what makes a host folder or a CD appear as
     /// a drive letter whose files can be opened with ordinary DOS calls.
@@ -242,6 +245,11 @@ public sealed partial class Machine : IDisposable
 
         Ide = new IdeController(this, Interrupts);
         Ide.Register(Io);
+
+        // The second cable, for a second disk. It carries no CD-ROM: that
+        // is the slave of the first, where drivers of the period expect it.
+        IdeSecondary = new IdeController(this, Interrupts, IdeController.Channel.Secondary);
+        IdeSecondary.Register(Io);
         Redirector = new RedirectorServices(this);
         _redirectorInstaller = new RedirectorInstaller(this);
         WatchForCommandProcessor();
