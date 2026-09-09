@@ -49,6 +49,9 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
 
     public string VolumeLabel { get; }
 
+    /// <summary>The host folder this drive is, for whoever has to write it down.</summary>
+    public string RootPath => _root.FullName;
+
     /// <summary>
     /// A shared folder is writable. That is the whole point of it, and it is
     /// what distinguishes this backend from the CD one.

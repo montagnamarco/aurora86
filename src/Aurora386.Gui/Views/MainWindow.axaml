@@ -193,6 +193,22 @@
           </StackPanel>
         </Button>
 
+        <!-- A machine folder: a box with its lid, opening and closing. -->
+        <Button Classes="tool" Command="{Binding OpenVmCommand}"
+                ToolTip.Tip="Open a machine from its folder (one with vm.json in it)">
+          <StackPanel>
+            <Path Classes="icon" Data="M 3,9 L 12,5 L 21,9 L 21,19 L 12,23 L 3,19 Z M 3,9 L 12,13 L 21,9 M 12,13 L 12,23" />
+            <TextBlock Classes="toollabel" Text="Open VM" />
+          </StackPanel>
+        </Button>
+        <Button Classes="tool" Command="{Binding SaveVmCommand}"
+                ToolTip.Tip="Save this machine -- drives, mouse, processor, boot order -- to its folder">
+          <StackPanel>
+            <Path Classes="icon" Data="M 4,4 L 17,4 L 21,8 L 21,21 L 4,21 Z M 7,4 L 7,10 L 15,10 L 15,4 M 7,21 L 7,15 L 18,15 L 18,21" />
+            <TextBlock Classes="toollabel" Text="Save VM" />
+          </StackPanel>
+        </Button>
+
         <!-- A new disk: the stack of platters with a plus beside it. -->
         <Button Classes="tool" Command="{Binding CreateDiskCommand}"
                 ToolTip.Tip="Make a new hard disk image, formatted and ready, and attach it">

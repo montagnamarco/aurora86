@@ -4,6 +4,7 @@ using Aurora386.Core.Firmware.Fpu;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Diagnostics;
 using Aurora386.Core.Dos;
+using Aurora386.Core.Configuration;
 using Aurora386.Core.Devices.Input;
 using Aurora386.Sdl.Frontend;
 
@@ -29,6 +30,7 @@ string? snapshot = null;
 string? dosLogPath = null;
 string? writeLogPath = null;
 string? mouse = null;
+string? vmFolder = null;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -57,6 +59,11 @@ for (int i = 0; i < args.Length; i++)
         case "--ram":
             if (++i >= args.Length || !uint.TryParse(args[i], out ramMegabytes))
                 return Fail("--ram needs a number of megabytes");
+            break;
+
+        case "--vm":
+            if (++i >= args.Length) return Fail("--vm needs a folder");
+            vmFolder = args[i];
             break;
 
         case "--hdd2":
@@ -129,7 +136,15 @@ if (createDisk is not null)
 if (ramMegabytes is < 1 or > 64)
     return Fail("la RAM deve essere fra 1 e 64 megabyte");
 
-using var machine = new Machine(ramMegabytes * 1024 * 1024);
+// A machine folder describes the whole machine; anything else on the
+// command line is added on top of what the file says.
+if (vmFolder is not null && !File.Exists(Path.Combine(vmFolder, VmConfiguration.FileName)))
+    return Fail($"{vmFolder} has no {VmConfiguration.FileName} in it");
+
+using var machine = vmFolder is null
+    ? new Machine(ramMegabytes * 1024 * 1024)
+    : VmConfiguration.Load(vmFolder).BuildMachine();
+if (vmFolder is not null) Console.WriteLine($"machine: {vmFolder}");
 
 // Floppies take BIOS drive numbers 0x00 and 0x01; the hard disk takes 0x80,
 // the convention that separates removable from fixed media.
@@ -262,6 +277,7 @@ static void PrintUsage()
               --create-hdd <file>  create a new partitioned hard disk
               --size <MB>          size of the disk to create (default 100)
               --ram <MB>           installed memory (default 16)
+              --vm <folder>        a machine folder (vm.json); other options add to it
               --hdd2 <file>        second hard disk (81h; DOS gives it the next letter)
               --cd <file>          CD-ROM image (ISO)
               --share <folder>     a folder of this computer as drive E: (LASTDRIVE=E)

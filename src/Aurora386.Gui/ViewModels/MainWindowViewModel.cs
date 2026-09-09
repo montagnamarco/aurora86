@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Avalonia.Threading;
 using Aurora386.Core.Firmware;
 using Aurora386.Core.Firmware.Fpu;
+using Aurora386.Core.Configuration;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Diagnostics;
 using Aurora386.Core.Devices.Input;
@@ -589,6 +590,117 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             StatusText = $"Could not share that folder: {ex.Message}";
         }
+    }
+
+    /// <summary>The folder of the machine currently open, when it came from one.</summary>
+    private string? _vmFolder;
+    private VmConfiguration? _vmConfiguration;
+
+    /// <summary>
+    /// Opens a machine from its folder: stops the one running, has the
+    /// session build machines from the file from now on, and starts again.
+    ///
+    /// Deliberately not Reset. Reset re-attaches whatever the old machine
+    /// had, which is right when the same machine is being restarted and
+    /// exactly wrong here: the disks of the machine being left would land
+    /// on top of the disks of the one being opened.
+    /// </summary>
+    [RelayCommand]
+    private async Task OpenVm()
+    {
+        if (PickFolderAsync is null) return;
+
+        string? folder = await PickFolderAsync("Open a machine folder (one with vm.json in it)");
+        if (folder is null) return;
+
+        VmConfiguration configuration;
+        try { configuration = VmConfiguration.Load(folder); }
+        catch (Exception ex) { StatusText = $"Could not open that machine: {ex.Message}"; return; }
+
+        Session.Stop();
+        Session.Factory = configuration.BuildMachine;
+        try
+        {
+            Session.Reset();
+        }
+        catch (Exception ex)
+        {
+            // A disk that is not there any more, most likely. Fall back to a
+            // plain machine rather than leave the session holding nothing.
+            Session.Factory = () => new Aurora386.Core.Machine();
+            Session.Reset();
+            HookMachineEvents();
+            RefreshDriveList();
+            StatusText = $"Could not build that machine: {ex.Message}";
+            return;
+        }
+        HookMachineEvents();
+
+        _vmFolder = folder;
+        _vmConfiguration = configuration;
+
+        // The settings the window shows follow the file, not the other way.
+        CpuModel = configuration.Cpu;
+        MouseInterface = configuration.Mouse;
+
+        RefreshDriveList();
+        Session.Start();
+        StatusText = $"Opened {configuration.Name}";
+    }
+
+    /// <summary>
+    /// Writes the machine as it stands to its folder, or to one chosen now
+    /// if it has none: every drive, the mouse port, the processor, the boot
+    /// order. The memory size stays what the file had, because the window
+    /// has no control for it yet and inventing a number would be worse than
+    /// keeping the one that was true.
+    /// </summary>
+    [RelayCommand]
+    private async Task SaveVm()
+    {
+        string? folder = _vmFolder;
+        if (folder is null)
+        {
+            if (PickFolderAsync is null) return;
+            folder = await PickFolderAsync("Choose a folder to keep this machine in");
+            if (folder is null) return;
+        }
+
+        VmConfiguration configuration = _vmConfiguration ?? new VmConfiguration
+        {
+            Name = Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar)),
+        };
+
+        Session.WithMachine(machine =>
+        {
+            configuration.Cpu = machine.CpuModel;
+            configuration.Mouse = machine.MouseInterface;
+            configuration.BootOrder = machine.BootDrives.ToList();
+
+            configuration.Disks = machine.DiskServices.AttachedDrives
+                .Where(d => d.DriveNumber >= 0x80 && d.SourcePath is not null)
+                .Select(d => new VmConfiguration.DiskEntry
+                    { Path = d.SourcePath!, Drive = d.DriveNumber, ReadOnly = d.ReadOnly })
+                .ToList();
+            configuration.Floppies = machine.DiskServices.AttachedDrives
+                .Where(d => d.DriveNumber < 0x80 && d.SourcePath is not null)
+                .OrderBy(d => d.DriveNumber)
+                .Select(d => d.SourcePath!)
+                .ToList();
+            configuration.CompactDisc = machine.CompactDisc?.SourcePath;
+            configuration.SharedFolders = machine.Redirector.MountedDrives
+                .Select(drive => (Drive: drive, Folder: machine.Redirector.GetMounted(drive) as HostDirectoryFileSystem))
+                .Where(pair => pair.Folder is not null)
+                .Select(pair => new VmConfiguration.SharedFolder { Path = pair.Folder!.RootPath, Drive = pair.Drive })
+                .ToList();
+        });
+
+        try { configuration.Save(folder); }
+        catch (Exception ex) { StatusText = $"Could not save the machine: {ex.Message}"; return; }
+
+        _vmFolder = folder;
+        _vmConfiguration = configuration;
+        StatusText = $"Saved {configuration.Name} to {Path.GetFileName(folder)}";
     }
 
     /// <summary>
