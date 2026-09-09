@@ -219,6 +219,31 @@ public sealed partial class Machine
     }
 
     /// <summary>
+    /// Which drives the BIOS tries, and in what order.
+    ///
+    /// Empty means the old behaviour: every attached drive by number, so the
+    /// floppy first and the hard disk after it. That is what a PC of the
+    /// period did, and it is why leaving a disk in the drive stopped the
+    /// machine booting -- an annoyance so universal that setting the order
+    /// was among the first things anyone changed.
+    ///
+    /// A drive named here that is not attached is skipped rather than
+    /// treated as a failure: the order is a preference, not a requirement,
+    /// and a machine configured to try the floppy first should still boot
+    /// with no floppy in it.
+    /// </summary>
+    public IReadOnlyList<byte> BootDrives { get; set; } = [];
+
+    private IEnumerable<DiskImage> BootOrder()
+    {
+        if (BootDrives.Count == 0) return _disks.OrderBy(d => d.DriveNumber);
+
+        return BootDrives
+            .Select(number => _disks.FirstOrDefault(d => d.DriveNumber == number))
+            .Where(disk => disk is not null)!;
+    }
+
+    /// <summary>
     /// INT 19h: loads the boot sector and hands control to it.
     ///
     /// The sector is read to 0000:7C00, an address fixed by the PC
@@ -227,7 +252,7 @@ public sealed partial class Machine
     /// </summary>
     private void Boot(CpuNs.Cpu cpu)
     {
-        foreach (DiskImage disk in _disks.OrderBy(d => d.DriveNumber))
+        foreach (DiskImage disk in BootOrder())
         {
             var sector = new byte[DiskImage.SectorSize];
             if (!disk.ReadSectors(0, 0, 1, 1, sector)) continue;

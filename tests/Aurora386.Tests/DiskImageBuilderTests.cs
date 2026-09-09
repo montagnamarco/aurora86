@@ -176,6 +176,53 @@ public class DiskImageBuilderTests
         finally { File.Delete(path); }
     }
 
+    /// <summary>
+    /// The boot order is a preference, not a requirement.
+    ///
+    /// A machine set to try the floppy first has to boot with no floppy in
+    /// it, which is the whole reason anybody sets an order at all: the
+    /// default -- every drive by number, floppy before hard disk -- is what
+    /// made leaving a disk in the drive stop the machine.
+    /// </summary>
+    [Fact]
+    public void AnAbsentBootDriveIsSkippedRatherThanFatal()
+    {
+        string path = TempPath();
+        try
+        {
+            DiskImageBuilder.CreateFat16(path, 20_000_000);
+
+            using var machine = new Aurora386.Core.Machine();
+            machine.AttachDisk(Aurora386.Core.Devices.Storage.DiskImage.OpenHardDisk(path));
+
+            // Try the floppy first, then the hard disk. There is no floppy.
+            machine.BootDrives = [0x00, 0x80];
+            machine.RunInstructions(50_000_000);
+
+            Assert.True(machine.Booted, "the hard disk must be reached past the missing floppy");
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void TheDefaultOrderIsEveryDriveByNumber()
+    {
+        string path = TempPath();
+        try
+        {
+            DiskImageBuilder.CreateFat16(path, 20_000_000);
+
+            using var machine = new Aurora386.Core.Machine();
+            machine.AttachDisk(Aurora386.Core.Devices.Storage.DiskImage.OpenHardDisk(path));
+
+            Assert.Empty(machine.BootDrives);
+            machine.RunInstructions(50_000_000);
+
+            Assert.True(machine.Booted);
+        }
+        finally { File.Delete(path); }
+    }
+
     [Fact]
     public void TheLabelIsWrittenWhereDosLooksForIt()
     {
