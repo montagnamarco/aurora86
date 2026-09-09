@@ -105,13 +105,19 @@ public sealed class Ne2000 : IIoDevice
     private readonly byte[] _registers = new byte[4 * 16];
     private readonly byte[] _macAddress = new byte[6];
     private readonly InterruptController _interrupts;
-    private readonly INetworkBackend _backend;
     private readonly ushort _basePort;
     private readonly int _irqLine;
 
     private byte _commandRegister = CmdStop;
     private int _remoteAddress;
     private int _remoteCount;
+
+    /// <summary>
+    /// The wire the card is plugged into. Swappable while running, because
+    /// plugging a cable into a card is something one does to a machine that
+    /// is on, and the driver cannot tell the difference.
+    /// </summary>
+    public INetworkBackend Backend { get; set; }
 
     /// <summary>Frames sent and received, for the user interface to show activity.</summary>
     public long FramesSent { get; private set; }
@@ -123,7 +129,7 @@ public sealed class Ne2000 : IIoDevice
                   ReadOnlySpan<byte> macAddress = default)
     {
         _interrupts = interrupts;
-        _backend = backend;
+        Backend = backend;
         _basePort = basePort;
         _irqLine = irqLine;
 
@@ -182,6 +188,9 @@ public sealed class Ne2000 : IIoDevice
 
     private byte GetRegister(int page, int offset) => _registers[page * 16 + offset];
 
+    /// <summary>Bit 0 of the data configuration register: remote DMA moves words, not bytes.</summary>
+    private bool WordMode => (GetRegister(0, DataConfiguration) & 0x01) != 0;
+
     private void SetRegister(int page, int offset, byte value)
         => _registers[page * 16 + offset] = value;
 
@@ -197,7 +206,18 @@ public sealed class Ne2000 : IIoDevice
             return 0;
         }
 
-        if (offset == DataPort) return ReadRemoteDma();
+        if (offset is >= DataPort and < DataPort + 8)
+        {
+            // In word mode every DMA cycle moves a word, whatever the width
+            // of the bus access: a byte read gets the low half and the high
+            // half is gone. The Crynwr driver reads its station address
+            // exactly this way -- word mode, byte reads -- and expects the
+            // doubled PROM to come out as one copy.
+            if (!WordMode) return ReadRemoteDma();
+            byte low = ReadRemoteDma();
+            ReadRemoteDma();
+            return low;
+        }
         if (offset == Command) return _commandRegister;
         if (offset is < 0 or > 0x0F) return 0xFF;
 
@@ -207,12 +227,51 @@ public sealed class Ne2000 : IIoDevice
         return GetRegister(page, offset);
     }
 
+    /// <summary>
+    /// The data port is the one genuinely 16-bit register on the card: an
+    /// <c>in ax</c> there moves two bytes of the transfer, low then high.
+    /// Served as two byte reads it would read the port and the one above
+    /// it, which is not the second byte but a mirror of the same port, and
+    /// the driver would see every other byte of its own station address.
+    /// The ports from 0x10 to 0x17 all decode to the data port, as on the
+    /// real card.
+    /// </summary>
+    public ushort ReadWord(ushort port)
+    {
+        int offset = port - _basePort;
+        if (offset is >= DataPort and < DataPort + 8)
+        {
+            byte low = ReadRemoteDma();
+            byte high = ReadRemoteDma();
+            return (ushort)(low | (high << 8));
+        }
+        return (ushort)(ReadByte(port) | (ReadByte((ushort)(port + 1)) << 8));
+    }
+
+    public void WriteWord(ushort port, ushort value)
+    {
+        int offset = port - _basePort;
+        if (offset is >= DataPort and < DataPort + 8)
+        {
+            WriteRemoteDma((byte)value);
+            WriteRemoteDma((byte)(value >> 8));
+            return;
+        }
+        WriteByte(port, (byte)value);
+        WriteByte((ushort)(port + 1), (byte)(value >> 8));
+    }
+
     public void WriteByte(ushort port, byte value)
     {
         int offset = port - _basePort;
 
         if (offset == ResetPort) { Reset(); return; }
-        if (offset == DataPort) { WriteRemoteDma(value); return; }
+        if (offset is >= DataPort and < DataPort + 8)
+        {
+            WriteRemoteDma(value);
+            if (WordMode) WriteRemoteDma(0);
+            return;
+        }
         if (offset == Command) { WriteCommand(value); return; }
         if (offset is < 0 or > 0x0F) return;
 
@@ -340,6 +399,17 @@ public sealed class Ne2000 : IIoDevice
     /// </summary>
     public byte ReadCardMemory(int address)
     {
+        // Below the RAM sits the station address PROM, which is how a driver
+        // learns the MAC: a remote DMA read of the first 32 bytes. Each byte
+        // appears twice because the PROM is 8 bits wide on a 16-bit bus, and
+        // 0x57 0x57 at the end is the mark drivers look for to tell an
+        // NE2000 from an NE1000 ("WW" against "BB").
+        if ((uint)address < 32)
+        {
+            if (address < 12) return _macAddress[address >> 1];
+            return address >= 28 ? (byte)0x57 : (byte)0;
+        }
+
         int index = address - MemoryBase;
         return (uint)index < MemorySize ? _memory[index] : (byte)0xFF;
     }
@@ -374,7 +444,7 @@ public sealed class Ne2000 : IIoDevice
         for (int i = 0; i < length; i++)
             frame[i] = ReadCardMemory(start + i);
 
-        _backend.Send(frame);
+        Backend.Send(frame);
         FramesSent++;
 
         // Bit 0 of TSR is "transmitted without error", which is what a driver
@@ -401,7 +471,7 @@ public sealed class Ne2000 : IIoDevice
         if ((_commandRegister & CmdStop) != 0) return;
 
         Span<byte> buffer = stackalloc byte[1600];
-        while (_backend.TryReceive(buffer, out int length))
+        while (Backend.TryReceive(buffer, out int length))
         {
             if (length is < 14 or > 1514) continue;
             DeliverFrame(buffer[..length]);

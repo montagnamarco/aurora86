@@ -272,6 +272,25 @@
           </Button.Flyout>
         </Button>
 
+        <!-- The network card is always there; what changes is whether its
+             cable goes anywhere. NAT needs no privileges and reaches the
+             world through this computer's own connections. -->
+        <Button Classes="tool"
+                ToolTip.Tip="Where the NE2000's cable goes. NAT gives the guest a private network (10.0.2.15) that reaches the outside through this computer; the guest is not reachable from outside unless a port is forwarded in vm.json.">
+          <StackPanel>
+            <Path Classes="icon" Data="M 4,16 L 10,16 L 10,20 L 4,20 Z M 14,16 L 20,16 L 20,20 L 14,20 Z M 9,4 L 15,4 L 15,8 L 9,8 Z M 12,8 L 12,12 M 7,12 L 17,12 M 7,12 L 7,16 M 17,12 L 17,16" />
+            <TextBlock Classes="toollabel" Text="Network ▾" />
+          </StackPanel>
+          <Button.Flyout>
+            <MenuFlyout>
+              <MenuItem Header="NAT, through this computer" ToggleType="Radio"
+                        IsChecked="{Binding NetworkIsNat, Mode=TwoWay}" />
+              <MenuItem Header="Unplugged" ToggleType="Radio"
+                        IsChecked="{Binding NetworkIsOff, Mode=TwoWay}" />
+            </MenuFlyout>
+          </Button.Flyout>
+        </Button>
+
         <Separator Classes="vertical" />
 
         <!-- A chip seen from above: the package, and the legs down both

@@ -11,6 +11,8 @@ using Aurora386.Core.Configuration;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Diagnostics;
 using Aurora386.Core.Devices.Input;
+using Aurora386.Core.Devices.Network;
+using Aurora386.Core.Devices.Network.Nat;
 using Aurora386.Core.Devices.Interrupts;
 using Aurora386.Core.Devices.Timing;
 using Aurora386.Core.Devices.System;
@@ -292,6 +294,47 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether the network card is on a NAT network or on nothing at all.
+    /// Like the mouse port this goes to the machine at once: a driver that
+    /// is already loaded sees the wire appear, the way a cable plugged in
+    /// after boot would.
+    /// </summary>
+    public bool NetworkIsNat
+    {
+        get => _networkIsNat;
+        set
+        {
+            Session.WithMachine(machine => ApplyNetwork(machine, value));
+            if (!SetProperty(ref _networkIsNat, value)) return;
+            OnPropertyChanged(nameof(NetworkIsOff));
+            StatusText = value
+                ? "Network: NAT through this computer (guest 10.0.2.15, gateway 10.0.2.2)"
+                : "Network unplugged";
+        }
+    }
+
+    public bool NetworkIsOff
+    {
+        get => !NetworkIsNat;
+        set { if (value) NetworkIsNat = false; }
+    }
+
+    private bool _networkIsNat;
+
+    /// <summary>
+    /// Plugs the card into a NAT or unplugs it, leaving it alone if it is
+    /// already where it should be: a NAT holds host ports, and building a
+    /// second one while the first is still listening would find them taken.
+    /// </summary>
+    private void ApplyNetwork(Aurora386.Core.Machine machine, bool nat)
+    {
+        if (machine.Network.Backend is NatBackend == nat) return;
+        machine.ConnectNetwork(nat
+            ? VmConfiguration.BuildNat(_vmConfiguration?.Network.Forwards ?? [])
+            : new LoopbackBackend());
+    }
+
     // COM1 by default: it is what MOUSE.DRV and every DOS program of the
     // period expect to find. The PS/2 port works too -- the BIOS provides
     // INT 15h C2xx and the 8042 raises IRQ 12 -- but a guest installed while
@@ -451,7 +494,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         // rather than to the machine, so it is reapplied -- otherwise the
         // serial mouse someone chose because their program needed it quietly
         // becomes a PS/2 one the moment they press Reset.
-        Session.WithMachine(machine => machine.MouseInterface = MouseInterface);
+        Session.WithMachine(machine =>
+        {
+            machine.MouseInterface = MouseInterface;
+            ApplyNetwork(machine, NetworkIsNat);
+        });
 
         foreach ((string path, byte drive, bool readOnly) in media)
             AttachImage(path, drive, readOnly);
@@ -651,6 +698,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         // The settings the window shows follow the file, not the other way.
         CpuModel = configuration.Cpu;
         MouseInterface = configuration.Mouse;
+        NetworkIsNat = configuration.Network.Mode == VmConfiguration.NetworkMode.Nat;
 
         RefreshDriveList();
         Session.Start();
@@ -687,6 +735,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             configuration.Cpu = machine.CpuModel;
             configuration.Mouse = machine.MouseInterface;
             configuration.BootOrder = machine.BootDrives.ToList();
+            configuration.Network.Mode = machine.Network.Backend is NatBackend
+                ? VmConfiguration.NetworkMode.Nat
+                : VmConfiguration.NetworkMode.None;
 
             configuration.Disks = machine.DiskServices.AttachedDrives
                 .Where(d => d.DriveNumber >= 0x80 && d.SourcePath is not null)
@@ -826,6 +877,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             _vmConfiguration = configuration;
             CpuModel = configuration.Cpu;
             MouseInterface = configuration.Mouse;
+            NetworkIsNat = configuration.Network.Mode == VmConfiguration.NetworkMode.Nat;
             RefreshDriveList();
             WindowTitle = $"Aurora386 \u2014 {configuration.Name}";
             StatusText = $"Opened {configuration.Name}";

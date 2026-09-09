@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Aurora386.Core.Cpu;
 using Aurora386.Core.Devices.Input;
+using Aurora386.Core.Devices.Network.Nat;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Dos;
 
@@ -53,6 +54,33 @@ public sealed class VmConfiguration
 
     /// <summary>Drives to try booting from, as BIOS numbers. Empty means every drive by number.</summary>
     public List<byte> BootOrder { get; set; } = new();
+
+    public NetworkSettings Network { get; set; } = new();
+
+    public enum NetworkMode
+    {
+        /// <summary>The card is there but its frames go nowhere: the machine is off the network.</summary>
+        None,
+
+        /// <summary>A private network behind the emulator, reaching out through the host's sockets.</summary>
+        Nat,
+    }
+
+    public sealed class NetworkSettings
+    {
+        public NetworkMode Mode { get; set; } = NetworkMode.None;
+
+        /// <summary>Host ports that reach the guest, for the connections a NAT would otherwise refuse.</summary>
+        public List<PortForward> Forwards { get; set; } = new();
+    }
+
+    public sealed class PortForward
+    {
+        /// <summary>"tcp" or "udp".</summary>
+        public string Protocol { get; set; } = "tcp";
+        public int HostPort { get; set; }
+        public int GuestPort { get; set; }
+    }
 
     public sealed class DiskEntry
     {
@@ -145,6 +173,16 @@ public sealed class VmConfiguration
     /// makes "the same vm.json opens the same way everywhere" true rather
     /// than hoped for.
     /// </summary>
+    /// <summary>A NAT with the given ports forwarded, ready to plug into a card.</summary>
+    public static NatBackend BuildNat(IEnumerable<PortForward> forwards)
+    {
+        var nat = new NatBackend();
+        foreach (PortForward forward in forwards)
+            nat.Forward(!string.Equals(forward.Protocol, "udp", StringComparison.OrdinalIgnoreCase),
+                        forward.HostPort, forward.GuestPort);
+        return nat;
+    }
+
     public Machine BuildMachine()
     {
         var machine = new Machine(RamMegabytes * 1024 * 1024);
@@ -164,6 +202,7 @@ public sealed class VmConfiguration
 
         machine.MouseInterface = Mouse;
         machine.BootDrives = BootOrder;
+        if (Network.Mode == NetworkMode.Nat) machine.ConnectNetwork(BuildNat(Network.Forwards));
         return machine;
     }
 }

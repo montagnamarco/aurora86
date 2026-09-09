@@ -31,6 +31,8 @@ string? dosLogPath = null;
 string? writeLogPath = null;
 string? mouse = null;
 string? vmFolder = null;
+string? network = null;
+var forwards = new List<VmConfiguration.PortForward>();
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -91,6 +93,24 @@ for (int i = 0; i < args.Length; i++)
                 return Fail("--mouse needs ps2 or serial");
             mouse = args[i];
             break;
+
+        case "--net":
+            if (++i >= args.Length || args[i] is not ("nat" or "none"))
+                return Fail("--net needs nat or none");
+            network = args[i];
+            break;
+
+        case "--forward":
+        {
+            // tcp:8080:80 -- host port 8080 reaches guest port 80.
+            if (++i >= args.Length) return Fail("--forward needs proto:hostport:guestport");
+            string[] parts = args[i].Split(':');
+            if (parts.Length != 3 || parts[0] is not ("tcp" or "udp")
+                || !int.TryParse(parts[1], out int hostPort) || !int.TryParse(parts[2], out int guestPort))
+                return Fail($"--forward: '{args[i]}' is not proto:hostport:guestport");
+            forwards.Add(new VmConfiguration.PortForward { Protocol = parts[0], HostPort = hostPort, GuestPort = guestPort });
+            break;
+        }
 
         case "--snapshot":
             if (++i >= args.Length) return Fail("--snapshot needs a path");
@@ -196,6 +216,17 @@ if (sharedFolder is not null)
     Console.WriteLine($"drive E: {sharedFolder} (shared; needs LASTDRIVE=E or more in CONFIG.SYS)");
 }
 
+if (network == "nat" || (network is null && forwards.Count > 0))
+{
+    machine.ConnectNetwork(VmConfiguration.BuildNat(forwards));
+    Console.WriteLine($"network: NAT (guest 10.0.2.15, gateway 10.0.2.2, dns 10.0.2.3)"
+                      + (forwards.Count > 0 ? $", {forwards.Count} port(s) forwarded" : ""));
+}
+else if (network == "none")
+{
+    machine.ConnectNetwork(new Aurora386.Core.Devices.Network.LoopbackBackend());
+}
+
 if (bootOrder is not null)
 {
     // Letters, the way a BIOS setup screen shows them: A and B are the
@@ -283,6 +314,8 @@ static void PrintUsage()
               --share <folder>     a folder of this computer as drive E: (LASTDRIVE=E)
               --boot <list>        boot order, like A,C or C,A (default: every drive by number)
               --mouse ps2|serial   which port the mouse is on
+              --net nat|none       put the NE2000 on a NAT network (guest 10.0.2.15)
+              --forward p:h:g      reach guest port g from host port h (p is tcp or udp)
               --snapshot <file>    restore a saved state after attaching everything
               --doslog <file>      log the DOS calls that move files, and the faults
               --writelog <file>    log the files the guest writes on drive C:

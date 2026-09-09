@@ -16,4 +16,10 @@
     <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- I test parlano ai formati dei pacchetti del NAT, che restano un
+         dettaglio interno per tutti gli altri. -->
+    <InternalsVisibleTo Include="Aurora386.Tests" />
+  </ItemGroup>
+
 </Project>

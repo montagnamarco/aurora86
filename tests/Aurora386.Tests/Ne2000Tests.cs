@@ -74,6 +74,85 @@ public class Ne2000Tests
     }
 
     [Fact]
+    public void ThePromAtAddressZeroCarriesTheMacDoubledAndTheNe2000Mark()
+    {
+        var (card, _) = Build();
+        // Remote DMA read of 32 bytes from address 0, as every driver does.
+        card.WriteByte(Base + 0x00, 0x21);       // stop, page 0
+        card.WriteByte(Base + 0x08, 0x00);       // RSAR = 0
+        card.WriteByte(Base + 0x09, 0x00);
+        card.WriteByte(Base + 0x0A, 32);         // RBCR = 32
+        card.WriteByte(Base + 0x0B, 0);
+        card.WriteByte(Base + 0x00, 0x0A);       // remote read, start
+        byte[] prom = new byte[32];
+        for (int i = 0; i < 32; i++) prom[i] = card.ReadByte(Base + 0x10);
+
+        for (int i = 0; i < 6; i++)
+        {
+            Assert.Equal(card.MacAddress[i], prom[2 * i]);
+            Assert.Equal(card.MacAddress[i], prom[2 * i + 1]);
+        }
+        Assert.Equal(0x57, prom[28]);
+        Assert.Equal(0x57, prom[29]);
+    }
+
+    [Fact]
+    public void AWordReadOfTheDataPortMovesTwoBytes()
+    {
+        var (card, _) = Build();
+        card.WriteByte(Base + 0x00, 0x21);
+        card.WriteByte(Base + 0x08, 0x00);
+        card.WriteByte(Base + 0x09, 0x00);
+        card.WriteByte(Base + 0x0A, 32);
+        card.WriteByte(Base + 0x0B, 0);
+        card.WriteByte(Base + 0x00, 0x0A);
+
+        // Read as words, the way a driver does with rep insw: the low byte
+        // of word i is byte 2i of the PROM, which is MAC byte i.
+        for (int i = 0; i < 6; i++)
+        {
+            ushort word = card.ReadWord(Base + 0x10);
+            Assert.Equal(card.MacAddress[i], (byte)word);
+            Assert.Equal(card.MacAddress[i], (byte)(word >> 8));
+        }
+    }
+
+    [Fact]
+    public void InWordModeAByteReadOfTheDataPortConsumesAWord()
+    {
+        var (card, _) = Build();
+        card.WriteByte(Base + 0x00, 0x21);
+        card.WriteByte(Base + 0x0E, 0x49);       // DCR: word mode
+        card.WriteByte(Base + 0x08, 0x00);
+        card.WriteByte(Base + 0x09, 0x00);
+        card.WriteByte(Base + 0x0A, 32);
+        card.WriteByte(Base + 0x0B, 0);
+        card.WriteByte(Base + 0x00, 0x0A);
+
+        // The Crynwr driver's way: sixteen byte reads yield the address once.
+        for (int i = 0; i < 6; i++)
+            Assert.Equal(card.MacAddress[i], card.ReadByte(Base + 0x10));
+    }
+
+    [Fact]
+    public void AWordWriteOfTheDataPortStoresTwoBytes()
+    {
+        var (card, _) = Build();
+        card.WriteByte(Base + 0x00, 0x21);
+        card.WriteByte(Base + 0x08, 0x00);
+        card.WriteByte(Base + 0x09, 0x40);       // RSAR = 0x4000
+        card.WriteByte(Base + 0x0A, 4);
+        card.WriteByte(Base + 0x0B, 0);
+        card.WriteByte(Base + 0x00, 0x12);       // remote write, start
+        card.WriteWord(Base + 0x10, 0x3412);
+        card.WriteWord(Base + 0x10, 0x7856);
+        Assert.Equal(0x12, card.ReadCardMemory(0x4000));
+        Assert.Equal(0x34, card.ReadCardMemory(0x4001));
+        Assert.Equal(0x56, card.ReadCardMemory(0x4002));
+        Assert.Equal(0x78, card.ReadCardMemory(0x4003));
+    }
+
+    [Fact]
     public void TheMacAddressIsReadableFromPageOne()
     {
         (Ne2000 card, _) = Build();

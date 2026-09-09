@@ -386,8 +386,22 @@ public sealed partial class Machine : IDisposable
         return builder.ToString();
     }
 
+    /// <summary>
+    /// Plugs the network card into a different wire. The one it had is
+    /// closed if it owns anything -- a NAT holds host sockets -- so that
+    /// switching a machine off the network really takes it off.
+    /// </summary>
+    public void ConnectNetwork(INetworkBackend backend)
+    {
+        INetworkBackend previous = Network.Backend;
+        if (ReferenceEquals(previous, backend)) return;
+        Network.Backend = backend;
+        (previous as IDisposable)?.Dispose();
+    }
+
     public void Dispose()
     {
+        (Network.Backend as IDisposable)?.Dispose();
         foreach (DiskImage disk in _disks) disk.Dispose();
         CompactDisc?.Dispose();
         Memory.Dispose();
