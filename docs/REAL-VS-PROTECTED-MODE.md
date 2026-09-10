@@ -14,8 +14,10 @@ difference between the modes.
 
 **Real mode** (the 8086's mode, and the one the 386 wakes up in) is
 arithmetic: the segment register holds a paragraph number, and the address is
-`segment * 16 + offset`. The offset is 16 bits, so a segment covers 64 KB;
-the sum is 20 bits, so the machine sees one megabyte. There is no protection
+`segment * 16 + offset`. Ordinary real-mode segments have a 64 KB limit. The largest
+segment-plus-offset sum is `0x10FFEF`, which exceeds one megabyte: the A20
+gate determines whether bit 20 reaches the bus or wraps as on an 8086. A
+386 also accepts address-size overrides; access still obeys the cached limit. There is no protection
 of any kind: any program can write anywhere, including over the interrupt
 vector table at address 0.
 
@@ -29,8 +31,9 @@ offset against the limit and the access against the rights. Offsets can be
 
 In Aurora386 the two live in `CpuState.cs` as the *segment cache*: for every
 segment register we keep the base, limit and rights that were loaded with it,
-exactly as the silicon does. `LoadSegmentRealMode` fills the cache with
-`paragraph * 16` and a limit of `0xFFFF`; `LoadSegmentProtected` in
+exactly as the silicon does. `LoadSegmentRealMode` updates the base to `paragraph * 16` while retaining
+the cached limit; its reset variant also restores the ordinary 64 KB limit.
+`LoadSegmentProtected` in
 `Cpu.Protected.cs` fetches the descriptor and fills it from that. Once the
 cache is loaded, *every* memory access in either mode goes through the same
 code: `CheckLimit` and `base + offset` in `Cpu.cs`.
@@ -48,8 +51,8 @@ mode, `mov eax, [es:0x12345678]` works.
 
 HIMEM.SYS uses exactly this to copy to extended memory without leaving real
 mode, and it is the reason the cache must survive a mode switch untouched.
-The test is in `UnrealModeTests`; the story is in the memory note
-"emulatore-386-unreal-mode".
+The regression is in `UnrealModeTests`. V86 loads use the reset variant,
+so a virtual DOS task does not inherit an unreal-mode segment limit.
 
 ## 2. The tables
 
@@ -66,10 +69,10 @@ A selector is 16 bits: 13 bits of index, one bit (`TI`) choosing GDT or LDT,
 and two bits of *requested privilege level* (`RPL`). `ReadDescriptor` in
 `Cpu.Protected.cs` does the lookup. Descriptors are eight bytes with the
 fields scattered in the least convenient order history could devise; the
-decoding is in `LoadSegmentProtected`, and the `Desc()` helper in the test
-harnesses shows the same decoding in ten lines of Python.
+decoding is in `LoadSegmentProtected`, and `WriteDescriptor` in `ProtectedModeTests` constructs those fields for
+executable regression cases.
 
-Windows in standard mode puts its GDT at 0x310800 and its LDT at 0x314C80,
+In an earlier measured standard-mode boot Windows put its GDT at 0x310800 and its LDT at 0x314C80,
 both in extended memory; in enhanced mode the tables live behind paging at
 linear addresses like 0x80663000. Neither address means anything to a real
 mode program, which is the point.
@@ -83,11 +86,13 @@ not load a ring 0 data selector, may not jump into ring 0 code except through
 a gate, and may not execute the instructions that would let it take the
 machine over.
 
-Which instructions those are is governed by a fourth number, `IOPL`, two
-bits in EFLAGS. `CLI`, `STI`, `IN`, `OUT`, `INS`, `OUTS` and, in a virtual
-8086 task, `PUSHF`, `POPF`, `INT n` and `IRET` are *IOPL-sensitive*: they
-run only when `CPL <= IOPL`. Otherwise they raise `#GP(0)`. This is how a
-monitor takes control of interrupts and ports without the program knowing.
+The rules differ by instruction. In protected mode, `CLI` and `STI`
+require `CPL <= IOPL`; insufficient privilege raises `#GP(0)`. `POPF` and
+`IRET` instead filter which flag bits may change. Port instructions consult
+the TSS I/O bitmap when privilege does not grant direct access. In V86,
+`CLI`, `STI`, `PUSHF`, `POPF`, `INT n` and `IRET` require IOPL 3, while port
+access always consults the bitmap. A clear bitmap bit permits the access;
+a set bit traps it. Every byte of a word or dword access must be permitted.
 
 Two rules follow, and both bit us:
 
@@ -113,15 +118,26 @@ a *gate* from the IDT, and the gate decides what happens:
 
 - an **interrupt gate** or **trap gate** names a code selector and an
   offset; the processor checks that the target ring is not less privileged
-  than the current one, switches to the ring 0 stack named in the TSS if the
+  than the current one, switches to the destination privilege level’s stack in the TSS if the
   privilege rises, pushes `SS:ESP` (only then), `EFLAGS`, `CS:EIP`, and for
   some exceptions an *error code*; an interrupt gate also clears `IF`;
-- a **task gate** names a TSS and switches the whole task (not implemented
-  here: nothing we run needs it, and `Cpu.Protected.cs` says so plainly).
+- a **task gate** names a TSS and switches the task. This is implemented in
+  `Cpu.Tasks.cs`: the outgoing state is saved, the incoming state loaded,
+  and busy bits, backlinks and the nested-task flag follow the transfer
+  type. CALL/interrupt nesting and an IRET with NT set differ from a JMP.
+  `TaskSwitchTests` exercises these paths; task switching has fault points
+  both before and after the incoming task becomes current.
 
 `EnterInterruptProtected` in `Cpu.Protected.cs` does all of it.
 `IretProtected` undoes it, in the same order, including popping `SS:ESP`
-when returning to a less privileged ring.
+when returning to a less privileged ring. A call gate is a separate GDT/LDT
+mechanism: it can switch stacks and copy a specified count of parameters.
+`CallThroughGate` and the far-transfer helpers implement it.
+
+Gate validation order matters. EMM386 executed a V86 `INT 12h` against a
+non-present gate that also failed the software-INT privilege check. Testing
+presence first delivered #NP; checking type and privilege first delivers
+#GP, which the monitor can reflect. `VirtualModeTests` covers this ordering.
 
 Which exceptions push an error code is a table you have to know: `#DF`,
 `#TS`, `#NP`, `#SS`, `#GP`, `#PF`, `#AC` do; the others do not; and a
@@ -153,6 +169,14 @@ in `Cpu.Ops.cs` restores `ESP` before rethrowing, and `IretProtected` keeps
 the whole frame if it fails partway. The `#NP` restart is tested in
 `VirtualModeTests`.
 
+A second example is `POP [memory]`: the stack read can succeed before the
+write faults. The S3 VDD used `POP [EAX+87h]` at 0028:8001493Eh to restore
+state into a paged-out buffer. Advancing ESP before delivering #PF made the
+retry skip a dword and eventually return into VM data. `Cpu.Execute.cs`
+now restores ESP on that failure. Four `ProtectedModeTests` cases page in
+the missing destination and retry through IRETD, covering 16/32-bit values
+and writes across a page boundary. See [the DOS-session trace](WINDOWS-DOS.md).
+
 Delivering a fault is itself a series of memory accesses that can fault. The
 architecture's table of which second faults are *contributory* (and become
 `#DF`) versus *benign* (and are simply delivered instead) is in
@@ -172,8 +196,8 @@ halved the emulator's speed. The hot paths now deliver the fault directly
 
 The 386 can run a real mode program as a *task* inside protected mode: the
 `VM` bit in EFLAGS makes segment loads arithmetic again (`paragraph * 16`),
-but paging, privilege and the IOPL rules stay in force, and every
-IOPL-sensitive instruction traps to the monitor. That is how EMM386 gives DOS
+but paging, privilege and the IOPL rules stay in force, and privileged operations trap when their individual privilege or bitmap
+checks fail. That is how EMM386 gives DOS
 expanded memory and how Windows enhanced mode runs DOS boxes.
 
 Three things about V86 are non-obvious, and each was a bug here:
@@ -189,9 +213,11 @@ Three things about V86 are non-obvious, and each was a bug here:
   `#UD` as its cue to step back in. Emulate `ARPL` there and the stub runs on
   into data. `Cpu.Execute.cs` raises `#UD` for `63h` outside protected mode.
 - **The monitor's entry has to look exactly right**: on entering ring 0
-  from V86 the processor pushes `GS`, `FS`, `DS`, `ES` after `SS:ESP` and
-  clears them, and the `IRET` back pops all six. `DropInaccessibleDataSegments`
-  and `EnterVirtual8086` do this.
+  from V86 the processor pushes `GS`, `FS`, `DS`, `ES` first, then
+  `SS`, `ESP`, `EFLAGS`, `CS`, `EIP`, and any exception error code. Thus the
+  saved EIP is nearest the top of the completed frame. The data segment
+  registers are cleared for protected-mode execution; `EnterVirtual8086`
+  restores them from the frame on IRET.
 
 ## 7. Paging
 
@@ -201,7 +227,10 @@ page directory named by `CR3`, the next ten index a page table, the low
 twelve are the offset within a 4 KB page. Both levels carry present, writable
 and user bits; the effective permission is the stricter of the two.
 `TranslatePaged` in `Cpu.Paging.cs` walks the tables, sets the *accessed*
-bits on both levels and the *dirty* bit on the page, and keeps a TLB.
+bits on both levels and the *dirty* bit on a written page, and keeps a TLB.
+A change to a page-table entry does not automatically invalidate a cached
+translation: software reloads CR3 on the 386 (or uses INVLPG on the 486).
+The emulator’s `FlushTlb` provides the corresponding invalidation.
 
 Two lessons:
 
@@ -242,3 +271,12 @@ If you want to see it happen, the harnesses in the project's history do:
 boot the installed image, run `win`, and watch `ProcessorException` and
 `SoftwareInterruptIssued`. The counts per 300 million instructions are in
 the plan (`PIANO.md`, phase 1.4).
+
+## References and scope
+
+The architectural reference is Intel’s 80386 Programmer’s Reference Manual:
+[exceptions and restart](https://www.ardent-tool.com/CPU/docs/Intel/386/manuals/prref386/s09_08.htm)
+and [virtual-8086 execution](https://www.ardent-tool.com/CPU/docs/Intel/386/manuals/prref386/s15_03.htm).
+The addresses above identify measured guest runs, not fixed Windows APIs.
+Use `tools/WindowsDosProbe` for the current cold-boot DOS-session regression;
+`tools/EmmBootProbe` checks EMM386 installation independently.
