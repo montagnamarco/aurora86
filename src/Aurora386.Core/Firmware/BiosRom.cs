@@ -152,6 +152,7 @@ public static class BiosRom
         public const ushort Bios32Header = 0x1A60;
         public const ushort Bios32Directory = 0x1A70;
         public const ushort PciProtected = 0x1A80;
+        public const ushort PciRoutingTable = 0x1AA0;
 
         /// <summary>
         /// The redirector's own INT 2Fh entry point, which chains.
@@ -399,6 +400,7 @@ public static class BiosRom
             rom[Entry.AdvancedPowerManagement + 2] = (byte)Handler.AdvancedPowerManagement;
             rom[Entry.AdvancedPowerManagement + 3] = 0xCB;
 
+            Aurora386.Core.Devices.Pci.PciInterruptRouter.BuildRoutingTable().CopyTo(rom, Entry.PciRoutingTable);
             int b32 = Entry.Bios32Header;
             Array.Clear(rom, b32, 16);
             WriteDword(rom, b32, 0x5F32335F); // _32_

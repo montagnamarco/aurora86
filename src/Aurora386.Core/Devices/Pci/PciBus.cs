@@ -10,6 +10,7 @@ namespace Aurora386.Core.Devices.Pci;
 /// </summary>
 public sealed class PciBus : IIoDwordDevice
 {
+    public PciInterruptRouter? InterruptRouter { get; set; }
     private uint _address;
     private readonly SortedDictionary<ushort, PciFunction> _functions = new();
     public IEnumerable<PciFunction> Functions => _functions.Values;
@@ -44,6 +45,7 @@ public sealed class PciBus : IIoDwordDevice
     }
     public void Reset()
     {
+        InterruptRouter?.ResetSources();
         _address = 0;
         foreach (var function in Functions) function.Reset();
     }
@@ -57,6 +59,12 @@ public sealed class PciBus : IIoDwordDevice
         {
             writer.Write(function.Address);
             writer.Write(function.Capture());
+        }
+        if (InterruptRouter is not null)
+        {
+            byte[] interrupts = InterruptRouter.Capture();
+            writer.Write(interrupts.Length);
+            writer.Write(interrupts);
         }
         return stream.ToArray();
     }
@@ -76,9 +84,17 @@ public sealed class PciBus : IIoDwordDevice
                 throw new InvalidDataException("Invalid PCI snapshot function.");
             blocks.Add((function, state));
         }
-        if (reader.BaseStream.Position != reader.BaseStream.Length)
-            throw new InvalidDataException("Trailing PCI snapshot data.");
+        byte[] interruptState = [];
+        if (reader.BaseStream.Position < reader.BaseStream.Length)
+        {
+            int length = reader.ReadInt32();
+            if (length < 0 || length != reader.BaseStream.Length - reader.BaseStream.Position)
+                throw new InvalidDataException("Invalid PCI interrupt snapshot length.");
+            interruptState = reader.ReadBytes(length);
+        }
+        InterruptRouter?.ResetSources();
         foreach (var block in blocks) block.Function.Restore(block.Data);
         _address = address & 0x80FFFFFC;
+        InterruptRouter?.Restore(interruptState);
     }
 }

@@ -43,6 +43,29 @@ public sealed class PciBios(PciBus bus)
                 else state.Bx = found.Address;
                 break;
             }
+            case 0x0E:
+            {
+                bool wide = fromEntryPoint && state.Cs.Big;
+                uint parameters = cpu.FarPointerToLinear(state.Es.Selector, wide ? state.Edi : state.Di);
+                ushort capacity = cpu.ReadLinearWord(parameters);
+                byte[] entries = PciInterruptRouter.BuildRoutingTable()[32..];
+                cpu.WriteLinearWord(parameters, (ushort)entries.Length);
+                if (capacity < entries.Length) { status = 0x89; break; }
+                uint offset = cpu.ReadLinearWord(parameters + 2);
+                if (wide) offset |= (uint)cpu.ReadLinearWord(parameters + 4) << 16;
+                ushort segment = cpu.ReadLinearWord(parameters + (wide ? 6u : 4u));
+                uint buffer = cpu.FarPointerToLinear(segment, offset);
+                for (uint i = 0; i < entries.Length; i++) cpu.WriteLinearByte(buffer + i, entries[i]);
+                state.Bx = 0; // all supported IRQs can also serve ISA devices
+                break;
+            }
+            case 0x0F:
+                // CL is 0Ah..0Dh. Route programs ELCR; the caller owns PIC masks.
+                byte pin = state.GetReg8(1);
+                status = pin is >= 0x0A and <= 0x0D && bus.InterruptRouter is not null
+                    && bus.InterruptRouter.Route(state.Bx, (byte)(pin - 9), state.GetReg8(5))
+                    ? (byte)0 : (byte)0x88;
+                break;
             case >= 0x08 and <= 0x0D:
             {
                 int function = state.GetReg8(0);
@@ -62,7 +85,7 @@ public sealed class PciBios(PciBus bus)
                 break;
             }
             default:
-                status = 0x81; // no special cycles or PCI interrupt routing yet
+                status = 0x81; // no special cycles
                 break;
         }
         state.SetReg8(4, status);

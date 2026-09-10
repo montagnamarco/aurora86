@@ -50,6 +50,7 @@ public sealed partial class Machine
     private void RunPost()
     {
         Pci.Reset();
+        Interrupts.ResetTriggerModes();
         // A reboot starts with no CD-ROM driver loaded; the guest reveals one
         // again by sending its first packet.
         GuestHasItsOwnCompactDiscExtensions = false;

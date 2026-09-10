@@ -25,6 +25,40 @@ public sealed class Pic8259 : IIoDevice
 
     /// <summary>Interrupt request register: lines asking to be serviced.</summary>
     private byte _requestRegister;
+    private byte _inputLevels;
+    internal byte LevelMask { get; set; }
+    private byte _externalLevels;
+
+    internal void SetExternalLevels(byte levels)
+    {
+        _requestRegister |= (byte)(levels & ~_externalLevels & ~LevelMask);
+        _externalLevels = levels;
+    }
+
+    private byte Requests
+    {
+        get
+        {
+            byte requests = (byte)(_requestRegister | ((_inputLevels | _externalLevels) & LevelMask));
+            if (_isMaster && _slave is not null)
+                requests = (byte)((requests & ~4) | (_slave.HasPendingInterrupt ? 4 : 0));
+            return requests;
+        }
+    }
+
+    private int PendingLine()
+    {
+        byte pending = (byte)(Requests & ~_maskRegister);
+        for (int line = 0; line < 8; line++)
+        {
+            int bit = 1 << line;
+            if ((pending & bit) == 0) continue;
+            // Lower numbered inputs have higher priority, including the
+            // request already in service at this same priority.
+            return (_serviceRegister & ((bit << 1) - 1)) == 0 ? line : -1;
+        }
+        return -1;
+    }
 
     /// <summary>In-service register: lines being handled, not yet closed by an EOI.</summary>
     private byte _serviceRegister;
@@ -50,11 +84,13 @@ public sealed class Pic8259 : IIoDevice
     /// <summary>Asserts a hardware interrupt request on this line.</summary>
     public void RaiseIrq(int line)
     {
-        _requestRegister |= (byte)(1 << line);
+        _inputLevels |= (byte)(1 << line);
+        if ((LevelMask & (1 << line)) == 0) _requestRegister |= (byte)(1 << line);
     }
 
     public void LowerIrq(int line)
     {
+        _inputLevels &= (byte)~(1 << line);
         _requestRegister &= (byte)~(1 << line);
     }
 
@@ -67,46 +103,33 @@ public sealed class Pic8259 : IIoDevice
     /// </summary>
     public int GetPendingVector()
     {
-        byte pending = (byte)(_requestRegister & ~_maskRegister);
-        if (pending == 0) return -1;
+        int line = PendingLine();
+        if (line < 0) return -1;
+        byte bit = (byte)(1 << line);
 
-        for (int line = 0; line < 8; line++)
+        // The cascade: line 2 on the master is not a device at all, it is
+        // the slave controller asking to be serviced. The vector comes
+        // from the slave, but the master still marks line 2 in service so
+        // that both controllers need an EOI when the handler finishes.
+        if (_isMaster && line == 2 && _slave is not null)
         {
-            byte bit = (byte)(1 << line);
-            if ((pending & bit) == 0) continue;
-
-            // An interrupt of equal or lower priority than one already in
-            // service has to wait. This is what stops a handler from being
-            // re-entered by its own line before it has sent its EOI.
-            if (_serviceRegister != 0 && (_serviceRegister & ~(bit - 1)) != 0)
-                return -1;
-
-            // The cascade: line 2 on the master is not a device at all, it is
-            // the slave controller asking to be serviced. The vector comes
-            // from the slave, but the master still marks line 2 in service so
-            // that both controllers need an EOI when the handler finishes.
-            if (_isMaster && line == 2 && _slave is not null)
-            {
-                int slaveVector = _slave.GetPendingVector();
-                if (slaveVector < 0) return -1;
-                _requestRegister &= (byte)~bit;
-                _serviceRegister |= bit;
-                return slaveVector;
-            }
-
+            int slaveVector = _slave.GetPendingVector();
+            if (slaveVector < 0) return -1;
             _requestRegister &= (byte)~bit;
             _serviceRegister |= bit;
-            return _vectorBase + line;
+            return slaveVector;
         }
 
-        return -1;
+        _requestRegister &= (byte)~bit;
+        _serviceRegister |= bit;
+        return _vectorBase + line;
     }
 
     public byte ReadByte(ushort port)
     {
         bool commandPort = (port & 1) == 0;
         if (commandPort)
-            return _readIsr ? _serviceRegister : _requestRegister;
+            return _readIsr ? _serviceRegister : Requests;
         return _maskRegister;
     }
 
@@ -195,7 +218,7 @@ public sealed class Pic8259 : IIoDevice
     }
 
     /// <summary>True when at least one unmasked interrupt is waiting to be serviced.</summary>
-    public bool HasPendingInterrupt => (_requestRegister & ~_maskRegister) != 0;
+    public bool HasPendingInterrupt => PendingLine() >= 0;
 
     /// <summary>
     /// True while a hardware interrupt is being serviced and is still waiting
@@ -216,7 +239,7 @@ public sealed class Pic8259 : IIoDevice
     /// these three bytes tells the three apart in one look.
     /// </summary>
     public (byte Request, byte Mask, byte InService) Registers
-        => (_requestRegister, _maskRegister, _serviceRegister);
+        => (Requests, _maskRegister, _serviceRegister);
 
     /// <summary>
     /// The whole of this controller's state, for a snapshot.
@@ -230,7 +253,7 @@ public sealed class Pic8259 : IIoDevice
     public byte[] Capture() =>
     [
         _requestRegister, _serviceRegister, _maskRegister, _vectorBase,
-        (byte)_initStep, (byte)(_expectIcw4 ? 1 : 0), (byte)(_readIsr ? 1 : 0), 0,
+        (byte)_initStep, (byte)(_expectIcw4 ? 1 : 0), (byte)(_readIsr ? 1 : 0), _inputLevels,
     ];
 
     /// <summary>Puts back what <see cref="Capture"/> took.</summary>
@@ -245,6 +268,8 @@ public sealed class Pic8259 : IIoDevice
         _initStep = state[4];
         _expectIcw4 = state[5] != 0;
         _readIsr = state[6] != 0;
+        _inputLevels = state[7];
+        _externalLevels = 0; // PCI owners restore their asserted sources separately.
     }
 }
 
@@ -252,7 +277,7 @@ public sealed class Pic8259 : IIoDevice
 /// The pair of cascaded 8259s exactly as a PC wires them, with the routing
 /// logic for all 16 IRQ lines.
 /// </summary>
-public sealed class InterruptController
+public sealed class InterruptController : IIoDevice
 {
     public Pic8259 Master { get; }
     public Pic8259 Slave { get; }
@@ -267,6 +292,28 @@ public sealed class InterruptController
     {
         io.Register(0x20, 2, Master);
         io.Register(0xA0, 2, Slave);
+        io.Register(0x4D0, 2, this);
+    }
+
+    // PIIX ELCR: IRQ0/1/2/8/13 remain edge triggered.
+    public byte ReadByte(ushort port) => port == 0x4D0 ? Master.LevelMask : Slave.LevelMask;
+    public void WriteByte(ushort port, byte value)
+    {
+        if (port == 0x4D0) Master.LevelMask = (byte)(value & 0xF8);
+        else Slave.LevelMask = (byte)(value & 0xDE);
+    }
+
+    /// <summary>Combined PCI inputs, kept separate from legacy device pins.</summary>
+    public void SetPciLevels(ushort levels)
+    {
+        Master.SetExternalLevels((byte)levels);
+        Slave.SetExternalLevels((byte)(levels >> 8));
+    }
+
+    public void ResetTriggerModes()
+    {
+        Master.LevelMask = 0;
+        Slave.LevelMask = 0;
     }
 
     /// <summary>
@@ -306,9 +353,11 @@ public sealed class InterruptController
     /// <summary>Both controllers' state, master first.</summary>
     public byte[] Capture()
     {
-        byte[] state = new byte[16];
+        byte[] state = new byte[18];
         Master.Capture().CopyTo(state, 0);
         Slave.Capture().CopyTo(state, 8);
+        state[16] = Master.LevelMask;
+        state[17] = Slave.LevelMask;
         return state;
     }
 
@@ -318,5 +367,7 @@ public sealed class InterruptController
         if (state.Length < 16) return;
         Master.Restore(state[..8]);
         Slave.Restore(state[8..16]);
+        Master.LevelMask = state.Length >= 18 ? (byte)(state[16] & 0xF8) : (byte)0;
+        Slave.LevelMask = state.Length >= 18 ? (byte)(state[17] & 0xDE) : (byte)0;
     }
 }

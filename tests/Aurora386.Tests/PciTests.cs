@@ -186,12 +186,42 @@ public class PciTests
         Bios(m, 0xB10A);
         Assert.Equal(uint.MaxValue, m.Cpu.State.Ecx);
         Assert.False(m.Cpu.Flags.Carry);
-        foreach (ushort function in new ushort[] { 0xB106, 0xB10E, 0xB10F })
+        foreach (ushort function in new ushort[] { 0xB106 })
         {
             Bios(m, function);
             Assert.Equal(0x81, m.Cpu.State.GetReg8(4));
             Assert.True(m.Cpu.Flags.Carry);
         }
+    }
+
+    [Fact]
+    public void BiosReturnsRoutingOptionsAndProgramsTheAdvertisedSlot()
+    {
+        using var m = Boot();
+        m.Cpu.SetSegment(SegReg.Es, 0);
+        m.Cpu.State.Di = 0x3000;
+        m.Memory.WriteWord(0x3000, 0);
+        m.Memory.WriteByte(0x4000, 0xCC);
+        Bios(m, 0xB10E);
+        Assert.Equal(0x89, m.Cpu.State.GetReg8(4));
+        Assert.Equal(64, m.Memory.ReadWord(0x3000));
+        Assert.Equal(0xCC, m.Memory.ReadByte(0x4000));
+        m.Memory.WriteWord(0x3002, 0x4000); m.Memory.WriteWord(0x3004, 0);
+        Bios(m, 0xB10E);
+        Assert.False(m.Cpu.Flags.Carry);
+        Assert.Equal(0, m.Cpu.State.Bx);
+        for (uint i = 0; i < 64; i++)
+            Assert.Equal(m.Memory.ReadByte(BiosRom.Base + BiosRom.Entry.PciRoutingTable + 32 + i),
+                m.Memory.ReadByte(0x4000 + i));
+        m.Cpu.State.Bx = 0x10; m.Cpu.State.Cx = 0x0B0A;
+        Bios(m, 0xB10F);
+        Assert.False(m.Cpu.Flags.Carry);
+        Assert.Equal(11u, m.Pci.ReadConfiguration(8, 0x60, 1));
+        Assert.Equal(8, m.Io.ReadByte(0x4D1));
+        m.Cpu.State.Cx = 0x080A;
+        Bios(m, 0xB10F);
+        Assert.True(m.Cpu.Flags.Carry);
+        Assert.Equal(0x88, m.Cpu.State.GetReg8(4));
     }
 
     [Fact]
@@ -231,6 +261,16 @@ public class PciTests
         m.Cpu.State.Ax = 0xB10A; m.Cpu.State.Bx = 9; m.Cpu.State.Di = 0;
         FarCall(entry);
         Assert.Equal(0x12308086u, m.Cpu.State.Ecx);
+        m.Cpu.SetSegment(SegReg.Es, 16);
+        m.Cpu.State.Edi = 0x13000;
+        m.Memory.WriteWord(0x13000, 64);
+        m.Memory.WriteDword(0x13002, 0x14000);
+        m.Memory.WriteWord(0x13006, 16);
+        m.Cpu.State.Ax = 0xB10E;
+        FarCall(entry);
+        Assert.False(m.Cpu.Flags.Carry);
+        Assert.Equal(0x60, m.Memory.ReadByte(0x14002));
+        Assert.Equal(5, m.Memory.ReadByte(0x14031) >> 3);
         m.Cpu.State.Ax = 0xB10F;
         FarCall(entry);
         Assert.True(m.Cpu.Flags.Carry);
