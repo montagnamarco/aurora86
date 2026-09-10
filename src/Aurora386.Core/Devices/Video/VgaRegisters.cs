@@ -74,6 +74,7 @@ public sealed class VgaRegisters : IIoDevice
     private int _dacComponent;
 
     private byte _miscOutput = 0x67;
+    private byte _featureControl;
 
     // --- named register indices ----------------------------------------------
     // Naming these is not decoration: the whole planar write path is four
@@ -965,7 +966,7 @@ public sealed class VgaRegisters : IIoDevice
             case 0x3CF: return ReadGraphics(_graphicsIndex);
             case 0x3D4 or 0x3B4: return _crtcIndex;
             case 0x3D5 or 0x3B5: return ReadCrtc(_crtcIndex);
-            case 0x3CA: return 0x00;   // feature control: nothing set
+            case 0x3CA: return _featureControl;
             case 0x3C3: return 0x01;   // the video subsystem is enabled
             case 0x3C2:
             {
@@ -1072,6 +1073,13 @@ public sealed class VgaRegisters : IIoDevice
                 _attributeExpectingIndex = !_attributeExpectingIndex;
                 return;
 
+            // Trio64 FCR: bit 3 selects the external VSYNC output. It does
+            // not change the internal retrace status or attribute flip-flop.
+            // Misc Output bit 0 selects the colour or monochrome write port.
+            case 0x3DA or 0x3BA:
+                if (port == ((_miscOutput & 1) != 0 ? 0x3DA : 0x3BA))
+                    _featureControl = (byte)(value & 0x08);
+                return;
             case 0x3C2: _miscOutput = value; return;
             case 0x3C4: _sequencerIndex = value; return;
             case 0x3C5: WriteSequencer(_sequencerIndex, value); return;
@@ -1217,6 +1225,7 @@ public sealed class VgaRegisters : IIoDevice
         state[at++] = (byte)VesaDisplayStart;
         state[at++] = (byte)(VesaDisplayStart >> 8);
         state[at++] = (byte)(VesaDisplayStart >> 16);
+        state[at++] = _featureControl; // formerly zero padding; old snapshots read as reset
 
         return state;
     }
@@ -1252,7 +1261,8 @@ public sealed class VgaRegisters : IIoDevice
 
         VesaWindowBank = state[at++];
         VesaScanLineBytes = state[at] | (state[at + 1] << 8); at += 2;
-        VesaDisplayStart = state[at] | (state[at + 1] << 8) | (state[at + 2] << 16);
+        VesaDisplayStart = state[at] | (state[at + 1] << 8) | (state[at + 2] << 16); at += 3;
+        _featureControl = (byte)(state[at] & 0x08);
 
         ModeChanged?.Invoke();
     }
