@@ -156,6 +156,7 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     public bool Mount(byte drive, IRedirectedFileSystem fileSystem)
     {
+        if (drive >= 26) throw new ArgumentOutOfRangeException(nameof(drive), "Drive must be A through Z.");
         _drives[drive] = fileSystem;
         MarkDriveRedirected(drive);
 
@@ -183,6 +184,22 @@ public sealed class RedirectorServices(Machine machine)
 
     /// <summary>The drive letters currently served, lowest first.</summary>
     public IEnumerable<byte> MountedDrives => _drives.Keys.Order();
+
+    /// <summary>
+    /// Whether an automatic mount can use this letter. Once DOS is attached,
+    /// its live CDS is authoritative: partitions, MSCDEX and other redirectors
+    /// can occupy letters that cannot be inferred from the number of disks.
+    /// Reading through the CPU also works when Windows has paged DOS memory.
+    /// </summary>
+    public bool IsDriveAvailable(byte drive)
+    {
+        if (drive >= 26 || _drives.ContainsKey(drive)) return false;
+        if (!IsInstalled) return true;
+        if (drive >= DriveCount) return false;
+        uint entry = CurrentDirectoryStructure + (uint)(drive * DosStructures.CdsEntrySize);
+        return (ReadWordAt(entry + DosStructures.CdsFlags)
+            & (DosStructures.CdsValidFlag | DosStructures.CdsRedirectedFlag)) == 0;
+    }
 
     /// <summary>
     /// Marks the drive's CDS entry as one we serve, which is the entire act

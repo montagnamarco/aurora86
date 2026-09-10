@@ -406,6 +406,67 @@ public class RedirectedFileSystemTests : IDisposable
 
 public class SharedFolderLettersTests
 {
+    [Fact]
+    public void AutomaticLettersSkipDosDrivesAndRespectLastDrive()
+    {
+        using var machine = new Aurora386.Core.Machine();
+        const uint cds = 0x30000;
+        machine.Redirector.AttachToDos(0x20000, cds, 7);
+        // E: local partition, F: MSCDEX or another redirector, G: free.
+        machine.Memory.WriteWord(cds + 4 * DosStructures.CdsEntrySize + DosStructures.CdsFlags,
+            DosStructures.CdsValidFlag);
+        machine.Memory.WriteWord(cds + 5 * DosStructures.CdsEntrySize + DosStructures.CdsFlags,
+            DosStructures.CdsValidFlag | DosStructures.CdsRedirectedFlag);
+        Assert.Equal(6, machine.NextSharedFolderDrive());
+        machine.Memory.WriteWord(cds + 6 * DosStructures.CdsEntrySize + DosStructures.CdsFlags,
+            DosStructures.CdsValidFlag);
+        Assert.Throws<InvalidOperationException>(() => machine.NextSharedFolderDrive());
+    }
+
+    [Fact]
+    public void AutomaticLettersNeverReturnPunctuationAfterZ()
+    {
+        using var machine = new Aurora386.Core.Machine();
+        var share = new HostDirectoryFileSystem(Path.GetTempPath());
+        for (byte drive = 4; drive < 26; drive++) machine.Redirector.Mount(drive, share);
+        Assert.Throws<InvalidOperationException>(() => machine.NextSharedFolderDrive());
+    }
+
+    [Fact]
+    public void SelectionReadsTheCurrentCdsWithoutChangingIt()
+    {
+        using var machine = new Aurora386.Core.Machine();
+        const uint cds = 0x30000;
+        machine.Redirector.AttachToDos(0x20000, cds, 6);
+        uint flags = cds + 4 * DosStructures.CdsEntrySize + DosStructures.CdsFlags;
+        Assert.Equal(4, machine.NextSharedFolderDrive());
+        machine.Memory.WriteWord(flags, DosStructures.CdsRedirectedFlag);
+        Assert.Equal(5, machine.NextSharedFolderDrive());
+        Assert.Equal(DosStructures.CdsRedirectedFlag, machine.Memory.ReadWord(flags));
+        machine.Memory.WriteWord(flags, 0);
+        Assert.Equal(4, machine.NextSharedFolderDrive());
+    }
+
+    [Fact]
+    public void TooSmallLastDriveDoesNotCreateAPendingAutomaticMount()
+    {
+        using var machine = new Aurora386.Core.Machine();
+        machine.Redirector.AttachToDos(0x20000, 0x30000, 4);
+        Assert.False(machine.TryGetNextSharedFolderDrive(out _));
+        Assert.Empty(machine.Redirector.MountedDrives);
+    }
+
+    [Theory]
+    [InlineData(26)]
+    [InlineData(255)]
+    public void InvalidExplicitLettersCannotEnterTheMountTable(int drive)
+    {
+        using var machine = new Aurora386.Core.Machine();
+        Assert.Throws<ArgumentOutOfRangeException>(() => machine.Redirector.Mount((byte)drive,
+            new HostDirectoryFileSystem(Path.GetTempPath())));
+        Assert.Empty(machine.Redirector.MountedDrives);
+    }
+
     private static Aurora386.Core.Devices.Storage.IsoImage Disc()
     {
         var bytes = new byte[100 * Aurora386.Core.Devices.Storage.IsoImage.SectorSize];

@@ -57,6 +57,12 @@ public class CompactDiscLetterTests
 
         Assert.Equal((byte)5, machine.QueryCompactDiscLetter());
         Assert.Equal((byte)5, seen);
+
+        // E: is occupied and MSCDEX still owns F: after the tray is emptied.
+        machine.Memory.WriteWord(0x30000 + 4 * Aurora386.Core.Dos.DosStructures.CdsEntrySize
+            + Aurora386.Core.Dos.DosStructures.CdsFlags, 0x4000);
+        machine.EjectCompactDisc();
+        Assert.Equal(6, machine.NextSharedFolderDrive());
     }
 
     [Fact]

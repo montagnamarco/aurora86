@@ -224,7 +224,10 @@ if (compactDisc is not null)
 foreach ((byte? requested, string folder) in sharedFolders)
 {
     if (!Directory.Exists(folder)) return Fail($"cartella non trovata: {folder}");
-    byte drive = requested ?? machine.NextSharedFolderDrive();
+    byte drive;
+    if (requested is { } explicitDrive) drive = explicitDrive;
+    else if (!machine.TryGetNextSharedFolderDrive(out drive))
+        return Fail("nessuna lettera DOS libera per la cartella condivisa; controllare le unità occupate e LASTDRIVE");
     machine.Redirector.Mount(drive, new HostDirectoryFileSystem(folder));
     char letter = (char)('A' + drive);
     Console.WriteLine($"drive {letter}: {folder} (shared; needs LASTDRIVE={letter} or more in CONFIG.SYS)");
