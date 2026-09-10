@@ -168,13 +168,24 @@ public sealed class XmsManager
         cpu.State.SetReg8(3, 0);   // BL: no error
     }
 
+    /// <summary>
+    /// Function 0x08: how much extended memory is left. AX is the largest
+    /// block that could be allocated in one piece and DX the total still
+    /// free -- both of them free figures, not the installed size. Reporting
+    /// the installed total in DX tells a caller there is memory that has
+    /// already been handed out, and one that sizes a buffer from DX and then
+    /// allocates it gets a refusal it was not expecting.
+    ///
+    /// Our allocator never splits a block, so the largest free block and the
+    /// total free are the same number.
+    /// </summary>
     private void QueryFreeMemory(CpuNs.Cpu cpu)
     {
-        uint free = FreeExtendedKb;
         // The registers are 16 bit wide, so anything past 64 MB saturates --
         // not a concern with 16 MB of RAM.
-        cpu.State.Ax = (ushort)Math.Min(free, 0xFFFF);      // largest free block
-        cpu.State.Dx = (ushort)Math.Min(TotalExtendedKb, 0xFFFF);
+        ushort free = (ushort)Math.Min(FreeExtendedKb, 0xFFFF);
+        cpu.State.Ax = free;      // largest free block
+        cpu.State.Dx = free;      // total free
         cpu.State.SetReg8(3, 0);
     }
 

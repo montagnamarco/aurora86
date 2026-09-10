@@ -279,6 +279,29 @@ public class XmsTests
         Assert.True(machine.Cpu.State.Dx < 16000);
     }
 
+    /// <summary>
+    /// Function 08 reports two free figures: AX the largest block that could
+    /// be allocated in one piece, DX the total still free. DX used to carry
+    /// the installed size instead, which claims memory that has already been
+    /// handed out is available.
+    /// </summary>
+    [Fact]
+    public void AvailableMemoryShrinksAfterAnAllocation()
+    {
+        using Machine machine = CreateBootedMachine();
+
+        CallXms(machine, 0x08);
+        ushort before = machine.Cpu.State.Dx;
+        Assert.Equal(before, machine.Cpu.State.Ax);      // one unsplit pool
+
+        CallXms(machine, 0x09, c => c.State.Dx = 512);
+        Assert.Equal(1, machine.Cpu.State.Ax);
+
+        CallXms(machine, 0x08);
+        Assert.Equal(before - 512, machine.Cpu.State.Dx);
+        Assert.Equal(machine.Cpu.State.Dx, machine.Cpu.State.Ax);
+    }
+
     [Fact]
     public void AllocatingAndFreeingABlock()
     {
