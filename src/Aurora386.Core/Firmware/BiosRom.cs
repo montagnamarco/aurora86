@@ -93,6 +93,25 @@ public static class BiosRom
         public const ushort SystemConfiguration = 0x11A0;
 
         /// <summary>
+        /// Where every vector with no handler of its own points: a bare IRET.
+        ///
+        /// It is not the same thing as <see cref="DummyIrq"/>, and the
+        /// difference matters. The dummy IRQ entry acknowledges the interrupt
+        /// controllers before returning, which is right for a hardware line
+        /// nobody claimed and wrong for everything else: a software INT that
+        /// sends two end-of-interrupt commands clears whichever line really
+        /// was in service, and a device that had raised one never gets
+        /// another look. It also makes an unclaimed vector answer like a
+        /// working handler. INT 67h is the case that showed it up: EMM386
+        /// calls it to find out whether an EMS manager is already installed,
+        /// our filler answered as if one were, and EMM386 gave up with "the
+        /// EMM386 driver was not installed" -- so there were no upper memory
+        /// blocks, and with none the DOS box under Windows had nowhere to
+        /// live.
+        /// </summary>
+        public const ushort UnusedVector = 0x11B0;
+
+        /// <summary>
         /// The card's name, as a far pointer in the VBE information block.
         ///
         /// It has to live in ROM because the structure hands back a pointer
@@ -300,6 +319,7 @@ public static class BiosRom
         WriteIrqEntry(rom, Entry.TimerTick, Handler.TimerTick, slave: false, userTick: true, readKeyboard: false);
         WriteIrqEntry(rom, Entry.KeyboardIrq, Handler.KeyboardIrq, slave: false, userTick: false, readKeyboard: false);
         WriteIrqEntry(rom, Entry.DummyIrq, Handler.DummyIrq, slave: true, userTick: false, readKeyboard: false);
+        rom[Entry.UnusedVector] = 0xCF;      // IRET, and nothing else
         WriteInterruptEntry(rom, Entry.Multiplex, Handler.Multiplex);
         WriteInterruptEntry(rom, Entry.Coprocessor, Handler.Coprocessor);
 

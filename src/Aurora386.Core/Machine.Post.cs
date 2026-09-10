@@ -116,8 +116,16 @@ public sealed partial class Machine
         // a zero there is not "free vector" but a pointer that sends execution
         // to 0000:0000. Fill everything first, then overwrite the entries that
         // have a real handler.
+        //
+        // The filler is a bare IRET, not the stub that acknowledges the
+        // interrupt controllers: only a hardware line deserves that, and an
+        // unclaimed software interrupt that sends an end-of-interrupt clears
+        // whichever line really was in service. It also has to look like
+        // nobody is home, because that is how a driver decides whether the
+        // service it provides is already provided. EMM386 asks INT 67h
+        // whether an EMS manager is installed before installing itself.
         for (int vector = 0; vector < 256; vector++)
-            SetVector((byte)vector, BiosRom.Entry.DummyIrq);
+            SetVector((byte)vector, BiosRom.Entry.UnusedVector);
 
         // Each vector is four bytes -- offset then segment -- starting at
         // physical address 0.
