@@ -35,6 +35,28 @@ public class Intel486InstructionTests
         return machine;
     }
 
+    [Theory]
+    [InlineData(CpuModel.Intel386, 4, 6)]
+    [InlineData(CpuModel.Intel386, 5, 7)]
+    [InlineData(CpuModel.Intel486, 4, 6)]
+    [InlineData(CpuModel.Intel486, 5, 7)]
+    public void DebugRegisterAliasesShareStorageInBothDirections(CpuModel model, int alias, int canonical)
+    {
+        // MOV DRalias,EAX; MOV EBX,DRcanonical; MOV DRcanonical,EDX; MOV ECX,DRalias.
+        // Special-register MOVs transfer 32 bits even from a 16-bit code segment.
+        using Machine machine = Running(
+            0x0F, 0x23, (byte)(0xC0 | alias << 3),
+            0x0F, 0x21, (byte)(0xC3 | canonical << 3),
+            0x0F, 0x23, (byte)(0xC2 | canonical << 3),
+            0x0F, 0x21, (byte)(0xC1 | alias << 3));
+        machine.Cpu.State.Model = model;
+        machine.Cpu.State.Eax = 0x12340401;
+        machine.Cpu.State.Edx = 0x56780402;
+        for (int i = 0; i < 4; i++) machine.Cpu.Step();
+        Assert.Equal(0x12340401u, machine.Cpu.State.Ebx);
+        Assert.Equal(0x56780402u, machine.Cpu.State.Ecx);
+    }
+
     [Fact]
     public void BswapTurnsAValueInsideOut()
     {

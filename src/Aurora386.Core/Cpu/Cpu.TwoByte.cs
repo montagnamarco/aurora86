@@ -494,18 +494,20 @@ public sealed partial class Cpu
             // There is no breakpoint hardware behind these, but the values
             // still have to be kept: whoever writes them expects to read the
             // same values back, and debuggers probe exactly that way.
+            // On 386/486 DR4 and DR5 alias DR6 and DR7. There is no CR4.DE
+            // on these models to disable the legacy aliases.
             case 0x21:
             {
                 RequireSupervisor();
                 var m = DecodeModRm();
-                State.SetReg32(m.Register, State.Dr[m.Reg]);
+                State.SetReg32(m.Register, State.Dr[m.Reg is 4 or 5 ? m.Reg + 2 : m.Reg]);
                 return;
             }
             case 0x23:
             {
                 RequireSupervisor();
                 var m = DecodeModRm();
-                State.Dr[m.Reg] = State.GetReg32(m.Register);
+                State.Dr[m.Reg is 4 or 5 ? m.Reg + 2 : m.Reg] = State.GetReg32(m.Register);
                 return;
             }
 
