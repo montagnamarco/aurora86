@@ -246,6 +246,32 @@ public class VesaTests
         Assert.Equal(VgaMemoryLayout.Text, machine.VideoRegisters.EffectiveMode.Layout);
     }
 
+    [Theory]
+    [InlineData(0x03, VgaMemoryLayout.Text)]
+    [InlineData(0x83, VgaMemoryLayout.Text)]
+    [InlineData(0x13, VgaMemoryLayout.Linear8)]
+    public void LegacyBiosModeSetReplacesTheVbeDisplay(ushort mode, VgaMemoryLayout layout)
+    {
+        using Machine machine = Started();
+        Int10(machine, 0x4F02, bx: 0x4103);
+        machine.VideoRegisters.VesaWindowBank = 3;
+        machine.VideoRegisters.VesaScanLineBytes = 1024;
+        machine.VideoRegisters.VesaDisplayStart = 4096;
+
+        Int10(machine, mode);
+
+        Assert.Null(machine.VideoRegisters.VesaMode);
+        Assert.False(machine.VideoRegisters.VesaLinearFrameBuffer);
+        Assert.Equal(0, machine.VideoRegisters.VesaWindowBank);
+        Assert.Equal(0, machine.VideoRegisters.VesaScanLineBytes);
+        Assert.Equal(0, machine.VideoRegisters.VesaDisplayStart);
+        Assert.Equal(layout, machine.VideoRegisters.EffectiveMode.Layout);
+        Int10(machine, 0x4F03);
+        Assert.Equal((ushort)(mode & 0x7F), machine.Cpu.State.Bx);
+        machine.Video.Render(true);
+        Assert.NotEqual(800, machine.Video.Width);
+    }
+
     [Fact]
     public void TheCurrentModeCanBeAskedFor()
     {

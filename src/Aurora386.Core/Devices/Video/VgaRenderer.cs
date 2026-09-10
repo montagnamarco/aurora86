@@ -74,6 +74,7 @@ public sealed class VgaRenderer
     // Where the pointer was drawn last frame, so those rows are repainted.
     private int _pointerRowFirst = -1, _pointerRowCount;
     private bool _pointerWasVisible;
+    private (int Column, int Row, bool Visible) _lastTextCursor = (-1, -1, false);
 
     /// <summary>The size the current mode wants the framebuffer to be.</summary>
     private (int Width, int Height) TargetSize()
@@ -111,6 +112,16 @@ public sealed class VgaRenderer
     public bool Render(bool force = false)
     {
         InvalidatePointerRows();
+        var textCursor = (_registers.CursorColumn, _registers.CursorRow,
+            !_registers.EffectiveMode.IsGraphics && _registers.CursorVisible);
+        if (textCursor != _lastTextCursor)
+        {
+            // CRTC-only cursor moves do not write VRAM. Repaint the old
+            // row too, or a newline leaves the previous caret on screen.
+            if (_lastTextCursor.Visible) _memory.MarkRowsDirty(_lastTextCursor.Row, 1);
+            if (textCursor.Item3) _memory.MarkRowsDirty(textCursor.CursorRow, 1);
+            _lastTextCursor = textCursor;
+        }
 
         // The blink phase changes with nothing writing to video memory, so a
         // frame that differs only by the phase would otherwise be skipped as
@@ -148,6 +159,22 @@ public sealed class VgaRenderer
         {
             Resize(width, height);
             force = true;
+        }
+
+        // Composition can XOR the background. Even a stationary pointer
+        // needs fresh pixels underneath whenever another dirty row causes
+        // a frame; otherwise we XOR the already composed pointer again.
+        if (_registers.CursorEnabled)
+        {
+            int first = _registers.CursorPosition.Y;
+            int last = first + 63;
+            if (!_registers.EffectiveMode.IsGraphics)
+            {
+                int heightOfCell = Math.Max(1, _registers.CharacterHeight);
+                first /= heightOfCell;
+                last /= heightOfCell;
+            }
+            _memory.MarkRowsDirty(first, last - first + 1);
         }
 
         switch (_registers.EffectiveMode.Layout)

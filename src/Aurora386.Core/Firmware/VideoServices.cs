@@ -198,6 +198,10 @@ public sealed class VideoServices
 
         VgaModeInfo info = VgaModes.Get(mode);
 
+        // AH=00 replaces a VBE mode too. Leaving its geometry active makes
+        // a return from Windows to DOS display the old packed-pixel buffer
+        // with the text-mode palette instead of the newly written console.
+        _registers.SetVesaMode(null, false);
         _registers.VideoMode = mode;
         _registers.TextColumns = info.TextColumns;
         _registers.TextRows = info.TextRows;

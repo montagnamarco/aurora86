@@ -74,6 +74,32 @@ public class S3HardwareCursorTests
         Crtc(machine, 0x49, (byte)y);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StationaryXorPointerSurvivesAnUnrelatedScreenUpdate(bool textMode)
+    {
+        using Machine machine = WithCursor();
+        if (textMode)
+        {
+            machine.Cpu.State.Ax = 0x0003;
+            machine.VideoServices.Handle(machine.Cpu);
+        }
+        FillPattern(machine, and: true, xor: true);
+        Place(machine, 100, 50);
+        Crtc(machine, 0x45, 0x01);
+        machine.Video.Render(force: true);
+        uint expected = machine.Video.Framebuffer[60 * machine.Video.Width + 110];
+
+        // Dirty a row away from the pointer, in scanlines or text cells.
+        machine.VideoMemory.MarkRowsDirty(textMode ? 20 : 300, 1);
+        machine.Video.Render();
+        Assert.Equal(expected, machine.Video.Framebuffer[60 * machine.Video.Width + 110]);
+        uint[] incremental = machine.Video.Framebuffer.ToArray();
+        machine.Video.Render(force: true);
+        Assert.Equal(incremental, machine.Video.Framebuffer.ToArray());
+    }
+
     [Fact]
     public void ThePointerCoversExactlySixtyFourPixels()
     {
