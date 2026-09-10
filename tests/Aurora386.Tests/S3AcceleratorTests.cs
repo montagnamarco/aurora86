@@ -124,6 +124,43 @@ public class S3AcceleratorTests
         Assert.Equal(0x0F, Pixel(machine, 50, 99));
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void OverlappingBlitStartsAtTheCornerProgrammedByTheDriver(bool rightwards, bool downwards)
+    {
+        using Machine machine = InSvgaMode();
+        const int width = 8, height = 6, left = 100, top = 100;
+        int destinationLeft = left + (rightwards ? -2 : 2);
+        int destinationTop = top + (downwards ? -2 : 2);
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+                machine.VideoMemory.WriteLinear((uint)((top + y) * 640 + left + x), (byte)(1 + y * width + x));
+        byte[] before = Enumerable.Range(0, 640 * 480)
+            .Select(i => machine.VideoMemory.ReadLinear((uint)i)).ToArray();
+        byte[] expected = (byte[])before.Clone();
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+                expected[(destinationTop + y) * 640 + destinationLeft + x] = before[(top + y) * 640 + left + x];
+
+        // Packed MMIO registers, as used by S3TRIO.DRV. With both direction
+        // bits clear the observed window-move command is C053h.
+        int cornerX = rightwards ? 0 : width - 1;
+        int cornerY = downwards ? 0 : height - 1;
+        var registers = machine.Accelerator.Mmio;
+        registers.WriteDword(0x8100, (uint)(((left + cornerX) << 16) | (top + cornerY)));
+        registers.WriteDword(0x8108, (uint)(((destinationLeft + cornerX) << 16) | (destinationTop + cornerY)));
+        registers.WriteDword(0x8148, ((width - 1) << 16) | (height - 1));
+        registers.WriteWord(0x8136, 0x67);
+        registers.WriteWord(0x8118, (ushort)(0xC053 | (rightwards ? 0x20 : 0) | (downwards ? 0x80 : 0)));
+
+        for (int y = top - 3; y <= top + height + 3; y++)
+            for (int x = left - 3; x <= left + width + 3; x++)
+                Assert.Equal(expected[y * 640 + x], Pixel(machine, x, y));
+    }
+
     [Fact]
     public void ALineStopsWhereItsLengthSays()
     {

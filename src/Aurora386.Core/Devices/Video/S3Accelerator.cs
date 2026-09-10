@@ -568,7 +568,7 @@ public sealed class S3Accelerator : IIoDevice
     /// Copies a rectangle from one place on the screen to another, which is
     /// what scrolling a window is.
     ///
-    /// The direction bits matter here and nowhere else. When the source and
+    /// When the source and
     /// destination overlap -- and scrolling is exactly that -- copying from
     /// the top down would overwrite rows that have not been read yet. The
     /// driver picks the direction that reads each pixel before it is
@@ -584,11 +584,16 @@ public sealed class S3Accelerator : IIoDevice
 
         for (int i = 0; i < height; i++)
         {
-            int y = downwards ? i : height - 1 - i;
+            // CUR and DEST name the first pixel transferred, not always the
+            // top-left corner. For a window moved down/right the S3 driver
+            // supplies both bottom-right corners and clears INC_X/INC_Y.
+            // Reversing a loop over positive offsets would copy a different
+            // rectangle entirely, leaving only fragments of the window.
+            int y = downwards ? i : -i;
 
             for (int j = 0; j < width; j++)
             {
-                int x = rightwards ? j : width - 1 - j;
+                int x = rightwards ? j : -j;
 
                 ushort pixel = GetPixel(_currentX + x, _currentY + y);
                 PutPixel(_destinationX + x, _destinationY + y, pixel);
