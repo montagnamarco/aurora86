@@ -607,16 +607,26 @@ public sealed partial class Cpu
                 if (!m.IsRegister)
                     CheckLimit(m.Segment, m.Offset, OperandSize32 ? 4u : 2u);
 
-                uint valore = PopOperand();
+                uint espBefore = State.Esp;
+                try
+                {
+                    uint value = PopOperand();
 
-                // When the destination is computed from the stack pointer, the
-                // effective address is the one *after* the pop: the ModR/M has
-                // already been decoded, so it is enough to displace it.
-                ModRm destination = m;
-                if (!m.IsRegister && m.UsesStackPointer)
-                    destination.Offset += OperandSize32 ? 4u : 2u;
+                    // ESP-based destinations use the pointer after the pop.
+                    ModRm destination = m;
+                    if (!m.IsRegister && m.UsesStackPointer)
+                        destination.Offset += State.Esp - espBefore;
 
-                WriteRm(destination, valore);
+                    WriteRm(destination, value);
+                }
+                catch (Exception ex) when (ex is CpuException or PageFaultException)
+                {
+                    // The destination may fault after the stack read succeeds.
+                    // Windows' VDD pages in its saved VGA state here; retrying
+                    // with an advanced ESP skips a dword and corrupts its RET.
+                    State.Esp = espBefore;
+                    throw;
+                }
                 return;
             }
 

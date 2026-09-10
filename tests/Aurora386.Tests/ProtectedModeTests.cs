@@ -85,6 +85,65 @@ public class ProtectedModeTests
         return machine;
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void PopDestinationPageFaultCanRetryWithoutConsumingTheStack(bool word, bool acrossPage)
+    {
+        using Machine machine = BuildProtectedMachine();
+        var cpu = machine.Cpu;
+        cpu.SetSegment(SegReg.Cs, 8);
+        cpu.SetSegment(SegReg.Ss, 16);
+        cpu.SetSegment(SegReg.Ds, 16);
+        // Identity-map the low 64K for the code, tables, stack, and handler.
+        const uint directory = 0x10000, table = 0x11000;
+        machine.Memory.WriteDword(directory, table | 3);
+        for (uint page = 0; page < 16; page++)
+            machine.Memory.WriteDword(table + page * 4, (page << 12) | 3);
+        uint target = acrossPage ? 0xFFFfu : 0x10087u;
+        cpu.State.Cr3 = directory;
+        cpu.State.Cr0 |= CpuState.Cr0Paging;
+        cpu.State.Eip = 0x3000;
+        cpu.State.Eax = target;
+        cpu.State.Esp = 0x9000;
+        machine.Memory.WriteDword(0x9000, 0x12345678);
+        machine.Memory.WriteDword(0x9004, 0xDEADBEEF);
+        machine.Memory.WriteByte(0xFFFF, 0xAA);
+        uint code = 0x3000;
+        if (word) machine.Memory.WriteByte(code++, 0x66);
+        machine.Memory.WriteByte(code++, 0x8F); // POP [EAX]
+        machine.Memory.WriteByte(code++, 0x00);
+        WriteGate(machine, IdtBase, 14, 8, 0x4000, 0x0E);
+        // Discard the #PF error code, then retry through IRETD.
+        foreach (var (value, index) in new byte[] { 0x83, 0xC4, 0x04, 0xCF }.Select((v,i)=>(v,i)))
+            machine.Memory.WriteByte(0x4000u + (uint)index, value);
+
+        cpu.Step();
+        Assert.Equal(0x4000u, cpu.State.Eip);
+        Assert.Equal(0x8FF0u, cpu.State.Esp);
+        Assert.Equal(acrossPage ? 0x10000u : target, cpu.State.Cr2);
+        Assert.Equal(2u, machine.Memory.ReadDword(0x8FF0));
+        Assert.Equal(0x3000u, machine.Memory.ReadDword(0x8FF4));
+        Assert.Equal((byte)0xAA, machine.Memory.ReadByte(0xFFFF));
+
+        // Page in the missing destination, as Windows does, and retry.
+        machine.Memory.WriteDword(table + 16 * 4, 0x12000 | 3);
+        cpu.FlushTlb();
+        cpu.Step();
+        cpu.Step();
+        Assert.Equal(0x9000u, cpu.State.Esp);
+        Assert.Equal(0x3000u, cpu.State.Eip);
+        cpu.Step();
+        Assert.Equal(code, cpu.State.Eip);
+        Assert.Equal(word ? 0x9002u : 0x9004u, cpu.State.Esp);
+        Assert.Equal(word ? 0x5678u : 0x12345678u, word
+            ? cpu.ReadMemoryWord(SegReg.Ds, target)
+            : cpu.ReadMemoryDword(SegReg.Ds, target));
+        Assert.Equal(0xDEADBEEFu, machine.Memory.ReadDword(0x9004));
+    }
+
     [Fact]
     public void LoadingASelectorReadsTheDescriptorsBaseAndLimit()
     {

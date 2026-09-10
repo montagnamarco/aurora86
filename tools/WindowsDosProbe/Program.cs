@@ -2,6 +2,7 @@ using System.Text;
 using Aurora386.Core;
 using Aurora386.Core.Devices.Input;
 using Aurora386.Core.Devices.Storage;
+using Aurora386.Core.Devices.Video;
 
 // Cold boot Windows Enhanced, open the MS-DOS Prompt icon, run MEM,
 // and return with EXIT. Coordinates default to the current hdd.img desktop.
@@ -38,7 +39,7 @@ try
     }
     void Shot(string name)
     {
-        Console.WriteLine($"{name}: CPU {machine.Cpu.State.Cs.Selector:X4}:{machine.Cpu.State.Eip:X8}, CR0={machine.Cpu.State.Cr0:X8}, GC6={machine.VideoRegisters.Graphics(6):X2}, CR31={machine.VideoRegisters.Crtc(0x31):X2}, CR67={machine.VideoRegisters.Crtc(0x67):X2}, BIOS={machine.VideoRegisters.VideoMode:X2}");
+        Console.WriteLine($"{name}: CPU {machine.Cpu.State.Cs.Selector:X4}:{machine.Cpu.State.Eip:X8}, CR0={machine.Cpu.State.Cr0:X8}, CR3={machine.Cpu.State.Cr3:X8}, GC6={machine.VideoRegisters.Graphics(6):X2}, BIOS={machine.VideoRegisters.VideoMode:X2}");
         MachineSnapshot.Capture(machine).Save(Path.Combine(output, name + ".snapshot"));
         machine.Video.Render();
         uint[] incremental = machine.Video.Framebuffer.ToArray();
@@ -93,6 +94,8 @@ try
     Key(0x1C); // launch the selected MS-DOS Prompt icon
     Run(150_000_000);
     Shot("dos-open");
+    if (machine.VideoRegisters.EffectiveMode.Layout != VgaMemoryLayout.Text)
+        throw new InvalidOperationException("The full-screen DOS Prompt did not open. Check the icon coordinates and PIF settings.");
     foreach (byte code in new byte[] { 0x32, 0x12, 0x32, 0x1C }) Key(code); // mem
     Run(50_000_000);
     Shot("dos-mem");
@@ -109,7 +112,7 @@ try
     foreach (byte code in new byte[] { 0x12, 0x2D, 0x17, 0x14, 0x1C }) Key(code); // exit
     Run(150_000_000);
     Shot("returned");
-    if (machine.VideoRegisters.EffectiveMode.Layout == Aurora386.Core.Devices.Video.VgaMemoryLayout.Text || !machine.VideoRegisters.CursorEnabled || machine.Video.Width < 800)
+    if (machine.VideoRegisters.EffectiveMode.Layout == VgaMemoryLayout.Text || !machine.VideoRegisters.CursorEnabled || machine.Video.Width < 800)
     {
         Console.Error.WriteLine("FAIL: EXIT did not restore the S3 Windows desktop.");
         return 1;

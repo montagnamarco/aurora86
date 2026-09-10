@@ -24,8 +24,9 @@ task switching. Two suites generated from real hardware keep it honest:
   disk, with HIMEM, SMARTDRV, KEYB, MSCDEX and an ATAPI CD-ROM driver.
 - Windows 3.11 reaches Program Manager in standard mode and in 386 enhanced
   mode. Enhanced mode runs at about 30 million instructions per second on
-  an Apple M-series machine. Opening the MS-DOS Prompt still exits Windows
-  on the current image; see the [reproducible DOS-session check](docs/WINDOWS-DOS.md).
+  an Apple M-series machine. The full-screen MS-DOS Prompt opens, runs MEM,
+  and returns to Program Manager with EXIT; see the
+  [reproducible DOS-session check](docs/WINDOWS-DOS.md).
 - An S3 Trio64V+ display driver runs at 800x600 and 1024x768 in 256 colours.
   See [Windows S3 setup and the window-move regression](docs/WINDOWS-S3.md).
 - The network works from DOS: with a packet driver and mTCP, DHCP gets an
