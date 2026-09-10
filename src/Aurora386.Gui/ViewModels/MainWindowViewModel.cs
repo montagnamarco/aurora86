@@ -779,7 +779,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             configuration.SharedFolders = machine.Redirector.MountedDrives
                 .Select(drive => (Drive: drive, Folder: machine.Redirector.GetMounted(drive) as HostDirectoryFileSystem))
                 .Where(pair => pair.Folder is not null)
-                .Select(pair => new VmConfiguration.SharedFolder { Path = pair.Folder!.RootPath, Drive = pair.Drive })
+                .Select(pair => new VmConfiguration.SharedFolder
+                    { Path = pair.Folder!.RootPath, Drive = pair.Drive, ReadOnly = pair.Folder.IsReadOnly })
                 .ToList();
         });
 

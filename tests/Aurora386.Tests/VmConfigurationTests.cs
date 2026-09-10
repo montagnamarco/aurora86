@@ -34,7 +34,7 @@ public class VmConfigurationTests
                 Disks = { new() { Path = "/somewhere/else/hdd.img", Drive = 0x81, ReadOnly = true } },
                 Floppies = { "/somewhere/a.img" },
                 CompactDisc = "/somewhere/cd.iso",
-                SharedFolders = { new() { Path = "/somewhere/shared", Drive = 5 } },
+                SharedFolders = { new() { Path = "/somewhere/shared", Drive = 5, ReadOnly = true } },
                 Mouse = MouseInterface.Ps2,
                 BootOrder = { 0x00, 0x80 },
             };
@@ -52,8 +52,60 @@ public class VmConfigurationTests
             Assert.Equal(new[] { "/somewhere/a.img" }, loaded.Floppies);
             Assert.Equal("/somewhere/cd.iso", loaded.CompactDisc);
             Assert.Equal(5, loaded.SharedFolders[0].Drive);
+            Assert.True(loaded.SharedFolders[0].ReadOnly);
             Assert.Equal(MouseInterface.Ps2, loaded.Mouse);
             Assert.Equal(new byte[] { 0x00, 0x80 }, loaded.BootOrder);
+        }
+        finally { Directory.Delete(folder, true); }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void SharedFolderPermissionsSurviveSaveLoadAndControlHostWrites(bool readOnly)
+    {
+        string folder = TempFolder();
+        try
+        {
+            string root = Path.Combine(folder, "shared");
+            Directory.CreateDirectory(root);
+            string file = Path.Combine(root, "FILE.TXT");
+            File.WriteAllText(file, "original");
+            new VmConfiguration
+            {
+                SharedFolders = { new() { Path = root, Drive = 4, ReadOnly = readOnly } }
+            }.Save(folder);
+            using var machine = VmConfiguration.Load(folder).BuildMachine();
+            var share = Assert.IsType<Aurora386.Core.Dos.HostDirectoryFileSystem>(machine.Redirector.GetMounted(4));
+            Assert.Equal(readOnly, share.IsReadOnly);
+            var buffer = new byte[8];
+            Assert.Equal(8, share.Read("\\FILE.TXT", 0, buffer));
+            Assert.Equal("original", System.Text.Encoding.ASCII.GetString(buffer));
+            if (readOnly)
+            {
+                Assert.Throws<NotSupportedException>(() => share.Write("\\FILE.TXT", 0, new byte[] { 88 }));
+                Assert.Throws<NotSupportedException>(() => share.Delete("\\FILE.TXT"));
+                Assert.Equal("original", File.ReadAllText(file));
+            }
+            else
+            {
+                share.Write("\\FILE.TXT", 0, new byte[] { 88 });
+                Assert.Equal("Xriginal", File.ReadAllText(file));
+            }
+        }
+        finally { Directory.Delete(folder, true); }
+    }
+
+    [Fact]
+    public void OlderSharedFolderConfigurationsRemainWritable()
+    {
+        string folder = TempFolder();
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, VmConfiguration.FileName),
+                """{"sharedFolders":[{"path":".","drive":4}]}""");
+            using var machine = VmConfiguration.Load(folder).BuildMachine();
+            Assert.False(machine.Redirector.GetMounted(4)!.IsReadOnly);
         }
         finally { Directory.Delete(folder, true); }
     }

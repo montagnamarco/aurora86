@@ -95,6 +95,8 @@ public sealed class VmConfiguration
 
         /// <summary>The drive letter as a number from zero: 4 is E:.</summary>
         public byte Drive { get; set; } = 4;
+
+        public bool ReadOnly { get; set; }
     }
 
     private static readonly JsonSerializerOptions Options = new()
@@ -198,7 +200,7 @@ public sealed class VmConfiguration
             machine.AttachCompactDisc(IsoImage.Open(CompactDisc));
 
         foreach (SharedFolder shared in SharedFolders)
-            machine.Redirector.Mount(shared.Drive, new HostDirectoryFileSystem(shared.Path));
+            machine.Redirector.Mount(shared.Drive, new HostDirectoryFileSystem(shared.Path) { IsReadOnly = shared.ReadOnly });
 
         machine.MouseInterface = Mouse;
         machine.BootDrives = BootOrder;

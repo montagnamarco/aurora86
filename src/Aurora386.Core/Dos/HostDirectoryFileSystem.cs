@@ -53,8 +53,8 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     public string RootPath => _root.FullName;
 
     /// <summary>
-    /// A shared folder is writable. That is the whole point of it, and it is
-    /// what distinguishes this backend from the CD one.
+    /// Shares are writable by default. A VM can opt into read-only access;
+    /// both DOS attributes and every host mutation observe this setting.
     /// </summary>
     public bool IsReadOnly { get; init; }
 

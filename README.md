@@ -103,7 +103,9 @@ dotnet run --project src/Aurora386.Sdl -- --help
 
 A machine lives in a folder with a `vm.json` describing its disks, memory,
 mouse port, network and shared folders; the window and the command line open
-the same file the same way. Disk images are not included: they are large
+the same file the same way. Shared folders accept `"readOnly": true`;
+[shared-folder configuration and drive letters](docs/SHARED-FOLDERS.md)
+describes permissions and automatic allocation. Disk images are not included: they are large
 and generally covered by copyright. Point the emulator at your own.
 
 ## Installing MS-DOS
