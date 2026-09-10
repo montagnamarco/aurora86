@@ -130,7 +130,7 @@ public sealed class VesaServices
         // checks that bit before asking for it.
         WriteWord(buffer + 0, 0x009B);
 
-        WriteWord(buffer + 2, 0x0700);                          // window A: readable, writable
+        WriteWord(buffer + 2, 0x0007);                          // window A: readable, writable
         WriteWord(buffer + 4, 64);                              // granularity, KB
         WriteWord(buffer + 6, 64);                              // window size, KB
         WriteWord(buffer + 8, 0xA000);                          // window A segment
@@ -150,7 +150,9 @@ public sealed class VesaServices
         // how to reach the pixels: 3 is the planar EGA arrangement, 4 the
         // packed byte-per-pixel one, 6 direct colour.
         Write(buffer + 27, (byte)(mode.IsPlanar ? 3 : mode.BitsPerPixel == 8 ? 4 : 6));
-        Write(buffer + 29, 8);                                  // DAC bits per colour
+        // Additional complete images, excluding the first visible image.
+        Write(buffer + 29, (byte)(VideoMemory / mode.MemoryNeeded - 1));
+        Write(buffer + 30, 1);                                  // reserved page-function byte
 
         // How the colour bits are laid out, which a program drawing at 15 or
         // 16 bits has to know: the two differ only in whether green gets the
@@ -173,31 +175,12 @@ public sealed class VesaServices
         }
 
         WriteDword(buffer + 40, LinearFrameBufferBase);
-        WriteWord(buffer + 50, (ushort)mode.BytesPerRow);       // linear bytes per row
-
-        // VBE 2.0 repeats the colour layout for the linear frame buffer, at
-        // offsets 52 to 57, and a driver that uses the frame buffer reads
-        // those rather than the banked ones above.
-        //
-        // Leaving them zero does not fail: it says every colour field is
-        // nought bits wide, which is a description of a mode that can show
-        // one colour. That is not what a driver does with it, though -- it
-        // takes it at its word and lays out pixels accordingly, so what it
-        // draws is right where it should be and invisible.
-        if (mode.BitsPerPixel is 15 or 16)
+        // VBE 2.0 uses the same colour layout for banked and linear access.
+        // Bytes 50 onwards are reserved (the separate linear fields are VBE 3.0).
+        if (mode.BitsPerPixel == 32)
         {
-            Write(buffer + 52, 5);                              // red size
-            Write(buffer + 53, (byte)(mode.BitsPerPixel == 15 ? 10 : 11));
-            Write(buffer + 54, (byte)(mode.BitsPerPixel == 15 ? 5 : 6));
-            Write(buffer + 55, 5);                              // green position
-            Write(buffer + 56, 5);                              // blue size
-            Write(buffer + 57, 0);                              // blue position
-        }
-        else if (mode.BitsPerPixel >= 24)
-        {
-            Write(buffer + 52, 8); Write(buffer + 53, 16);
-            Write(buffer + 54, 8); Write(buffer + 55, 8);
-            Write(buffer + 56, 8); Write(buffer + 57, 0);
+            Write(buffer + 37, 8);                              // unused high byte
+            Write(buffer + 38, 24);
         }
 
         cpu.State.Ax = 0x004F;

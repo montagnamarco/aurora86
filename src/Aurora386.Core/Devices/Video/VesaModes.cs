@@ -72,13 +72,14 @@ public static class VesaModes
     }
 
     /// <summary>
-    /// The modes this card offers, in the numbering VBE fixed so that a
+    /// The legacy modes use the numbering VBE fixed so that a
     /// program need not ask what 0x101 means on this particular card.
     ///
     /// The numbers look arbitrary and are not: 0x100 upwards were assigned by
     /// VESA in the order the resolutions were standardised, which is why
     /// 640x400 comes before 640x480 and the 16-bit modes are scattered among
-    /// the 8-bit ones rather than grouped.
+    /// the 8-bit ones rather than grouped. The 32-bit modes below use OEM
+    /// numbers and must be discovered through the mode list.
     /// </summary>
     public static readonly VesaModeInfo[] Table =
     [
@@ -112,6 +113,11 @@ public static class VesaModes
         new(0x116, 1024, 768, 15),
         new(0x117, 1024, 768, 16),
         new(0x118, 1024, 768, 24),
+
+        // OEM mode numbers: callers discover these through 4F00/4F01.
+        // XRGB8888 uses four bytes per pixel; 1024x768 would exceed 2 MB.
+        new(0x140, 640, 480, 32),
+        new(0x141, 800, 600, 32),
     ];
 
     /// <summary>

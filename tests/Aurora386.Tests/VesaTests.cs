@@ -103,6 +103,95 @@ public class VesaTests
         Assert.True(modes.Count < 64);               // it did terminate
     }
 
+    [Theory]
+    [InlineData(0x140, 640, 480)]
+    [InlineData(0x141, 800, 600)]
+    public void ThirtyTwoBitModesAreDiscoverableAndDescribeXrgb(ushort mode, int width, int height)
+    {
+        using Machine machine = Started();
+        Int10(machine, 0x4F00, es: 0x5000);
+        uint list = (uint)(machine.Memory.ReadWord(0x50010) << 4)
+                  + machine.Memory.ReadWord(0x5000E);
+        var modes = new List<ushort>();
+        for (uint i = 0; i < 64; i++)
+        {
+            ushort number = machine.Memory.ReadWord(list + i * 2);
+            if (number == 0xFFFF) break;
+            modes.Add(number);
+        }
+        Assert.Contains(mode, modes);
+        Int10(machine, 0x4F01, cx: mode, es: 0x5100);
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        const uint info = 0x51000;
+        Assert.Equal(width, machine.Memory.ReadWord(info + 18));
+        Assert.Equal(height, machine.Memory.ReadWord(info + 20));
+        Assert.Equal(width * 4, machine.Memory.ReadWord(info + 16));
+        Assert.Equal(32, machine.Memory.ReadByte(info + 25));
+        Assert.Equal(6, machine.Memory.ReadByte(info + 27));
+        Assert.Equal(7, machine.Memory.ReadByte(info + 2)); // bank A exists, readable and writable
+        Assert.Equal(0, machine.Memory.ReadByte(info + 3)); // no bank B
+        Assert.Equal(VgaMemory.TotalSize / (width * height * 4) - 1,
+                     machine.Memory.ReadByte(info + 29));
+        byte[] layout = [8, 16, 8, 8, 8, 0, 8, 24];
+        for (uint i = 0; i < layout.Length; i++)
+            Assert.Equal(layout[i], machine.Memory.ReadByte(info + 31 + i));
+        Assert.Equal(0, machine.Memory.ReadByte(info + 39)); // reserved bits not usable as colour
+        for (uint i = 50; i < 256; i++) Assert.Equal(0, machine.Memory.ReadByte(info + i));
+    }
+
+    [Theory]
+    [InlineData(0x140, false)]
+    [InlineData(0x140, true)]
+    [InlineData(0x141, false)]
+    [InlineData(0x141, true)]
+    public void ThirtyTwoBitPixelsRenderAcrossBanksAndWithAScrolledStride(ushort mode, bool linear)
+    {
+        using Machine machine = Started();
+        machine.Io.WriteByte(0x92, 0x02); // enable A20 before addressing the full linear buffer
+        ushort request = (ushort)(mode | (linear ? 0x4000 : 0));
+        Int10(machine, 0x4F02, bx: request);
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        int width = mode == 0x140 ? 640 : 800;
+        int height = mode == 0x140 ? 480 : 600;
+        Int10(machine, 0x4F03);
+        Assert.Equal(request, machine.Cpu.State.Bx);
+        int stride = (width + 16) * 4;
+        Int10(machine, 0x4F06, cx: (ushort)(width + 16));
+        Assert.Equal(stride, machine.Cpu.State.Bx);
+        Assert.Equal(width + 16, machine.Cpu.State.Cx);
+        Int10(machine, 0x4F07, cx: 3, dx: 1);
+        Int10(machine, 0x4F07, bx: 1);
+        Assert.Equal(3, machine.Cpu.State.Cx);
+        Assert.Equal(1, machine.Cpu.State.Dx);
+        machine.Video.Render(true);
+
+        void Pixel(int x, int y, uint value)
+        {
+            uint offset = (uint)((y + 1) * stride + (x + 3) * 4);
+            if (linear) machine.Memory.WriteDword(machine.LinearFrameBufferBase + offset, value);
+            else
+            {
+                Int10(machine, 0x4F05, dx: (ushort)(offset >> 16));
+                machine.Memory.WriteDword(0xA0000 + (offset & 0xFFFF), value);
+            }
+        }
+        Pixel(0, 0, 0xA5123456);
+        Pixel(width - 1, height - 1, 0x00789ABC);
+        // Pixel immediately after a 64 KB boundary in the virtual screen.
+        int boundaryY = 65536 / stride - 1;
+        int boundaryX = (65536 % stride) / 4 - 3;
+        Pixel(boundaryX - 1, boundaryY, 0xFFFF0000);
+        Pixel(boundaryX, boundaryY, 0x8000FF00);
+        machine.Video.Render();
+        Assert.Equal(0xFF563412u, machine.Video.Framebuffer[0]);
+        Assert.Equal(0xFFBC9A78u, machine.Video.Framebuffer[width * height - 1]);
+        Assert.Equal(0xFF0000FFu, machine.Video.Framebuffer[boundaryY * width + boundaryX - 1]);
+        Assert.Equal(0xFF00FF00u, machine.Video.Framebuffer[boundaryY * width + boundaryX]);
+        uint[] incremental = machine.Video.Framebuffer.ToArray();
+        machine.Video.Render(true);
+        Assert.Equal(incremental, machine.Video.Framebuffer.ToArray());
+    }
+
     [Fact]
     public void AModeTooLargeForTheMemoryIsNotOffered()
     {
