@@ -96,7 +96,7 @@ for (int i = 0; i < args.Length; i++)
         }
 
         case "--boot":
-            if (++i >= args.Length) return Fail("--boot needs a list of drives, like A,C");
+            if (++i >= args.Length) return Fail("--boot needs a list of drives, like A,C or CD,C");
             bootOrder = args[i];
             break;
 
@@ -247,14 +247,23 @@ else if (network == "none")
 if (bootOrder is not null)
 {
     // Letters, the way a BIOS setup screen shows them: A and B are the
-    // floppies, C onwards the hard disks by number.
+    // floppies, C onwards the hard disks by number, and CD the disc -- which
+    // a setup screen of the period also spelled out rather than lettering.
     var order = new List<byte>();
     foreach (string piece in bootOrder.Split(',', StringSplitOptions.RemoveEmptyEntries))
     {
-        string letter = piece.Trim();
-        if (letter.Length != 1 || char.ToUpperInvariant(letter[0]) is < 'A' or > 'Z')
+        string name = piece.Trim().ToUpperInvariant();
+
+        if (name is "CD" or "CDROM")
+        {
+            order.Add(Machine.CompactDiscBootDrive);
+            continue;
+        }
+
+        if (name.Length != 1 || name[0] is < 'A' or > 'Z')
             return Fail($"--boot: '{piece}' is not a drive letter");
-        char drive = char.ToUpperInvariant(letter[0]);
+
+        char drive = name[0];
         order.Add(drive < 'C' ? (byte)(drive - 'A') : (byte)(0x80 + drive - 'C'));
     }
     machine.BootDrives = order;
@@ -330,7 +339,7 @@ static void PrintUsage()
               --cd <file>          CD-ROM image (ISO)
               --share [X:]<folder> a folder of this computer as a drive: the next free
                                    letter after the disks, or X:; repeatable
-              --boot <list>        boot order, like A,C or C,A (default: every drive by number)
+              --boot <list>        boot order, like A,C or CD,C (default: every drive by number)
               --mouse ps2|serial   which port the mouse is on
               --net nat|none       put the NE2000 on a NAT network (guest 10.0.2.15)
               --forward p:h:g      reach guest port g from host port h (p is tcp or udp)

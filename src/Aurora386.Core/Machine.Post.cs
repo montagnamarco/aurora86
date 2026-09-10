@@ -51,6 +51,8 @@ public sealed partial class Machine
     {
         Pci.Reset();
         Interrupts.ResetTriggerModes();
+        Usb?.Reset();
+        UsbStorageController?.Reset();
         // A reboot starts with no CD-ROM driver loaded; the guest reveals one
         // again by sending its first packet.
         GuestHasItsOwnCompactDiscExtensions = false;
@@ -244,6 +246,22 @@ public sealed partial class Machine
     /// </summary>
     public IReadOnlyList<byte> BootDrives { get; set; } = [];
 
+    /// <summary>
+    /// The drive number that means "the CD-ROM" in a boot order. Real BIOSes
+    /// of the El Torito era numbered optical drives from 0xE0, above the hard
+    /// disks at 0x80, and the number never reaches the guest: once the boot
+    /// image is loaded it is presented as drive 0x00 or 0x80, as the disc's
+    /// catalogue asks.
+    /// </summary>
+    public const byte CompactDiscBootDrive = 0xE0;
+
+    /// <summary>
+    /// The drive built from the CD's El Torito boot image, kept alive for as
+    /// long as the guest runs because it answers INT 13h for the emulated
+    /// floppy or hard disk throughout the installation.
+    /// </summary>
+    private DiskImage? _elToritoBootDrive;
+
     private IEnumerable<DiskImage> BootOrder()
     {
         if (BootDrives.Count == 0) return _disks.OrderBy(d => d.DriveNumber);
@@ -262,6 +280,16 @@ public sealed partial class Machine
     /// </summary>
     private void Boot(CpuNs.Cpu cpu)
     {
+        // The CD is tried wherever the boot order names it. It is not part of
+        // the ordinary drive list because it is not a DiskImage at all until
+        // its boot image has been extracted, and most discs have none.
+        foreach (byte drive in BootDrives)
+        {
+            if (drive != CompactDiscBootDrive) continue;
+            if (TryBootFromCompactDisc(cpu)) return;
+            break;
+        }
+
         foreach (DiskImage disk in BootOrder())
         {
             var sector = new byte[DiskImage.SectorSize];
@@ -290,6 +318,72 @@ public sealed partial class Machine
         // No bootable disk: halt, which is what a real PC does after printing
         // "No bootable device".
         cpu.State.Halted = true;
+    }
+
+    /// <summary>
+    /// Boots from the CD, if a disc is in the drive and it is bootable.
+    ///
+    /// The emulated drive takes the place of whatever was at its number: a
+    /// floppy image becomes drive A: and a hard-disk image becomes drive C:,
+    /// pushing the real first hard disk to 0x81, which is what the
+    /// specification requires and what an installer expects when it writes to
+    /// the disk it is about to install onto.
+    /// </summary>
+    private bool TryBootFromCompactDisc(CpuNs.Cpu cpu)
+    {
+        if (CompactDisc is null) return false;
+
+        DiskImage? bootDrive = ElTorito.CreateBootDrive(CompactDisc);
+        if (bootDrive is null) return false;
+
+        // A hard-disk image displaces the real drive 0x80, which moves up one
+        // number. Done before attaching, so the new drive does not evict the
+        // disk it is displacing.
+        if (bootDrive.DriveNumber == 0x80) ShiftHardDisksUpForBootImage();
+
+        AttachDisk(bootDrive);
+        _elToritoBootDrive = bootDrive;
+
+        var sector = new byte[DiskImage.SectorSize];
+        if (!bootDrive.ReadLinear(0, 1, sector)) return false;
+        if (sector[510] != 0x55 || sector[511] != 0xAA) return false;
+
+        const uint bootAddress = 0x7C00;
+        sector.CopyTo(Memory.GetRamSpan(bootAddress, sector.Length));
+
+        cpu.State.SetReg8(2, bootDrive.DriveNumber);
+        cpu.SetSegment(CpuNs.SegReg.Cs, 0);
+        cpu.State.Eip = bootAddress;
+        cpu.SetSegment(CpuNs.SegReg.Ds, 0);
+        cpu.SetSegment(CpuNs.SegReg.Es, 0);
+        cpu.SetSegment(CpuNs.SegReg.Ss, 0);
+        cpu.State.Esp = 0x7C00;
+
+        Booted = true;
+        return true;
+    }
+
+    /// <summary>
+    /// Moves the hard disks up one drive number to make room for a CD's
+    /// hard-disk boot image at 0x80. Highest number first, so that each move
+    /// lands on a number that has just been vacated.
+    /// </summary>
+    private void ShiftHardDisksUpForBootImage()
+    {
+        List<DiskImage> hardDisks = _disks
+            .Where(disk => disk.DriveNumber >= 0x80)
+            .OrderByDescending(disk => disk.DriveNumber)
+            .ToList();
+
+        foreach (DiskImage disk in hardDisks)
+        {
+            DiskServices.Detach(disk.DriveNumber);
+            _disks.Remove(disk);
+
+            var moved = disk.WithDriveNumber((byte)(disk.DriveNumber + 1));
+            _disks.Add(moved);
+            DiskServices.Attach(moved);
+        }
     }
 
     /// <summary>Writes a vector that points at data rather than at code.</summary>

@@ -46,7 +46,7 @@ vectors with protected-mode vectors generated from 86Box:
 | Plug and Play | PnP BIOS 1.0A with device nodes; ISA Plug and Play bus (isolation, CSN, configuration); APM power-off |
 | Floppy and hard disks | Images up to 7.8 GB, translated geometry past 1024 cylinders, media change line |
 | IDE | ATA hard disk as primary master, ATAPI CD-ROM as primary slave, a second disk on the secondary cable |
-| CD-ROM | ISO 9660; a stand-in MSCDEX until the guest loads its own |
+| CD-ROM | ISO 9660; El Torito booting (floppy and hard-disk emulation); a stand-in MSCDEX until the guest loads its own |
 | Shared folders | Host folders as DOS drives through the INT 2Fh redirector |
 | Sound Blaster 16 + OPL3 | DSP, mixer, DMA playback, FM synthesis; a Plug and Play card |
 | NE2000 Ethernet | Registers, ring buffer, remote DMA; a user-mode NAT with DHCP, DNS, TCP, UDP and port forwarding |

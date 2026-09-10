@@ -109,6 +109,124 @@ public sealed class IsoImage : IDisposable
     }
 
     /// <summary>
+    /// Reads the El Torito boot catalogue, or returns null when the disc is
+    /// not bootable -- which most data CDs are not, and which is not an error.
+    ///
+    /// El Torito (1995, Phoenix and IBM) is what made a CD bootable at all.
+    /// Before it a PC could only boot from a floppy or a hard disk, because
+    /// the BIOS knew how to read nothing else; the specification works by
+    /// having the BIOS copy a small image off the CD and then pretend, for
+    /// the rest of the boot, that the image is drive A: or drive C:. The
+    /// operating system on the disc therefore needs no CD driver to start --
+    /// it loads its own later, from what it already has running.
+    ///
+    /// The path to the catalogue is deliberately indirect. A boot record
+    /// volume descriptor (type 0) sits among the ordinary descriptors and
+    /// names the sector of the catalogue; the catalogue's first 32 bytes are
+    /// a validation entry that has to carry the "EL TORITO SPECIFICATION"
+    /// identifier, the 0x55 0xAA key and a 16-bit checksum of the whole entry
+    /// that sums to zero. All three are checked here, because the fields that
+    /// follow are meaningless without them: reading this disc's supplementary
+    /// descriptor as though it were a catalogue produced a plausible-looking
+    /// media type and a load address of 0x4542, which are simply the bytes of
+    /// a Joliet volume name.
+    /// </summary>
+    public ElToritoBootEntry? ReadBootCatalogue()
+    {
+        long catalogueSector = FindBootCatalogueSector();
+        if (catalogueSector <= 0) return null;
+
+        var catalogue = new byte[SectorSize];
+        ReadSector(catalogueSector, catalogue);
+
+        if (!ValidationEntryIsSound(catalogue)) return null;
+
+        // The initial/default entry follows the validation entry. Only the
+        // first is read: a multi-boot disc lists further entries in section
+        // headers after it, and nothing of the period offered the user a
+        // choice anyway.
+        ReadOnlySpan<byte> entry = catalogue.AsSpan(32, 32);
+
+        const byte bootableIndicator = 0x88;
+        if (entry[0] != bootableIndicator) return null;
+
+        return new ElToritoBootEntry
+        {
+            Media = (ElToritoMedia)(entry[1] & 0x0F),
+            LoadSegment = BitConverter.ToUInt16(entry[2..4]),
+            SystemType = entry[4],
+            SectorCount = BitConverter.ToUInt16(entry[6..8]),
+            ImageSector = BitConverter.ToUInt32(entry[8..12]),
+        };
+    }
+
+    /// <summary>
+    /// Walks the volume descriptors looking for the boot record, and returns
+    /// the catalogue sector it names.
+    ///
+    /// The descriptors form a list starting at sector 16, each one 2048 bytes
+    /// and tagged with a type byte, ending at the terminator (255). A disc
+    /// with no boot record simply has no type 0 among them.
+    /// </summary>
+    private long FindBootCatalogueSector()
+    {
+        const byte bootRecordType = 0;
+        const byte terminatorType = 255;
+        const int maximumDescriptors = 32;      // a guard, not a limit of the format
+
+        var descriptor = new byte[SectorSize];
+        for (int index = 0; index < maximumDescriptors; index++)
+        {
+            long sector = PrimaryVolumeDescriptorSector + index;
+            if (sector >= TotalSectors) return 0;
+
+            ReadSector(sector, descriptor);
+            if (!HasIsoSignature(descriptor)) return 0;
+
+            byte type = descriptor[0];
+            if (type == terminatorType) return 0;
+            if (type != bootRecordType) continue;
+
+            // The boot record names its specification in 32 bytes at offset
+            // 7, and the catalogue's sector number sits at offset 71.
+            string specification = Encoding.ASCII
+                .GetString(descriptor, 7, 32)
+                .TrimEnd('\0', ' ');
+            if (specification != "EL TORITO SPECIFICATION") return 0;
+
+            return BitConverter.ToUInt32(descriptor, 71);
+        }
+
+        return 0;
+    }
+
+    private static bool HasIsoSignature(ReadOnlySpan<byte> descriptor)
+        => descriptor.Length >= 6
+           && descriptor[1] == 'C' && descriptor[2] == 'D'
+           && descriptor[3] == '0' && descriptor[4] == '0' && descriptor[5] == '1';
+
+    /// <summary>
+    /// Checks the catalogue's validation entry: the header byte, the 0x55
+    /// 0xAA key, and the checksum. The checksum is the one field worth
+    /// explaining -- every 16-bit word of the 32-byte entry, added together,
+    /// must come to zero. It exists because the catalogue is found by
+    /// following a sector number out of another structure, and a BIOS that
+    /// followed a stale one would otherwise run whatever it landed on.
+    /// </summary>
+    private static bool ValidationEntryIsSound(ReadOnlySpan<byte> catalogue)
+    {
+        const byte validationHeaderId = 1;
+        if (catalogue[0] != validationHeaderId) return false;
+        if (catalogue[30] != 0x55 || catalogue[31] != 0xAA) return false;
+
+        ushort sum = 0;
+        for (int offset = 0; offset < 32; offset += 2)
+            sum += BitConverter.ToUInt16(catalogue.Slice(offset, 2));
+
+        return sum == 0;
+    }
+
+    /// <summary>
     /// Pulls the volume identifier out of the Primary Volume Descriptor.
     ///
     /// The descriptor starts with a type byte (1 for primary) and the string
@@ -364,4 +482,71 @@ public sealed class IsoDirectoryEntry
     public long Length { get; init; }
 
     public DateTime? RecordedAt { get; init; }
+}
+
+/// <summary>
+/// How an El Torito boot image is presented to the software that boots from
+/// it. The BIOS reads the image off the CD and then answers INT 13h for the
+/// emulated drive out of it, so that an operating system written for a
+/// floppy needs no change to start from a CD.
+/// </summary>
+public enum ElToritoMedia
+{
+    /// <summary>
+    /// The image is loaded at the address the entry names and run there,
+    /// with no drive emulated. Used by loaders that bring their own CD
+    /// driver, and by every Linux distribution of the later era.
+    /// </summary>
+    NoEmulation = 0,
+
+    Floppy1200Kb = 1,
+    Floppy1440Kb = 2,
+    Floppy2880Kb = 3,
+
+    /// <summary>
+    /// The image is a hard disk, complete with a partition table, presented
+    /// as drive 0x80 -- and the real first hard disk moves to 0x81 while it
+    /// is in use.
+    /// </summary>
+    HardDisk = 4,
+}
+
+/// <summary>
+/// The initial/default entry of an El Torito boot catalogue: what to load,
+/// from where, and how to present it.
+/// </summary>
+public sealed class ElToritoBootEntry
+{
+    public required ElToritoMedia Media { get; init; }
+
+    /// <summary>
+    /// Real-mode segment the image is loaded at. Zero means the traditional
+    /// 0x07C0, the same place a floppy's boot sector goes.
+    /// </summary>
+    public required ushort LoadSegment { get; init; }
+
+    /// <summary>Partition type byte, meaningful only for a hard disk image.</summary>
+    public required byte SystemType { get; init; }
+
+    /// <summary>
+    /// How many 512-byte virtual sectors to load. Note the unit: the entry
+    /// counts in virtual sectors even though the disc is read in 2048-byte
+    /// blocks, so four of these come out of every block read.
+    /// </summary>
+    public required ushort SectorCount { get; init; }
+
+    /// <summary>Block number on the disc where the image begins.</summary>
+    public required uint ImageSector { get; init; }
+
+    /// <summary>The drive number this image is presented as while booting.</summary>
+    public byte EmulatedDriveNumber => Media == ElToritoMedia.HardDisk ? (byte)0x80 : (byte)0x00;
+
+    /// <summary>Size in bytes of the emulated medium, or zero when nothing is emulated.</summary>
+    public long EmulatedSizeInBytes => Media switch
+    {
+        ElToritoMedia.Floppy1200Kb => 1200 * 1024L,
+        ElToritoMedia.Floppy1440Kb => 1440 * 1024L,
+        ElToritoMedia.Floppy2880Kb => 2880 * 1024L,
+        _ => 0,
+    };
 }

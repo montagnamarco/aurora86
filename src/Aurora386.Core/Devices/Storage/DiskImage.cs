@@ -134,6 +134,22 @@ public sealed class DiskImage : IDisposable
     }
 
     /// <summary>
+    /// The same image at a different drive number, sharing the underlying
+    /// stream rather than reopening it.
+    ///
+    /// It exists for one situation: a CD whose El Torito boot image is a hard
+    /// disk takes drive 0x80, and the real hard disks have to move up to make
+    /// room. The original instance is left owning the stream, so that
+    /// disposing the machine still closes the file exactly once.
+    /// </summary>
+    public DiskImage WithDriveNumber(byte driveNumber)
+        => new(_stream, driveNumber, Cylinders, Heads, SectorsPerTrack,
+               ReadOnly, ownsStream: false)
+        {
+            SourcePath = SourcePath,
+        };
+
+    /// <summary>
     /// Converts CHS into a linear sector number. Sectors are numbered from 1:
     /// there is no sector 0, and forgetting that is a classic source of
     /// off-by-one bugs.
