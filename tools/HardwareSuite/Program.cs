@@ -3,7 +3,7 @@ using Aurora386.Core.Cpu;
 using Aurora386.Core.Memory;
 
 // Runs the SingleStepTests for the 80386 in protected mode -- test vectors
-// captured from a real processor, one instruction each -- against the
+// generated from 86Box, one instruction each -- against the
 // emulated CPU, and reports every case where the two disagree.
 //
 //   dotnet run --project tools/HardwareSuite -- <directory of v1/*.json> [name,name,...]
@@ -12,7 +12,7 @@ using Aurora386.Core.Memory;
 // (branch master, folder v1). Each test gives the processor's full state
 // before one instruction and after it; the runner loads the first, steps
 // once, and compares with the second. Nothing about the emulator is
-// special-cased here: what the silicon did is the whole specification.
+// special-cased here: the reference emulator supplies the expected result.
 //
 // Only the bus and the CPU are used, not a Machine: the vectors need more
 // memory than a machine mounts and no BIOS getting in the way.

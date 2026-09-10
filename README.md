@@ -11,7 +11,8 @@ cards, APM, an ATA disk on the IDE bus, the extended INT 13h functions).
 ## Status
 
 **The processor.** Real mode, protected mode, virtual 8086 mode, paging,
-task switching. Two suites generated from real hardware keep it honest:
+task switching. Regression coverage combines hardware-generated real-mode
+vectors with protected-mode vectors generated from 86Box:
 
 | Suite | Result |
 |---|---|
@@ -126,7 +127,7 @@ src/Aurora386.Core     the machine: CPU, memory, devices, firmware, DOS redirect
 src/Aurora386.Gui      the Avalonia window and the debugger
 src/Aurora386.Sdl      the command-line front end
 src/Aurora386.FatTool  reads and writes FAT images from the host
-tools/HardwareSuite    runs the protected-mode hardware vectors against the CPU
+tools/HardwareSuite    runs the 86Box-generated protected-mode vectors against the CPU
 tools/fat-insert.py    puts a file into a FAT16 image without booting the guest
 tests/Aurora386.Tests  the unit tests, one class per device or service
 docs/                  ARCHITECTURE.md, REAL-VS-PROTECTED-MODE.md, NETWORK.md
