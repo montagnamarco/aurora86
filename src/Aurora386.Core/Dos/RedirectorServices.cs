@@ -211,17 +211,17 @@ public sealed class RedirectorServices(Machine machine)
         if (drive >= DriveCount) return;
 
         uint entry = CurrentDirectoryStructure + (uint)(drive * DosStructures.CdsEntrySize);
-        ushort flags = _machine.Memory.ReadWord(entry + DosStructures.CdsFlags);
+        ushort flags = ReadWordAt(entry + DosStructures.CdsFlags);
 
         flags |= DosStructures.CdsRedirectedFlag | DosStructures.CdsValidFlag;
-        _machine.Memory.WriteWord(entry + DosStructures.CdsFlags, flags);
+        WriteWordAt(entry + DosStructures.CdsFlags, flags);
 
         // The path has to name the drive we are pretending to be, because DOS
         // shows it to the user and parses it back when resolving relative
         // names. Anything else and a CHDIR onto the drive lands somewhere
         // unrelated.
         WriteAsciiz(entry + DosStructures.CdsPath, $"{(char)('A' + drive)}:\\");
-        _machine.Memory.WriteWord(entry + DosStructures.CdsRootLength, 2);
+        WriteWordAt(entry + DosStructures.CdsRootLength, 2);
     }
 
     private void ClearDriveRedirected(byte drive)
@@ -230,8 +230,8 @@ public sealed class RedirectorServices(Machine machine)
         if (drive >= DriveCount) return;
 
         uint entry = CurrentDirectoryStructure + (uint)(drive * DosStructures.CdsEntrySize);
-        ushort flags = _machine.Memory.ReadWord(entry + DosStructures.CdsFlags);
-        _machine.Memory.WriteWord(entry + DosStructures.CdsFlags,
+        ushort flags = ReadWordAt(entry + DosStructures.CdsFlags);
+        WriteWordAt(entry + DosStructures.CdsFlags,
             (ushort)(flags & ~(DosStructures.CdsRedirectedFlag | DosStructures.CdsValidFlag)));
     }
 
@@ -472,7 +472,7 @@ public sealed class RedirectorServices(Machine machine)
         string directory = lastSeparator <= 0 ? "\\" : path[..lastSeparator];
         string pattern = path[(lastSeparator + 1)..];
 
-        byte attributeMask = _machine.Memory.ReadByte(
+        byte attributeMask = ReadByteAt(
             SwappableDataArea + DosStructures.SdaSearchAttributes);
 
         var matches = new List<RedirectedFileInfo>();
@@ -551,7 +551,7 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private bool FindNext(CpuNs.Cpu cpu)
     {
-        ushort searchId = _machine.Memory.ReadWord(
+        ushort searchId = ReadWordAt(
             SwappableDataArea + DosStructures.SdaFindFirstBlock + SearchIdOffset);
 
         if (!_searches.ContainsKey(searchId))
@@ -581,7 +581,7 @@ public sealed class RedirectorServices(Machine machine)
         // DOS knows a search belongs to a redirector rather than to a local
         // disk. Get it wrong and findnext is never routed here at all: DOS
         // handles it with the FAT code, on a drive that has no FAT.
-        _machine.Memory.WriteByte(block, (byte)(0x80 | (drive + 1)));
+        WriteByteAt(block, (byte)(0x80 | (drive + 1)));
 
         // Bytes 1-11 are the search template in FCB form and byte 12 the
         // attribute mask, and they are not decoration. A search started
@@ -595,10 +595,10 @@ public sealed class RedirectorServices(Machine machine)
         // drive had left a real template behind in the same block.
         string template = SearchTemplate(pattern);
         for (int i = 0; i < 11; i++)
-            _machine.Memory.WriteByte(block + 1 + (uint)i, (byte)template[i]);
-        _machine.Memory.WriteByte(block + 12, attributeMask);
+            WriteByteAt(block + 1 + (uint)i, (byte)template[i]);
+        WriteByteAt(block + 12, attributeMask);
 
-        _machine.Memory.WriteWord(block + SearchIdOffset, searchId);
+        WriteWordAt(block + SearchIdOffset, searchId);
     }
 
     /// <summary>
@@ -676,24 +676,24 @@ public sealed class RedirectorServices(Machine machine)
     {
         string padded = PadToDirectoryEntry(info.Name);
         for (int i = 0; i < 11; i++)
-            _machine.Memory.WriteByte(address + (uint)i, (byte)padded[i]);
+            WriteByteAt(address + (uint)i, (byte)padded[i]);
 
-        _machine.Memory.WriteByte(address + 11, (byte)info.Attributes);
+        WriteByteAt(address + 11, (byte)info.Attributes);
 
         for (uint i = 12; i < 22; i++)
-            _machine.Memory.WriteByte(address + i, 0);
+            WriteByteAt(address + i, 0);
 
-        _machine.Memory.WriteWord(address + 22, info.PackedTime);
-        _machine.Memory.WriteWord(address + 24, info.PackedDate);
+        WriteWordAt(address + 22, info.PackedTime);
+        WriteWordAt(address + 24, info.PackedDate);
 
         // The starting cluster. There is no cluster: nothing behind this
         // drive has a FAT. Zero is what MSCDEX wrote too, and no program
         // looks at it for a file it did not open by cluster.
-        _machine.Memory.WriteWord(address + 26, 0);
+        WriteWordAt(address + 26, 0);
 
         uint size = (uint)Math.Min(info.Size, uint.MaxValue);
-        _machine.Memory.WriteWord(address + 28, (ushort)size);
-        _machine.Memory.WriteWord(address + 30, (ushort)(size >> 16));
+        WriteWordAt(address + 28, (ushort)size);
+        WriteWordAt(address + 30, (ushort)(size >> 16));
     }
 
     /// <summary>
@@ -896,7 +896,7 @@ public sealed class RedirectorServices(Machine machine)
         // bits 4-7 when it does not. DOS keeps it in the SDA, not in DX;
         // DOS 6.22 also sets a bit above those for the ordinary opens it
         // routes through here, which changes nothing.
-        ushort action = _machine.Memory.ReadWord(SwappableDataArea + DosStructures.SdaExtendedOpenAction);
+        ushort action = ReadWordAt(SwappableDataArea + DosStructures.SdaExtendedOpenAction);
         bool openIfExists = (action & 0x01) != 0;
         bool replaceIfExists = (action & 0x02) != 0;
         bool createIfMissing = (action & 0x10) != 0;
@@ -968,11 +968,11 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     /// <summary>The open mode of an ordinary open (16h), as DOS left it in the SDA.</summary>
     private ushort ClassicOpenMode() =>
-        _machine.Memory.ReadByte(SwappableDataArea + DosStructures.SdaOpenMode);
+        ReadByteAt(SwappableDataArea + DosStructures.SdaOpenMode);
 
     /// <summary>The open mode of an extended open (2Eh), from its own field in the SDA.</summary>
     private ushort ExtendedOpenMode() =>
-        _machine.Memory.ReadWord(SwappableDataArea + DosStructures.SdaExtendedOpenMode);
+        ReadWordAt(SwappableDataArea + DosStructures.SdaExtendedOpenMode);
 
     /// <summary>A file just created is open for reading and writing: that is what create means.</summary>
     private const ushort ReadWriteMode = 0x02;
@@ -1064,7 +1064,7 @@ public sealed class RedirectorServices(Machine machine)
 
         uint target = DiskTransferAddress();
         for (int i = 0; i < read; i++)
-            _machine.Memory.WriteByte(target + (uint)i, buffer[i]);
+            WriteByteAt(target + (uint)i, buffer[i]);
 
         WriteDword(cpu, sft + DosStructures.SftFilePosition, position + (uint)read);
         cpu.State.Cx = (ushort)read;
@@ -1109,7 +1109,7 @@ public sealed class RedirectorServices(Machine machine)
                 uint source = DiskTransferAddress();
                 var buffer = new byte[requested];
                 for (int i = 0; i < requested; i++)
-                    buffer[i] = _machine.Memory.ReadByte(source + (uint)i);
+                    buffer[i] = ReadByteAt(source + (uint)i);
 
                 file.FileSystem.Write(file.Path, position, buffer);
             }
@@ -1397,7 +1397,7 @@ public sealed class RedirectorServices(Machine machine)
     }
 
     private bool CdsPointerIsAbsent() =>
-        ReadDwordPhysical(SwappableDataArea + DosStructures.SdaCurrentCdsPointer) == 0xFFFFFFFF;
+        ReadDwordAt(SwappableDataArea + DosStructures.SdaCurrentCdsPointer) == 0xFFFFFFFF;
 
     private IRedirectedFileSystem? DriveFromName(string qualified)
     {
@@ -1419,7 +1419,7 @@ public sealed class RedirectorServices(Machine machine)
 
     private byte CurrentDrive()
     {
-        uint pointer = ReadDwordPhysical(SwappableDataArea + DosStructures.SdaCurrentCdsPointer);
+        uint pointer = ReadDwordAt(SwappableDataArea + DosStructures.SdaCurrentCdsPointer);
         uint address = ((pointer >> 16) << 4) + (pointer & 0xFFFF);
 
         if (address < CurrentDirectoryStructure) return 0xFF;
@@ -1444,7 +1444,7 @@ public sealed class RedirectorServices(Machine machine)
 
     private uint DiskTransferAddress()
     {
-        uint pointer = ReadDwordPhysical(SwappableDataArea + DosStructures.SdaDiskTransferAddress);
+        uint pointer = ReadDwordAt(SwappableDataArea + DosStructures.SdaDiskTransferAddress);
         return ((pointer >> 16) << 4) + (pointer & 0xFFFF);
     }
 
@@ -1485,7 +1485,7 @@ public sealed class RedirectorServices(Machine machine)
         cpu.SetCarryInStackedFlags(true);
 
         if (SwappableDataArea != 0)
-            _machine.Memory.WriteWord(SwappableDataArea + DosStructures.SdaErrorCode, error);
+            WriteWordAt(SwappableDataArea + DosStructures.SdaErrorCode, error);
     }
 
     /// <summary>
@@ -1521,7 +1521,7 @@ public sealed class RedirectorServices(Machine machine)
 
         for (uint i = 0; i < 128; i++)
         {
-            byte c = _machine.Memory.ReadByte(address + i);
+            byte c = ReadByteAt(address + i);
             if (c == 0) break;
             builder.Append((char)c);
         }
@@ -1532,13 +1532,30 @@ public sealed class RedirectorServices(Machine machine)
     private void WriteAsciiz(uint address, string text)
     {
         for (int i = 0; i < text.Length; i++)
-            _machine.Memory.WriteByte(address + (uint)i, (byte)text[i]);
-        _machine.Memory.WriteByte(address + (uint)text.Length, 0);
+            WriteByteAt(address + (uint)i, (byte)text[i]);
+        WriteByteAt(address + (uint)text.Length, 0);
     }
 
-    private uint ReadDwordPhysical(uint address)
-        => (uint)(_machine.Memory.ReadWord(address)
-                | (_machine.Memory.ReadWord(address + 2) << 16));
+    private uint ReadDwordAt(uint address)
+        => (uint)(ReadWordAt(address)
+                | (ReadWordAt(address + 2) << 16));
+
+    // --- guest memory ----------------------------------------------------------
+    //
+    // Every address the redirector handles -- the SDA, the CDS, an SFT, the
+    // disk transfer address -- comes from a far pointer, and a far pointer
+    // names a linear address, not a physical one. With DOS alone the two
+    // are the same. Under Windows in Enhanced mode they are not: the
+    // buffer a DOS call from a Windows program reads into is a translation
+    // buffer the monitor mapped where it pleased, and data written to the
+    // physical address the linear one spells landed in some other page.
+    // Notepad opened a file on the shared drive and showed its own name
+    // instead of the text: the buffer still held the path from the open.
+
+    private byte ReadByteAt(uint linear) => _machine.Cpu.ReadLinearByte(linear);
+    private void WriteByteAt(uint linear, byte value) => _machine.Cpu.WriteLinearByte(linear, value);
+    private ushort ReadWordAt(uint linear) => _machine.Cpu.ReadLinearWord(linear);
+    private void WriteWordAt(uint linear, ushort value) => _machine.Cpu.WriteLinearWord(linear, value);
 
     private static uint ReadDword(CpuNs.Cpu cpu, uint offset)
         => (uint)(cpu.ReadMemoryWord(CpuNs.SegReg.Es, offset)
