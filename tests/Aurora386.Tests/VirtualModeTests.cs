@@ -110,6 +110,33 @@ public class VirtualModeTests
         machine.Memory.WriteDword(machine.Cpu.State.Ss.Base + machine.Cpu.State.Esp, value);
     }
 
+    [Theory]
+    [InlineData(0x00, 13)] // invalid gate type, also not present
+    [InlineData(0x0E, 13)] // valid ring 0 gate, also not present
+    [InlineData(0x6E, 11)] // valid ring 3 gate: only presence fails
+    public void V86SoftwareInterruptChecksTypeAndPrivilegeBeforePresence(byte access, byte expected)
+    {
+        using Machine machine = BuildMonitor();
+        WriteGate(machine, 13, 0x08, 0x5000, 0x0E, 0);
+        WriteGate(machine, 11, 0x08, 0x5100, 0x0E, 0);
+        WriteGate(machine, 0x12, 0x08, 0x5200, 0x0E, 0);
+        machine.Memory.WriteByte(IdtBase + 0x12 * 8 + 5, access);
+        machine.Cpu.State.Eip = 0x6000;
+        EnterTask(machine, cs: 0x0800, eip: 0x0100, eflags: 0x00023002);
+        machine.Memory.WriteWord(0x8100, 0x12CD); // INT 12h, as in EMM386
+        byte reported = 0;
+        uint error = 0;
+        machine.Cpu.ProcessorException += (vector, code, _, _) => { reported = vector; error = code; };
+
+        machine.Cpu.Step();
+
+        Assert.Equal(expected, reported);
+        Assert.Equal(0x92u, error);
+        Assert.False(machine.Cpu.State.Virtual8086Mode);
+        Assert.Equal(expected == 13 ? 0x5000u : 0x5100u, machine.Cpu.State.Eip);
+        Assert.Equal(0x0100u, machine.Memory.ReadDword(machine.Cpu.State.Esp + 4));
+    }
+
     [Fact]
     public void IretWithTheVirtualModeFlagStartsATask()
     {

@@ -1090,6 +1090,8 @@ public class ProtectedModeTests
     {
         using Machine machine = BuildProtectedMachine();
         WriteGate(machine, IdtBase, 11, 0x08, 0x6000, type: 0x0E);    // #NP is served
+        WriteGate(machine, IdtBase, 0x40, 0x08, 0x6100, type: 0x0E);
+        machine.Memory.WriteByte(IdtBase + 0x40 * 8 + 5, 0x0E); // valid type, P=0
 
         // INT 40h: its gate is absent, so delivering it raises #NP. A software
         // interrupt is benign, and the #NP is simply what arrives.
@@ -1106,7 +1108,7 @@ public class ProtectedModeTests
         WriteGate(machine, IdtBase, 8, 0x08, 0x5000, type: 0x0E);     // #DF is served, #GP is not
 
         // MOV DS,AX with a selector past the table: #GP. Delivering it finds
-        // no gate: #NP. Two contributory faults in a row are a double fault.
+        // an invalid gate: #GP. Two contributory faults in a row are a double fault.
         machine.Cpu.State.Eax = 0x40;
         RunInstruction(machine, 0x8E, 0xD8);
 
@@ -1125,7 +1127,7 @@ public class ProtectedModeTests
         machine.Cpu.State.Eax = 0x40;
         RunInstruction(machine, 0x8E, 0xD8);          // #GP, no gate for it, none for #DF either
 
-        Assert.Equal(((byte)13, (byte)11), seen);
+        Assert.Equal(((byte)13, (byte)13), seen);
         // Back at the reset vector, the way a real machine comes back from a shutdown.
         Assert.Equal(0xF000, machine.Cpu.State.Cs.Selector);
         Assert.Equal(0xFFF0u, machine.Cpu.State.Eip);

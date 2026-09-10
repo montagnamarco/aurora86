@@ -181,6 +181,10 @@ public sealed partial class Machine : IDisposable
         // registers looked like: icons drawn by the processor, and nothing
         // where the engine should have filled.
         Memory = new PhysicalMemoryBus(ramSize, frameBufferBase + TrioMmioOffset + 0x10000);
+        // No option ROMs are fitted here. Reporting writable RAM makes
+        // EMM386 reserve the entire range instead of mapping UMB pages into
+        // it. Its page tables supply extended RAM behind these addresses.
+        Memory.Unmap(0xC0000, 0x30000);
         LinearFrameBufferBase = frameBufferBase;
         Io = new IoBus();
 

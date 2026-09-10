@@ -150,6 +150,26 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     }
 
     /// <summary>
+    /// Leaves a range without a responding device: reads return FFh and
+    /// writes disappear. The PC's unused option-ROM sockets are holes in
+    /// its address space, even when more RAM is installed above one MB.
+    /// </summary>
+    public void Unmap(uint physicalBase, uint length)
+    {
+        ValidateRange(physicalBase, length);
+        int first = (int)(physicalBase >> PageShift);
+        int count = (int)(length >> PageShift);
+        for (int page = first; page < first + count; page++)
+        {
+            _pageRam[page] = null;
+            _pageWatchedRam[page] = null;
+            _pageDevice[page] = null;
+            _pageDeviceBase[page] = 0;
+            _pageReadOnly[page] = false;
+        }
+    }
+
+    /// <summary>
     /// Maps a ROM: the contents are copied into the underlying RAM and the
     /// pages are marked read-only. Reads therefore keep taking the fast path,
     /// which matters because a ROM is read constantly and written never, and

@@ -576,6 +576,10 @@ public sealed partial class Machine
                 PointingDevice.Handle(cpu);
                 return;
 
+            case 0x87:
+                MoveExtendedMemory(cpu);
+                return;
+
             case 0x88:
                 // Extended memory, in KB above the first megabyte.
                 uint extendedKb = Memory.RamSize > 0x100000

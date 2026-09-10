@@ -349,10 +349,6 @@ public sealed partial class Cpu
         byte gateDpl = (byte)((access >> 5) & 3);
         bool present = (access & 0x80) != 0;
 
-        // A gate that is not present is how an operating system traps the
-        // first use of a vector it has not set up yet.
-        if (!present) throw new CpuException(11, (uint)(vector * 8 + 2));
-
         // 32-bit gates carry the offset's upper half in the high dword; 16-bit
         // gates leave it zero, which is exactly what a 286-era handler wants.
         bool is32Bit = gateType is 0x0E or 0x0F;
@@ -384,6 +380,12 @@ public sealed partial class Cpu
         // a second fault, and then a third.
         if (isSoftware && gateDpl < currentPrivilege)
             throw new CpuException(13, (uint)(vector * 8 + 2));
+
+        // Intel's INT checks type and software-call privilege before P.
+        // EMM386 leaves BIOS vectors inaccessible in its IDT and reflects
+        // their #GP into the V86 IVT. Reporting #NP first makes INT 12h
+        // fatal during installation instead of reaching that reflector.
+        if (!present) throw new CpuException(11, (uint)(vector * 8 + 2));
 
         // A task gate does not build a frame on any stack: it replaces the
         // running context wholesale with the one saved in a task state
