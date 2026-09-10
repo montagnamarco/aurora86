@@ -25,6 +25,13 @@ public interface IIoDevice
     }
 }
 
+/// <summary>A device whose 32-bit registers cannot be split into two word accesses.</summary>
+public interface IIoDwordDevice : IIoDevice
+{
+    uint ReadDword(ushort port);
+    void WriteDword(ushort port, uint value);
+}
+
 /// <summary>
 /// The I/O address space: 65536 ports, each assignable to a device.
 /// Unassigned ports read back 0xFF, which is what an idle bus with nothing
@@ -78,7 +85,8 @@ public sealed class IoBus
     public ushort ReadWord(ushort port) => _devices[port]?.ReadWord(port) ?? 0xFFFF;
 
     public uint ReadDword(ushort port)
-        => (uint)(ReadWord(port) | (ReadWord((ushort)(port + 2)) << 16));
+        => _devices[port] is IIoDwordDevice wide ? wide.ReadDword(port)
+            : (uint)(ReadWord(port) | (ReadWord((ushort)(port + 2)) << 16));
 
     public void WriteByte(ushort port, byte value)
     {
@@ -90,6 +98,7 @@ public sealed class IoBus
 
     public void WriteDword(ushort port, uint value)
     {
+        if (_devices[port] is IIoDwordDevice wide) { wide.WriteDword(port, value); return; }
         WriteWord(port, (ushort)value);
         WriteWord((ushort)(port + 2), (ushort)(value >> 16));
     }

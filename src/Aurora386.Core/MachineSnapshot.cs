@@ -70,6 +70,7 @@ public sealed class MachineSnapshot
 
     /// <summary>The redirector's attachment to DOS; see <see cref="Machine.CaptureDosState"/>.</summary>
     private readonly byte[] _dosState;
+    private readonly byte[] _pci;
 
     private MachineSnapshot(Machine machine)
     {
@@ -99,6 +100,7 @@ public sealed class MachineSnapshot
         _timer = machine.Timer.Capture();
         _keyboard = machine.Keyboard.Capture();
         _dosState = machine.CaptureDosState();
+        _pci = machine.Pci.Capture();
     }
 
     /// <summary>Takes a snapshot of the machine as it stands.</summary>
@@ -138,6 +140,7 @@ public sealed class MachineSnapshot
 
         // After the memory, because attaching marks the CDS entries in it.
         machine.RestoreDosState(_dosState);
+        machine.Pci.Restore(_pci);
 
         // Paging translations cached from the old contents of memory describe
         // an address space that no longer exists.
@@ -190,6 +193,8 @@ public sealed class MachineSnapshot
 
         file.Write(_dosState.Length);
         file.Write(_dosState);
+        file.Write(_pci.Length);
+        file.Write(_pci);
     }
 
     private MachineSnapshot(BinaryReader file)
@@ -264,6 +269,9 @@ public sealed class MachineSnapshot
         // restores a guest whose shared folders have to be found afresh,
         // which for a DOS already at its prompt never happens.
         _dosState = file.BaseStream.Position < file.BaseStream.Length
+            ? file.ReadBytes(file.ReadInt32())
+            : [];
+        _pci = file.BaseStream.Position < file.BaseStream.Length
             ? file.ReadBytes(file.ReadInt32())
             : [];
     }

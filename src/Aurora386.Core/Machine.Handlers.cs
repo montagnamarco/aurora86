@@ -47,6 +47,8 @@ public sealed partial class Machine
             case BiosRom.Handler.EquipmentList: cpu.State.Ax = Bda.EquipmentWord; return;
             case BiosRom.Handler.MemorySize: cpu.State.Ax = Bda.MemorySizeKb; return;
             case BiosRom.Handler.System: HandleSystemServices(cpu); return;
+            case BiosRom.Handler.Bios32Directory: PciServices.HandleDirectory(cpu); return;
+            case BiosRom.Handler.PciProtected: PciServices.Handle(cpu, true); return;
             case BiosRom.Handler.TimeOfDay: HandleTimeOfDay(cpu); return;
             case BiosRom.Handler.Bootstrap: Boot(cpu); return;
             case BiosRom.Handler.Multiplex: HandleMultiplex(cpu); return;
@@ -667,6 +669,7 @@ public sealed partial class Machine
 
     private void HandleTimeOfDay(CpuNs.Cpu cpu)
     {
+        if (cpu.State.GetReg8(4) == 0xB1) { PciServices.Handle(cpu, false); return; }
         byte function = cpu.State.GetReg8(4);
 
         switch (function)

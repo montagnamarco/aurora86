@@ -1,0 +1,264 @@
+using Aurora386.Core;
+using Aurora386.Core.Cpu;
+using Aurora386.Core.Devices.Pci;
+using Aurora386.Core.Firmware;
+using Aurora386.Core.IO;
+
+namespace Aurora386.Tests;
+
+public class PciTests
+{
+    private static Machine Boot()
+    {
+        var m = new Machine();
+        m.RunInstructions(3000);
+        m.Cpu.SetSegment(SegReg.Cs, 0);
+        m.Cpu.SetSegment(SegReg.Ss, 0);
+        return m;
+    }
+
+    private static void Run(Machine m, params byte[] code)
+    {
+        for (int i = 0; i < code.Length; i++) m.Memory.WriteByte(0x2000u + (uint)i, code[i]);
+        m.Cpu.State.Eip = 0x2000;
+        m.Cpu.State.Esp = 0x7000;
+        m.Cpu.State.Halted = false;
+        for (int i = 0; i < 200 && !m.Cpu.State.Halted; i++) m.Cpu.Step();
+        Assert.True(m.Cpu.State.Halted);
+        Assert.Equal(0x7000u, m.Cpu.State.Esp);
+    }
+
+    private static void Bios(Machine m, ushort function)
+    {
+        m.Cpu.State.Ax = function;
+        Run(m, 0xCD, 0x1A, 0xF4);
+    }
+
+    [Fact]
+    public void ConfigurationAddressRequiresADwordAndAbsentCyclesFloatHigh()
+    {
+        using var m = new Machine();
+        Assert.Equal(uint.MaxValue, m.Io.ReadDword(0xCFC));
+        m.Io.WriteWord(0xCF8, 0);
+        m.Io.WriteWord(0xCFA, 0x8000);
+        Assert.Equal(0u, m.Io.ReadDword(0xCF8));
+        m.Io.WriteDword(0xCF8, 0xFF000003);
+        Assert.Equal(0x80000000u, m.Io.ReadDword(0xCF8));
+        Assert.Equal(0x122D8086u, m.Io.ReadDword(0xCFC));
+        Assert.Equal(0x8086, m.Io.ReadWord(0xCFC));
+        Assert.Equal(0x12, m.Io.ReadByte(0xCFF));
+        m.Io.WriteByte(0xCFB, 0);
+        Assert.Equal(0x80000000u, m.Io.ReadDword(0xCF8));
+        Assert.Equal(0xFFFF, m.Io.ReadWord(0xCF8));
+        foreach (uint missing in new uint[] { 0x80010000, 0x80001000, 0x80000A00 })
+        {
+            m.Io.WriteDword(0xCF8, missing);
+            Assert.Equal(uint.MaxValue, m.Io.ReadDword(0xCFC));
+            m.Io.WriteDword(0xCFC, 0);
+            Assert.Equal(uint.MaxValue, m.Io.ReadDword(0xCFC));
+        }
+    }
+
+    [Fact]
+    public void CpuOutAndInUseOneDwordConfigurationCycle()
+    {
+        using var m = Boot();
+        // MOV DX,CF8 / MOV EAX,80000800 / OUT DX,EAX / MOV DX,CFC / IN EAX,DX.
+        Run(m, 0xBA, 0xF8, 0x0C, 0x66, 0xB8, 0, 8, 0, 0x80,
+            0x66, 0xEF, 0xBA, 0xFC, 0x0C, 0x66, 0xED, 0xF4);
+        Assert.Equal(0x122E8086u, m.Cpu.State.Eax);
+    }
+
+    [Fact]
+    public void BarProbesPreserveTypeSizeAndReadOnlyIdentity()
+    {
+        var io = new IoBus();
+        var bus = new PciBus();
+        var device = new PciFunction(0, 0x1234, 0x5678, 0x020000);
+        device.DefineBar(0, 0x100, true, 0xC000);
+        device.DefineBar(1, 0x100000, false, 0xE0000000);
+        bus.Add(device);
+        bus.Register(io);
+        io.WriteDword(0xCF8, 0x80000000);
+        io.WriteDword(0xCFC, uint.MaxValue);
+        Assert.Equal(0x56781234u, io.ReadDword(0xCFC));
+        io.WriteDword(0xCF8, 0x80000010);
+        io.WriteDword(0xCFC, uint.MaxValue);
+        Assert.Equal(0xFFFFFF01u, io.ReadDword(0xCFC));
+        io.WriteDword(0xCFC, 0xC123);
+        Assert.Equal(0xC101u, io.ReadDword(0xCFC));
+        io.WriteDword(0xCF8, 0x80000014);
+        io.WriteDword(0xCFC, uint.MaxValue);
+        Assert.Equal(0xFFF00000u, io.ReadDword(0xCFC));
+        io.WriteDword(0xCFC, 0xE0123456);
+        Assert.Equal(0xE0100000u, io.ReadDword(0xCFC));
+    }
+
+    [Fact]
+    public void IdeCommandControlsBothRealCompatibilityChannelsAndResetRestoresThem()
+    {
+        using var m = new Machine();
+        m.Io.WriteByte(0x1F2, 0x27);
+        m.Io.WriteByte(0x172, 0x39);
+        m.Io.WriteDword(0xCF8, 0x80000904);
+        m.Io.WriteByte(0xCFC, 0);
+        Assert.Equal(0xFF, m.Io.ReadByte(0x1F2));
+        Assert.Equal(0xFF, m.Io.ReadByte(0x172));
+        Assert.Equal(0xFF, m.Io.ReadByte(0x3F6));
+        Assert.Equal(0xFF, m.Io.ReadByte(0x376));
+        m.Io.WriteByte(0xCFC, 0xFF);
+        Assert.Equal(1u, m.Io.ReadDword(0xCFC));
+        Assert.Equal(0x27, m.Io.ReadByte(0x1F2));
+        Assert.Equal(0x39, m.Io.ReadByte(0x172));
+        m.Io.WriteByte(0xCFC, 0);
+        m.Pci.Reset();
+        Assert.Equal(0x27, m.Io.ReadByte(0x1F2));
+        Assert.Equal(0u, m.Io.ReadDword(0xCF8));
+    }
+
+    [Fact]
+    public void Int1AEnumeratesTheMultifunctionBridgeAndPreservesUnspecifiedRegisters()
+    {
+        using var m = Boot();
+        m.Cpu.State.Ecx = 0xABCD1200;
+        m.Cpu.State.Edi = 0x12345678;
+        m.Cpu.Flags.Carry = true;
+        Bios(m, 0xB101);
+        Assert.Equal(1, m.Cpu.State.Ax);
+        Assert.Equal(0x0210, m.Cpu.State.Bx);
+        Assert.Equal(0x20494350u, m.Cpu.State.Edx);
+        Assert.Equal(0xABCD1200u, m.Cpu.State.Ecx);
+        Assert.Equal(0x12345678u, m.Cpu.State.Edi);
+        Assert.False(m.Cpu.Flags.Carry);
+        m.Cpu.State.Dx = 0x8086; m.Cpu.State.Cx = 0x1230; m.Cpu.State.Si = 0;
+        Bios(m, 0xB102);
+        Assert.Equal(9, m.Cpu.State.Bx);
+        Assert.False(m.Cpu.Flags.Carry);
+        m.Cpu.State.Ecx = 0x010100;
+        Bios(m, 0xB103);
+        Assert.Equal(9, m.Cpu.State.Bx);
+        m.Cpu.State.Si = 1;
+        Bios(m, 0xB103);
+        Assert.Equal(0x86, m.Cpu.State.GetReg8(4));
+        Assert.True(m.Cpu.Flags.Carry);
+        m.Cpu.State.Dx = 0xFFFF;
+        Bios(m, 0xB102);
+        Assert.Equal(0x83, m.Cpu.State.GetReg8(4));
+    }
+
+    [Theory]
+    [InlineData(0xB108, 0xB10B, 0xABCDEF34u)]
+    [InlineData(0xB109, 0xB10C, 0xABCD1234u)]
+    [InlineData(0xB10A, 0xB10D, 0x00801234u)]
+    public void BiosConfigurationUsesTheSameByteLanesAsPorts(int read, int write, uint expected)
+    {
+        using var m = Boot();
+        m.Cpu.State.Bx = 8; m.Cpu.State.Di = 12;
+        m.Cpu.State.Ecx = 0x1234;
+        Bios(m, (ushort)write);
+        m.Cpu.State.Ecx = 0xABCDEF00;
+        Bios(m, (ushort)read);
+        Assert.False(m.Cpu.Flags.Carry);
+        Assert.Equal(expected, m.Cpu.State.Ecx);
+        m.Io.WriteDword(0xCF8, 0x8000080C);
+        Assert.Equal(read == 0xB108 ? 0x00800034u : 0x00801234u, m.Io.ReadDword(0xCFC));
+    }
+
+    [Theory]
+    [InlineData(0xB109, 1)]
+    [InlineData(0xB10A, 254)]
+    [InlineData(0xB10D, 2)]
+    [InlineData(0xB108, 256)]
+    public void BiosRejectsMisalignedOrOutOfRangeRegisters(int function, int offset)
+    {
+        using var m = Boot();
+        m.Cpu.State.Di = (ushort)offset;
+        Bios(m, (ushort)function);
+        Assert.Equal(0x87, m.Cpu.State.GetReg8(4));
+        Assert.True(m.Cpu.Flags.Carry);
+    }
+
+    [Fact]
+    public void AbsentConfigurationReadsSucceedAndUnsupportedServicesSetCarry()
+    {
+        using var m = Boot();
+        m.Cpu.State.Bx = 0xFFFF; m.Cpu.State.Di = 0;
+        Bios(m, 0xB10A);
+        Assert.Equal(uint.MaxValue, m.Cpu.State.Ecx);
+        Assert.False(m.Cpu.Flags.Carry);
+        foreach (ushort function in new ushort[] { 0xB106, 0xB10E, 0xB10F })
+        {
+            Bios(m, function);
+            Assert.Equal(0x81, m.Cpu.State.GetReg8(4));
+            Assert.True(m.Cpu.Flags.Carry);
+        }
+    }
+
+    [Fact]
+    public void Bios32HeaderAndFarCallsWorkFromAFlat32BitCaller()
+    {
+        using var m = Boot();
+        uint header = BiosRom.Base + BiosRom.Entry.Bios32Header;
+        Assert.Equal(0x5F32335Fu, m.Memory.ReadDword(header));
+        Assert.Equal(1, m.Memory.ReadByte(header + 9));
+        int sum = 0;
+        for (uint i = 0; i < 16; i++) sum += m.Memory.ReadByte(header + i);
+        Assert.Equal(0, sum & 255);
+        // Flat, 32-bit code/data descriptors.
+        m.Memory.WriteDword(0x1008, 0x0000FFFF);
+        m.Memory.WriteDword(0x100C, 0x00CF9A00);
+        m.Memory.WriteDword(0x1010, 0x0000FFFF);
+        m.Memory.WriteDword(0x1014, 0x00CF9200);
+        m.Cpu.State.GdtBase = 0x1000; m.Cpu.State.GdtLimit = 23;
+        m.Cpu.State.Cr0 |= CpuState.Cr0ProtectionEnable;
+        m.Cpu.SetSegment(SegReg.Cs, 8);
+        m.Cpu.SetSegment(SegReg.Ss, 16);
+        m.Cpu.SetSegment(SegReg.Ds, 16);
+        void FarCall(uint address) => Run(m, 0x9A, (byte)address, (byte)(address >> 8),
+            (byte)(address >> 16), (byte)(address >> 24), 8, 0, 0xF4);
+        m.Cpu.State.Eax = 0x49435024; m.Cpu.State.Ebx = 0;
+        m.Cpu.Flags.Carry = true;
+        FarCall(m.Memory.ReadDword(header + 4));
+        Assert.Equal(0, m.Cpu.State.GetReg8(0));
+        Assert.True(m.Cpu.Flags.Carry); // directory returns AL, leaves flags untouched
+        Assert.Equal(BiosRom.Base, m.Cpu.State.Ebx);
+        Assert.Equal(0x10000u, m.Cpu.State.Ecx);
+        uint entry = m.Cpu.State.Ebx + m.Cpu.State.Edx;
+        m.Cpu.State.Ax = 0xB101;
+        FarCall(entry);
+        Assert.Equal(1, m.Cpu.State.Ax);
+        Assert.False(m.Cpu.Flags.Carry);
+        m.Cpu.State.Ax = 0xB10A; m.Cpu.State.Bx = 9; m.Cpu.State.Di = 0;
+        FarCall(entry);
+        Assert.Equal(0x12308086u, m.Cpu.State.Ecx);
+        m.Cpu.State.Ax = 0xB10F;
+        FarCall(entry);
+        Assert.True(m.Cpu.Flags.Carry);
+        m.Cpu.State.Eax = 0; m.Cpu.State.Ebx = 0;
+        FarCall(m.Memory.ReadDword(header + 4));
+        Assert.Equal(0x80, m.Cpu.State.GetReg8(0));
+    }
+
+    [Fact]
+    public void SnapshotRestoresConfigurationLatchAndIdeDecodingAndAcceptsOlderFiles()
+    {
+        using var m = Boot();
+        m.Io.WriteDword(0xCF8, 0x80000904);
+        m.Io.WriteByte(0xCFC, 0);
+        string path = Path.GetTempFileName();
+        try
+        {
+            MachineSnapshot.Capture(m).Save(path);
+            m.Pci.Reset();
+            MachineSnapshot.Load(path).RestoreTo(m);
+            Assert.Equal(0x80000904u, m.Io.ReadDword(0xCF8));
+            Assert.Equal(0u, m.Io.ReadDword(0xCFC));
+            Assert.Equal(0xFF, m.Io.ReadByte(0x1F2));
+            using (var file = File.OpenWrite(path)) file.SetLength(file.Length - 4 - m.Pci.Capture().Length);
+            MachineSnapshot.Load(path).RestoreTo(m);
+            Assert.Equal(1u, m.Pci.ReadConfiguration(9, 4, 2));
+            Assert.Equal(0u, m.Io.ReadDword(0xCF8));
+        }
+        finally { File.Delete(path); }
+    }
+}

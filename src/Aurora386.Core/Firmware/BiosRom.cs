@@ -149,6 +149,9 @@ public static class BiosRom
         /// pops whatever size of return address the caller's segment pushed.
         /// </summary>
         public const ushort AdvancedPowerManagement = 0x1A50;
+        public const ushort Bios32Header = 0x1A60;
+        public const ushort Bios32Directory = 0x1A70;
+        public const ushort PciProtected = 0x1A80;
 
         /// <summary>
         /// The redirector's own INT 2Fh entry point, which chains.
@@ -293,6 +296,8 @@ public static class BiosRom
 
         /// <summary>APM through its protected-mode entry, called far with the function in AX.</summary>
         AdvancedPowerManagement = 0x53,
+        Bios32Directory = 0x54,
+        PciProtected = 0x55,
         Post = 0xFF,
     }
 
@@ -393,6 +398,20 @@ public static class BiosRom
             rom[Entry.AdvancedPowerManagement + 1] = HookByte2;
             rom[Entry.AdvancedPowerManagement + 2] = (byte)Handler.AdvancedPowerManagement;
             rom[Entry.AdvancedPowerManagement + 3] = 0xCB;
+
+            int b32 = Entry.Bios32Header;
+            Array.Clear(rom, b32, 16);
+            WriteDword(rom, b32, 0x5F32335F); // _32_
+            WriteDword(rom, b32 + 4, Base + Entry.Bios32Directory);
+            rom[b32 + 9] = 1; // one paragraph, revision zero
+            int checksum32 = 0;
+            for (int i = 0; i < 16; i++) checksum32 += rom[b32 + i];
+            rom[b32 + 10] = unchecked((byte)-checksum32);
+            rom[Entry.Bios32Directory] = rom[Entry.PciProtected] = HookByte1;
+            rom[Entry.Bios32Directory + 1] = rom[Entry.PciProtected + 1] = HookByte2;
+            rom[Entry.Bios32Directory + 2] = (byte)Handler.Bios32Directory;
+            rom[Entry.PciProtected + 2] = (byte)Handler.PciProtected;
+            rom[Entry.Bios32Directory + 3] = rom[Entry.PciProtected + 3] = 0xCB; // RETF
         }
 
         // The two VBE tables the information block points at rather than

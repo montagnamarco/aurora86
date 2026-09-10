@@ -753,5 +753,11 @@ answer, and the machine already does, ahead of the guest itself:
   that turns everything off, which the front ends treat as the switch.
 
 The BIOS also answers INT 15h E801h and E820h, the memory map beyond the
-64 MB ceiling of the old call, and the extended INT 13h functions. What is
-still missing for 95 is the PCI bus; it is next.
+64 MB ceiling of the old call, and the extended INT 13h functions.
+
+The PCI bus (`Devices/Pci`) now provides CF8h/CFC configuration cycles,
+minimal host/ISA bridges and compatibility IDE. `Firmware/PciBios.cs`
+exposes enumeration and configuration through INT 1Ah and BIOS32 far calls.
+The IDE command register controls the actual legacy port mappings. PCI
+interrupt routing and Windows 95 guest validation remain open; see
+[PCI configuration and firmware](PCI.md) for the implemented boundary.

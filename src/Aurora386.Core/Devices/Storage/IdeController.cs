@@ -119,6 +119,16 @@ public sealed partial class IdeController : IIoDevice
     /// is the answer that means "empty", and the bus gives it for free to
     /// ports nobody claimed.
     /// </summary>
+    public void SetIoDecoding(IoBus io, bool enabled)
+    {
+        if (enabled) Register(io);
+        else
+        {
+            io.Unregister(_commandBase, 8, this);
+            io.Unregister(_controlBase, 2, this);
+        }
+    }
+
     public void Register(IoBus io)
     {
         io.Register(_commandBase, 8, this);

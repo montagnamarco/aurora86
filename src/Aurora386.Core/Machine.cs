@@ -8,6 +8,7 @@ using Aurora386.Core.Devices.Timing;
 using Aurora386.Core.Devices.System;
 using Aurora386.Core.Devices.Network;
 using Aurora386.Core.Devices.IsaPnp;
+using Aurora386.Core.Devices.Pci;
 using Aurora386.Core.Devices.Audio;
 using Aurora386.Core.Devices.Video;
 using Aurora386.Core.Dos;
@@ -26,6 +27,8 @@ public sealed partial class Machine : IDisposable
 {
     public PhysicalMemoryBus Memory { get; }
     public IoBus Io { get; }
+    public PciBus Pci { get; }
+    public PciBios PciServices { get; }
     public CpuNs.Cpu Cpu { get; }
 
     public InterruptController Interrupts { get; }
@@ -291,6 +294,20 @@ public sealed partial class Machine : IDisposable
         // is the slave of the first, where drivers of the period expect it.
         IdeSecondary = new IdeController(this, Interrupts, IdeController.Channel.Secondary);
         IdeSecondary.Register(Io);
+        Pci = new PciBus();
+        Pci.Add(new PciFunction(0x0000, 0x8086, 0x122D, 0x060000));
+        Pci.Add(new PciFunction(0x0008, 0x8086, 0x122E, 0x060100, headerType: 0x80));
+        // Compatibility PIO only: no native-mode BARs or bus-master capability.
+        var pciIde = new PciFunction(0x0009, 0x8086, 0x1230, 0x010100, commandMask: 1);
+        pciIde.Define(4, 1, 2, 1);
+        pciIde.ConfigurationChanged += () =>
+        {
+            Ide.SetIoDecoding(Io, (pciIde.Command & 1) != 0);
+            IdeSecondary.SetIoDecoding(Io, (pciIde.Command & 1) != 0);
+        };
+        Pci.Add(pciIde);
+        Pci.Register(Io);
+        PciServices = new PciBios(Pci);
         Redirector = new RedirectorServices(this);
         _redirectorInstaller = new RedirectorInstaller(this);
         WatchForCommandProcessor();
