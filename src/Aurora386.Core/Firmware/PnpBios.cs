@@ -83,14 +83,20 @@ public sealed class PnpBios
         // Control 1 asks for the current configuration, 2 for the one at
         // next boot; on a board where nothing moves they are the same.
         byte number = cpu.ReadLinearByte(numberPointer);
-        if (number >= _nodes.Count) return InvalidHandle;
+        int nodeIndex = _nodes.FindIndex(node => node[2] == number);
+        if (nodeIndex < 0)
+        {
+            return InvalidHandle;
+        }
 
-        byte[] node = _nodes[number];
+        byte[] node = _nodes[nodeIndex];
         for (int i = 0; i < node.Length; i++) cpu.WriteLinearByte(buffer + (uint)i, node[i]);
 
         // The caller walks the list by following this: the next node's
         // number, or FFh after the last.
-        cpu.WriteLinearByte(numberPointer, number + 1 < _nodes.Count ? (byte)(number + 1) : (byte)0xFF);
+        int nextIndex = nodeIndex + 1;
+        byte nextHandle = nextIndex < _nodes.Count ? _nodes[nextIndex][2] : (byte)0xFF;
+        cpu.WriteLinearByte(numberPointer, nextHandle);
         return Success;
     }
 
@@ -122,12 +128,11 @@ public sealed class PnpBios
         var nodes = new List<byte[]>();
         byte handle = 0;
 
-        // Attributes: bit 0 says the device cannot be disabled, bit 3 that
-        // it can be booted from, bit 4 that it is an input device. Nothing
-        // here can be configured (bit 1 clear), so a request to change a
-        // node is refused before it is made.
+        // Attribute bit 0 prevents disabling the device; bit 4 identifies
+        // an input device. Bit 1, used for the PCI bus below, prevents
+        // configuration changes. Set-node requests currently leave all
+        // resource assignments unchanged.
         const ushort Fixed = 0x0001;
-        const ushort Boot = 0x0008;
         const ushort Input = 0x0010;
 
         void Add(string id, byte type, byte subtype, byte iface, ushort attributes, Action<ResourceBlock> resources)
@@ -147,20 +152,31 @@ public sealed class PnpBios
         Add("PNP0303", 0x09, 0x00, 0x00, (ushort)(Fixed | Input), r => { r.Io(0x60, 1); r.Io(0x64, 1); r.Irq(1); });
         Add("PNP0F13", 0x0F, 0x00, 0x00, (ushort)(Fixed | Input), r => r.Irq(12));
         Add("PNP0501", 0x07, 0x00, 0x02, Fixed, r => { r.Io(0x3F8, 8); r.Irq(4); });
-        Add("PNP0600", 0x01, 0x01, 0x00, (ushort)(Fixed | Boot), r => { r.Io(0x1F0, 8); r.Io(0x3F6, 1); r.Irq(14); });
-        Add("PNP0600", 0x01, 0x01, 0x00, Fixed, r => { r.Io(0x170, 8); r.Io(0x376, 1); r.Irq(15); });
-        Add("PNP0900", 0x03, 0x00, 0x00, Fixed, r =>
-        {
-            r.Io(0x3B0, 12);
-            r.Io(0x3C0, 32);
-            r.Memory(0xA0000, 0x20000);
-        });
+        // PCI owns both PIIX channels. Separate legacy IDE nodes reserve
+        // the same ports and IRQs a second time. Retire their handles without
+        // changing the identities of the video and memory nodes after them.
+        handle += 2;
+
+        // The display adapter is a PCI device and announces itself there, so
+        // a PNP0900 node here would reserve the VGA ports and the A0000
+        // window a second time. Windows 95 resolves that the same way it did
+        // for the duplicated IDE channels: it finds the PCI card, matches the
+        // S3 driver to it, and then marks the card as not working because
+        // another device already holds its resources. Retire the handle
+        // without adding the node, so the memory and bus nodes after it keep
+        // the identities a guest may already have stored.
+        handle++;
         Add("PNP0C01", 0x05, 0x00, 0x00, Fixed, r =>
         {
             r.Memory(0x00000, 0xA0000);
             uint extended = _machine.Memory.RamSize - 0x100000;
             if (extended > 0) r.Memory(0x100000, extended);
         });
+
+        // Windows 95 needs a system-bus node before it can enumerate PCI
+        // children. Append it so existing BIOS device handles stay stable.
+        const ushort CannotDisableOrConfigure = 0x0003;
+        Add("PNP0A03", 0x06, 0x04, 0x00, CannotDisableOrConfigure, _ => { });
 
         return nodes;
     }

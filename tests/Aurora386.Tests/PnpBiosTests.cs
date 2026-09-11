@@ -145,6 +145,37 @@ public class PnpBiosTests
     }
 
     [Fact]
+    public void TheSystemNodeWalkAnnouncesThePciBusToTheGuest()
+    {
+        using Machine machine = RealMode();
+        machine.Memory.WriteByte(Scratch, 0);
+        bool pciFound = false;
+        for (int nodeIndex = 0; nodeIndex < 64; nodeIndex++)
+        {
+            if (machine.Memory.ReadByte(Scratch) == 0xFF)
+            {
+                break;
+            }
+            ushort status = Call(machine, 0xF000, 0x01,
+                (ushort)Scratch, 0, (ushort)Buffer, 0, 1, 0xF000);
+            Assert.Equal(0, status);
+            byte[] identifier = new byte[4];
+            for (uint index = 0; index < identifier.Length; index++)
+            {
+                identifier[index] = machine.Memory.ReadByte(Buffer + 3 + index);
+            }
+            if (identifier.SequenceEqual(PnpBios.CompressId("PNP0A03")))
+            {
+                pciFound = true;
+                Assert.Equal(0x06, machine.Memory.ReadByte(Buffer + 7));
+                Assert.Equal(0x04, machine.Memory.ReadByte(Buffer + 8));
+                Assert.Equal(3, machine.Memory.ReadWord(Buffer + 10) & 3);
+            }
+        }
+        Assert.True(pciFound, "The PnP BIOS must announce the PCI bus already implemented by the machine.");
+    }
+
+    [Fact]
     public void FunctionOneWalksEveryNodeAndEndsWithFF()
     {
         using Machine machine = RealMode();
@@ -299,19 +330,71 @@ public class PnpBiosTests
     }
 
     [Fact]
-    public void ThePrimaryIdeNodeClaimsItsPortsAndInterrupt()
+    public void PciIdeChannelsAreNotDuplicatedAsLegacyBiosControllers()
     {
         using Machine machine = Boot();
-        byte[] ide = machine.PlugAndPlay.Nodes.First(n =>
-            n[3..7].SequenceEqual(PnpBios.CompressId("PNP0600")));
-        var allocated = ParseBlocks(ide)[0];
+        Assert.Equal(0x12308086u, machine.Pci.ReadConfiguration(9, 0, 4));
+        Assert.DoesNotContain(machine.PlugAndPlay.Nodes, node =>
+            node[3..7].SequenceEqual(PnpBios.CompressId("PNP0600")));
+        foreach (byte[] node in machine.PlugAndPlay.Nodes)
+        {
+            foreach (var resource in ParseBlocks(node)[0].Where(item => item.Tag == 0x47))
+            {
+                int port = resource.Data[1] | (resource.Data[2] << 8);
+                Assert.DoesNotContain(port, new[] { 0x1F0, 0x3F6, 0x170, 0x376 });
+            }
+        }
+    }
 
-        var io = allocated.Where(item => item.Tag == 0x47).Select(item => item.Data[1] | (item.Data[2] << 8)).ToList();
-        Assert.Contains(0x1F0, io);
-        Assert.Contains(0x3F6, io);
-        var irq = allocated.Single(item => item.Tag == 0x22);
-        Assert.Equal(1 << 14, irq.Data[0] | (irq.Data[1] << 8));
-        Assert.Equal(0x08, ide[10] & 0x08);                        // bootable
+    /// <summary>
+    /// Enumeration walks past the handles of devices that PCI owns -- the two
+    /// IDE channels and the display adapter -- and the devices after them keep
+    /// the handles they always had, because a guest may have stored them.
+    /// </summary>
+    [Fact]
+    public void EnumerationSkipsRetiredHandlesWithoutRenumberingOtherDevices()
+    {
+        using Machine machine = RealMode();
+        machine.Memory.WriteByte(Scratch, 9);
+        Assert.Equal(0, Call(machine, 0xF000, 0x01, (ushort)Scratch, 0, (ushort)Buffer, 0, 1, 0xF000));
+
+        // Handles 9 and 10 were the IDE channels, 11 the VGA adapter: the next
+        // node is the memory node at 12, and it still says 12.
+        Assert.Equal(13, machine.Memory.ReadByte(Scratch));
+        Assert.Equal(0, Call(machine, 0xF000, 0x01, (ushort)Scratch, 0, (ushort)Buffer, 0, 1, 0xF000));
+        Assert.Equal(13, machine.Memory.ReadByte(Buffer + 2));
+        Assert.Equal(PnpBios.CompressId("PNP0C01"), Enumerable.Range(0, 4)
+            .Select(index => machine.Memory.ReadByte(Buffer + 3 + (uint)index)).ToArray());
+    }
+
+    /// <summary>
+    /// No node claims the VGA ports or the A0000 window: the display adapter
+    /// is a PCI device and announces itself there. A second claim here made
+    /// Windows 95 find the card, match the S3 driver to it, and then report
+    /// that the device was not working properly.
+    /// </summary>
+    [Fact]
+    public void NoNodeClaimsTheDisplayAdapterResources()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(100);
+
+        foreach (byte[] node in machine.PlugAndPlay.Nodes)
+        {
+            var blocks = ParseBlocks(node)[0];
+
+            foreach (var resource in blocks.Where(item => item.Tag == 0x47))
+            {
+                int port = resource.Data[1] | (resource.Data[2] << 8);
+                Assert.False(port is >= 0x3B0 and < 0x3E0, $"a node still claims VGA port {port:X3}");
+            }
+
+            foreach (var resource in blocks.Where(item => item.Tag == 0x86))
+            {
+                uint start = BitConverter.ToUInt32(resource.Data, 1);
+                Assert.NotEqual(0xA0000u, start);
+            }
+        }
     }
 
     [Fact]
