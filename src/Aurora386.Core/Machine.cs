@@ -336,7 +336,19 @@ public sealed partial class Machine : IDisposable
         // sees how large it is.
         var pciVideo = new PciFunction(0x0020, 0x5333, 0x8811, 0x030000);
         pciVideo.Define(8, 0x03000000 | 0x54, 4);      // class, with revision 0x54
-        pciVideo.Define(0x10, LinearFrameBufferBase | 0x08, 4, 0xFC000000);
+
+        // The base address register advertises the linear framebuffer:
+        // prefetchable memory, at the address the aperture really answers.
+        //
+        // The writable mask is what states the size, and it has to state the
+        // true one. Software sizes a region by writing all ones and reading
+        // back: the bits that stay clear are the ones the card does not
+        // decode, so the lowest bit that can be set is the size. A mask of
+        // 0xFC000000 claims 64 MB of aperture over 2 MB of memory, and a
+        // driver that maps what it is told to then addresses memory the card
+        // never answers at.
+        const uint apertureMask = ~(uint)(VgaMemory.TotalSize - 1);
+        pciVideo.Define(0x10, LinearFrameBufferBase | 0x08, 4, apertureMask);
         Pci.Add(pciVideo);
 
         Pci.Register(Io);

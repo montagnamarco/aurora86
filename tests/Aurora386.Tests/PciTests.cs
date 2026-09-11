@@ -94,6 +94,56 @@ public class PciTests
         Assert.Equal(0xE0100000u, io.ReadDword(0xCFC));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SnapshotsDistinguishDisabledChannelsFromPreviouslyMissingTimingRegisters(bool legacy)
+    {
+        using var machine = new Machine();
+        machine.Pci.WriteConfiguration(9, 0x40, 4, 0);
+        string path = Path.GetTempFileName();
+        try
+        {
+            MachineSnapshot.Capture(machine).Save(path);
+            if (legacy)
+            {
+                // The preceding format had no IDETIM-presence flag and
+                // recorded zero for these then-unimplemented registers.
+                using FileStream file = File.OpenWrite(path);
+                file.SetLength(file.Length - 1);
+            }
+            machine.Pci.Reset();
+            MachineSnapshot.Load(path).RestoreTo(machine);
+            uint expectedTiming = legacy ? 0x80008000u : 0u;
+            Assert.Equal(expectedTiming, machine.Pci.ReadConfiguration(9, 0x40, 4));
+            machine.Io.WriteByte(0x1F2, 0x27);
+            Assert.Equal(legacy ? 0x27 : 0xFF, machine.Io.ReadByte(0x1F2));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData(0x40, 0x1F2, 0x172)]
+    [InlineData(0x42, 0x172, 0x1F2)]
+    public void PiixTimingRegistersEnableEachIdeChannelIndependently(int offset, int port, int otherPort)
+    {
+        using var machine = new Machine();
+        machine.Io.WriteByte((ushort)port, 0x27);
+        machine.Io.WriteByte((ushort)otherPort, 0x39);
+        Assert.Equal(0x8000u, machine.Pci.ReadConfiguration(9, offset, 2));
+
+        machine.Pci.WriteConfiguration(9, offset, 2, 0);
+        Assert.Equal(0xFF, machine.Io.ReadByte((ushort)port));
+        Assert.Equal(0x39, machine.Io.ReadByte((ushort)otherPort));
+
+        machine.Pci.WriteConfiguration(9, offset, 2, 0xFFFF);
+        Assert.Equal(0xB3FFu, machine.Pci.ReadConfiguration(9, offset, 2));
+        Assert.Equal(0x27, machine.Io.ReadByte((ushort)port));
+    }
+
     [Fact]
     public void IdeCommandControlsBothRealCompatibilityChannelsAndResetRestoresThem()
     {
@@ -294,11 +344,66 @@ public class PciTests
             Assert.Equal(0x80000904u, m.Io.ReadDword(0xCF8));
             Assert.Equal(0u, m.Io.ReadDword(0xCFC));
             Assert.Equal(0xFF, m.Io.ReadByte(0x1F2));
-            using (var file = File.OpenWrite(path)) file.SetLength(file.Length - 4 - m.Pci.Capture().Length);
+            // Remove the PCI block, empty USB block and two device-state flags
+            // to reproduce the earlier snapshot format.
+            using (FileStream file = File.OpenWrite(path))
+            {
+                file.SetLength(file.Length - 10 - m.Pci.Capture().Length);
+            }
             MachineSnapshot.Load(path).RestoreTo(m);
             Assert.Equal(1u, m.Pci.ReadConfiguration(9, 4, 2));
             Assert.Equal(0u, m.Io.ReadDword(0xCF8));
         }
         finally { File.Delete(path); }
+    }
+
+    /// <summary>
+    /// The display adapter on the PCI bus.
+    ///
+    /// Windows 95 will not use a card-specific display driver unless it can
+    /// identify the card, and for an S3 of this generation it identifies it
+    /// by PCI vendor and device ID: its driver database lists the Trio64V+ as
+    /// PCI\VEN_5333&DEV_8811 and nothing else.
+    /// </summary>
+    [Fact]
+    public void TheDisplayAdapterAnswersAsAnS3Trio64()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(100);
+
+        uint identity = machine.Pci.ReadConfiguration(0x20, 0, 4);
+        Assert.Equal(0x88115333u, identity);
+
+        // Class 03, subclass 00: a VGA-compatible display controller.
+        uint classCode = machine.Pci.ReadConfiguration(0x20, 8, 4) >> 8;
+        Assert.Equal(0x030000u, classCode);
+    }
+
+    /// <summary>
+    /// Sizing the framebuffer aperture: software writes all ones to the base
+    /// address register and reads back, and the bits that stay clear say how
+    /// much the card decodes. The answer has to be the memory that is really
+    /// there -- a larger claim gets the driver a mapping of addresses the
+    /// card never answers at.
+    /// </summary>
+    [Fact]
+    public void TheFramebufferApertureSizesToTheInstalledVideoMemory()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(100);
+
+        uint original = machine.Pci.ReadConfiguration(0x20, 0x10, 4);
+        Assert.Equal(machine.LinearFrameBufferBase, original & 0xFFFFFFF0u);
+        Assert.Equal(0x08u, original & 0x0Fu);          // prefetchable memory
+
+        machine.Pci.WriteConfiguration(0x20, 0x10, 4, uint.MaxValue);
+        uint sized = machine.Pci.ReadConfiguration(0x20, 0x10, 4);
+
+        // The decoded size is the lowest settable bit of the address field.
+        uint size = ~(sized & 0xFFFFFFF0u) + 1;
+        Assert.Equal((uint)Aurora386.Core.Devices.Video.VgaMemory.TotalSize, size);
+
+        machine.Pci.WriteConfiguration(0x20, 0x10, 4, original);
+        Assert.Equal(original, machine.Pci.ReadConfiguration(0x20, 0x10, 4));
     }
 }
