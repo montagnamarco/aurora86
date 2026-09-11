@@ -1,4 +1,5 @@
 using Aurora386.Core;
+using Aurora386.Core.Devices.Video;
 
 namespace Aurora386.Tests;
 
@@ -562,6 +563,49 @@ public class S3ProcessorDataTests
 /// before this existed: the writes landed in video memory and the engine
 /// never heard of them.
 /// </summary>
+/// <summary>
+/// What the engine does when the card is not in a packed-pixel mode.
+///
+/// The accelerator works on a flat array of pixels, which is what it sees on
+/// a real card: it has no path to the VGA's four planes. Windows 95 with its
+/// standard driver runs 640x480 at 16 colours, which is planar, and a command
+/// issued there has to be refused rather than carried out approximately --
+/// the bytes would land at linear offsets over planar memory and corrupt the
+/// screen. A driver that sets a planar mode draws with the processor.
+/// </summary>
+public class S3PlanarModeTests
+{
+    [Fact]
+    public void TheEngineRefusesToDrawInAPlanarMode()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+        machine.Cpu.State.Halted = false;
+
+        // Mode 12h: 640x480, sixteen colours, four planes -- what Windows 95
+        // uses before a card-specific driver takes over.
+        machine.Cpu.State.Ax = 0x0012;
+        machine.VideoServices.Handle(machine.Cpu);
+        machine.Accelerator.ResetClip(640, 480);
+
+        Assert.Equal(VgaMemoryLayout.Planar4, machine.VideoRegisters.EffectiveMode.Layout);
+
+        long before = machine.Accelerator.OperationsPerformed;
+
+        machine.Io.WriteByte(0x86E8, 10); machine.Io.WriteByte(0x86E9, 0);      // x
+        machine.Io.WriteByte(0x82E8, 20); machine.Io.WriteByte(0x82E9, 0);      // y
+        machine.Io.WriteByte(0x96E8, 99); machine.Io.WriteByte(0x96E9, 0);      // width
+        machine.Io.WriteByte(0x92E8, 49); machine.Io.WriteByte(0x92E9, 0);      // height
+        machine.Io.WriteByte(0xA6E8, 0x0F); machine.Io.WriteByte(0xA6E9, 0);    // colour
+        machine.Io.WriteByte(0x9AE8, 0x00); machine.Io.WriteByte(0x9AE9, 0x40); // fill
+
+        // Nothing ran, and nothing in the planes was touched.
+        Assert.Equal(before, machine.Accelerator.OperationsPerformed);
+        for (int plane = 0; plane < 4; plane++)
+            Assert.Equal(0, machine.VideoMemory.ReadPlane(plane, 20 * 80 + 1));
+    }
+}
+
 public class S3MemoryMappedEngineTests
 {
     private static Machine InSvgaMode()

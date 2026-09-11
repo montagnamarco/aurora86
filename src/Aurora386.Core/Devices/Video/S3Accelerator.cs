@@ -390,6 +390,16 @@ public sealed class S3Accelerator : IIoDevice
         _transfer = null;
         _unitBytes = 0;
 
+        // Every drawing routine below addresses video memory as a flat array
+        // of pixels, which is what the engine sees on a real card: the S3's
+        // accelerator works on the packed framebuffer and has no path to the
+        // VGA's four planes. A command issued while the card is in a planar
+        // mode is therefore not something to carry out approximately -- the
+        // bytes would land at linear offsets over planar memory and corrupt
+        // whatever is on screen. Refusing is both safer and truer: a driver
+        // that sets a planar mode uses the processor, not the engine.
+        if (!HasLinearFramebuffer) return;
+
         // The encoding is the 8514/A's, kept by every S3: 1 draws a line, 2
         // fills a rectangle, 3 fills a polygon (a rectangle here: the
         // polygon form differs only in how the edges are given), 6 copies
@@ -653,6 +663,17 @@ public sealed class S3Accelerator : IIoDevice
     }
 
     // --- pixels ---------------------------------------------------------------
+
+    /// <summary>
+    /// Whether video memory is currently a flat array of pixels, which is the
+    /// only arrangement the engine can draw into. False in the VGA's planar
+    /// modes -- including the 640x480 at 16 colours that Windows uses with
+    /// its standard driver -- where a pixel's bits are spread across four
+    /// planes and reached through the sequencer's masks.
+    /// </summary>
+    private bool HasLinearFramebuffer =>
+        _registers.VesaMode is not null
+        || _registers.EffectiveMode.Layout == VgaMemoryLayout.Linear8;
 
     private int BytesPerPixel =>
         _registers.VesaMode is { } mode ? mode.BytesPerPixel : 1;
