@@ -302,12 +302,43 @@ public sealed partial class Machine : IDisposable
         // Compatibility PIO only: no native-mode BARs or bus-master capability.
         var pciIde = new PciFunction(0x0009, 0x8086, 0x1230, 0x010100, commandMask: 1);
         pciIde.Define(4, 1, 2, 1);
+        // These reset defaults include BIOS setup, as does PCI command above.
+        // IDETIM bit 15 enables each cable. Windows 95 reported code 29
+        // with these registers zero despite the ports being decoded.
+        // PIIX reserves bits 14 and 11:10; PIIX3 has a different bit-14 use.
+        pciIde.Define(0x40, 0x8000, 2, 0xB3FF);
+        pciIde.Define(0x42, 0x8000, 2, 0xB3FF);
         pciIde.ConfigurationChanged += () =>
         {
-            Ide.SetIoDecoding(Io, (pciIde.Command & 1) != 0);
-            IdeSecondary.SetIoDecoding(Io, (pciIde.Command & 1) != 0);
+            bool ioEnabled = (pciIde.Command & 1) != 0;
+            bool primaryEnabled = (pciIde.Read(0x40, 2) & 0x8000) != 0;
+            bool secondaryEnabled = (pciIde.Read(0x42, 2) & 0x8000) != 0;
+            Ide.SetIoDecoding(Io, ioEnabled && primaryEnabled);
+            IdeSecondary.SetIoDecoding(Io, ioEnabled && secondaryEnabled);
         };
         Pci.Add(pciIde);
+
+        // The S3 Trio64V+ as a PCI display adapter.
+        //
+        // Windows 95 will not use a card-specific display driver unless it can
+        // identify the card, and for an S3 of this generation it identifies it
+        // by PCI vendor and device ID -- its driver database lists the Trio64V+
+        // as PCI\VEN_5333&DEV_8811 and nothing else. With the card absent from
+        // the bus, Plug and Play found no display device, Windows fell back to
+        // the standard VGA driver, and the desktop ran 640x480 in sixteen
+        // colours with the accelerator never touched. The registers and the
+        // memory windows are reached the same way they always were; this entry
+        // exists so that the card can be found.
+        //
+        // The base address register advertises the linear framebuffer, which
+        // is where the driver expects the aperture: prefetchable memory, and
+        // the low bits read back as zero so that software sizing the region
+        // sees how large it is.
+        var pciVideo = new PciFunction(0x0020, 0x5333, 0x8811, 0x030000);
+        pciVideo.Define(8, 0x03000000 | 0x54, 4);      // class, with revision 0x54
+        pciVideo.Define(0x10, LinearFrameBufferBase | 0x08, 4, 0xFC000000);
+        Pci.Add(pciVideo);
+
         Pci.Register(Io);
         PciServices = new PciBios(Pci);
         Redirector = new RedirectorServices(this);
@@ -495,6 +526,7 @@ public sealed partial class Machine : IDisposable
         (Network.Backend as IDisposable)?.Dispose();
         foreach (DiskImage disk in _disks) disk.Dispose();
         CompactDisc?.Dispose();
+        UsbStorage?.Dispose();
         Memory.Dispose();
     }
 }
