@@ -272,4 +272,64 @@ public class SystemServicesTests
         Assert.Equal(0x504D, machine.Cpu.State.Bx);
         Assert.Equal(0x7000u, machine.Cpu.State.Esp);
     }
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void ApmFarCallsReturnCarryWithoutChangingTheCallersStack(bool wide, bool unsupported)
+    {
+        using Machine machine = Boot();
+        const uint descriptorTable = 0x1000;
+        void WriteDescriptor(int index, uint baseAddress, byte access)
+        {
+            uint address = descriptorTable + (uint)(index * 8);
+            machine.Memory.WriteWord(address, 0xFFFF);
+            machine.Memory.WriteWord(address + 2, (ushort)baseAddress);
+            machine.Memory.WriteByte(address + 4, (byte)(baseAddress >> 16));
+            machine.Memory.WriteByte(address + 5, access);
+            machine.Memory.WriteByte(address + 6, wide ? (byte)0x40 : (byte)0);
+            machine.Memory.WriteByte(address + 7, (byte)(baseAddress >> 24));
+        }
+        WriteDescriptor(1, 0xF0000, 0x9A);
+        WriteDescriptor(2, 0, 0x92);
+        WriteDescriptor(3, 0, 0x9A);
+        machine.Cpu.State.GdtBase = descriptorTable;
+        machine.Cpu.State.GdtLimit = 0x1F;
+        machine.Cpu.State.Cr0 |= CpuState.Cr0ProtectionEnable;
+        machine.Cpu.SetSegment(SegReg.Cs, 24);
+        machine.Cpu.SetSegment(SegReg.Ss, 16);
+        machine.Cpu.State.Esp = 0x7000;
+        machine.Cpu.State.Eip = 0x2000;
+        machine.Cpu.State.Ax = unsupported ? (ushort)0x5312 : (ushort)0x5300;
+        machine.Cpu.State.Bx = 0;
+        machine.Cpu.Flags.Carry = !unsupported;
+        const uint stackSentinel = 0xAABBCCDD;
+        machine.Memory.WriteDword(0x7000, stackSentinel);
+
+        // A 32-bit far return places CS at ESP+4, where an interrupt's
+        // 16-bit FLAGS would be. APM must leave that selector untouched.
+        byte[] code = wide
+            ? [0x9A, 0x50, 0x1A, 0x00, 0x00, 0x08, 0x00, 0xF4]
+            : [0x9A, 0x50, 0x1A, 0x08, 0x00, 0xF4];
+        for (int index = 0; index < code.Length; index++)
+        {
+            machine.Memory.WriteByte(0x2000 + (uint)index, code[index]);
+        }
+        var exceptions = new List<byte>();
+        machine.Cpu.ProcessorException += (vector, _, _, _) => exceptions.Add(vector);
+        for (int instruction = 0; instruction < 20 && !machine.Cpu.State.Halted; instruction++)
+        {
+            machine.Cpu.Step();
+        }
+
+        Assert.Empty(exceptions);
+        Assert.True(machine.Cpu.State.Halted);
+        Assert.Equal(unsupported, machine.Cpu.Flags.Carry);
+        Assert.Equal(unsupported ? 0x8612 : 0x0102, machine.Cpu.State.Ax);
+        Assert.Equal(24, machine.Cpu.State.Cs.Selector);
+        Assert.Equal(0x7000u, machine.Cpu.State.Esp);
+        Assert.Equal(stackSentinel, machine.Memory.ReadDword(0x7000));
+    }
+
 }

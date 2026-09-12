@@ -43,6 +43,17 @@ public sealed class ApmBios
 
     public void Handle(CpuNs.Cpu cpu, bool fromEntryPoint)
     {
+        HandleFunction(cpu);
+        // The protected entry returns with RETF, so carry belongs in the live
+        // flags. Only INT 15h has a saved FLAGS word to update before IRET.
+        if (!fromEntryPoint)
+        {
+            cpu.SetCarryInStackedFlags(cpu.Flags.Carry);
+        }
+    }
+
+    private void HandleFunction(CpuNs.Cpu cpu)
+    {
         byte function = cpu.State.GetReg8(0);   // AL
         ushort device = cpu.State.Bx;
 
@@ -190,11 +201,11 @@ public sealed class ApmBios
         if (device == 0x0001 && state == 3) _machine.RequestPowerOff();
     }
 
-    private static void Succeed(CpuNs.Cpu cpu) => cpu.SetCarryInStackedFlags(false);
+    private static void Succeed(CpuNs.Cpu cpu) => cpu.Flags.Carry = false;
 
     private static void Fail(CpuNs.Cpu cpu, byte error)
     {
         cpu.State.SetReg8(4, error);
-        cpu.SetCarryInStackedFlags(true);
+        cpu.Flags.Carry = true;
     }
 }
