@@ -34,6 +34,23 @@ avoid conflicts: validation of those mounts against drivers loaded later
 in AUTOEXEC.BAT remains unfinished. Automatic allocation after attachment
 does not establish that earlier explicit mounts are safe.
 
+## Windows 95 status
+
+The usual Windows 95 VM and its checkpoints have no configured shared
+folders. In an isolated configured E: drive test, DOS 7 reported through
+INT 21h/AH=52h a raw internal drive-table count of 32; the old guard
+rejected that value above 26. The fix accepts internal counts from 1 through
+32 while still capping
+usable drive letters at A: through Z:. Tests exercise this through real guest
+interrupts.
+
+The real guest query now reports the correct CDS at `B7F0` with count 26.
+Automatic attachment still retains an earlier CDS with count 3, and E: is
+invalid in that state. This does not establish fully functional shared
+folders, and the live 32-drive-table result does not support attributing the
+failure to LASTDRIVE. End-to-end Windows 95 shared-folder operations remain
+unverified.
+
 `SharedFolderLettersTests` cover live CDS changes, occupied local/remote
 letters, LASTDRIVE and exhaustion through Z:. `CompactDiscLetterTests` use
 a guest interrupt handler reporting a CD letter different from the BIOS
