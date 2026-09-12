@@ -314,8 +314,9 @@ The paired checkpoint is `/tmp/win95-push-fixed/setup-complete.snapshot`.
 After the requested guest restart, the serial mouse is initialized again.
 Sending movement to the login dialog's OK button and a left-button press
 and release successfully completes login. No serial-button protocol change
-was required. This verifies the guest input path after boot, while the
-snapshot omission of UART state remains open.
+was required. This verifies the guest input path after boot. The earlier
+snapshot omission of UART state is covered by the serial snapshot change
+documented above.
 
 The restarted guest subsequently reaches the desktop with icons and taskbar.
 `/tmp/win95-push-fixed/desktop-verified.snapshot` and its paired image retain
@@ -338,6 +339,22 @@ previous format. The two ownership regressions failed before the fix;
 59 CD, IDE, snapshot and PCI tests pass afterwards. Old snapshots remain
 readable but cannot supply ownership information they never recorded.
 This does not yet establish the cause of the user's missing CD after boot.
+
+On September 12, 2026, a fresh boot with the current Windows 95
+configuration shows `Win95_OSR25` on `D:` in My Computer and lists 11 items
+at the CD root. A 3,728-byte
+`README.TXT` copied before the snapshot matches the ISO byte-for-byte with
+SHA-256 `43b018a2ace818fb9fabb2bb41311de1d9670edfffda8295f538e8eba73258e2`.
+After restoring the paired snapshot into a fresh machine, a distinct
+3,664-byte `SETUP.EXE` copied from the CD to `CDAFTER.EXE` also matches the
+ISO with SHA-256
+`8028cacc62cf84ebc47546e0784f363b09f54485c5ae97b2e71816f84c9a46a8`.
+The trace records an ATAPI packet at port `01F7` from `0028:C101B4B9`.
+After `EXIT` the guest remained in text mode; graphics return was not
+verified and DOS text was only partially rendered. These results verify CD
+reads and copies across restore; the graphical directory listing was
+verified before restore. No new ATAPI fix or complete guest result is
+claimed.
 
 ## Empty diskette drive type (11 September)
 
