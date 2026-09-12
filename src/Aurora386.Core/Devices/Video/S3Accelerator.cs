@@ -25,7 +25,7 @@ namespace Aurora386.Core.Devices.Video;
 /// space and it is why the addresses look arbitrary -- they are the ones IBM
 /// happened to choose in 1987.
 /// </summary>
-public sealed class S3Accelerator : IIoDevice
+public sealed class S3Accelerator : IIoDwordDevice
 {
     private readonly VgaMemory _memory;
     private readonly VgaRegisters _registers;
@@ -46,14 +46,16 @@ public sealed class S3Accelerator : IIoDevice
     private ushort _currentX, _currentY;         // 0x86E8, 0x86EA
     private ushort _destinationX, _destinationY; // 0x8EE8, 0x8EEA
     private ushort _width, _height;              // 0x96E8, 0x8EE8
-    private ushort _foreground, _background;     // 0xA6E8, 0xA2E8
+    // The five colour registers are 32 bits in the Trio64V+ register file.
+    // In 8- and 16-bpp modes only their low bits reach the framebuffer.
+    private uint _foreground, _background;       // 0xA6E8, 0xA2E8
     // The power-on value is undefined.  Until the driver has written it, use
     // the conventional all-planes value; once written, zero is a real mask
     // value and prevents every update.
-    private ushort _writeMask;
+    private uint _writeMask;
     private bool _writeMaskWritten;
-    private ushort _readMask;                     // 0xAAE8, 0xAEE8
-    private ushort _colourCompare;               // 0xB2E8
+    private uint _readMask;                       // 0xAAE8, 0xAEE8
+    private uint _colourCompare;                  // 0xB2E8
     private ushort _command;                     // 0x9AE8
 
     /// <summary>
@@ -83,7 +85,7 @@ public sealed class S3Accelerator : IIoDevice
     /// and the rectangle it names. What a driver asks the engine to do is
     /// the only evidence there is when the screen comes out wrong.
     /// </summary>
-    public Action<ushort, int, int, int, int, ushort, ushort, ushort>? CommandTrace { get; set; }
+    public Action<ushort, int, int, int, int, uint, ushort, ushort>? CommandTrace { get; set; }
 
     /// <summary>
     /// The same registers, reached through memory instead of I/O ports.
@@ -158,14 +160,16 @@ public sealed class S3Accelerator : IIoDevice
             case 0x8110: return;                        // error term: the line takes endpoints here
             case 0x8118: _command = value; Execute(); return;
             case 0x811A: return;                        // short stroke vectors
-            case 0x8120: _background = value; return;
-            case 0x8124: _foreground = value; return;
-            case 0x8128:
-                _writeMask = value;
-                _writeMaskWritten = true;
-                return;
-            case 0x812C: _readMask = value; return;
-            case 0x8130: _colourCompare = value; return;
+            case 0x8120: WritePackedColourWord(0x8120, value); return;
+            case 0x8122: WritePackedColourWord(0x8122, value); return;
+            case 0x8124: WritePackedColourWord(0x8124, value); return;
+            case 0x8126: WritePackedColourWord(0x8126, value); return;
+            case 0x8128: WritePackedColourWord(0x8128, value); return;
+            case 0x812A: WritePackedColourWord(0x812A, value); return;
+            case 0x812C: WritePackedColourWord(0x812C, value); return;
+            case 0x812E: WritePackedColourWord(0x812E, value); return;
+            case 0x8130: WritePackedColourWord(0x8130, value); return;
+            case 0x8132: WritePackedColourWord(0x8132, value); return;
             case 0x8134: _backgroundMix = value; return;
             case 0x8136: _mix = value; return;
             case 0x8138: _clipTop = (ushort)(value & 0x0FFF); return;
@@ -182,11 +186,17 @@ public sealed class S3Accelerator : IIoDevice
             case 0x814E: _patternX = value; return;
         }
 
-        // The high halves of 32-bit writes to the classic registers -- a
-        // driver writing its colour with a doubleword -- land on odd port
-        // numbers plus two, which no register answers to.
+        // Classic MMIO colour registers occupy two adjacent words. Unlike
+        // their programmed-I/O form, their high halves are direct lanes and
+        // do not use the RSF selector.
+        if (IsClassicMmioColourRegister(offset))
+        {
+            WriteClassicMmioColourWord(offset, value);
+            return;
+        }
+
         if (offset >= 0x8200 && (offset & 3) == 0 || offset is 0x82E8 or 0x86E8 or 0x8AE8 or 0x8EE8 or 0x92E8 or 0x96E8 or 0x9AE8 or 0x9EE8
-            or 0xA2E8 or 0xA6E8 or 0xAAE8 or 0xAEE8 or 0xB2E8 or 0xB6E8 or 0xBAE8 or 0xBEE8 or 0xE2E8 or 0xE2EA)
+            or 0xB6E8 or 0xBAE8 or 0xBEE8 or 0xE2E8 or 0xE2EA)
             WriteRegister(offset, value);
     }
 
@@ -262,11 +272,16 @@ public sealed class S3Accelerator : IIoDevice
             0x8108 => _destinationY,
             0x810A => _destinationX,
             0x8118 => _command,
-            0x8120 => _background,
-            0x8124 => _foreground,
-            0x8128 => _writeMask,
-            0x812C => _readMask,
-            0x8130 => _colourCompare,
+            0x8120 => (ushort)_background,
+            0x8122 => (ushort)(_background >> 16),
+            0x8124 => (ushort)_foreground,
+            0x8126 => (ushort)(_foreground >> 16),
+            0x8128 => (ushort)_writeMask,
+            0x812A => (ushort)(_writeMask >> 16),
+            0x812C => (ushort)_readMask,
+            0x812E => (ushort)(_readMask >> 16),
+            0x8130 => (ushort)_colourCompare,
+            0x8132 => (ushort)(_colourCompare >> 16),
             0x8134 => _backgroundMix,
             0x8136 => _mix,
             0x8138 => _clipTop,
@@ -288,11 +303,16 @@ public sealed class S3Accelerator : IIoDevice
             0x92E8 => _height,
             0x96E8 => _width,
             0x9AE8 => _command,
-            0xA2E8 => _background,
-            0xA6E8 => _foreground,
-            0xAAE8 => _writeMask,
-            0xAEE8 => _readMask,
-            0xB2E8 => _colourCompare,
+            0xA2E8 => (ushort)_background,
+            0xA2EA => (ushort)(_background >> 16),
+            0xA6E8 => (ushort)_foreground,
+            0xA6EA => (ushort)(_foreground >> 16),
+            0xAAE8 => (ushort)_writeMask,
+            0xAAEA => (ushort)(_writeMask >> 16),
+            0xAEE8 => (ushort)_readMask,
+            0xAEEA => (ushort)(_readMask >> 16),
+            0xB2E8 => (ushort)_colourCompare,
+            0xB2EA => (ushort)(_colourCompare >> 16),
             0xB6E8 => _backgroundMix,
             0xBAE8 => _mix,
             0xBEE8 => _lastMultifunctionCommand,
@@ -306,9 +326,29 @@ public sealed class S3Accelerator : IIoDevice
         {
             0x8100 => _currentY,
             0x8102 => _currentX,
+            0x8120 => (ushort)_background,
+            0x8122 => (ushort)(_background >> 16),
+            0x8124 => (ushort)_foreground,
+            0x8126 => (ushort)(_foreground >> 16),
+            0x8128 => (ushort)_writeMask,
+            0x812A => (ushort)(_writeMask >> 16),
+            0x812C => (ushort)_readMask,
+            0x812E => (ushort)(_readMask >> 16),
+            0x8130 => (ushort)_colourCompare,
+            0x8132 => (ushort)(_colourCompare >> 16),
             0x8138 => _clipTop, 0x813A => _clipLeft, 0x813C => _clipBottom, 0x813E => _clipRight,
             0x8140 => _pixelControl, 0x8142 => _multiMisc2, 0x8144 => _multiMisc,
             0x8148 => _height, 0x814A => _width,
+            0xA2E8 => (ushort)_background,
+            0xA2EA => (ushort)(_background >> 16),
+            0xA6E8 => (ushort)_foreground,
+            0xA6EA => (ushort)(_foreground >> 16),
+            0xAAE8 => (ushort)_writeMask,
+            0xAAEA => (ushort)(_writeMask >> 16),
+            0xAEE8 => (ushort)_readMask,
+            0xAEEA => (ushort)(_readMask >> 16),
+            0xB2E8 => (ushort)_colourCompare,
+            0xB2EA => (ushort)(_colourCompare >> 16),
             _ => ReadRegister(offset),
         };
     }
@@ -322,7 +362,11 @@ public sealed class S3Accelerator : IIoDevice
         // The 8514/A ports, each sixteen bits wide. They are scattered because
         // IBM chose addresses that did not clash with anything else in 1987,
         // not because there is a pattern to find.
-        foreach (ushort port in Ports) io.Register(port, 2, this);
+        foreach (ushort port in Ports)
+        {
+            int width = IsColourRegister(port) || port == 0xE2E8 ? 4 : 2;
+            io.Register(port, width, this);
+        }
     }
 
     private static readonly ushort[] Ports =
@@ -334,7 +378,18 @@ public sealed class S3Accelerator : IIoDevice
 
     public byte ReadByte(ushort port)
     {
-        ushort word = ReadRegister((ushort)(port & ~1));
+        ushort register = (ushort)(port & ~1);
+
+        if (Is32BitPixelMode
+            && !UsesPioDwordColourRegisters
+            && TryReadColourRegister(register, out uint colour))
+        {
+            bool highByte = (port & 1) != 0;
+            ushort colourWord = ReadPioColourWord(colour, highByte);
+            return highByte ? (byte)(colourWord >> 8) : (byte)colourWord;
+        }
+
+        ushort word = ReadRegister(register);
         return (port & 1) != 0 ? (byte)(word >> 8) : (byte)word;
     }
 
@@ -357,6 +412,11 @@ public sealed class S3Accelerator : IIoDevice
             case 0x82E8: return _currentY;
             case 0x86E8: return _currentX;
             case 0x96E8: return _width;
+            case 0xA2E8: return ReadPioColourWord(_background);
+            case 0xA6E8: return ReadPioColourWord(_foreground);
+            case 0xAAE8: return ReadPioColourWord(_writeMask);
+            case 0xAEE8: return ReadPioColourWord(_readMask);
+            case 0xB2E8: return ReadPioColourWord(_colourCompare);
             case 0xBEE8: return ReadMultifunction();
             default: return 0xFFFF;
         }
@@ -399,6 +459,42 @@ public sealed class S3Accelerator : IIoDevice
 
     public void WriteWord(ushort port, ushort value) => WriteRegister((ushort)(port & ~1), value);
 
+    public uint ReadDword(ushort port)
+    {
+        ushort register = (ushort)(port & 0xFFFE);
+
+        if (UsesPioDwordColourRegisters && TryReadColourRegister(register, out uint value))
+        {
+            return value;
+        }
+
+        ushort low = ReadWord(register);
+        ushort high = ReadWord((ushort)(register + 2));
+        return (uint)(low | (high << 16));
+    }
+
+    public void WriteDword(ushort port, uint value)
+    {
+        ushort register = (ushort)(port & 0xFFFE);
+
+        if (UsesPioDwordColourRegisters && TryWriteColourRegister(register, value))
+        {
+            return;
+        }
+
+        if (register == 0xE2E8)
+        {
+            PushDataByte((byte)value);
+            PushDataByte((byte)(value >> 8));
+            PushDataByte((byte)(value >> 16));
+            PushDataByte((byte)(value >> 24));
+            return;
+        }
+
+        WriteWord(register, (ushort)value);
+        WriteWord((ushort)(register + 2), (ushort)(value >> 16));
+    }
+
     private readonly Dictionary<ushort, byte> _pendingLow = [];
     private int _readSelect;
     private ushort _multiMisc;
@@ -406,6 +502,188 @@ public sealed class S3Accelerator : IIoDevice
     private ushort _patternX;
     private ushort _patternY;
     private ushort _lastMultifunctionCommand;
+
+    /// <summary>Whether the engine stores one pixel in all four colour bytes.</summary>
+    private bool Is32BitPixelMode => BytesPerPixel == 4;
+
+    /// <summary>
+    /// Whether MULT_MISC bit 9 selects the programmed-I/O doubleword form.
+    /// The data book makes byte and word PIO accesses invalid in this state;
+    /// MMIO colour lanes are always independently addressable.
+    /// </summary>
+    private bool UsesPioDwordColourRegisters => (_multiMisc & 0x0200) != 0;
+
+    /// <summary>Whether a classic port names one of the five colour registers.</summary>
+    private static bool IsColourRegister(ushort port)
+    {
+        return port is 0xA2E8 or 0xA6E8 or 0xAAE8 or 0xAEE8 or 0xB2E8;
+    }
+
+    /// <summary>
+    /// Whether a classic MMIO offset names either word of a colour register.
+    /// Clearing bit one turns its high-word address back into the base port.
+    /// </summary>
+    private static bool IsClassicMmioColourRegister(ushort offset)
+    {
+        ushort register = (ushort)(offset & 0xFFFD);
+        return IsColourRegister(register);
+    }
+
+    /// <summary>Replaces either 16-bit lane of a 32-bit colour register.</summary>
+    private static uint ReplaceColourWord(uint colour, ushort value, bool upperWord)
+    {
+        if (upperWord)
+        {
+            return (colour & 0x0000FFFF) | ((uint)value << 16);
+        }
+
+        return (colour & 0xFFFF0000) | value;
+    }
+
+    /// <summary>Writes a packed-MMIO colour lane through its classic register.</summary>
+    private void WritePackedColourWord(ushort offset, ushort value)
+    {
+        bool upperWord = (offset & 0x0002) != 0;
+        ushort register = (ushort)(offset & 0xFFFD);
+
+        switch (register)
+        {
+            case 0x8120:
+                WriteColourWord(0xA2E8, value, upperWord);
+                return;
+
+            case 0x8124:
+                WriteColourWord(0xA6E8, value, upperWord);
+                return;
+
+            case 0x8128:
+                WriteColourWord(0xAAE8, value, upperWord);
+                return;
+
+            case 0x812C:
+                WriteColourWord(0xAEE8, value, upperWord);
+                return;
+
+            case 0x8130:
+                WriteColourWord(0xB2E8, value, upperWord);
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Writes either lane of a classic MMIO colour register. MMIO bypasses
+    /// MULT_MISC bit 4, which selects lanes only for programmed I/O.
+    /// </summary>
+    private void WriteClassicMmioColourWord(ushort offset, ushort value)
+    {
+        bool upperWord = (offset & 0x0002) != 0;
+        ushort register = (ushort)(offset & 0xFFFD);
+        WriteColourWord(register, value, upperWord);
+    }
+
+    /// <summary>
+    /// Writes a programmed-I/O colour word. In 32-bpp sequential mode,
+    /// MULT_MISC bit 4 selects the active half and flips after that word.
+    /// </summary>
+    private void WritePioColourWord(ushort register, ushort value)
+    {
+        bool upperWord = Is32BitPixelMode && (_multiMisc & 0x0010) != 0;
+        WriteColourWord(register, value, upperWord);
+
+        if (Is32BitPixelMode && !UsesPioDwordColourRegisters)
+        {
+            _multiMisc ^= 0x0010;
+        }
+    }
+
+    /// <summary>Writes a selected 16-bit lane into one colour register.</summary>
+    private void WriteColourWord(ushort register, ushort value, bool upperWord)
+    {
+        switch (register)
+        {
+            case 0xA2E8:
+                _background = ReplaceColourWord(_background, value, upperWord);
+                return;
+
+            case 0xA6E8:
+                _foreground = ReplaceColourWord(_foreground, value, upperWord);
+                return;
+
+            case 0xAAE8:
+                _writeMask = ReplaceColourWord(_writeMask, value, upperWord);
+                _writeMaskWritten = true;
+                return;
+
+            case 0xAEE8:
+                _readMask = ReplaceColourWord(_readMask, value, upperWord);
+                return;
+
+            case 0xB2E8:
+                _colourCompare = ReplaceColourWord(_colourCompare, value, upperWord);
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Reads a programmed-I/O colour word, optionally advancing the RSF
+    /// selector after its high byte completes the word access.
+    /// </summary>
+    private ushort ReadPioColourWord(uint colour, bool advance = true)
+    {
+        bool upperWord = Is32BitPixelMode && (_multiMisc & 0x0010) != 0;
+        ushort value = upperWord ? (ushort)(colour >> 16) : (ushort)colour;
+
+        if (advance && Is32BitPixelMode && !UsesPioDwordColourRegisters)
+        {
+            _multiMisc ^= 0x0010;
+        }
+
+        return value;
+    }
+
+    /// <summary>Gets a complete colour register for a direct DWORD PIO access.</summary>
+    private bool TryReadColourRegister(ushort register, out uint value)
+    {
+        switch (register)
+        {
+            case 0xA2E8:
+                value = _background;
+                return true;
+
+            case 0xA6E8:
+                value = _foreground;
+                return true;
+
+            case 0xAAE8:
+                value = _writeMask;
+                return true;
+
+            case 0xAEE8:
+                value = _readMask;
+                return true;
+
+            case 0xB2E8:
+                value = _colourCompare;
+                return true;
+
+            default:
+                value = 0;
+                return false;
+        }
+    }
+
+    /// <summary>Writes a complete colour register for a direct DWORD PIO access.</summary>
+    private bool TryWriteColourRegister(ushort register, uint value)
+    {
+        if (!IsColourRegister(register))
+        {
+            return false;
+        }
+
+        WriteColourWord(register, (ushort)value, false);
+        WriteColourWord(register, (ushort)(value >> 16), true);
+        return true;
+    }
 
     private void WriteRegister(ushort port, ushort value)
     {
@@ -423,14 +701,11 @@ public sealed class S3Accelerator : IIoDevice
             case 0x92E8: _height = value; return;
             case 0x96E8: _width = value; return;
 
-            case 0xA2E8: _background = value; return;
-            case 0xA6E8: _foreground = value; return;
-            case 0xAAE8:
-                _writeMask = value;
-                _writeMaskWritten = true;
-                return;
-            case 0xAEE8: _readMask = value; return;
-            case 0xB2E8: _colourCompare = value; return;
+            case 0xA2E8: WritePioColourWord(0xA2E8, value); return;
+            case 0xA6E8: WritePioColourWord(0xA6E8, value); return;
+            case 0xAAE8: WritePioColourWord(0xAAE8, value); return;
+            case 0xAEE8: WritePioColourWord(0xAEE8, value); return;
+            case 0xB2E8: WritePioColourWord(0xB2E8, value); return;
             case 0xB6E8: _backgroundMix = value; return;
             case 0xBAE8: _mix = value; return;
 
@@ -505,8 +780,8 @@ public sealed class S3Accelerator : IIoDevice
         _transfer = null;
         _unit = 0;
         _unitBytes = 0;
-        _newTransferPixel = 0;
-        _newTransferPixelBytes = 0;
+        _processorPixel = 0;
+        _processorPixelBytes = 0;
 
         // Every drawing routine below addresses video memory as a flat array
         // of pixels, which is what the engine sees on a real card: the S3's
@@ -578,14 +853,14 @@ public sealed class S3Accelerator : IIoDevice
     /// say whether it is the background colour, the foreground colour, the
     /// processor's data or what is already on the screen at the source.
     /// </summary>
-    private ushort ForegroundSource(int x, int y) => ((_mix >> 5) & 3) switch
+    private uint ForegroundSource(int x, int y) => ((_mix >> 5) & 3) switch
     {
         0 => _background,
         3 => GetPixel(x, y),
         _ => _foreground,
     };
 
-    private ushort BackgroundSource(int x, int y) => ((_backgroundMix >> 5) & 3) switch
+    private uint BackgroundSource(int x, int y) => ((_backgroundMix >> 5) & 3) switch
     {
         1 => _foreground,
         3 => GetPixel(x, y),
@@ -623,8 +898,8 @@ public sealed class S3Accelerator : IIoDevice
     private Transfer? _transfer;
     private uint _unit;
     private int _unitBytes;
-    private uint _newTransferPixel;
-    private int _newTransferPixelBytes;
+    private uint _processorPixel;
+    private int _processorPixelBytes;
 
     /// <summary>
     /// The width of one unit of processor data, in bytes: bits 10-9 of the
@@ -698,17 +973,17 @@ public sealed class S3Accelerator : IIoDevice
                 continue;
             }
 
-            _newTransferPixel |= (uint)value << (8 * _newTransferPixelBytes);
-            _newTransferPixelBytes++;
+            _processorPixel |= (uint)value << (8 * _processorPixelBytes);
+            _processorPixelBytes++;
 
-            if (_newTransferPixelBytes < BytesPerPixel)
+            if (_processorPixelBytes < BytesPerPixel)
             {
                 continue;
             }
 
-            bool hasMorePixels = PlotFromProcessor(true, (ushort)_newTransferPixel);
-            _newTransferPixel = 0;
-            _newTransferPixelBytes = 0;
+            bool hasMorePixels = PlotFromProcessor(true, _processorPixel);
+            _processorPixel = 0;
+            _processorPixelBytes = 0;
 
             if (!hasMorePixels)
             {
@@ -721,8 +996,6 @@ public sealed class S3Accelerator : IIoDevice
     {
         bool lowFirst = (_command & 0x1000) != 0;
         int pixelBytes = _transfer!.Mask ? 1 : BytesPerPixel;
-        uint pixel = 0;
-        int pixelFilled = 0;
 
         for (int i = 0; i < bytes; i++)
         {
@@ -739,18 +1012,27 @@ public sealed class S3Accelerator : IIoDevice
                 continue;
             }
 
-            pixel |= (uint)b << (8 * pixelFilled);
-            if (++pixelFilled < pixelBytes) continue;
+            _processorPixel |= (uint)b << (8 * _processorPixelBytes);
+            _processorPixelBytes++;
 
-            bool more = PlotFromProcessor(true, (ushort)pixel);
-            pixel = 0;
-            pixelFilled = 0;
-            if (!more || _transfer.RowStarting) return;
+            if (_processorPixelBytes < pixelBytes)
+            {
+                continue;
+            }
+
+            bool hasMorePixels = PlotFromProcessor(true, _processorPixel);
+            _processorPixel = 0;
+            _processorPixelBytes = 0;
+
+            if (!hasMorePixels || _transfer.RowStarting)
+            {
+                return;
+            }
         }
     }
 
     /// <summary>Paints the next pixel of the transfer; false when the rectangle is full.</summary>
-    private bool PlotFromProcessor(bool foreground, ushort? data)
+    private bool PlotFromProcessor(bool foreground, uint? data)
     {
         if (_transfer!.Next() is not { } at) return false;
 
@@ -798,9 +1080,9 @@ public sealed class S3Accelerator : IIoDevice
 
                 int sourceX = _currentX + x;
                 int sourceY = _currentY + y;
-                ushort sourcePixel = GetPixel(sourceX, sourceY);
+                uint sourcePixel = GetPixel(sourceX, sourceY);
                 ushort mix = MixSelectedByBitmap(sourcePixel) ? _mix : _backgroundMix;
-                ushort colour = SourceForMix(mix, sourcePixel, sourceX, sourceY);
+                uint colour = SourceForMix(mix, sourcePixel, sourceX, sourceY);
                 PutPixel(_destinationX + x, _destinationY + y, colour, mix);
             }
         }
@@ -832,9 +1114,9 @@ public sealed class S3Accelerator : IIoDevice
                 int destinationY = _destinationY + row * verticalStep;
                 int sourceX = _currentX + (destinationX & 7);
                 int sourceY = _currentY + (destinationY & 7);
-                ushort sourcePixel = GetPixel(sourceX, sourceY);
+                uint sourcePixel = GetPixel(sourceX, sourceY);
                 ushort mix = MixSelectedByBitmap(sourcePixel) ? _mix : _backgroundMix;
-                ushort colour = SourceForMix(mix, sourcePixel, sourceX, sourceY);
+                uint colour = SourceForMix(mix, sourcePixel, sourceX, sourceY);
                 PutPixel(destinationX, destinationY, colour, mix);
             }
         }
@@ -845,7 +1127,7 @@ public sealed class S3Accelerator : IIoDevice
     /// memory selected, every enabled bit of the source pixel must be one to
     /// select it; a zero in any enabled plane selects the background mix.
     /// </summary>
-    private bool MixSelectedByBitmap(ushort sourcePixel)
+    private bool MixSelectedByBitmap(uint sourcePixel)
     {
         if ((_pixelControl & 0x00C0) != 0x00C0)
         {
@@ -855,7 +1137,7 @@ public sealed class S3Accelerator : IIoDevice
         return (sourcePixel & _readMask) == _readMask;
     }
 
-    private ushort SourceForMix(ushort mix, ushort sourcePixel, int sourceX, int sourceY)
+    private uint SourceForMix(ushort mix, uint sourcePixel, int sourceX, int sourceY)
     {
         int sourceSelect = (mix >> 5) & 3;
 
@@ -937,15 +1219,15 @@ public sealed class S3Accelerator : IIoDevice
     /// costs nothing worth measuring and it means a line drawn diagonally out
     /// of the clip region stops at the boundary rather than at a corner.
     /// </summary>
-    private void PutPixel(int x, int y, ushort colour) => PutPixel(x, y, colour, _mix);
+    private void PutPixel(int x, int y, uint colour) => PutPixel(x, y, colour, _mix);
 
-    private void PutPixel(int x, int y, ushort colour, ushort mix)
+    private void PutPixel(int x, int y, uint colour, ushort mix)
     {
         if (x < _clipLeft || x > _clipRight) return;
         if (y < _clipTop || y > _clipBottom) return;
         if (x < 0 || y < 0) return;
 
-        ushort existing = GetPixel(x, y);
+        uint existing = GetPixel(x, y);
 
         // Colour compare: a pixel already holding the compare colour is
         // either the only one that may be written or the only one that may
@@ -954,23 +1236,29 @@ public sealed class S3Accelerator : IIoDevice
         // background of a window without disturbing what is on it.
         if (ColourCompareEnabled)
         {
-            bool matches = (existing & 0xFF) == (_colourCompare & 0xFF);
+            uint compareMask = ColourCompareMask;
+            bool matches = (existing & compareMask) == (_colourCompare & compareMask);
             if (matches != ColourCompareWritesOnMatch) return;
         }
 
-        ushort result = ApplyMix(colour, existing, mix);
+        uint result = ApplyMix(colour, existing, mix);
 
         // The write mask -- "plane write mask" in the manual -- lets through
         // only the bits it has set. A driver that wants to change the top
         // four bits of every pixel and leave the rest alone does it here
         // rather than reading, modifying and writing back.
-        ushort writeMask = _writeMaskWritten ? _writeMask : ushort.MaxValue;
-        result = (ushort)((result & writeMask) | (existing & ~writeMask));
+        uint writeMask = _writeMaskWritten ? _writeMask : uint.MaxValue;
+        result = (result & writeMask) | (existing & ~writeMask);
 
         uint at = (uint)(y * Stride + x * BytesPerPixel);
 
         _memory.WriteLinear(at, (byte)result);
         if (BytesPerPixel >= 2) _memory.WriteLinear(at + 1, (byte)(result >> 8));
+        if (BytesPerPixel == 4)
+        {
+            _memory.WriteLinear(at + 2, (byte)(result >> 16));
+            _memory.WriteLinear(at + 3, (byte)(result >> 24));
+        }
     }
 
     /// <summary>
@@ -978,6 +1266,20 @@ public sealed class S3Accelerator : IIoDevice
     /// multifunction pixel control register.
     /// </summary>
     private bool ColourCompareEnabled => (_pixelControl & 0x0038) != 0;
+
+    /// <summary>
+    /// The colour compare registers remain 32 bits at every depth, but only
+    /// the bits stored by the active pixel can take part in a comparison.
+    /// High bits left by an earlier mode must not turn an 8- or 16-bpp match
+    /// into a miss.
+    /// </summary>
+    private uint ColourCompareMask => BytesPerPixel switch
+    {
+        1 => byte.MaxValue,
+        2 => ushort.MaxValue,
+        4 => uint.MaxValue,
+        _ => ushort.MaxValue,
+    };
 
     /// <summary>
     /// Whether a matching pixel is the one that gets written or the one that
@@ -1006,33 +1308,39 @@ public sealed class S3Accelerator : IIoDevice
     /// pixels touch the screen; a table in another order painted the
     /// background too, and every word came out as a black block.
     /// </summary>
-    private static ushort ApplyMix(ushort source, ushort destination, ushort mix) => (mix & 0x0F) switch
+    private static uint ApplyMix(uint source, uint destination, ushort mix) => (mix & 0x0F) switch
     {
-        0x0 => (ushort)~destination,
+        0x0 => ~destination,
         0x1 => 0,                                            // clear
-        0x2 => 0xFFFF,                                       // set
+        0x2 => uint.MaxValue,                                // set
         0x3 => destination,                                  // leave it alone
-        0x4 => (ushort)~source,
-        0x5 => (ushort)(destination ^ source),               // the rubber band
-        0x6 => (ushort)~(destination ^ source),
+        0x4 => ~source,
+        0x5 => destination ^ source,                         // the rubber band
+        0x6 => ~(destination ^ source),
         0x7 => source,                                       // replace: the common case
-        0x8 => (ushort)(~source | ~destination),
-        0x9 => (ushort)(source | ~destination),
-        0xA => (ushort)(~source | destination),
-        0xB => (ushort)(source | destination),
-        0xC => (ushort)(source & destination),
-        0xD => (ushort)(source & ~destination),
-        0xE => (ushort)(~source & destination),
-        _ => (ushort)(~source & ~destination),
+        0x8 => ~source | ~destination,
+        0x9 => source | ~destination,
+        0xA => ~source | destination,
+        0xB => source | destination,
+        0xC => source & destination,
+        0xD => source & ~destination,
+        0xE => ~source & destination,
+        _ => ~source & ~destination,
     };
 
-    private ushort GetPixel(int x, int y)
+    private uint GetPixel(int x, int y)
     {
         if (x < 0 || y < 0) return 0;
 
         uint at = (uint)(y * Stride + x * BytesPerPixel);
-        ushort value = _memory.ReadLinear(at);
-        if (BytesPerPixel >= 2) value |= (ushort)(_memory.ReadLinear(at + 1) << 8);
+        uint value = _memory.ReadLinear(at);
+        if (BytesPerPixel >= 2) value |= (uint)_memory.ReadLinear(at + 1) << 8;
+        if (BytesPerPixel == 4)
+        {
+            value |= (uint)_memory.ReadLinear(at + 2) << 16;
+            value |= (uint)_memory.ReadLinear(at + 3) << 24;
+        }
+
         return value;
     }
 
