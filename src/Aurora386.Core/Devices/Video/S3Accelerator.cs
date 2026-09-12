@@ -27,6 +27,11 @@ namespace Aurora386.Core.Devices.Video;
 /// </summary>
 public sealed class S3Accelerator : IIoDwordDevice
 {
+    // MULT_MISC selects the 32-bit PIO form with CMR32B. In its normal
+    // sequential form, RSF selects the next half of every colour register.
+    private const ushort MultiMiscRegisterSelectFlip = 0x0010;
+    private const ushort MultiMiscColourRegister32Bit = 0x0200;
+
     private readonly VgaMemory _memory;
     private readonly VgaRegisters _registers;
 
@@ -105,8 +110,7 @@ public sealed class S3Accelerator : IIoDwordDevice
     {
         public byte ReadByte(uint offset)
         {
-            ushort word = engine.ReadMmioWord((ushort)(offset & 0xFFFE));
-            return (offset & 1) != 0 ? (byte)(word >> 8) : (byte)word;
+            return engine.ReadMmioByte((ushort)offset);
         }
 
         public ushort ReadWord(uint offset) => engine.ReadMmioWord((ushort)(offset & 0xFFFE));
@@ -186,12 +190,20 @@ public sealed class S3Accelerator : IIoDwordDevice
             case 0x814E: _patternX = value; return;
         }
 
-        // Classic MMIO colour registers occupy two adjacent words. Unlike
-        // their programmed-I/O form, their high halves are direct lanes and
-        // do not use the RSF selector.
+        // In a 32-bit sequential mode, classic MMIO uses RSF just as the
+        // reference model does. The real driver writes C0C0h then 00C0h to
+        // AA6E8h, rather than addressing the second half at AA6EAh.
         if (IsClassicMmioColourRegister(offset))
         {
-            WriteClassicMmioColourWord(offset, value);
+            if (UsesSequentialClassicMmioColourWords)
+            {
+                WriteSequentialColourWord((ushort)(offset & 0xFFFD), value);
+            }
+            else
+            {
+                WriteClassicMmioColourWord(offset, value);
+            }
+
             return;
         }
 
@@ -245,6 +257,13 @@ public sealed class S3Accelerator : IIoDwordDevice
 
             _lastMultifunctionCommand = (ushort)((_lastMultifunctionCommand & 0x00FF) | (value << 8));
             WriteMultifunction(_lastMultifunctionCommand);
+            return;
+        }
+
+        if (IsClassicMmioColourRegister(register)
+            && UsesSequentialClassicMmioColourWords)
+        {
+            WriteClassicMmioColourByte(offset, value);
             return;
         }
 
@@ -322,6 +341,13 @@ public sealed class S3Accelerator : IIoDwordDevice
 
     internal ushort ReadMmioWord(ushort offset)
     {
+        if (IsClassicMmioColourRegister(offset)
+            && UsesSequentialClassicMmioColourWords
+            && TryReadColourRegister((ushort)(offset & 0xFFFD), out uint colour))
+        {
+            return ReadSequentialColourWord(colour);
+        }
+
         return offset switch
         {
             0x8100 => _currentY,
@@ -351,6 +377,28 @@ public sealed class S3Accelerator : IIoDwordDevice
             0xB2EA => (ushort)(_colourCompare >> 16),
             _ => ReadRegister(offset),
         };
+    }
+
+    /// <summary>
+    /// Reads one byte from classic MMIO without advancing RSF until the high
+    /// byte completes its selected word. Calling the word reader for both
+    /// bytes would skip the second colour half before the driver reads it.
+    /// </summary>
+    internal byte ReadMmioByte(ushort offset)
+    {
+        ushort wordOffset = (ushort)(offset & 0xFFFE);
+
+        if (IsClassicMmioColourRegister(wordOffset)
+            && UsesSequentialClassicMmioColourWords
+            && TryReadColourRegister((ushort)(wordOffset & 0xFFFD), out uint colour))
+        {
+            bool highByte = (offset & 1) != 0;
+            ushort word = ReadSequentialColourWord(colour, highByte);
+            return highByte ? (byte)(word >> 8) : (byte)word;
+        }
+
+        ushort value = ReadMmioWord(wordOffset);
+        return (offset & 1) != 0 ? (byte)(value >> 8) : (byte)value;
     }
 
     /// <summary>The engine's register file, addressed as memory.</summary>
@@ -385,7 +433,7 @@ public sealed class S3Accelerator : IIoDwordDevice
             && TryReadColourRegister(register, out uint colour))
         {
             bool highByte = (port & 1) != 0;
-            ushort colourWord = ReadPioColourWord(colour, highByte);
+            ushort colourWord = ReadSequentialColourWord(colour, highByte);
             return highByte ? (byte)(colourWord >> 8) : (byte)colourWord;
         }
 
@@ -412,11 +460,11 @@ public sealed class S3Accelerator : IIoDwordDevice
             case 0x82E8: return _currentY;
             case 0x86E8: return _currentX;
             case 0x96E8: return _width;
-            case 0xA2E8: return ReadPioColourWord(_background);
-            case 0xA6E8: return ReadPioColourWord(_foreground);
-            case 0xAAE8: return ReadPioColourWord(_writeMask);
-            case 0xAEE8: return ReadPioColourWord(_readMask);
-            case 0xB2E8: return ReadPioColourWord(_colourCompare);
+            case 0xA2E8: return ReadSequentialColourWord(_background);
+            case 0xA6E8: return ReadSequentialColourWord(_foreground);
+            case 0xAAE8: return ReadSequentialColourWord(_writeMask);
+            case 0xAEE8: return ReadSequentialColourWord(_readMask);
+            case 0xB2E8: return ReadSequentialColourWord(_colourCompare);
             case 0xBEE8: return ReadMultifunction();
             default: return 0xFFFF;
         }
@@ -509,9 +557,16 @@ public sealed class S3Accelerator : IIoDwordDevice
     /// <summary>
     /// Whether MULT_MISC bit 9 selects the programmed-I/O doubleword form.
     /// The data book makes byte and word PIO accesses invalid in this state;
-    /// MMIO colour lanes are always independently addressable.
+    /// classic MMIO continues to expose direct colour lanes.
     /// </summary>
-    private bool UsesPioDwordColourRegisters => (_multiMisc & 0x0200) != 0;
+    private bool UsesPioDwordColourRegisters => (_multiMisc & MultiMiscColourRegister32Bit) != 0;
+
+    /// <summary>
+    /// Whether classic MMIO uses the sequential colour half selected by RSF.
+    /// The Trio64V+ manual describes RSF for PIO, while the reference MMIO
+    /// model and the Windows driver show the same selection for these words.
+    /// </summary>
+    private bool UsesSequentialClassicMmioColourWords => Is32BitPixelMode && !UsesPioDwordColourRegisters;
 
     /// <summary>Whether a classic port names one of the five colour registers.</summary>
     private static bool IsColourRegister(ushort port)
@@ -571,8 +626,8 @@ public sealed class S3Accelerator : IIoDwordDevice
     }
 
     /// <summary>
-    /// Writes either lane of a classic MMIO colour register. MMIO bypasses
-    /// MULT_MISC bit 4, which selects lanes only for programmed I/O.
+    /// Writes either direct lane of a classic MMIO colour register. CMR32B
+    /// selects this form; with it clear, the sequential path above uses RSF.
     /// </summary>
     private void WriteClassicMmioColourWord(ushort offset, ushort value)
     {
@@ -582,17 +637,56 @@ public sealed class S3Accelerator : IIoDwordDevice
     }
 
     /// <summary>
-    /// Writes a programmed-I/O colour word. In 32-bpp sequential mode,
+    /// Writes a sequential colour word. In 32-bpp sequential mode,
     /// MULT_MISC bit 4 selects the active half and flips after that word.
+    /// Classic MMIO follows this behaviour when CMR32B is clear; the driver
+    /// uses two WORD stores to one address, C0C0h then 00C0h, for grey.
     /// </summary>
-    private void WritePioColourWord(ushort register, ushort value)
+    private void WriteSequentialColourWord(ushort register, ushort value)
     {
-        bool upperWord = Is32BitPixelMode && (_multiMisc & 0x0010) != 0;
+        bool upperWord = Is32BitPixelMode && (_multiMisc & MultiMiscRegisterSelectFlip) != 0;
         WriteColourWord(register, value, upperWord);
 
         if (Is32BitPixelMode && !UsesPioDwordColourRegisters)
         {
-            _multiMisc ^= 0x0010;
+            AdvanceColourWordSelector();
+        }
+    }
+
+    /// <summary>
+    /// Writes one byte into the word currently selected by RSF. The low byte
+    /// is visible immediately, but the high byte is what completes the word
+    /// and advances the selector to the other 16-bit half.
+    /// </summary>
+    private void WriteClassicMmioColourByte(ushort offset, byte value)
+    {
+        ushort wordOffset = (ushort)(offset & 0xFFFE);
+        ushort register = (ushort)(wordOffset & 0xFFFD);
+
+        if (!TryReadColourRegister(register, out uint colour))
+        {
+            return;
+        }
+
+        bool upperWord = (_multiMisc & MultiMiscRegisterSelectFlip) != 0;
+        ushort selectedWord = upperWord ? (ushort)(colour >> 16) : (ushort)colour;
+        bool highByte = (offset & 1) != 0;
+
+        ushort updatedWord;
+        if (highByte)
+        {
+            updatedWord = (ushort)((selectedWord & 0x00FF) | (value << 8));
+        }
+        else
+        {
+            updatedWord = (ushort)((selectedWord & 0xFF00) | value);
+        }
+
+        WriteColourWord(register, updatedWord, upperWord);
+
+        if (highByte)
+        {
+            AdvanceColourWordSelector();
         }
     }
 
@@ -625,20 +719,26 @@ public sealed class S3Accelerator : IIoDwordDevice
     }
 
     /// <summary>
-    /// Reads a programmed-I/O colour word, optionally advancing the RSF
+    /// Reads a sequential colour word, optionally advancing the RSF
     /// selector after its high byte completes the word access.
     /// </summary>
-    private ushort ReadPioColourWord(uint colour, bool advance = true)
+    private ushort ReadSequentialColourWord(uint colour, bool advance = true)
     {
-        bool upperWord = Is32BitPixelMode && (_multiMisc & 0x0010) != 0;
+        bool upperWord = Is32BitPixelMode && (_multiMisc & MultiMiscRegisterSelectFlip) != 0;
         ushort value = upperWord ? (ushort)(colour >> 16) : (ushort)colour;
 
         if (advance && Is32BitPixelMode && !UsesPioDwordColourRegisters)
         {
-            _multiMisc ^= 0x0010;
+            AdvanceColourWordSelector();
         }
 
         return value;
+    }
+
+    /// <summary>Moves RSF to the other half of a sequential colour register.</summary>
+    private void AdvanceColourWordSelector()
+    {
+        _multiMisc ^= MultiMiscRegisterSelectFlip;
     }
 
     /// <summary>Gets a complete colour register for a direct DWORD PIO access.</summary>
@@ -701,11 +801,11 @@ public sealed class S3Accelerator : IIoDwordDevice
             case 0x92E8: _height = value; return;
             case 0x96E8: _width = value; return;
 
-            case 0xA2E8: WritePioColourWord(0xA2E8, value); return;
-            case 0xA6E8: WritePioColourWord(0xA6E8, value); return;
-            case 0xAAE8: WritePioColourWord(0xAAE8, value); return;
-            case 0xAEE8: WritePioColourWord(0xAEE8, value); return;
-            case 0xB2E8: WritePioColourWord(0xB2E8, value); return;
+            case 0xA2E8: WriteSequentialColourWord(0xA2E8, value); return;
+            case 0xA6E8: WriteSequentialColourWord(0xA6E8, value); return;
+            case 0xAAE8: WriteSequentialColourWord(0xAAE8, value); return;
+            case 0xAEE8: WriteSequentialColourWord(0xAEE8, value); return;
+            case 0xB2E8: WriteSequentialColourWord(0xB2E8, value); return;
             case 0xB6E8: _backgroundMix = value; return;
             case 0xBAE8: _mix = value; return;
 
@@ -755,10 +855,10 @@ public sealed class S3Accelerator : IIoDwordDevice
             case 0x3: _clipBottom = (ushort)data; return;
             case 0x4: _clipRight = (ushort)data; return;
 
-            // The two miscellaneous registers and the read-select. Nothing
-            // here changes what is drawn, but a driver writes them and reads
-            // them back, and a card that answers with 0xFFFF is a card the
-            // driver decides is not there.
+            // The miscellaneous registers choose how colour registers are
+            // accessed, while read-select chooses what this port returns.
+            // A driver writes them and reads them back, and a card that
+            // answers with 0xFFFF is a card the driver decides is not there.
             case 0xD: _multiMisc2 = (ushort)data; return;
             case 0xE: _multiMisc = (ushort)data; return;
             case 0xF: _readSelect = data & 0x0F; return;
@@ -775,6 +875,8 @@ public sealed class S3Accelerator : IIoDwordDevice
     /// </summary>
     private void Execute()
     {
+        ResetSequentialColourSelector();
+
         int operation = (_command >> 13) & 7;
         CommandTrace?.Invoke(_command, _currentX, _currentY, _width + 1, _height + 1, _foreground, _mix, _pixelControl);
         _transfer = null;
@@ -808,6 +910,19 @@ public sealed class S3Accelerator : IIoDwordDevice
         }
 
         OperationsPerformed++;
+    }
+
+    /// <summary>
+    /// A completed command starts the next colour sequence at its low word.
+    /// The low CMD byte merely prepares the command, so only the high byte
+    /// that reaches <see cref="Execute"/> can reset RSF.
+    /// </summary>
+    private void ResetSequentialColourSelector()
+    {
+        if (UsesSequentialClassicMmioColourWords)
+        {
+            _multiMisc = (ushort)(_multiMisc & ~MultiMiscRegisterSelectFlip);
+        }
     }
 
     /// <summary>

@@ -254,11 +254,100 @@ public sealed class S3TrueColourTests
     public void ClassicMmioColourLanesPreserveTheOtherBytes()
     {
         using Machine machine = InTrueColourMode();
+
+        // With CMR32B set, the reference model keeps classic MMIO as two
+        // direct lanes. The Windows driver leaves this bit clear instead.
+        machine.Memory.WriteWord(0xA8144, 0x0200);
         machine.Memory.WriteDword(0xAA6E8, 0x11223344);
         machine.Memory.WriteWord(0xAA6EA, 0x5566);
         machine.Memory.WriteByte(0xAA6EB, 0x77);
 
         Assert.Equal(0x77663344u, machine.Memory.ReadDword(0xAA6E8));
+    }
+
+    [Theory]
+    [InlineData(0xA2E8, 0x8120)]
+    [InlineData(0xA6E8, 0x8124)]
+    [InlineData(0xAAE8, 0x8128)]
+    [InlineData(0xAEE8, 0x812C)]
+    [InlineData(0xB2E8, 0x8130)]
+    public void ClassicMmioWordPairsAssembleTheDriverColours(
+        ushort classicRegister,
+        ushort packedRegister)
+    {
+        using Machine machine = InTrueColourMode();
+
+        machine.Memory.WriteWord(0xA0000u + classicRegister, 0x5678);
+        machine.Memory.WriteWord(0xA0000u + classicRegister + 2, 0x1234);
+
+        Assert.Equal(ForegroundColour, machine.Memory.ReadDword(0xA0000u + packedRegister));
+    }
+
+    [Fact]
+    public void TheWindows95GreyWordPairProducesAGreyFill()
+    {
+        using Machine machine = InTrueColourMode();
+        SetCurrentPosition(machine, 0, 0);
+        SetPixelCount(machine, 1, 1);
+
+        // S3.DRV writes both words to AA6E8h while MULT_MISC is 0000h.
+        machine.Memory.WriteWord(0xAA6E8, 0xC0C0);
+        machine.Memory.WriteWord(0xAA6E8, 0x00C0);
+        machine.Memory.WriteWord(0xA8118, 0x40A0);
+
+        Assert.Equal(0x00C0C0C0u, Pixel(machine, 0, 0));
+    }
+
+    [Fact]
+    public void ClassicMmioBytePairsAdvanceRsfOnlyAfterTheHighByte()
+    {
+        using Machine machine = InTrueColourMode();
+
+        machine.Memory.WriteByte(0xAA6E8, 0x78);
+        machine.Memory.WriteByte(0xAA6E9, 0x56);
+        machine.Memory.WriteByte(0xAA6E8, 0x34);
+        machine.Memory.WriteByte(0xAA6E9, 0x12);
+
+        Assert.Equal(ForegroundColour, machine.Memory.ReadDword(0xA8124));
+        Assert.Equal(0x78, machine.Memory.ReadByte(0xAA6E8));
+        Assert.Equal(0x56, machine.Memory.ReadByte(0xAA6E9));
+        Assert.Equal(0x34, machine.Memory.ReadByte(0xAA6E8));
+        Assert.Equal(0x12, machine.Memory.ReadByte(0xAA6E9));
+    }
+
+    [Fact]
+    public void ClassicMmioDoublewordsPreserveAllFourBytesWithRsfClear()
+    {
+        using Machine machine = InTrueColourMode();
+
+        machine.Memory.WriteDword(0xAA6E8, ForegroundColour);
+
+        Assert.Equal(ForegroundColour, machine.Memory.ReadDword(0xAA6E8));
+
+        machine.Memory.WriteWord(0xAA6E8, 0xBEEF);
+
+        Assert.Equal(0x1234BEEFu, machine.Memory.ReadDword(0xA8124));
+    }
+
+    [Fact]
+    public void ACompletedCommandResetsTheClassicColourHalfSelector()
+    {
+        using Machine machine = InTrueColourMode();
+        machine.Memory.WriteDword(0xA8124, 0xAAAABBBB);
+
+        // This word selects the upper half for the next sequential access.
+        machine.Memory.WriteWord(0xAA6E8, 0xCCCC);
+        machine.Memory.WriteByte(0xA8118, 0xA0);
+        machine.Memory.WriteWord(0xAA6E8, 0xDDDD);
+        Assert.Equal(0xDDDDCCCCu, machine.Memory.ReadDword(0xA8124));
+
+        // Bring RSF high again before the command's high byte completes it.
+        machine.Memory.WriteWord(0xAA6E8, 0xEEEE);
+
+        machine.Memory.WriteByte(0xA8119, 0x40);
+        machine.Memory.WriteWord(0xAA6E8, 0x5678);
+
+        Assert.Equal(0xDDDD5678u, machine.Memory.ReadDword(0xA8124));
     }
 
     [Fact]
