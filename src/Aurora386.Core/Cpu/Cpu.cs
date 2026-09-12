@@ -402,15 +402,19 @@ public sealed partial class Cpu
 
     private void Push16(ushort value)
     {
+        // A page fault restarts PUSH. Commit SP only after the write succeeds,
+        // otherwise Windows grows the stack and retries with SP already lower.
         if (State.Ss.Big)
         {
-            State.Esp -= 2;
-            WriteMem16(SegReg.Ss, State.Esp, value);
+            uint newStackPointer = State.Esp - 2;
+            WriteMem16(SegReg.Ss, newStackPointer, value);
+            State.Esp = newStackPointer;
         }
         else
         {
-            State.Sp -= 2;
-            WriteMem16(SegReg.Ss, State.Sp, value);
+            ushort newStackPointer = (ushort)(State.Sp - 2);
+            WriteMem16(SegReg.Ss, newStackPointer, value);
+            State.Sp = newStackPointer;
         }
     }
 
@@ -418,17 +422,19 @@ public sealed partial class Cpu
     {
         if (State.Ss.Big)
         {
-            State.Esp -= 4;
-            WriteMem32(SegReg.Ss, State.Esp, value);
+            uint newStackPointer = State.Esp - 4;
+            WriteMem32(SegReg.Ss, newStackPointer, value);
+            State.Esp = newStackPointer;
         }
         else
         {
             // As with the pop, on a 16-bit stack the write splits into two
             // word accesses, each of which wraps within the segment rather
             // than running past its end.
-            State.Sp -= 4;
-            WriteMem16(SegReg.Ss, State.Sp, (ushort)value);
-            WriteMem16(SegReg.Ss, (uint)(ushort)(State.Sp + 2), (ushort)(value >> 16));
+            ushort newStackPointer = (ushort)(State.Sp - 4);
+            WriteMem16(SegReg.Ss, newStackPointer, (ushort)value);
+            WriteMem16(SegReg.Ss, (uint)(ushort)(newStackPointer + 2), (ushort)(value >> 16));
+            State.Sp = newStackPointer;
         }
     }
 

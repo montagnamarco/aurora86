@@ -144,6 +144,93 @@ public class ProtectedModeTests
         Assert.Equal(0xDEADBEEFu, machine.Memory.ReadDword(0x9004));
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void PushPageFaultRetriesWithTheOriginalStackPointer(bool word, bool wideStack)
+    {
+        using Machine machine = BuildProtectedMachine();
+        var cpu = machine.Cpu;
+        WriteDescriptor(machine, GdtBase, 2, 0, 0xFFFF, 0x92,
+            wideStack ? (byte)0x40 : (byte)0);
+        cpu.SetSegment(SegReg.Cs, 8);
+        cpu.SetSegment(SegReg.Ss, 16);
+        cpu.SetSegment(SegReg.Ds, 16);
+        const uint directory = 0x10000;
+        const uint table = 0x11000;
+        machine.Memory.WriteDword(directory, table | 3);
+        for (uint page = 0; page < 16; page++)
+        {
+            if (page != 8)
+            {
+                machine.Memory.WriteDword(table + page * 4, (page << 12) | 3);
+            }
+        }
+        uint originalStackPointer = wideStack ? 0x9000u : 0xABCD9000u;
+        cpu.State.Esp = originalStackPointer;
+        cpu.State.Eip = 0x3000;
+        cpu.State.Cr3 = directory;
+        cpu.State.Cr0 |= CpuState.Cr0Paging;
+        machine.Memory.WriteDword(0x900C, 0x12345678);
+        uint code = 0x3000;
+        if (word)
+        {
+            machine.Memory.WriteByte(code++, 0x66);
+        }
+        // PUSH must re-read the same argument on retry. The 32-bit case uses
+        // ESP-relative addressing, as in the Windows fault that exposed this.
+        if (!wideStack)
+        {
+            cpu.State.Bx = 0x900C;
+            machine.Memory.WriteByte(code++, 0x67);
+            machine.Memory.WriteByte(code++, 0xFF);
+            machine.Memory.WriteByte(code++, 0x37); // PUSH [BX]
+        }
+        else
+        {
+            foreach (byte value in new byte[] { 0xFF, 0x74, 0x24, 0x0C })
+            {
+                machine.Memory.WriteByte(code++, value);
+            }
+        }
+        WriteGate(machine, IdtBase, 14, 8, 0x4000, 0x0E);
+        byte[] handler = [0x83, 0xC4, 0x04, 0xCF];
+        for (int index = 0; index < handler.Length; index++)
+        {
+            machine.Memory.WriteByte(0x4000 + (uint)index, handler[index]);
+        }
+        uint? stackAtFault = null;
+        cpu.ProcessorException += (vector, _, _, _) =>
+        {
+            if (vector == 14)
+            {
+                stackAtFault = cpu.State.Esp;
+                // Make the guard page available before the same-ring handler
+                // writes its frame. IRETD then retries the original PUSH.
+                machine.Memory.WriteDword(table + 8 * 4, 0x8000 | 3);
+                cpu.FlushTlb();
+            }
+        };
+
+        cpu.Step();
+        Assert.Equal(originalStackPointer, stackAtFault);
+        Assert.Equal(0x4000u, cpu.State.Eip);
+        Assert.Equal(originalStackPointer - 16, cpu.State.Esp);
+        Assert.Equal(word ? 0x8FFEu : 0x8FFCu, cpu.State.Cr2);
+        cpu.Step();
+        cpu.Step();
+        Assert.Equal(originalStackPointer, cpu.State.Esp);
+        Assert.Equal(0x3000u, cpu.State.Eip);
+        cpu.Step();
+        Assert.Equal(code, cpu.State.Eip);
+        Assert.Equal(originalStackPointer - (word ? 2u : 4u), cpu.State.Esp);
+        Assert.Equal(word ? 0x5678u : 0x12345678u, word
+            ? machine.Memory.ReadWord(0x8FFE)
+            : machine.Memory.ReadDword(0x8FFC));
+    }
+
     [Fact]
     public void LoadingASelectorReadsTheDescriptorsBaseAndLimit()
     {
@@ -1134,6 +1221,117 @@ public class ProtectedModeTests
         Assert.Equal(0x2B, machine.Cpu.State.Ss.Selector);
         Assert.Equal(0x7000u, machine.Cpu.State.Esp);
         Assert.Equal(0, machine.Cpu.State.Ds.Selector);   // DPL 0: not for an application
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FarReturnDiscardsCopiedParametersBeforeRestoringTheOuterStack(bool wide)
+    {
+        using Machine machine = BuildProtectedMachine();
+        AddUserModeAndTss(machine);
+        WriteGate(machine, IdtBase, 12, 0x08, 0x6000, type: 0x0E);
+        WriteGate(machine, IdtBase, 13, 0x08, 0x6100, type: 0x0E);
+        uint slotSize = wide ? 4u : 2u;
+        void WriteSlot(uint address, uint value)
+        {
+            if (wide)
+            {
+                machine.Memory.WriteDword(address, value);
+            }
+            else
+            {
+                machine.Memory.WriteWord(address, (ushort)value);
+            }
+        }
+        WriteSlot(0x8000, 0x4309);
+        WriteSlot(0x8000 + slotSize, 0x23);
+        // The IDE probe in SYSDETMG passes port 0170h in four copied bytes.
+        // These are arguments, not the saved outer SP and SS.
+        machine.Memory.WriteDword(0x8000 + 2 * slotSize, 0x170);
+        WriteSlot(0x8004 + 2 * slotSize, 0x7000);
+        WriteSlot(0x8004 + 3 * slotSize, 0x2B);
+        byte? raisedException = null;
+        machine.Cpu.ProcessorException += (vector, _, _, _) => raisedException = vector;
+
+        RunInstruction(machine, wide ? [0xCA, 4, 0] : [0x66, 0xCA, 4, 0]);
+
+        Assert.Null(raisedException);
+        Assert.Equal(3, machine.Cpu.State.Cpl);
+        Assert.Equal(0x23, machine.Cpu.State.Cs.Selector);
+        Assert.Equal(0x4309u, machine.Cpu.State.Eip);
+        Assert.Equal(0x2B, machine.Cpu.State.Ss.Selector);
+        Assert.Equal(0x7004u, machine.Cpu.State.Esp);
+    }
+
+    [Fact]
+    public void ARejectedOuterStackLeavesTheFarReturnInItsOriginalCodeSegment()
+    {
+        using Machine machine = BuildProtectedMachine();
+        AddUserModeAndTss(machine);
+        WriteGate(machine, IdtBase, 13, 0x08, 0x6000, type: 0x0E);
+        machine.Memory.WriteDword(0x8000, 0x4309);
+        machine.Memory.WriteDword(0x8004, 0x23);
+        machine.Memory.WriteDword(0x8008, 0x7000);
+        machine.Memory.WriteDword(0x800C, 0x23); // code cannot be used as SS
+        ushort? faultCodeSegment = null;
+        byte? faultPrivilege = null;
+        machine.Cpu.ProcessorException += (_, _, _, _) =>
+        {
+            faultCodeSegment = machine.Cpu.State.Cs.Selector;
+            faultPrivilege = machine.Cpu.State.Cpl;
+        };
+
+        RunInstruction(machine, 0xCB);
+
+        Assert.Equal((ushort)8, faultCodeSegment);
+        Assert.Equal((byte)0, faultPrivilege);
+        Assert.Equal(0x6000u, machine.Cpu.State.Eip);
+        Assert.Equal(0x7FF0u, machine.Cpu.State.Esp);
+        Assert.Equal(8u, machine.Memory.ReadDword(0x7FF8));
+        Assert.Equal(0x4309u, machine.Memory.ReadDword(0x8000));
+    }
+
+    [Theory]
+    [InlineData(false, 0x1A, 11, 0x18)]
+    [InlineData(true, 0x1A, 11, 0x18)]
+    [InlineData(false, 0x12, 13, 0x18)]
+    [InlineData(true, 0x12, 13, 0x18)]
+    [InlineData(false, 0x9A, 13, 0)]
+    [InlineData(true, 0x9A, 13, 0)]
+    public void FarReturnValidatesTheDescriptorBeforeItsLimit(
+        bool wide, byte access, byte expectedVector, uint expectedError)
+    {
+        using Machine machine = BuildProtectedMachine();
+        // SETUPX returns to a discarded segment. Windows leaves a small
+        // placeholder limit in its absent descriptor and relies on #NP to
+        // reload the code. Checking that limit first incorrectly delivers #GP.
+        WriteDescriptor(machine, GdtBase, 3, 0, 0x0D97, access);
+        machine.Cpu.State.GdtLimit = 0x1F;
+        WriteGate(machine, IdtBase, 11, 0x08, 0x6000, type: 0x0E);
+        WriteGate(machine, IdtBase, 13, 0x08, 0x6100, type: 0x0E);
+        if (wide)
+        {
+            machine.Memory.WriteDword(0x8000, 0x1EF4);
+            machine.Memory.WriteDword(0x8004, 0x18);
+        }
+        else
+        {
+            machine.Memory.WriteWord(0x8000, 0x1EF4);
+            machine.Memory.WriteWord(0x8002, 0x18);
+        }
+        byte? vector = null;
+        machine.Cpu.ProcessorException += (raisedVector, _, _, _) => vector = raisedVector;
+
+        RunInstruction(machine, wide ? [0xCA, 8, 0] : [0x66, 0xCA, 8, 0]);
+
+        Assert.Equal(expectedVector, vector);
+        Assert.Equal(expectedVector == 11 ? 0x6000u : 0x6100u, machine.Cpu.State.Eip);
+        Assert.Equal(0x7FF0u, machine.Cpu.State.Esp);
+        Assert.Equal(expectedError, machine.Memory.ReadDword(0x7FF0));
+        Assert.Equal(0x1000u, machine.Memory.ReadDword(0x7FF4)); // faulting RETF
+        Assert.Equal(8u, machine.Memory.ReadDword(0x7FF8));      // original CS
+        Assert.Equal(0x1EF4, machine.Memory.ReadWord(0x8000));   // frame is retryable
     }
 
     // ---- faults during delivery ----------------------------------------------

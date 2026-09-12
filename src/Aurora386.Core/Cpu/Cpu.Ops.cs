@@ -549,6 +549,9 @@ public sealed partial class Cpu
     private void RetFar(ushort popBytes)
     {
         uint espBefore = State.Esp;
+        SegmentCache codeBefore = State.Cs;
+        SegmentCache stackBefore = State.Ss;
+        byte privilegeBefore = State.Cpl;
         try
         {
             // Only the 32-bit form reads the block in one go.
@@ -576,15 +579,40 @@ public sealed partial class Cpu
                 if ((selector & 0xFFFC) == 0) throw new CpuException(13, 0);
                 byte returnPrivilege = (byte)(selector & 3);
                 if (returnPrivilege < State.Cpl) throw new CpuException(13, selector);   // no returning inward
-                if (destination > DescriptorLimit(selector)) throw new CpuException(13, 0);
+                // Windows discards code segments and reuses the absent
+                // descriptor's base/limit fields as loader bookkeeping.
+                // RET must report #NP before consulting that placeholder
+                // limit, so the loader can bring the return segment back.
+                ulong returnDescriptor = ReadDescriptor(selector);
+                byte access = (byte)(returnDescriptor >> 40);
+                bool codeSegment = (access & 0x18) == 0x18;
+                bool conforming = (access & 0x04) != 0;
+                byte descriptorPrivilege = (byte)((access >> 5) & 3);
+                if (!codeSegment || descriptorPrivilege > returnPrivilege
+                    || (!conforming && descriptorPrivilege != returnPrivilege))
+                {
+                    throw new CpuException(13, selector);
+                }
+                if ((access & 0x80) == 0)
+                {
+                    throw new CpuException(11, selector);
+                }
+                if (destination > DescriptorLimitOf(returnDescriptor))
+                {
+                    throw new CpuException(13, 0);
+                }
 
                 if (returnPrivilege > State.Cpl)
                 {
-                    // Returning to a less privileged caller: its stack pointer
-                    // follows the return address on ours, and its data
-                    // segments are pruned exactly as IRET prunes them. The
-                    // immediate is applied to the caller's stack, which is
-                    // the one that held the arguments.
+                    // A call gate copies parameters onto the inner stack,
+                    // between CS:IP and the saved outer SS:SP. RET n must
+                    // skip that copy before restoring the outer stack, then
+                    // discard the original parameters from that stack too.
+                    // SYSDETMG's RETF 4 otherwise reads its IDE port argument
+                    // as SP and the following zero word as SS.
+                    uint outerFrameBytes = OperandSize32 ? 8u : 4u;
+                    CheckStackBlock((uint)popBytes + outerFrameBytes);
+                    AdjustStack(popBytes);
                     uint returnEsp = PopOperand();
                     ushort returnSs = (ushort)PopOperand();
 
@@ -604,9 +632,12 @@ public sealed partial class Cpu
         }
         catch (CpuException)
         {
-            // The stack is put back the way it was: the handler must see the
-            // stack pointer the code executing the RET had, not one stranded
-            // halfway through the operation.
+            // A failure loading the outer stack must not leave the caller's
+            // CS or privilege installed. The exception handler needs the
+            // original instruction and stack frame to diagnose or retry RET.
+            State.Cs = codeBefore;
+            State.Ss = stackBefore;
+            State.Cpl = privilegeBefore;
             State.Esp = espBefore;
             throw;
         }
