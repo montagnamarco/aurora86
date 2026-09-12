@@ -4,16 +4,16 @@ obj/
 *.user
 *.suo
 
-# Immagini disco: sono grandi e spesso protette da copyright
-images/*.img
-images/**/*.img
-images/**/*.iso
-images/**/*.IMA
+# Disk images and everything around them: large, and most of it is
+# copyrighted software (operating system installers, disc images). Nothing
+# under this directory belongs in the repository.
+images/
 *.vhd
 
-# Contents unpacked from a disc image. Large, and reproducible from the image
-# it came out of.
-images/**/ISO/
+# Working plans and session notes. They are personal working documents;
+# the rules an agent needs are in AGENTS.md and CLAUDE.md.
+PIANO.md
+docs/PIANO-1-storico.md
 
 # macOS
 .DS_Store
