@@ -1,5 +1,8 @@
 # Windows 3.1 with the S3 Trio64V+ driver
 
+For the corresponding Windows 95 measurements, see
+[Windows 95 and the S3 Trio64V+](WINDOWS95-S3.md).
+
 The installed S3 driver needs its matching enhanced-mode virtual display
 driver. Selecting only `S3TRIO.DRV` while retaining the generic VGA VDD
 does not establish a working S3 display. On the DOS 6.22 / Windows 3.11
