@@ -83,7 +83,7 @@ public sealed class AudioOutput : IDisposable
             foreach (int buffer in _buffers)
             {
                 AL.BufferData(buffer, ALFormat.Stereo16, _staging,
-                              _session.WithMachine(m => m.SoundBlaster.SampleRate));
+                              _session.WithMachine(m => m.Audio.SampleRate));
                 AL.SourceQueueBuffer(_source, buffer);
             }
 
@@ -116,7 +116,7 @@ public sealed class AudioOutput : IDisposable
     /// </summary>
     private void FeedLoop()
     {
-        int sampleRate = _session.WithMachine(m => m.SoundBlaster.SampleRate);
+        int sampleRate = _session.WithMachine(m => m.Audio.SampleRate);
 
         while (_running)
         {
@@ -135,7 +135,7 @@ public sealed class AudioOutput : IDisposable
                 int buffer = AL.SourceUnqueueBuffer(_source);
 
                 int written = _session.WithMachine(
-                    machine => machine.SoundBlaster.ReadSamples(_staging));
+                    machine => machine.Audio.ReadSamples(_staging));
 
                 // The card may not have produced a full buffer's worth. Pad
                 // with silence rather than shortening the buffer: a short
