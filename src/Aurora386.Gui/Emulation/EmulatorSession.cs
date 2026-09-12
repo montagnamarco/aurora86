@@ -247,7 +247,7 @@ public sealed class EmulatorSession : IDisposable
                 // that it keeps a steady rhythm in Turbo, where emulated time
                 // races ahead and the cursor would otherwise flicker.
                 bool blink = (long)(now.TotalMilliseconds / CursorBlinkMs) % 2 == 0;
-                lock (_gate) Machine.Video.CursorBlinkOn = blink;
+                lock (_gate) Machine.Display.CursorBlinkOn = blink;
 
                 FrameReady?.Invoke();
             }

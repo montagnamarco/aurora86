@@ -28,7 +28,7 @@ namespace Aurora386.Core.Devices.Video;
 /// to a 4:3 aspect rather than blitting it pixel-for-pixel. The same is true
 /// of modes 0Dh, 0Eh and 13h, whose 200 scanlines a real VGA doubles to 400.
 /// </summary>
-public sealed class VgaRenderer
+public sealed class VgaRenderer : IVideoOutput
 {
     private readonly VgaMemory _memory;
     private readonly VgaRegisters _registers;

@@ -286,15 +286,15 @@ public sealed class ScreenView : Control
             // almost every frame changes nothing at all -- a blinking cursor
             // aside -- and copying a quarter of a million pixels to say so is
             // the single most expensive thing the interface does.
-            bool changed = machine.Video.Render();
-            width = machine.Video.Width;
-            height = machine.Video.Height;
+            bool changed = machine.Display.Render();
+            width = machine.Display.Width;
+            height = machine.Display.Height;
 
             if (width <= 0 || height <= 0) return;
 
             bool resized = _bitmap is null || _bitmapWidth != width || _bitmapHeight != height;
             EnsureBitmap(width, height);
-            if (changed || resized) CopyFramebuffer(machine.Video.Framebuffer, width, height);
+            if (changed || resized) CopyFramebuffer(machine.Display.Framebuffer, width, height);
 
             // Read here, inside the lock the frame copy already holds, rather
             // than taking it a second time further down: this runs sixty
