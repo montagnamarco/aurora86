@@ -4,6 +4,7 @@ using Aurora386.Core.Cpu;
 using Aurora386.Core.Configuration;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Devices.Input;
+using Aurora386.Core.Devices.Video;
 using Aurora386.Core.Diagnostics;
 
 // Mini-Windows loads and discards segments while preparing Windows 95 Setup.
@@ -131,10 +132,19 @@ machine.Accelerator.CommandTrace = (command, x, y, width, height, colour, mix, c
 };
 machine.Io.PortAccessed += (port, write, value) =>
 {
-    if (!traceVideo || port < 0x3B0 || port > 0x3DF || videoAccesses++ >= 100_000)
+    if (!traceVideo || port < 0x3B0 || port > 0x3DF)
     {
         return;
     }
+    if (!write && port is 0x3DA or 0x3BA)
+    {
+        return;
+    }
+    if (videoAccesses >= 100_000)
+    {
+        return;
+    }
+    videoAccesses++;
     string direction = write ? "W" : "R";
     videoLog.WriteLine($"{machine.Cpu.State.Cs.Selector:X4}:{machine.Cpu.State.Eip:X8} {direction} {port:X4}={value:X2}");
 };
@@ -315,7 +325,30 @@ void SaveCheckpoint(string name)
     File.Copy(workingDiskPath, OutputPath(name, ".img"), overwrite: false);
 }
 
-Console.WriteLine("Commands: run <instructions>, type <DOS command>, text <text without Enter>, key <hex scan>, move <dx> <dy>, click <left|right>, trace <on|off>, shot <name>, save <name>, quit");
+void PrintVgaState()
+{
+    VgaRegisters registers = machine.VideoRegisters;
+    string mode = registers.VesaMode?.Number.ToString("X4") ?? "none";
+    Console.WriteLine($"VGA: mode={mode}, bank={registers.VesaWindowBank}, "
+        + $"cpu-window={registers.CpuWindowOffset:X8}, "
+        + $"cursor-pattern={registers.CursorPatternAddress:X8}, "
+        + $"accelerator-operations={machine.Accelerator.OperationsPerformed}");
+    for (int registerIndex = 0x30; registerIndex <= 0x6F; registerIndex++)
+    {
+        Console.WriteLine($"CRTC[{registerIndex:X2}]={registers.Crtc(registerIndex):X2}");
+    }
+
+    uint cursorPatternAddress = registers.CursorPatternAddress;
+    var cursorPattern = new byte[32];
+    for (int index = 0; index < cursorPattern.Length; index++)
+    {
+        cursorPattern[index] = machine.VideoMemory.ReadLinear(cursorPatternAddress + (uint)index);
+    }
+    Console.WriteLine($"cursor-pattern-bytes={Convert.ToHexString(cursorPattern)}");
+}
+
+Console.WriteLine("Commands: run, type, text, key, move, drag, click, "
+    + "video on/off, watch, dump, vram, vga state, trace, shot, save, quit");
 string? input;
 while ((input = Console.ReadLine()) is not null)
 {
@@ -367,9 +400,25 @@ while ((input = Console.ReadLine()) is not null)
             File.WriteAllBytes(OutputPath("memory-" + values[0], ".bin"), Convert.FromHexString(ReadBytes(address, length)));
             break;
         }
+        case "vram":
+        {
+            string[] values = parts[1].Split(' ');
+            uint address = Convert.ToUInt32(values[0], 16);
+            int length = Convert.ToInt32(values[1], 16);
+            var bytes = new byte[length];
+            for (int index = 0; index < bytes.Length; index++)
+            {
+                bytes[index] = machine.VideoMemory.ReadLinear(address + (uint)index);
+            }
+            File.WriteAllBytes(OutputPath("vram-" + values[0], ".bin"), bytes);
+            break;
+        }
         case "video":
             traceVideo = parts[1] == "on";
             videoAccesses = 0;
+            break;
+        case "vga" when parts[1] == "state":
+            PrintVgaState();
             break;
         case "trace":
             machine.Cpu.Trace.Enabled = parts[1] switch
@@ -394,6 +443,21 @@ while ((input = Console.ReadLine()) is not null)
             }
             machine.MoveMouse(int.Parse(coordinates[0]), int.Parse(coordinates[1]));
             Run(700_000);
+            break;
+        }
+        case "drag":
+        {
+            string[] coordinates = parts[1].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (coordinates.Length != 2)
+            {
+                throw new ArgumentException("Use drag <dx> <dy> in mouse units.");
+            }
+            machine.SetMouseButton(MouseButtons.Left, true);
+            Run(200_000);
+            machine.MoveMouse(int.Parse(coordinates[0]), int.Parse(coordinates[1]));
+            Run(700_000);
+            machine.SetMouseButton(MouseButtons.Left, false);
+            Run(500_000);
             break;
         }
         case "click":
