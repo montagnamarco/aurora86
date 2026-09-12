@@ -260,11 +260,14 @@ Its paired checkpoint is `/tmp/win95-spool32/regsvr-error.snapshot`.
 A snapshot of the user's exact failure has been requested.
 
 The diagnostic probe now accepts `move <dx> <dy>` and `click left|right`.
-However, the current machine snapshot omits the serial mouse UART state.
-A fresh machine restoring the error checkpoint therefore does not retain
-the guest's serial-port initialization, so that path cannot establish
-whether the user's live mouse buttons are delivered correctly. No mouse
-or spooler correction is claimed from these observations.
+As of September 12, 2026, new machine snapshots preserve the serial mouse
+UART registers, queued receive bytes, pending serial movement, and both
+current and last-reported button states. Tests restore these into a fresh
+machine and verify the remaining packet bytes, IRQ state, and subsequent
+reports. Older snapshots remain readable but cannot reconstruct serial-port
+state they never captured; restoring those files therefore cannot validate
+live mouse input. This change does not establish a new guest or spooler
+result.
 
 
 ## REGSVR32: a retried PUSH corrupts the return stack
