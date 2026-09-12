@@ -13,19 +13,56 @@ namespace Aurora386.Core.Firmware;
 /// reloads the flags from the stack, the carry has to be modified in the
 /// stacked flags rather than in the live CPU register.
 /// </summary>
-public sealed class DiskServices
+public sealed partial class DiskServices
 {
     private readonly Dictionary<byte, DiskImage> _drives = new();
     private readonly BiosDataArea _bda;
+
+    // The default PC has a 1.44 MB A: drive even when its tray is empty.
+    // Keep drive geometry independently of media so ejection does not make
+    // INT 13h contradict the CMOS equipment description.
+    private readonly Dictionary<byte, FloppyGeometry> _floppyDrives = new()
+    {
+        [0] = new FloppyGeometry(80, 2, 18, 4),
+    };
+
+    private readonly record struct FloppyGeometry(
+        int Cylinders, int Heads, int SectorsPerTrack, byte DriveType);
+
+    public int FloppyDriveCount => _floppyDrives.Count;
+
+    public byte GetFloppyDriveType(byte drive)
+    {
+        return _floppyDrives.TryGetValue(drive, out FloppyGeometry geometry)
+            ? geometry.DriveType
+            : (byte)0;
+    }
 
     /// <summary>Error code of the last operation, returned by function 0x01.</summary>
     private byte _lastStatus;
 
     public DiskServices(BiosDataArea bda) => _bda = bda;
 
-    public void Attach(DiskImage image) => _drives[image.DriveNumber] = image;
+    public void Attach(DiskImage image)
+    {
+        _drives[image.DriveNumber] = image;
+        if (!image.IsHardDisk)
+        {
+            byte driveType = image.SectorsPerTrack switch
+            {
+                9 when image.Cylinders == 40 => 1,
+                15 => 2,
+                9 => 3,
+                18 => 4,
+                36 => 6,
+                _ => 4,
+            };
+            _floppyDrives[image.DriveNumber] = new FloppyGeometry(
+                image.Cylinders, image.Heads, image.SectorsPerTrack, driveType);
+        }
+    }
 
-    /// <summary>Removes a drive entirely, as if the cable had been unplugged.</summary>
+    /// <summary>Removes the image; a physical floppy drive remains installed.</summary>
     public void Detach(byte driveNumber) => _drives.Remove(driveNumber);
 
     /// <summary>
@@ -238,7 +275,8 @@ public sealed class DiskServices
     private void GetDriveParameters(CpuNs.Cpu cpu, byte drive)
     {
         DiskImage? image = GetDrive(drive);
-        if (image is null)
+        bool floppyInstalled = _floppyDrives.TryGetValue(drive, out FloppyGeometry floppy);
+        if (image is null && !floppyInstalled)
         {
             // No such drive. Reporting the error is not enough: the registers
             // must also be cleared, because DOS reads DL regardless to learn
@@ -255,7 +293,9 @@ public sealed class DiskServices
 
         // The geometry comes back in a packed encoding: the two high bits of
         // the cylinder count are folded into the top bits of CL.
-        (int cylinders, int heads, int sectorsPerTrack) = PresentedGeometry(image);
+        (int cylinders, int heads, int sectorsPerTrack) = image is not null
+            ? PresentedGeometry(image)
+            : (floppy.Cylinders, floppy.Heads, floppy.SectorsPerTrack);
         int lastCylinder = cylinders - 1;
         byte cl = (byte)((sectorsPerTrack & 0x3F) | ((lastCylinder >> 2) & 0xC0));
         cpu.State.SetReg8(1, cl);                              // CL
@@ -271,7 +311,7 @@ public sealed class DiskServices
         // DL reports how many drives of the same kind are installed: floppies
         // and hard disks are counted separately.
         bool wantHardDisks = drive >= 0x80;
-        int sameKind = _drives.Keys.Count(d => (d >= 0x80) == wantHardDisks);
+        int sameKind = wantHardDisks ? HardDiskCount : FloppyDriveCount;
         cpu.State.SetReg8(2, (byte)sameKind);                  // DL
 
         // BL names the kind of drive, and only floppies have one. Software
@@ -285,15 +325,7 @@ public sealed class DiskServices
         // MB images did, always on the same file.
         if (!wantHardDisks)
         {
-            byte driveType = image.SectorsPerTrack switch
-            {
-                9 when image.Cylinders == 40 => 0x01,   // 360 KB
-                15 => 0x02,                             // 1.2 MB
-                9 => 0x03,                              // 720 KB
-                18 => 0x04,                             // 1.44 MB
-                36 => 0x06,                             // 2.88 MB
-                _ => 0x04,                              // anything else: treat as 1.44 MB
-            };
+            byte driveType = GetFloppyDriveType(drive);
 
             cpu.State.SetReg8(3, driveType);                   // BL
         }
@@ -304,6 +336,13 @@ public sealed class DiskServices
     private void GetDiskType(CpuNs.Cpu cpu, byte drive)
     {
         DiskImage? image = GetDrive(drive);
+        if (image is null && _floppyDrives.ContainsKey(drive))
+        {
+            cpu.SetCarryInStackedFlags(false);
+            cpu.State.SetReg8(4, 0x02);
+            return;
+        }
+
         if (image is null)
         {
             // AH=0 means "drive not installed". Carry stays clear: the call

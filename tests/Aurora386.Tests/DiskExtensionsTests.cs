@@ -55,7 +55,12 @@ public class DiskExtensionsTests : IDisposable
         state.SetReg8(4, ah);
         state.SetReg8(2, 0x80);      // DL: the first hard disk
         setup?.Invoke(state);
-        for (int i = 0; i < 40 && !state.Halted; i++) _machine.Cpu.Step();
+        // A PIO BIOS read executes INSW for each word rather than completing
+        // in the native hook. Keep a bound while allowing the actual transfer.
+        for (int instruction = 0; instruction < 100_000 && !state.Halted; instruction++)
+        {
+            _machine.Cpu.Step();
+        }
         Assert.True(state.Halted);
         return _machine.Cpu.Flags.Carry;
     }

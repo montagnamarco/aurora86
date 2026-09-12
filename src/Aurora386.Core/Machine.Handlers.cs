@@ -40,7 +40,14 @@ public sealed partial class Machine
         {
             case BiosRom.Handler.Post: RunPost(); return;
             case BiosRom.Handler.Video: VideoServices.Handle(cpu); return;
-            case BiosRom.Handler.Disk: DiskServices.Handle(cpu); return;
+            case BiosRom.Handler.Disk:
+                if (!DiskServices.TryRouteIdeRead(cpu))
+                {
+                    DiskServices.Handle(cpu);
+                }
+                return;
+            case BiosRom.Handler.DiskReadPrepare: DiskServices.PrepareIdeRead(cpu, Ide, IdeSecondary); return;
+            case BiosRom.Handler.DiskReadComplete: DiskServices.CompleteIdeRead(cpu); return;
             case BiosRom.Handler.Keyboard: KeyboardServices.Handle(cpu); return;
             case BiosRom.Handler.KeyboardIrq: KeyboardServices.HandleIrq(cpu); return;
             case BiosRom.Handler.TimerTick: HandleTimerTick(cpu); return;

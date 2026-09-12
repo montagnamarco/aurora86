@@ -87,6 +87,10 @@ public sealed partial class IdeController : IIoDevice
     private readonly ushort _commandBase;
     private readonly ushort _controlBase;
     private readonly int _irq;
+    private bool _interruptPending;
+
+    /// <summary>The last device-control write, including the active-low interrupt enable.</summary>
+    public byte DeviceControl { get; private set; }
 
     public IdeController(Machine machine, InterruptController interrupts,
                          Channel channel = Channel.Primary)
@@ -189,6 +193,7 @@ public sealed partial class IdeController : IIoDevice
                 // Reading the status register acknowledges the interrupt. This
                 // is the register software polls, so the acknowledgement has
                 // to happen here rather than anywhere more obvious.
+                _interruptPending = false;
                 _interrupts.LowerIrq(_irq);
                 return CurrentStatus;
 
@@ -252,7 +257,13 @@ public sealed partial class IdeController : IIoDevice
                 // Bit 2 is the software reset. A driver pulses it to find out
                 // what is on the cable, and expects the drive to come back
                 // announcing itself.
-                if ((value & 0x04) != 0) Reset();
+                DeviceControl = value;
+                if ((value & 0x04) != 0)
+                {
+                    Reset();
+                    _interruptPending = false;
+                }
+                UpdateInterruptLine();
                 return;
         }
     }
@@ -1023,7 +1034,20 @@ public sealed partial class IdeController : IIoDevice
     /// </summary>
     private void RaiseInterrupt()
     {
+        _interruptPending = true;
         _interrupts.LowerIrq(_irq);
-        _interrupts.RaiseIrq(_irq);
+        UpdateInterruptLine();
+    }
+
+    private void UpdateInterruptLine()
+    {
+        if (_interruptPending && (DeviceControl & 2) == 0)
+        {
+            _interrupts.RaiseIrq(_irq);
+        }
+        else
+        {
+            _interrupts.LowerIrq(_irq);
+        }
     }
 }

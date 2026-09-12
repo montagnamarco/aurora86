@@ -15,7 +15,7 @@ namespace Aurora386.Core.Firmware;
 /// easier to fix: a bug shows up in an ordinary debugger instead of in a trace
 /// of machine code.
 /// </summary>
-public static class BiosRom
+public static partial class BiosRom
 {
     /// <summary>Physical address the ROM is mapped at (the top 64 KB of the first megabyte).</summary>
     public const uint Base = 0xF0000;
@@ -35,6 +35,7 @@ public static class BiosRom
         public const ushort EquipmentList = 0x1010;  // INT 11h
         public const ushort MemorySize = 0x1020;     // INT 12h
         public const ushort Disk = 0x1030;           // INT 13h
+        public const ushort DiskPioRead = 0x1C00;    // IDE transfer executed by the guest
         public const ushort Serial = 0x1040;         // INT 14h
         public const ushort System = 0x1050;         // INT 15h
         public const ushort Keyboard = 0x1060;       // INT 16h
@@ -259,6 +260,8 @@ public static class BiosRom
         EquipmentList = 0x11,
         MemorySize = 0x12,
         Disk = 0x13,
+        DiskReadPrepare = 0x56,
+        DiskReadComplete = 0x57,
         Serial = 0x14,
         System = 0x15,
         Keyboard = 0x16,
@@ -316,6 +319,7 @@ public static class BiosRom
         WriteInterruptEntry(rom, Entry.EquipmentList, Handler.EquipmentList);
         WriteInterruptEntry(rom, Entry.MemorySize, Handler.MemorySize);
         WriteInterruptEntry(rom, Entry.Disk, Handler.Disk);
+        WriteDiskPioRead(rom);
         WriteInterruptEntry(rom, Entry.Serial, Handler.Serial);
         WriteInterruptEntry(rom, Entry.System, Handler.System);
         WriteInterruptEntry(rom, Entry.Keyboard, Handler.Keyboard);
