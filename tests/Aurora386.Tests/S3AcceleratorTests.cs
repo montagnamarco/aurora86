@@ -59,7 +59,7 @@ public class S3AcceleratorTests
         Write(machine, 0x96E8, 99);        // width - 1
         Write(machine, 0x92E8, 49);        // height - 1
         Write(machine, 0xA6E8, 0x0F);      // colour
-        Write(machine, 0x9AE8, 0x4000);    // fill
+        Write(machine, 0x9AE8, 0x40A0);    // fill, increasing X and Y
 
         Assert.Equal(0x0F, Pixel(machine, 50, 40));      // inside
 
@@ -69,6 +69,27 @@ public class S3AcceleratorTests
         Assert.Equal(0x0F, Pixel(machine, 109, 69));
         Assert.Equal(0x00, Pixel(machine, 110, 70));
         Assert.Equal(0x00, Pixel(machine, 9, 19));
+    }
+
+    [Fact]
+    public void AFillStartsAtTheCornerAndDirectionsTheDriverPrograms()
+    {
+        using Machine machine = InSvgaMode();
+
+        // With INC_X and INC_Y clear, CUR_X/CUR_Y name the bottom-right
+        // pixel. This is the form a driver uses after it chose a safe corner
+        // for an overlapping operation.
+        Write(machine, 0x86E8, 13);
+        Write(machine, 0x82E8, 23);
+        Write(machine, 0x96E8, 3);
+        Write(machine, 0x92E8, 2);
+        Write(machine, 0xA6E8, 0x0C);
+        Write(machine, 0x9AE8, 0x4010);
+
+        Assert.Equal(0x0C, Pixel(machine, 10, 21));
+        Assert.Equal(0x0C, Pixel(machine, 13, 23));
+        Assert.Equal(0x00, Pixel(machine, 9, 21));
+        Assert.Equal(0x00, Pixel(machine, 13, 24));
     }
 
     [Fact]
@@ -82,7 +103,7 @@ public class S3AcceleratorTests
         Write(machine, 0x96E8, 99);
         Write(machine, 0x92E8, 49);
         Write(machine, 0xA6E8, 0x0F);
-        Write(machine, 0x9AE8, 0x4000);
+        Write(machine, 0x9AE8, 0x40A0);
 
         Write(machine, 0x86E8, 10);        // source
         Write(machine, 0x82E8, 20);
@@ -93,6 +114,31 @@ public class S3AcceleratorTests
         Write(machine, 0x9AE8, 0xC0A0);    // copy, both directions increasing
 
         Assert.Equal(0x0F, Pixel(machine, 250, 40));
+    }
+
+    [Fact]
+    public void ABitBltCanChooseForegroundOrBackgroundFromTheSourceBitmap()
+    {
+        using Machine machine = InSvgaMode();
+
+        machine.VideoMemory.WriteLinear(20 * 640 + 10, 0x01);
+        machine.VideoMemory.WriteLinear(20 * 640 + 11, 0x00);
+        Write(machine, 0xAEE8, 0x0001);              // plane zero selects the mix
+        Write(machine, 0xA6E8, 0x000E);
+        Write(machine, 0xA2E8, 0x0003);
+        Write(machine, 0xBAE8, 0x0027);              // foreground colour, replace
+        Write(machine, 0xB6E8, 0x0007);              // background colour, replace
+        Write(machine, 0xBEE8, 0xA0C0);              // source bitmap chooses the mix
+        Write(machine, 0x86E8, 10);
+        Write(machine, 0x82E8, 20);
+        Write(machine, 0x8EE8, 100);
+        Write(machine, 0x8AE8, 40);
+        Write(machine, 0x96E8, 1);
+        Write(machine, 0x92E8, 0);
+        Write(machine, 0x9AE8, 0xC0F0);
+
+        Assert.Equal(0x0E, Pixel(machine, 100, 40));
+        Assert.Equal(0x03, Pixel(machine, 101, 40));
     }
 
     [Fact]
@@ -110,7 +156,7 @@ public class S3AcceleratorTests
         Write(machine, 0x96E8, 99);
         Write(machine, 0x92E8, 0);
         Write(machine, 0xA6E8, 0x0F);
-        Write(machine, 0x9AE8, 0x4000);
+        Write(machine, 0x9AE8, 0x40A0);
 
         // Copy the ten rows from 100 up to 99: overlapping, and the driver
         // asks for increasing Y so each row is read before it is written.
@@ -194,7 +240,7 @@ public class S3AcceleratorTests
         Write(machine, 0x96E8, 49);
         Write(machine, 0x92E8, 9);
         Write(machine, 0xA6E8, 0x0A);
-        Write(machine, 0x9AE8, 0x4000);
+        Write(machine, 0x9AE8, 0x40A0);
 
         Assert.Equal(0x00, Pixel(machine, 390, 205));   // outside the clip
         Assert.Equal(0x0A, Pixel(machine, 410, 205));   // inside
@@ -209,7 +255,7 @@ public class S3AcceleratorTests
         // card.
         using Machine machine = InSvgaMode();
 
-        Write(machine, 0x9AE8, 0x4000);
+        Write(machine, 0x9AE8, 0x40A0);
 
         Assert.Equal(0x00, machine.Io.ReadByte(0x9AE8) & 0x02);
     }
@@ -222,8 +268,8 @@ public class S3AcceleratorTests
 
         Write(machine, 0x96E8, 9);
         Write(machine, 0x92E8, 9);
-        Write(machine, 0x9AE8, 0x4000);
-        Write(machine, 0x9AE8, 0x4000);
+        Write(machine, 0x9AE8, 0x40A0);
+        Write(machine, 0x9AE8, 0x40A0);
 
         Assert.Equal(before + 2, machine.Accelerator.OperationsPerformed);
     }
@@ -271,7 +317,7 @@ public class S3RasterOperationTests
         Write(machine, 0x96E8, 49);
         Write(machine, 0x92E8, 49);
         Write(machine, 0xA6E8, colour);
-        Write(machine, 0x9AE8, 0x4000);
+        Write(machine, 0x9AE8, 0x40A0);
     }
 
     [Fact]
@@ -304,7 +350,7 @@ public class S3RasterOperationTests
         Fill(machine, 0x0F);
         Assert.Equal(0x00, Pixel(machine, 20, 20));
 
-        Write(machine, 0x9AE8, 0x4000);    // and again
+        Write(machine, 0x9AE8, 0x40A0);    // and again
         Assert.Equal(0x0F, Pixel(machine, 20, 20));
     }
 
@@ -324,6 +370,18 @@ public class S3RasterOperationTests
 
         // The low nibble came from the new value, the high one stayed.
         Assert.Equal(0x03, Pixel(machine, 20, 20));
+    }
+
+    [Fact]
+    public void AZeroWriteMaskPreventsEveryPixelUpdate()
+    {
+        using Machine machine = InSvgaMode();
+
+        Fill(machine, 0x0F);
+        Write(machine, 0xAAE8, 0x0000);
+        Fill(machine, 0xF3);
+
+        Assert.Equal(0x0F, Pixel(machine, 20, 20));
     }
 
     [Fact]
@@ -551,6 +609,32 @@ public class S3ProcessorDataTests
         Assert.Equal(0x0F, Pixel(machine, 3, 101));  // the row below is inverted
         Assert.Equal(0x00, Pixel(machine, 23, 100)); // outside
     }
+
+    [Fact]
+    public void APatternFillCanChooseForegroundOrBackgroundFromThePattern()
+    {
+        using Machine machine = InSvgaMode();
+
+        // Destination 100 starts at pattern column four.
+        machine.VideoMemory.WriteLinear(400 * 640 + 4, 0x01);
+        machine.VideoMemory.WriteLinear(400 * 640 + 5, 0x00);
+        Write(machine, 0xAEE8, 0x0001);
+        Write(machine, 0xA6E8, 0x000E);
+        Write(machine, 0xA2E8, 0x0003);
+        Write(machine, 0xBAE8, 0x0027);
+        Write(machine, 0xB6E8, 0x0007);
+        Write(machine, 0xBEE8, 0xA0C0);
+        Write(machine, 0x86E8, 0);
+        Write(machine, 0x82E8, 400);
+        Write(machine, 0x8EE8, 100);
+        Write(machine, 0x8AE8, 120);
+        Write(machine, 0x96E8, 1);
+        Write(machine, 0x92E8, 0);
+        Write(machine, 0x9AE8, 0xE0F0);
+
+        Assert.Equal(0x0E, Pixel(machine, 100, 120));
+        Assert.Equal(0x03, Pixel(machine, 101, 120));
+    }
 }
 
 /// <summary>
@@ -705,5 +789,116 @@ public class S3MemoryMappedEngineTests
         Assert.Equal(0x0C, Pixel(machine, 5, 5));
         Assert.Equal(0x0C, Pixel(machine, 14, 14));
         Assert.Equal(0x00, Pixel(machine, 15, 15));
+    }
+
+    [Fact]
+    public void AByteWriteToTheForegroundMixSelectsCpuPixelsImmediately()
+    {
+        using Machine machine = InSvgaMode();
+        EnableMmio(machine, true);
+
+        machine.Memory.WriteWord(0xAA6E8, 0x000E);           // must not become the fill colour
+        machine.Memory.WriteByte(0xABAE8, 0x47);             // CPU source, replace
+        machine.Memory.WriteDword(0xA8100, (20u << 16) | 30);
+        machine.Memory.WriteDword(0xA8148, (1u << 16) | 0);
+        machine.Memory.WriteWord(0xA8118, 0x55B1);
+        machine.Memory.WriteDword(0xAE2E8, 0x00002211);
+
+        Assert.Equal(0x11, Pixel(machine, 20, 30));
+        Assert.Equal(0x22, Pixel(machine, 21, 30));
+    }
+
+    [Fact]
+    public void AHighByteMixWriteLeavesTheLowByteSelectionIntact()
+    {
+        using Machine machine = InSvgaMode();
+        EnableMmio(machine, true);
+
+        machine.Memory.WriteByte(0xABAE8, 0x47);
+        machine.Memory.WriteByte(0xABAE9, 0xA5);
+        machine.Memory.WriteDword(0xA8100, (30u << 16) | 30);
+        machine.Memory.WriteDword(0xA8148, (1u << 16) | 0);
+        machine.Memory.WriteWord(0xA8118, 0x55B1);
+        machine.Memory.WriteDword(0xAE2E8, 0x00004433);
+
+        Assert.Equal(0x33, Pixel(machine, 30, 30));
+        Assert.Equal(0x44, Pixel(machine, 31, 30));
+    }
+
+    [Fact]
+    public void ByteWritesToPixelTransferStreamAMonochromeBitmap()
+    {
+        using Machine machine = InSvgaMode();
+        EnableMmio(machine, true);
+
+        machine.Memory.WriteWord(0xAA6E8, 0x000F);
+        machine.Memory.WriteWord(0xAA2E8, 0x0004);
+        machine.Memory.WriteWord(0xABAE8, 0x0027);
+        machine.Memory.WriteWord(0xAB6E8, 0x0007);
+        machine.Memory.WriteWord(0xABEE8, 0xA080);
+        machine.Memory.WriteDword(0xA8100, 160);
+        machine.Memory.WriteDword(0xA8148, (7u << 16) | 7);
+        machine.Memory.WriteWord(0xA8118, 0x51B3);
+
+        for (int row = 0; row < 8; row++)
+            machine.Memory.WriteByte(0xAE2E8, (row & 1) == 0 ? (byte)0xAA : (byte)0x55);
+
+        Assert.Equal(0x0F, Pixel(machine, 0, 160));
+        Assert.Equal(0x04, Pixel(machine, 1, 160));
+        Assert.Equal(0x04, Pixel(machine, 0, 161));
+        Assert.Equal(0x0F, Pixel(machine, 1, 161));
+    }
+
+    [Fact]
+    public void AByteCommandDoesNotStartUntilItsHighByteArrives()
+    {
+        using Machine machine = InSvgaMode();
+        EnableMmio(machine, true);
+
+        machine.Memory.WriteDword(0xA8100, (10u << 16) | 10);
+        machine.Memory.WriteDword(0xA8148, (1u << 16) | 0);
+        machine.Memory.WriteWord(0xAA6E8, 0x000C);
+        long before = machine.Accelerator.OperationsPerformed;
+
+        machine.Memory.WriteByte(0xA8118, 0xF3);
+
+        Assert.Equal(before, machine.Accelerator.OperationsPerformed);
+        Assert.Equal(0x00, Pixel(machine, 10, 10));
+
+        machine.Memory.WriteByte(0xA8119, 0x40);
+
+        Assert.Equal(before + 1, machine.Accelerator.OperationsPerformed);
+        Assert.Equal(0x0C, Pixel(machine, 10, 10));
+    }
+
+    [Fact]
+    public void MultifunctionBytesApplyOnlyWhenTheIndexByteArrives()
+    {
+        using Machine machine = InSvgaMode();
+        EnableMmio(machine, true);
+
+        // This is the driver's byte sequence: left clip seven, right clip
+        // fifty-three, then a height of sixteen. Each low byte must wait for
+        // the index in its high-byte partner.
+        machine.Memory.WriteByte(0xABEE8, 0x07);
+        machine.Memory.WriteByte(0xABEE9, 0x20);
+        machine.Memory.WriteByte(0xABEE8, 0x35);
+        machine.Memory.WriteByte(0xABEE9, 0x40);
+        machine.Memory.WriteByte(0xABEE8, 0x10);
+        machine.Memory.WriteByte(0xABEE9, 0x00);
+
+        Assert.Equal(7, machine.Memory.ReadWord(0xA813A));
+        Assert.Equal(53, machine.Memory.ReadWord(0xA813E));
+        Assert.Equal(16, machine.Memory.ReadWord(0xA8148));
+
+        // The resulting clip takes effect before a following drawing command.
+        machine.Memory.WriteDword(0xA8100, (5u << 16) | 100);
+        machine.Memory.WriteDword(0xA8148, (10u << 16) | 0);
+        machine.Memory.WriteWord(0xAA6E8, 0x000C);
+        machine.Memory.WriteWord(0xA8118, 0x40F3);
+
+        Assert.Equal(0x00, Pixel(machine, 6, 100));
+        Assert.Equal(0x0C, Pixel(machine, 7, 100));
+        Assert.Equal(0x0C, Pixel(machine, 15, 100));
     }
 }

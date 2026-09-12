@@ -47,7 +47,12 @@ public sealed class S3Accelerator : IIoDevice
     private ushort _destinationX, _destinationY; // 0x8EE8, 0x8EEA
     private ushort _width, _height;              // 0x96E8, 0x8EE8
     private ushort _foreground, _background;     // 0xA6E8, 0xA2E8
-    private ushort _writeMask, _readMask;        // 0xAAE8, 0xAEE8
+    // The power-on value is undefined.  Until the driver has written it, use
+    // the conventional all-planes value; once written, zero is a real mask
+    // value and prevents every update.
+    private ushort _writeMask;
+    private bool _writeMaskWritten;
+    private ushort _readMask;                     // 0xAAE8, 0xAEE8
     private ushort _colourCompare;               // 0xB2E8
     private ushort _command;                     // 0x9AE8
 
@@ -96,8 +101,6 @@ public sealed class S3Accelerator : IIoDevice
     /// </summary>
     public sealed class MemoryMappedRegisters(S3Accelerator engine) : IMemoryDevice
     {
-        private readonly Dictionary<uint, byte> _pendingLow = [];
-
         public byte ReadByte(uint offset)
         {
             ushort word = engine.ReadMmioWord((ushort)(offset & 0xFFFE));
@@ -109,20 +112,14 @@ public sealed class S3Accelerator : IIoDevice
         public uint ReadDword(uint offset) =>
             (uint)(engine.ReadMmioWord((ushort)(offset & 0xFFFC)) | (engine.ReadMmioWord((ushort)((offset & 0xFFFC) + 2)) << 16));
 
-        // Bytes arrive low first, and every register here is sixteen bits
-        // wide or a pair of them: the low byte waits for its partner. Below
-        // 0x8000 is the image transfer area, where anything written is
-        // pixel data for the operation in progress.
+        // The accelerator decodes byte accesses to its registers immediately.
+        // This matters to the Windows S3 driver, which writes BAE8h once with
+        // the foreground mix and streams glyph bytes one at a time to E2E8h.
+        // The command register is the exception: its high byte starts work,
+        // so the low half can be installed without firing a partial command.
         public void WriteByte(uint offset, byte value)
         {
-            if (offset < 0x8000) { engine.PushDataByte(value); return; }
-            uint address = offset & 0xFFFE;
-            if ((offset & 1) == 0)
-            {
-                _pendingLow[address] = value;
-                return;
-            }
-            engine.WriteMmioWord((ushort)address, (ushort)(_pendingLow.GetValueOrDefault(address) | (value << 8)));
+            engine.WriteMmioByte((ushort)offset, value);
         }
 
         public void WriteWord(uint offset, ushort value)
@@ -163,7 +160,10 @@ public sealed class S3Accelerator : IIoDevice
             case 0x811A: return;                        // short stroke vectors
             case 0x8120: _background = value; return;
             case 0x8124: _foreground = value; return;
-            case 0x8128: _writeMask = value; return;
+            case 0x8128:
+                _writeMask = value;
+                _writeMaskWritten = true;
+                return;
             case 0x812C: _readMask = value; return;
             case 0x8130: _colourCompare = value; return;
             case 0x8134: _backgroundMix = value; return;
@@ -188,6 +188,116 @@ public sealed class S3Accelerator : IIoDevice
         if (offset >= 0x8200 && (offset & 3) == 0 || offset is 0x82E8 or 0x86E8 or 0x8AE8 or 0x8EE8 or 0x92E8 or 0x96E8 or 0x9AE8 or 0x9EE8
             or 0xA2E8 or 0xA6E8 or 0xAAE8 or 0xAEE8 or 0xB2E8 or 0xB6E8 or 0xBAE8 or 0xBEE8 or 0xE2E8 or 0xE2EA)
             WriteRegister(offset, value);
+    }
+
+    /// <summary>
+    /// Writes one byte through the MMIO aperture. The S3 accepts byte stores
+    /// to its ordinary registers immediately, retaining the untouched half
+    /// of the register. PIX_TRANS is byte-addressable data, not a word
+    /// register. CMD is deliberately different: its high byte commits the
+    /// command, as described in the Trio64V+ programming model.
+    /// </summary>
+    internal void WriteMmioByte(ushort offset, byte value)
+    {
+        if (offset < 0x8000 || offset is >= 0xE2E8 and <= 0xE2EB)
+        {
+            PushDataByte(value);
+            return;
+        }
+
+        ushort register = (ushort)(offset & 0xFFFE);
+
+        if (register is 0x8118 or 0x9AE8)
+        {
+            if ((offset & 1) == 0)
+            {
+                _command = (ushort)((_command & 0xFF00) | value);
+                return;
+            }
+
+            _command = (ushort)((_command & 0x00FF) | (value << 8));
+            Execute();
+            return;
+        }
+
+        // BEE8 is a multiplexed register. Its low byte supplies the data,
+        // while its high byte supplies the index and commits both together.
+        // Applying the low byte immediately would send it through whichever
+        // index the previous command selected, moving a clip edge before the
+        // driver had named the new one.
+        if (register == 0xBEE8)
+        {
+            if ((offset & 1) == 0)
+            {
+                _lastMultifunctionCommand = (ushort)((_lastMultifunctionCommand & 0xFF00) | value);
+                return;
+            }
+
+            _lastMultifunctionCommand = (ushort)((_lastMultifunctionCommand & 0x00FF) | (value << 8));
+            WriteMultifunction(_lastMultifunctionCommand);
+            return;
+        }
+
+        ushort existing = MmioValueForByteWrite(register);
+        ushort word;
+
+        if ((offset & 1) == 0)
+        {
+            word = (ushort)((existing & 0xFF00) | value);
+        }
+        else
+        {
+            word = (ushort)((existing & 0x00FF) | (value << 8));
+        }
+
+        WriteMmioWord(register, word);
+    }
+
+    private ushort MmioValueForByteWrite(ushort offset)
+    {
+        return offset switch
+        {
+            0x8100 => _currentY,
+            0x8102 => _currentX,
+            0x8108 => _destinationY,
+            0x810A => _destinationX,
+            0x8118 => _command,
+            0x8120 => _background,
+            0x8124 => _foreground,
+            0x8128 => _writeMask,
+            0x812C => _readMask,
+            0x8130 => _colourCompare,
+            0x8134 => _backgroundMix,
+            0x8136 => _mix,
+            0x8138 => _clipTop,
+            0x813A => _clipLeft,
+            0x813C => _clipBottom,
+            0x813E => _clipRight,
+            0x8140 => _pixelControl,
+            0x8142 => _multiMisc2,
+            0x8144 => _multiMisc,
+            0x8146 => (ushort)_readSelect,
+            0x8148 => _height,
+            0x814A => _width,
+            0x814C => _patternY,
+            0x814E => _patternX,
+            0x82E8 => _currentY,
+            0x86E8 => _currentX,
+            0x8AE8 => _destinationY,
+            0x8EE8 => _destinationX,
+            0x92E8 => _height,
+            0x96E8 => _width,
+            0x9AE8 => _command,
+            0xA2E8 => _background,
+            0xA6E8 => _foreground,
+            0xAAE8 => _writeMask,
+            0xAEE8 => _readMask,
+            0xB2E8 => _colourCompare,
+            0xB6E8 => _backgroundMix,
+            0xBAE8 => _mix,
+            0xBEE8 => _lastMultifunctionCommand,
+            _ => 0,
+        };
     }
 
     internal ushort ReadMmioWord(ushort offset)
@@ -295,6 +405,7 @@ public sealed class S3Accelerator : IIoDevice
     private ushort _multiMisc2;
     private ushort _patternX;
     private ushort _patternY;
+    private ushort _lastMultifunctionCommand;
 
     private void WriteRegister(ushort port, ushort value)
     {
@@ -314,7 +425,10 @@ public sealed class S3Accelerator : IIoDevice
 
             case 0xA2E8: _background = value; return;
             case 0xA6E8: _foreground = value; return;
-            case 0xAAE8: _writeMask = value; return;
+            case 0xAAE8:
+                _writeMask = value;
+                _writeMaskWritten = true;
+                return;
             case 0xAEE8: _readMask = value; return;
             case 0xB2E8: _colourCompare = value; return;
             case 0xB6E8: _backgroundMix = value; return;
@@ -351,6 +465,7 @@ public sealed class S3Accelerator : IIoDevice
     /// </summary>
     private void WriteMultifunction(ushort value)
     {
+        _lastMultifunctionCommand = value;
         int data = value & 0x0FFF;
 
         switch (value >> 12)
@@ -388,7 +503,10 @@ public sealed class S3Accelerator : IIoDevice
         int operation = (_command >> 13) & 7;
         CommandTrace?.Invoke(_command, _currentX, _currentY, _width + 1, _height + 1, _foreground, _mix, _pixelControl);
         _transfer = null;
+        _unit = 0;
         _unitBytes = 0;
+        _newTransferPixel = 0;
+        _newTransferPixelBytes = 0;
 
         // Every drawing routine below addresses video memory as a flat array
         // of pixels, which is what the engine sees on a real card: the S3's
@@ -441,9 +559,18 @@ public sealed class S3Accelerator : IIoDevice
         int width = _width + 1;
         int height = _height + 1;
 
-        for (int y = 0; y < height; y++)
-            for (int x = 0; x < width; x++)
-                PutPixel(_currentX + x, _currentY + y, ForegroundSource(_currentX + x, _currentY + y), _mix);
+        int horizontalStep = (_command & 0x0020) != 0 ? 1 : -1;
+        int verticalStep = (_command & 0x0080) != 0 ? 1 : -1;
+
+        for (int row = 0; row < height; row++)
+        {
+            for (int column = 0; column < width; column++)
+            {
+                int x = _currentX + column * horizontalStep;
+                int y = _currentY + row * verticalStep;
+                PutPixel(x, y, ForegroundSource(x, y), _mix);
+            }
+        }
     }
 
     /// <summary>
@@ -496,6 +623,8 @@ public sealed class S3Accelerator : IIoDevice
     private Transfer? _transfer;
     private uint _unit;
     private int _unitBytes;
+    private uint _newTransferPixel;
+    private int _newTransferPixelBytes;
 
     /// <summary>
     /// The width of one unit of processor data, in bytes: bits 10-9 of the
@@ -505,6 +634,8 @@ public sealed class S3Accelerator : IIoDevice
     /// bitmap rows carry.
     /// </summary>
     private int UnitBytes => ((_command >> 9) & 3) switch { 0 => 1, 1 => 2, _ => 4 };
+
+    private bool HasNew32BitTransfer => ((_command >> 9) & 3) == 3;
 
     /// <summary>
     /// One byte of data from the processor, by whichever door it came
@@ -605,8 +736,12 @@ public sealed class S3Accelerator : IIoDevice
             {
                 int x = rightwards ? j : -j;
 
-                ushort pixel = GetPixel(_currentX + x, _currentY + y);
-                PutPixel(_destinationX + x, _destinationY + y, pixel);
+                int sourceX = _currentX + x;
+                int sourceY = _currentY + y;
+                ushort sourcePixel = GetPixel(sourceX, sourceY);
+                ushort mix = MixSelectedByBitmap(sourcePixel) ? _mix : _backgroundMix;
+                ushort colour = SourceForMix(mix, sourcePixel, sourceX, sourceY);
+                PutPixel(_destinationX + x, _destinationY + y, colour, mix);
             }
         }
     }
@@ -626,12 +761,58 @@ public sealed class S3Accelerator : IIoDevice
         int width = _width + 1;
         int height = _height + 1;
 
-        for (int y = 0; y < height; y++)
-            for (int x = 0; x < width; x++)
+        int horizontalStep = (_command & 0x0020) != 0 ? 1 : -1;
+        int verticalStep = (_command & 0x0080) != 0 ? 1 : -1;
+
+        for (int row = 0; row < height; row++)
+        {
+            for (int column = 0; column < width; column++)
             {
-                ushort pixel = GetPixel(_currentX + ((_destinationX + x) & 7), _currentY + ((_destinationY + y) & 7));
-                PutPixel(_destinationX + x, _destinationY + y, pixel, _mix);
+                int destinationX = _destinationX + column * horizontalStep;
+                int destinationY = _destinationY + row * verticalStep;
+                int sourceX = _currentX + (destinationX & 7);
+                int sourceY = _currentY + (destinationY & 7);
+                ushort sourcePixel = GetPixel(sourceX, sourceY);
+                ushort mix = MixSelectedByBitmap(sourcePixel) ? _mix : _backgroundMix;
+                ushort colour = SourceForMix(mix, sourcePixel, sourceX, sourceY);
+                PutPixel(destinationX, destinationY, colour, mix);
             }
+        }
+    }
+
+    /// <summary>
+    /// Pixel control normally selects the foreground mix.  With display
+    /// memory selected, every enabled bit of the source pixel must be one to
+    /// select it; a zero in any enabled plane selects the background mix.
+    /// </summary>
+    private bool MixSelectedByBitmap(ushort sourcePixel)
+    {
+        if ((_pixelControl & 0x00C0) != 0x00C0)
+        {
+            return true;
+        }
+
+        return (sourcePixel & _readMask) == _readMask;
+    }
+
+    private ushort SourceForMix(ushort mix, ushort sourcePixel, int sourceX, int sourceY)
+    {
+        int sourceSelect = (mix >> 5) & 3;
+
+        switch (sourceSelect)
+        {
+            case 0:
+                return _background;
+
+            case 1:
+                return _foreground;
+
+            case 3:
+                return sourcePixel;
+
+            default:
+                return GetPixel(sourceX, sourceY);
+        }
     }
 
     /// <summary>
@@ -723,8 +904,8 @@ public sealed class S3Accelerator : IIoDevice
         // only the bits it has set. A driver that wants to change the top
         // four bits of every pixel and leave the rest alone does it here
         // rather than reading, modifying and writing back.
-        if (_writeMask != 0)
-            result = (ushort)((result & _writeMask) | (existing & ~_writeMask));
+        ushort writeMask = _writeMaskWritten ? _writeMask : ushort.MaxValue;
+        result = (ushort)((result & writeMask) | (existing & ~writeMask));
 
         uint at = (uint)(y * Stride + x * BytesPerPixel);
 
