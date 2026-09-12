@@ -370,6 +370,52 @@ public sealed class VgaRegisters : IIoDevice
         ModeChanged?.Invoke();
     }
 
+    /// <summary>
+    /// Adopts a standard text mode after the BIOS ROM has programmed it.
+    ///
+    /// A virtual display driver can consume the ROM's OUT instructions and
+    /// leave this physical register file in its graphical desktop mode.  The
+    /// metadata must follow only when the physical CRTC and graphics
+    /// controller really describe the requested text raster; calling the
+    /// normal <see cref="VideoMode"/> setter here would overwrite that
+    /// virtualised hardware state.
+    /// </summary>
+    public bool TryAdoptTextModeMetadata(byte mode)
+    {
+        if (!VgaModes.TryGet(mode, out VgaModeInfo info) || info.IsGraphics)
+        {
+            return false;
+        }
+
+        int verticalEnd = Crtc(0x12)
+            | ((Crtc(0x07) & 0x02) << 7)
+            | ((Crtc(0x07) & 0x40) << 3);
+
+        bool isText = (Graphics(GcMiscellaneous) & 0x01) == 0;
+        bool columnsMatch = Crtc(0x01) + 1 == info.TextColumns;
+        bool characterHeightMatches = (Crtc(0x09) & 0x1F) + 1 == info.CharHeight;
+        bool verticalGeometryMatches = verticalEnd + 1 == info.TextRows * info.CharHeight;
+
+        if (!isText || !columnsMatch || !characterHeightMatches || !verticalGeometryMatches)
+        {
+            return false;
+        }
+
+        _videoMode = mode;
+        ModeInfo = info;
+        _textColumns = info.TextColumns;
+        _textRows = info.TextRows;
+        _characterHeight = info.CharHeight;
+        VesaMode = null;
+        VesaLinearFrameBuffer = false;
+        VesaWindowBank = 0;
+        VesaScanLineBytes = 0;
+        VesaDisplayStart = 0;
+        RegistersChanged();
+        NotifyModeChanged();
+        return true;
+    }
+
     public int TextColumns { get => _textColumns; set { _textColumns = value; RegistersChanged(); } }
     private int _textColumns = 80;
     public int TextRows { get => _textRows; set { _textRows = value; RegistersChanged(); } }

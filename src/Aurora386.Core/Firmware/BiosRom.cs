@@ -90,6 +90,16 @@ public static partial class BiosRom
         public const ushort VgaPalette = 0x1720;
 
         /// <summary>
+        /// Text-mode completion after the standard VGA register program.
+        /// It writes the guest-visible BDA, text page, DAC and cursor so a
+        /// virtual display device can redirect each operation independently.
+        /// </summary>
+        public const ushort TextModeCompletion = 0x1900;
+
+        /// <summary>The 256 DAC triples streamed by <see cref="TextModeCompletion"/>.</summary>
+        public const ushort TextModePalette = 0x3000;
+
+        /// <summary>
         /// The system configuration table INT 15h AH=C0 hands back, which says
         /// what kind of machine this is and which BIOS features it has.
         /// </summary>
@@ -259,6 +269,7 @@ public static partial class BiosRom
     public enum Handler : byte
     {
         Video = 0x10,
+        VideoModeCompletion = 0x58,
         EquipmentList = 0x11,
         MemorySize = 0x12,
         Disk = 0x13,
@@ -595,7 +606,9 @@ public static partial class BiosRom
         a.B(0x0A, 0xE4);                    // OR AH,AH
         a.Jcc(0x75, "not_mode");            // JNZ
         a.CallNear(Entry.VgaProgram);
-        a.Jmp("hook");
+        a.B(HookByte1, HookByte2, (byte)Handler.VideoModeCompletion);
+        a.CallNear(Entry.TextModeCompletion);
+        a.B(0xCF);                          // IRET
         a.Label("not_mode");
         a.B(0x80, 0xFC, 0x10);              // CMP AH,10h
         a.Jcc(0x75, "not_palette");         // JNE
@@ -613,6 +626,7 @@ public static partial class BiosRom
         WriteVesaProgram(rom);
         WriteVgaTables(rom);
         WriteVgaPalette(rom);
+        WriteTextModeCompletion(rom);
     }
 
     /// <summary>
@@ -771,7 +785,7 @@ public static partial class BiosRom
         int o = Entry.VgaProgram;
         void B(params byte[] bytes) { foreach (byte b in bytes) rom[o++] = b; }
 
-        B(0x50, 0x53, 0x51, 0x52, 0x56, 0x1E);            // PUSH AX,BX,CX,DX,SI,DS
+        B(0x50, 0x53, 0x51, 0x52, 0x56, 0x1E, 0x9C, 0xFC); // PUSH AX,BX,CX,DX,SI,DS,FLAGS / CLD
         B(0x0E, 0x1F);                                    // PUSH CS / POP DS
         B(0x24, 0x7F);                                    // AND AL,7Fh
         B(0xBE, unchecked((byte)Entry.VgaTables), unchecked((byte)(Entry.VgaTables >> 8)));   // MOV SI,tables
@@ -802,7 +816,7 @@ public static partial class BiosRom
         B(0xBA, 0xC0, 0x03, 0xB9, 0x15, 0x00, 0x30, 0xDB);   // MOV DX,3C0h / MOV CX,21 / XOR BL,BL
         B(0x88, 0xD8, 0xEE, 0xAC, 0xEE, 0xFE, 0xC3, 0xE2, 0xF7);   // loop: MOV AL,BL / OUT / LODSB / OUT / INC BL / LOOP (-9)
         B(0xB0, 0x20, 0xEE);                              // MOV AL,20h / OUT DX,AL  (display back on)
-        B(0x1F, 0x5E, 0x5A, 0x59, 0x5B, 0x58);            // POP DS,SI,DX,CX,BX,AX
+        B(0x9D, 0x1F, 0x5E, 0x5A, 0x59, 0x5B, 0x58);      // POP FLAGS,DS,SI,DX,CX,BX,AX
         B(0xC3);                                          // RET
         if (o > Entry.VgaTables) throw new InvalidOperationException("VGA routine overruns its tables");
     }

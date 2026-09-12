@@ -59,10 +59,11 @@ public class VgaRomProgramTests
         RunInt10(machine, 0x0003);
 
         Assert.Equal(0x67, misc.Writes.Single().value);
-        // 25 CRTC values behind their indices, after the unlock of register 11h.
+        // 25 CRTC values behind their indices, the unlock of register 11h,
+        // and the cursor address written by the ROM text completion.
         var indices = crtc.Writes.Where(w => w.port == 0x3D4).Select(w => w.value).ToList();
         var data = crtc.Writes.Where(w => w.port == 0x3D5).Select(w => w.value).ToList();
-        Assert.Equal(26, indices.Count);
+        Assert.Equal(28, indices.Count);
         Assert.Equal(0x11, indices[0]);
         Assert.Equal(0x5F, data[1]);          // horizontal total, first table value
         Assert.Equal(0x28, data[0x13 + 1]);
