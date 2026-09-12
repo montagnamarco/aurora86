@@ -196,7 +196,7 @@ public sealed class VesaServices
 
         // A VBE call can also be used to return to an ordinary VGA mode, and
         // programs do exactly that on the way out.
-        if ((requested & 0x01FF) < 0x100)
+        if ((requested & 0x3FFF) < 0x100)
         {
             _machine.VideoRegisters.SetVesaMode(null, false);
             _machine.VideoRegisters.VideoMode = (byte)(requested & 0xFF);

@@ -82,6 +82,46 @@ public class VgaRomProgramTests
         Assert.Equal(0xE3, machine.Io.ReadByte(0x3CC));
     }
 
+    [Theory]
+    [InlineData(0x101, 640)]
+    [InlineData(0x103, 800)]
+    [InlineData(0x105, 1024)]
+    [InlineData(0x111, 1280)]
+    [InlineData(0x117, 2048)]
+    public void VesaModeProgramsThePitchThatTheS3DriverReads(int mode, int expectedBytes)
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+        Spy crtc = Watch(machine, 0x3D4);
+        machine.Cpu.State.Bx = (ushort)(mode | 0x8000);
+
+        RunInt10(machine, 0x4F02);
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        machine.Io.WriteByte(0x3D4, 0x13);
+        int offset = machine.Io.ReadByte(0x3D5);
+        machine.Io.WriteByte(0x3D4, 0x51);
+        offset |= (machine.Io.ReadByte(0x3D5) & 0x30) << 4;
+        Assert.Equal(expectedBytes, offset * 8);
+        Assert.Contains(crtc.Writes, write => write.port == 0x3D5 && write.value == (byte)(expectedBytes / 8));
+    }
+
+    [Fact]
+    public void VesaModeSetClearsDirectionForItsTableScanAndRestoresTheCallersFlag()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+        machine.Cpu.State.Bx = 0x8101;
+        machine.Cpu.Flags.Direction = true;
+
+        RunInt10(machine, 0x4F02);
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        machine.Io.WriteByte(0x3D4, 0x13);
+        Assert.Equal(80, machine.Io.ReadByte(0x3D5));
+        Assert.True(machine.Cpu.Flags.Direction);
+    }
+
     [Fact]
     public void OtherVideoFunctionsDoNotTouchThePorts()
     {

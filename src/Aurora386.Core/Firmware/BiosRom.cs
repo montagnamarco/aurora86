@@ -77,6 +77,8 @@ public static partial class BiosRom
         /// of nothing.
         /// </summary>
         public const ushort VesaProgram = 0x16E0;
+        public const ushort VesaModeProgram = 0x1D00;
+        public const ushort VesaRegisterTable = 0x1E00;
 
         /// <summary>Where the INT 10h entry jumps: the mode-set and palette
         /// routines are chosen here before the native handler runs.</summary>
@@ -816,24 +818,10 @@ public static partial class BiosRom
     /// </summary>
     private static void WriteVesaProgram(byte[] rom)
     {
-        var a = new Asm(rom, Entry.VesaProgram);
-        a.B(0x3D, 0x02, 0x4F);              // CMP AX,4F02h
-        a.Jcc(0x75, "done");                // JNE
-        a.B(0x50);                          // PUSH AX
-        a.B(0x88, 0xD8);                    // MOV AL,BL
-        a.B(0xF6, 0xC7, 0x01);              // TEST BH,1  (a VBE mode number is 100h or more)
-        a.Jcc(0x74, "program");             // JZ: a VGA mode, AL already holds it
-        a.B(0xB0, 0x13);                    // MOV AL,13h
-        a.B(0x80, 0xFB, 0x02);              // CMP BL,02h  (102h is the planar one)
-        a.Jcc(0x75, "program");             // JNE
-        a.B(0xB0, 0x12);                    // MOV AL,12h
-        a.Label("program");
-        a.CallNear(Entry.VgaProgram);
-        a.B(0x58);                          // POP AX
-        a.Label("done");
-        a.B(0xC3);                          // RET
-        a.Resolve();
-        if (a.Position > Entry.VideoDispatch) throw new InvalidOperationException("VESA routine overruns the video dispatch");
+        var entry = new Asm(rom, Entry.VesaProgram);
+        entry.CallNear(Entry.VesaModeProgram);
+        entry.B(0xC3);
+        WriteVesaModeProgram(rom);
     }
 
     private static void WriteVgaTables(byte[] rom)

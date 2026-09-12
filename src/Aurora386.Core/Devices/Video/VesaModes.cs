@@ -134,7 +134,7 @@ public static class VesaModes
         // Bits 14 and 15 are requests rather than part of the number: bit 14
         // asks for the linear frame buffer, bit 15 to preserve the memory
         // contents across the mode set.
-        ushort plain = (ushort)(number & 0x01FF);
+        ushort plain = (ushort)(number & 0x3FFF);
 
         foreach (VesaModeInfo mode in Table)
             if (mode.Number == plain && mode.MemoryNeeded <= videoMemory)
