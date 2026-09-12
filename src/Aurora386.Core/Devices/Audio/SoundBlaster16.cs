@@ -370,6 +370,8 @@ public sealed class SoundBlaster16 : IIoDevice
     /// <summary>How many bytes follow each command.</summary>
     private static int ArgumentCount(byte command) => command switch
     {
+        0x04 or 0x08 or 0x0F => 1, // ASP mode, version query, register read
+        0x05 or 0x0E => 2,  // ASP codec parameter or register write
         0x10 => 1,          // direct DAC output: one sample
         0x14 or 0x16 or 0x17 => 2,   // single-cycle DMA: 16-bit length
         0x1C or 0x1F => 0,  // auto-init DMA using the length from 0x48
@@ -390,6 +392,42 @@ public sealed class SoundBlaster16 : IIoDevice
     {
         switch (command)
         {
+            case 0x04:
+            case 0x05:
+            case 0x0E:
+                // This card has no optional ASP coprocessor. Its configuration
+                // writes still consume their arguments in the DSP protocol.
+                return;
+
+            case 0x08:
+                if (arguments[0] == 0x03)
+                {
+                    Push(0xFF); // No ASP version, as on a ViBRA without the chip.
+                }
+                return;
+
+            case 0x0F:
+                // Windows probes ASP register 83h even when no ASP is fitted.
+                // Omitting the reply leaves its driver polling 22Eh for billions
+                // of instructions. Use the read-only probe values from DOSBox-X;
+                // this does not implement ASP RAM, microcode or audio processing.
+                byte register = arguments[0];
+                byte probeValue = register;
+                if (register < 0x20 || register is >= 0x80 and <= 0x83)
+                {
+                    probeValue = 0;
+                }
+                if (register == 0x05)
+                {
+                    probeValue = 0x01;
+                }
+                if (register == 0x09)
+                {
+                    probeValue = 0xF8;
+                }
+                Push(probeValue);
+                return;
+
             case 0x10:
                 // Direct DAC output: the CPU hands over one sample and it goes
                 // straight to the converter. Simple, and completely unusable

@@ -31,6 +31,53 @@ public class SoundBlasterDspTests
     }
 
     [Fact]
+    public void WindowsAspDetectionReceivesARegisterReplyWithoutAnAspChip()
+    {
+        NewCard(out IoBus io);
+        // Windows 95 initializes the optional ASP, then probes register 83h.
+        byte[] commands = [0x05, 0x00, 0x00, 0x03, 0x04, 0xFC, 0x04, 0xFA, 0x0F, 0x83];
+        foreach (byte command in commands)
+        {
+            io.WriteByte(WriteCommand, command);
+        }
+        Assert.Equal(0x80, io.ReadByte(ReadStatus) & 0x80);
+        Assert.Equal(0, io.ReadByte(ReadData));
+        Assert.Equal(0, io.ReadByte(ReadStatus) & 0x80);
+    }
+
+    [Theory]
+    [InlineData(0x04, 1)]
+    [InlineData(0x05, 2)]
+    [InlineData(0x0E, 2)]
+    public void AspWriteArgumentsAreNotInterpretedAsDspCommands(byte command, int argumentCount)
+    {
+        NewCard(out IoBus io);
+        io.WriteByte(WriteCommand, command);
+        for (int argument = 0; argument < argumentCount; argument++)
+        {
+            // E1h would return two version bytes if mistaken for a command.
+            io.WriteByte(WriteCommand, 0xE1);
+        }
+        Assert.Equal(0, io.ReadByte(ReadStatus) & 0x80);
+        io.WriteByte(WriteCommand, 0xE1);
+        Assert.Equal(SoundBlaster16.VersionMajor, io.ReadByte(ReadData));
+        Assert.Equal(SoundBlaster16.VersionMinor, io.ReadByte(ReadData));
+        Assert.Equal(0, io.ReadByte(ReadStatus) & 0x80);
+    }
+
+    [Fact]
+    public void AspVersionQueryReportsThatTheOptionalChipIsAbsent()
+    {
+        NewCard(out IoBus io);
+        io.WriteByte(WriteCommand, 0x08);
+        Assert.Equal(0, io.ReadByte(ReadStatus) & 0x80);
+        io.WriteByte(WriteCommand, 0x03);
+        Assert.Equal(0x80, io.ReadByte(ReadStatus) & 0x80);
+        Assert.Equal(0xFF, io.ReadByte(ReadData));
+        Assert.Equal(0, io.ReadByte(ReadStatus) & 0x80);
+    }
+
+    [Fact]
     public void ResetSequenceMakesTheDspAnswerWithAa()
     {
         // This is the detection handshake in full: assert reset, release it,
