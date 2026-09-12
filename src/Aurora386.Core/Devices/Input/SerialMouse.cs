@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+
 using Aurora386.Core.IO;
 
 using Aurora386.Core.Devices.Interrupts;
@@ -35,6 +37,13 @@ public sealed class SerialMouse : IIoDevice
 
     /// <summary>COM1 interrupts on IRQ 4, COM2 on IRQ 3.</summary>
     private const int Irq = 4;
+
+    /// <summary>
+    /// Version one stores one format byte, six UART bytes, two mouse-button
+    /// bytes, two Int32 serial deltas, and the Int32 receive-queue count.
+    /// </summary>
+    private const int SnapshotHeaderLength = 21;
+    private const byte SnapshotVersion = 1;
 
     private readonly MouseState _state;
     private readonly InterruptController _interrupts;
@@ -76,6 +85,77 @@ public sealed class SerialMouse : IIoDevice
     /// Until then the mouse is electrically dead and sends nothing at all.
     /// </summary>
     public bool PoweredOn { get; private set; }
+
+    /// <summary>
+    /// Captures UART registers, received data, and the serial input that has
+    /// not yet reached a packet. Enumerating the queue copies it without
+    /// consuming the next byte visible to the guest.
+    /// </summary>
+    public byte[] Capture()
+    {
+        (MouseButtons buttons, int deltaX, int deltaY) = _state.CaptureSerialState();
+        byte[] snapshot = new byte[SnapshotHeaderLength + _receiveQueue.Count];
+        Span<byte> data = snapshot;
+
+        data[0] = SnapshotVersion;
+        data[1] = _interruptEnable;
+        data[2] = _lineControl;
+        data[3] = _modemControl;
+        data[4] = _divisorLow;
+        data[5] = _divisorHigh;
+        data[6] = _scratch;
+        data[7] = (byte)_reportedButtons;
+        data[8] = (byte)buttons;
+        BinaryPrimitives.WriteInt32LittleEndian(data[9..], deltaX);
+        BinaryPrimitives.WriteInt32LittleEndian(data[13..], deltaY);
+        BinaryPrimitives.WriteInt32LittleEndian(data[17..], _receiveQueue.Count);
+
+        int queueOffset = SnapshotHeaderLength;
+        foreach (byte value in _receiveQueue)
+        {
+            data[queueOffset] = value;
+            queueOffset++;
+        }
+
+        return snapshot;
+    }
+
+    /// <summary>
+    /// Restores a complete serial snapshot without raising or lowering IRQ4.
+    /// The interrupt controller snapshot already records that line, and
+    /// replaying it here would turn restoration into a new device event.
+    /// </summary>
+    public void Restore(ReadOnlySpan<byte> snapshot)
+    {
+        SerialSnapshot state = ReadSnapshot(snapshot);
+
+        _interruptEnable = state.InterruptEnable;
+        _lineControl = state.LineControl;
+        _modemControl = state.ModemControl;
+        _divisorLow = state.DivisorLow;
+        _divisorHigh = state.DivisorHigh;
+        _scratch = state.Scratch;
+        _reportedButtons = state.ReportedButtons;
+        PoweredOn = (state.ModemControl & 0x03) == 0x03;
+
+        _receiveQueue.Clear();
+        foreach (byte value in state.ReceiveQueue)
+        {
+            _receiveQueue.Enqueue(value);
+        }
+
+        _state.RestoreSerialState(state.Buttons, state.DeltaX, state.DeltaY);
+    }
+
+    /// <summary>
+    /// Verifies an optional snapshot payload before the containing machine
+    /// has been restored. Parsing first ensures malformed files cannot leave
+    /// the target UART half changed.
+    /// </summary>
+    internal static void ValidateSnapshot(ReadOnlySpan<byte> snapshot)
+    {
+        _ = ReadSnapshot(snapshot);
+    }
 
     /// <summary>
     /// Builds a report if the mouse is powered and has something to report.
@@ -265,4 +345,57 @@ public sealed class SerialMouse : IIoDevice
         if (_receiveQueue.Count > 0 && (_interruptEnable & 0x01) != 0)
             _interrupts.RaiseIrq(Irq);
     }
+
+    /// <summary>
+    /// Parses a self-contained serial snapshot before assigning any device
+    /// field. A caller can therefore reject a malformed payload without
+    /// changing UART registers, input state, or the interrupt controller.
+    /// </summary>
+    private static SerialSnapshot ReadSnapshot(ReadOnlySpan<byte> snapshot)
+    {
+        if (snapshot.Length < SnapshotHeaderLength)
+        {
+            throw new InvalidDataException("The serial mouse snapshot header is truncated.");
+        }
+
+        if (snapshot[0] != SnapshotVersion)
+        {
+            throw new InvalidDataException("The serial mouse snapshot version is unknown.");
+        }
+
+        int receiveCount = BinaryPrimitives.ReadInt32LittleEndian(snapshot[17..]);
+        int remainingBytes = snapshot.Length - SnapshotHeaderLength;
+        if (receiveCount < 0 || receiveCount != remainingBytes)
+        {
+            throw new InvalidDataException("The serial mouse snapshot receive queue is invalid.");
+        }
+
+        byte[] receiveQueue = snapshot[SnapshotHeaderLength..].ToArray();
+        return new SerialSnapshot(
+            snapshot[1],
+            snapshot[2],
+            snapshot[3],
+            snapshot[4],
+            snapshot[5],
+            snapshot[6],
+            (MouseButtons)snapshot[7],
+            (MouseButtons)snapshot[8],
+            BinaryPrimitives.ReadInt32LittleEndian(snapshot[9..]),
+            BinaryPrimitives.ReadInt32LittleEndian(snapshot[13..]),
+            receiveQueue);
+    }
+
+    /// <summary>Parsed UART, mouse input, and FIFO state from one v1 payload.</summary>
+    private readonly record struct SerialSnapshot(
+        byte InterruptEnable,
+        byte LineControl,
+        byte ModemControl,
+        byte DivisorLow,
+        byte DivisorHigh,
+        byte Scratch,
+        MouseButtons ReportedButtons,
+        MouseButtons Buttons,
+        int DeltaX,
+        int DeltaY,
+        byte[] ReceiveQueue);
 }

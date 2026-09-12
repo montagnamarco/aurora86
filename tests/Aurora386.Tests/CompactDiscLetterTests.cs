@@ -88,7 +88,8 @@ public class CompactDiscLetterTests
             MachineSnapshot.Capture(machine).Save(snapshotPath);
             using (FileStream file = File.OpenWrite(snapshotPath))
             {
-                file.SetLength(file.Length - 2);
+                int serialStateLength = sizeof(int) + machine.SerialMouse.Capture().Length;
+                file.SetLength(file.Length - serialStateLength - 2);
             }
             MachineSnapshot.Load(snapshotPath).RestoreTo(machine);
             Assert.Equal((byte)3, machine.QueryCompactDiscLetter());

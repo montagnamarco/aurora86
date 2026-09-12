@@ -110,7 +110,8 @@ public class PciTests
                 // The preceding format had no IDETIM-presence flag and
                 // recorded zero for these then-unimplemented registers.
                 using FileStream file = File.OpenWrite(path);
-                file.SetLength(file.Length - 1);
+                int serialStateLength = sizeof(int) + machine.SerialMouse.Capture().Length;
+                file.SetLength(file.Length - serialStateLength - 1);
             }
             machine.Pci.Reset();
             MachineSnapshot.Load(path).RestoreTo(machine);
@@ -344,11 +345,12 @@ public class PciTests
             Assert.Equal(0x80000904u, m.Io.ReadDword(0xCF8));
             Assert.Equal(0u, m.Io.ReadDword(0xCFC));
             Assert.Equal(0xFF, m.Io.ReadByte(0x1F2));
-            // Remove the PCI block, empty USB block and two device-state flags
-            // to reproduce the earlier snapshot format.
+            // Remove serial state first, then the PCI block, empty USB block,
+            // and two device-state flags to reproduce the earlier format.
             using (FileStream file = File.OpenWrite(path))
             {
-                file.SetLength(file.Length - 10 - m.Pci.Capture().Length);
+                int serialStateLength = sizeof(int) + m.SerialMouse.Capture().Length;
+                file.SetLength(file.Length - serialStateLength - 10 - m.Pci.Capture().Length);
             }
             MachineSnapshot.Load(path).RestoreTo(m);
             Assert.Equal(1u, m.Pci.ReadConfiguration(9, 4, 2));

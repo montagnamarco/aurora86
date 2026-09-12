@@ -11,8 +11,8 @@ namespace Aurora386.Core;
 /// work at that rate and a few minutes with a snapshot taken just before it.
 ///
 /// Captures CPU and RAM together with video, interrupt, timer, keyboard,
-/// PCI, USB and DOS integration state. Device coverage is still incomplete:
-/// in-flight IDE transfers and the serial mouse UART are not captured. Disk
+/// PCI, USB, DOS integration, and serial mouse state. Device coverage is
+/// still incomplete: in-flight IDE transfers are not captured. Disk
 /// contents are external state and must be paired with the snapshot by the
 /// caller; restoring RAM alone does not undo guest writes to an image.
 /// </summary>
@@ -73,6 +73,7 @@ public sealed class MachineSnapshot
     private readonly byte[] _usb;
     private readonly bool? _guestOwnsCompactDisc;
     private readonly bool _hasIdeTimingRegisters;
+    private readonly byte[]? _serialMouse;
 
     private MachineSnapshot(Machine machine)
     {
@@ -106,6 +107,7 @@ public sealed class MachineSnapshot
         _usb = machine.CaptureUsbState();
         _guestOwnsCompactDisc = machine.GuestHasItsOwnCompactDiscExtensions;
         _hasIdeTimingRegisters = true;
+        _serialMouse = machine.SerialMouse.Capture();
     }
 
     /// <summary>Takes a snapshot of the machine as it stands.</summary>
@@ -149,6 +151,7 @@ public sealed class MachineSnapshot
         if (_interruptControllers.Length > 0) machine.Interrupts.Restore(_interruptControllers);
         if (_timer.Length > 0) machine.Timer.Restore(_timer);
         if (_keyboard.Length > 0) machine.Keyboard.Restore(_keyboard);
+        if (_serialMouse is not null) machine.SerialMouse.Restore(_serialMouse);
 
         // After the memory, because attaching marks the CDS entries in it.
         machine.RestoreDosState(_dosState);
@@ -220,6 +223,12 @@ public sealed class MachineSnapshot
         {
             file.Write(_guestOwnsCompactDisc.Value);
             file.Write(_hasIdeTimingRegisters);
+        }
+
+        if (_serialMouse is not null)
+        {
+            file.Write(_serialMouse.Length);
+            file.Write(_serialMouse);
         }
     }
 
@@ -310,6 +319,33 @@ public sealed class MachineSnapshot
             : null;
         _hasIdeTimingRegisters = file.BaseStream.Position < file.BaseStream.Length
             && file.ReadBoolean();
+
+        if (file.BaseStream.Position == file.BaseStream.Length)
+        {
+            _serialMouse = null;
+            return;
+        }
+
+        long remainingLength = file.BaseStream.Length - file.BaseStream.Position;
+        if (remainingLength < sizeof(int))
+        {
+            throw new InvalidDataException("The serial mouse snapshot length is truncated.");
+        }
+
+        int serialMouseLength = file.ReadInt32();
+        long payloadLength = file.BaseStream.Length - file.BaseStream.Position;
+        if (serialMouseLength < 0 || serialMouseLength > payloadLength)
+        {
+            throw new InvalidDataException("The serial mouse snapshot length is invalid.");
+        }
+
+        _serialMouse = file.ReadBytes(serialMouseLength);
+        if (_serialMouse.Length != serialMouseLength)
+        {
+            throw new InvalidDataException("The serial mouse snapshot payload is truncated.");
+        }
+
+        Devices.Input.SerialMouse.ValidateSnapshot(_serialMouse);
     }
 
     /// <summary>Reads a snapshot back from a file.</summary>

@@ -228,6 +228,29 @@ public sealed class MouseState
     public bool HasSerialMotion => _serialDeltaX != 0 || _serialDeltaY != 0;
 
     /// <summary>
+    /// Captures the physical state still relevant to a serial mouse report.
+    /// The other consumers have independent accumulators and deliberately do
+    /// not travel through the serial UART snapshot.
+    /// </summary>
+    internal (MouseButtons Buttons, int DeltaX, int DeltaY) CaptureSerialState()
+    {
+        return (Buttons, _serialDeltaX, _serialDeltaY);
+    }
+
+    /// <summary>
+    /// Restores serial input without replaying a host input event. Replaying
+    /// through <see cref="Move"/> or <see cref="SetButton"/> would notify the
+    /// ports, change INT 33h counters, and create a packet the source did not
+    /// have at the instant it was captured.
+    /// </summary>
+    internal void RestoreSerialState(MouseButtons buttons, int deltaX, int deltaY)
+    {
+        Buttons = buttons;
+        _serialDeltaX = deltaX;
+        _serialDeltaY = deltaY;
+    }
+
+    /// <summary>
     /// Takes the motion accumulated for the PS/2 port, clamped to what one
     /// packet can carry.
     ///
