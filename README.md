@@ -82,6 +82,11 @@ dotnet run --project tools/EmmBootProbe -c Release -- images/hdd.img
 
 ## Running
 
+Use the Release configuration for normal guest execution. The default Debug
+build leaves the CPU interpreter unoptimized and can run Windows 95 several
+times slower. The configured CPU frequency is a pacing target; it does not
+guarantee that the host can execute the interpreter at that rate.
+
 The graphical front end (Avalonia) has a toolbar, drive lights with the
 letter the guest gave each drive, menus for the mouse port and the network,
 folders shared with the guest, snapshots, and a debugger with breakpoints,
@@ -89,16 +94,16 @@ watchpoints on memory and ports, a symbolic view of the ROM and the DOS
 structures, and a disk inspector:
 
 ```
-dotnet run --project src/Aurora386.Gui
+dotnet run --project src/Aurora386.Gui -c Release
 ```
 
 The SDL front end takes everything from the command line, which is what a
 script or a bug report wants:
 
 ```
-dotnet run --project src/Aurora386.Sdl -- --hdd hdd.img
-dotnet run --project src/Aurora386.Sdl -- --vm machines/dos --net nat --share ~/Documents
-dotnet run --project src/Aurora386.Sdl -- --help
+dotnet run --project src/Aurora386.Sdl -c Release -- --hdd hdd.img
+dotnet run --project src/Aurora386.Sdl -c Release -- --vm machines/dos --net nat --share ~/Documents
+dotnet run --project src/Aurora386.Sdl -c Release -- --help
 ```
 
 A machine lives in a folder with a `vm.json` describing its disks, memory,
@@ -113,8 +118,8 @@ and generally covered by copyright. Point the emulator at your own.
 Create a disk, then boot the first installation floppy with it attached:
 
 ```
-dotnet run --project src/Aurora386.Sdl -- --create-hdd hdd.img --size 500
-dotnet run --project src/Aurora386.Sdl -- --hdd hdd.img --floppy dos622-1.img
+dotnet run --project src/Aurora386.Sdl -c Release -- --create-hdd hdd.img --size 500
+dotnet run --project src/Aurora386.Sdl -c Release -- --hdd hdd.img --floppy dos622-1.img
 ```
 
 When setup asks for the next disk, swap the image with the *Floppy A…*
