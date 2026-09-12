@@ -1,5 +1,6 @@
 using System.Text;
 using Aurora386.Core;
+using Aurora386.Core.Dos;
 using Aurora386.Core.Devices.Storage;
 
 namespace Aurora386.Tests;
@@ -25,6 +26,77 @@ public class CompactDiscLetterTests
         // Fake DOS structures, so the installer believes DOS is up and idle.
         machine.Redirector.AttachToDos(0x20000, 0x30000, 26);
         return machine;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RestoringNativeCdOwnershipPreservesTheGuestDriveFlags(bool throughFile)
+    {
+        using Machine source = Booted();
+        source.UnmountRedirectedDrive(3);
+        source.GuestHasItsOwnCompactDiscExtensions = true;
+        uint driveFlags = 0x30000 + 3 * Aurora386.Core.Dos.DosStructures.CdsEntrySize
+            + Aurora386.Core.Dos.DosStructures.CdsFlags;
+        source.Memory.WriteWord(driveFlags, 0x4000);
+        MachineSnapshot snapshot = MachineSnapshot.Capture(source);
+        string snapshotPath = Path.GetTempFileName();
+        try
+        {
+            if (throughFile)
+            {
+                snapshot.Save(snapshotPath);
+                snapshot = MachineSnapshot.Load(snapshotPath);
+            }
+
+            using Machine restored = Booted();
+            Assert.NotNull(restored.Redirector.GetMounted(3));
+            snapshot.RestoreTo(restored);
+
+            Assert.True(restored.GuestHasItsOwnCompactDiscExtensions);
+            Assert.Null(restored.Redirector.GetMounted(3));
+            Assert.Equal(0x4000, restored.Memory.ReadWord(driveFlags));
+        }
+        finally
+        {
+            File.Delete(snapshotPath);
+        }
+    }
+
+    [Fact]
+    public void RestoringTheStandInReattachesItsCdFilesystem()
+    {
+        using Machine machine = Booted();
+        MachineSnapshot snapshot = MachineSnapshot.Capture(machine);
+        machine.UnmountRedirectedDrive(3);
+        machine.GuestHasItsOwnCompactDiscExtensions = true;
+
+        snapshot.RestoreTo(machine);
+
+        Assert.False(machine.GuestHasItsOwnCompactDiscExtensions);
+        Assert.IsType<IsoFileSystem>(machine.Redirector.GetMounted(3));
+        Assert.Equal((byte)3, machine.QueryCompactDiscLetter());
+    }
+
+    [Fact]
+    public void APreviousSnapshotWithoutCdOwnershipRemainsReadable()
+    {
+        using Machine machine = Booted();
+        string snapshotPath = Path.GetTempFileName();
+        try
+        {
+            MachineSnapshot.Capture(machine).Save(snapshotPath);
+            using (FileStream file = File.OpenWrite(snapshotPath))
+            {
+                file.SetLength(file.Length - 2);
+            }
+            MachineSnapshot.Load(snapshotPath).RestoreTo(machine);
+            Assert.Equal((byte)3, machine.QueryCompactDiscLetter());
+        }
+        finally
+        {
+            File.Delete(snapshotPath);
+        }
     }
 
     [Fact]

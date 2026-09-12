@@ -10,12 +10,11 @@ namespace Aurora386.Core;
 /// and installation; a defect that needs twenty attempts to corner is a day's
 /// work at that rate and a few minutes with a snapshot taken just before it.
 ///
-/// What is captured is RAM and the processor. Devices are deliberately left
-/// out: their state is timers, latches and half-finished transfers, and
-/// restoring those correctly is a much larger problem than the one this is
-/// meant to solve. A snapshot is therefore faithful for what the guest's own
-/// code does next, and not for a device transfer that was in flight when it
-/// was taken -- which is why it belongs in diagnostics and not in a save-game.
+/// Captures CPU and RAM together with video, interrupt, timer, keyboard,
+/// PCI, USB and DOS integration state. Device coverage is still incomplete:
+/// in-flight IDE transfers and the serial mouse UART are not captured. Disk
+/// contents are external state and must be paired with the snapshot by the
+/// caller; restoring RAM alone does not undo guest writes to an image.
 /// </summary>
 public sealed class MachineSnapshot
 {
@@ -71,6 +70,9 @@ public sealed class MachineSnapshot
     /// <summary>The redirector's attachment to DOS; see <see cref="Machine.CaptureDosState"/>.</summary>
     private readonly byte[] _dosState;
     private readonly byte[] _pci;
+    private readonly byte[] _usb;
+    private readonly bool? _guestOwnsCompactDisc;
+    private readonly bool _hasIdeTimingRegisters;
 
     private MachineSnapshot(Machine machine)
     {
@@ -101,6 +103,9 @@ public sealed class MachineSnapshot
         _keyboard = machine.Keyboard.Capture();
         _dosState = machine.CaptureDosState();
         _pci = machine.Pci.Capture();
+        _usb = machine.CaptureUsbState();
+        _guestOwnsCompactDisc = machine.GuestHasItsOwnCompactDiscExtensions;
+        _hasIdeTimingRegisters = true;
     }
 
     /// <summary>Takes a snapshot of the machine as it stands.</summary>
@@ -110,6 +115,13 @@ public sealed class MachineSnapshot
     public void RestoreTo(Machine machine)
     {
         CpuState state = machine.Cpu.State;
+
+        // Remove the host CD mount before restoring RAM: unmounting clears
+        // DOS drive flags, which may already belong to the guest's driver.
+        if (_guestOwnsCompactDisc is bool guestOwnsCompactDisc)
+        {
+            machine.RestoreCompactDiscOwnership(guestOwnsCompactDisc);
+        }
 
         machine.Memory.A20Enabled = _a20;
         machine.Memory.RestoreRam(_ram);
@@ -141,6 +153,13 @@ public sealed class MachineSnapshot
         // After the memory, because attaching marks the CDS entries in it.
         machine.RestoreDosState(_dosState);
         machine.Pci.Restore(_pci);
+        if (!_hasIdeTimingRegisters)
+        {
+            // Earlier PCI snapshots stored zero in unimplemented IDETIM
+            // registers while both channels actually decoded their ports.
+            machine.Pci.WriteConfiguration(0x0009, 0x40, 4, 0x80008000);
+        }
+        machine.RestoreUsbState(_usb);
 
         // Paging translations cached from the old contents of memory describe
         // an address space that no longer exists.
@@ -195,6 +214,13 @@ public sealed class MachineSnapshot
         file.Write(_dosState);
         file.Write(_pci.Length);
         file.Write(_pci);
+        file.Write(_usb.Length);
+        file.Write(_usb);
+        if (_guestOwnsCompactDisc.HasValue)
+        {
+            file.Write(_guestOwnsCompactDisc.Value);
+            file.Write(_hasIdeTimingRegisters);
+        }
     }
 
     private MachineSnapshot(BinaryReader file)
@@ -274,6 +300,16 @@ public sealed class MachineSnapshot
         _pci = file.BaseStream.Position < file.BaseStream.Length
             ? file.ReadBytes(file.ReadInt32())
             : [];
+        _usb = file.BaseStream.Position < file.BaseStream.Length
+            ? file.ReadBytes(file.ReadInt32())
+            : [];
+        // Older snapshots did not record ownership. Keep it unknown rather
+        // than claiming that their guest had no native CD-ROM driver.
+        _guestOwnsCompactDisc = file.BaseStream.Position < file.BaseStream.Length
+            ? file.ReadBoolean()
+            : null;
+        _hasIdeTimingRegisters = file.BaseStream.Position < file.BaseStream.Length
+            && file.ReadBoolean();
     }
 
     /// <summary>Reads a snapshot back from a file.</summary>

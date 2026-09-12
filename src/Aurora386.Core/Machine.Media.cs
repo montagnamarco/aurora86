@@ -80,6 +80,25 @@ public sealed partial class Machine
             MountRedirectedDrive(CompactDiscServices.DriveLetter, new IsoFileSystem(disc));
     }
 
+    internal void RestoreCompactDiscOwnership(bool guestOwnsCompactDisc)
+    {
+        GuestHasItsOwnCompactDiscExtensions = guestOwnsCompactDisc;
+        byte drive = CompactDiscServices.DriveLetter;
+        if (guestOwnsCompactDisc)
+        {
+            if (Redirector.GetMounted(drive) is IsoFileSystem)
+            {
+                Redirector.Unmount(drive);
+            }
+        }
+        else if (CompactDisc is not null && Redirector.GetMounted(drive) is null)
+        {
+            // Reattach only the host filesystem here. DOS structures and
+            // the multiplex hook are restored later from the snapshot.
+            Redirector.Mount(drive, new IsoFileSystem(CompactDisc));
+        }
+    }
+
     /// <summary>Ejects the disc, leaving the drive empty.</summary>
     public void EjectCompactDisc()
     {
@@ -107,6 +126,7 @@ public sealed partial class Machine
 
         _disks.Add(image);
         DiskServices.Attach(image);
+        UpdateFloppyConfiguration();
 
         // The first hard disk is also the master on the IDE cable, where
         // Windows looks for it directly. Same image, two doors.
@@ -117,6 +137,18 @@ public sealed partial class Machine
         // it has to follow the disk that is actually there.
         if (image.DriveNumber == 0x00)
             WriteDiskParameterTable(image.SectorsPerTrack);
+    }
+
+    private void UpdateFloppyConfiguration()
+    {
+        Cmos.ConfigureFloppyDrives(
+            DiskServices.GetFloppyDriveType(0), DiskServices.GetFloppyDriveType(1));
+        int count = DiskServices.FloppyDriveCount;
+        Bda.EquipmentWord = (ushort)(Bda.EquipmentWord & ~0x00C1);
+        if (count != 0)
+        {
+            Bda.EquipmentWord |= (ushort)(1 | ((count - 1) << 6));
+        }
     }
 
     /// <summary>
