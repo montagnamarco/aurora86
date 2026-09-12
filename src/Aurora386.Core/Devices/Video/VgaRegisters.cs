@@ -320,6 +320,32 @@ public sealed class VgaRegisters : IIoDevice
     public int VesaWindowBank { get; set; }
 
     /// <summary>
+    /// The offset selected for CPU accesses through the 64 KB VGA window.
+    ///
+    /// VBE keeps its bank outside the VGA register file, but an S3 driver
+    /// programs the card's own CPU-base latch instead.  CR31 bit zero chooses
+    /// the legacy latch. CR35 supplies its low four bits and CR51 supplies
+    /// bits 5-4. The later CR6A register is independent: the Trio64V+ manual
+    /// says that a non-zero CR6A value makes the old fields ignored. In
+    /// chained mode one value names a 64 KB page; without chaining it names a
+    /// 16 KB page before the VGA plane decode.
+    /// </summary>
+    public uint CpuWindowOffset
+    {
+        get
+        {
+            if ((_crtc[0x31] & 0x01) == 0)
+                return (uint)(VesaWindowBank * 0x10000);
+
+            int alternateBank = _crtc[0x6A] & 0x3F;
+            int legacyBank = (_crtc[0x35] & 0x0F) | ((_crtc[0x51] & 0x0C) << 2);
+            int bank = alternateBank != 0 ? alternateBank : legacyBank;
+            int pageSize = Chain4 ? 0x10000 : 0x4000;
+            return (uint)(bank * pageSize);
+        }
+    }
+
+    /// <summary>
     /// Whether the mode was set with the linear frame buffer requested, in
     /// which case the window at 0xA0000 is not used at all and the whole of
     /// video memory is reached at one physical address.

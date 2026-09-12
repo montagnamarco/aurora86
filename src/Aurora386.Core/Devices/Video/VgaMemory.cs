@@ -275,7 +275,7 @@ public sealed class VgaMemory : IMemoryDevice
         // modes expects them to be -- so those fall through to the planar
         // code below.
         if (Registers.VesaMode is { IsPlanar: false } && offset < 0x10000)
-            return ReadLinear((uint)(Registers.VesaWindowBank * 0x10000) + offset);
+            return ReadLinear(Registers.CpuWindowOffset + offset);
 
         if (!InWindow(offset)) return 0xFF;
 
@@ -358,7 +358,7 @@ public sealed class VgaMemory : IMemoryDevice
 
         if (Registers.VesaMode is { IsPlanar: false } && offset < 0x10000)
         {
-            WriteLinear((uint)(Registers.VesaWindowBank * 0x10000) + offset, value);
+            WriteLinear(Registers.CpuWindowOffset + offset, value);
             return;
         }
 
