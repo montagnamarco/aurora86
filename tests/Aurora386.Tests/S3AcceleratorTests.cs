@@ -552,6 +552,46 @@ public class S3ProcessorDataTests
     }
 
     [Fact]
+    public void New32BitTransfersBeginTheNextRowAtTheNextByte()
+    {
+        using Machine machine = InSvgaMode();
+        Write(machine, 0xA6E8, 0x0F);
+        Write(machine, 0xA2E8, 0x04);
+        Write(machine, 0xBAE8, 0x0027);
+        Write(machine, 0xB6E8, 0x0007);
+        Write(machine, 0xBEE8, 0xA080);
+
+        // BUS_SIZE=11b is the Trio extension.  The first three bits in A0h
+        // make row one; the next byte, 40h, starts row two in the same dword.
+        Expect(machine, 0, 55, 3, 2, 0x57B2);
+        machine.Accelerator.Mmio.WriteDword(0, 0x000040A0);
+
+        Assert.Equal(0x0F, Pixel(machine, 0, 55));
+        Assert.Equal(0x04, Pixel(machine, 1, 55));
+        Assert.Equal(0x0F, Pixel(machine, 2, 55));
+        Assert.Equal(0x04, Pixel(machine, 0, 56));
+        Assert.Equal(0x0F, Pixel(machine, 1, 56));
+        Assert.Equal(0x04, Pixel(machine, 2, 56));
+    }
+
+    [Fact]
+    public void ANewCommandDiscardsThePreviousPartialTransferUnit()
+    {
+        using Machine machine = InSvgaMode();
+        Write(machine, 0xBAE8, 0x0047);
+        Write(machine, 0xBEE8, 0xA000);
+
+        Expect(machine, 0, 80, 4, 1, 0x53B1);
+        machine.Accelerator.Mmio.WriteByte(0, 0x99);
+
+        Expect(machine, 0, 81, 2, 1, 0x53B1);
+        Write(machine, 0xE2E8, 0x2211);
+
+        Assert.Equal(0x11, Pixel(machine, 0, 81));
+        Assert.Equal(0x22, Pixel(machine, 1, 81));
+    }
+
+    [Fact]
     public void DataAfterTheRectangleIsFullIsIgnored()
     {
         using Machine machine = InSvgaMode();

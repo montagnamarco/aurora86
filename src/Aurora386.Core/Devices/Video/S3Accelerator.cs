@@ -654,7 +654,67 @@ public sealed class S3Accelerator : IIoDevice
         int bytes = _unitBytes;
         _unit = 0;
         _unitBytes = 0;
-        ConsumeUnit(unit, bytes);
+        if (HasNew32BitTransfer)
+        {
+            ConsumeNew32BitUnit(unit, bytes);
+        }
+        else
+        {
+            ConsumeUnit(unit, bytes);
+        }
+    }
+
+    /// <summary>
+    /// The Trio's BUS_SIZE=11b form still accepts doubleword writes, but it
+    /// does not restart every scan line on a doubleword boundary.  It drops
+    /// only the unused bits of the byte which ended a monochrome row, then
+    /// continues with the next byte.  Icon rows whose width is not a multiple
+    /// of 32 otherwise begin at the wrong source byte.
+    /// </summary>
+    private void ConsumeNew32BitUnit(uint unit, int bytes)
+    {
+        bool lowFirst = (_command & 0x1000) != 0;
+
+        for (int i = 0; i < bytes; i++)
+        {
+            int sourceByteIndex = lowFirst ? i : bytes - 1 - i;
+            byte value = (byte)(unit >> (8 * sourceByteIndex));
+
+            if (_transfer!.Mask)
+            {
+                for (int bit = 7; bit >= 0; bit--)
+                {
+                    if (!PlotFromProcessor(((value >> bit) & 1) != 0, null))
+                    {
+                        return;
+                    }
+
+                    if (_transfer.RowStarting)
+                    {
+                        break;
+                    }
+                }
+
+                continue;
+            }
+
+            _newTransferPixel |= (uint)value << (8 * _newTransferPixelBytes);
+            _newTransferPixelBytes++;
+
+            if (_newTransferPixelBytes < BytesPerPixel)
+            {
+                continue;
+            }
+
+            bool hasMorePixels = PlotFromProcessor(true, (ushort)_newTransferPixel);
+            _newTransferPixel = 0;
+            _newTransferPixelBytes = 0;
+
+            if (!hasMorePixels)
+            {
+                return;
+            }
+        }
     }
 
     private void ConsumeUnit(uint unit, int bytes)
