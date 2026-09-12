@@ -324,6 +324,34 @@ that result. The optional network file copy was cancelled earlier on this
 disposable disk; this is not validation of networking or every installed
 component. The original user disk remains untouched.
 
+## DOS text services and return to Windows 95
+
+The BIOS now completes AH=00 text-mode changes through guest-visible ROM
+instructions when the display is virtualized. AH=00 respects the requested
+text mode and updates the guest BDA, text page, palette, cursor, and metadata
+without writing the physical display in the intercepted path. The other
+observed text services, AH=02, AH=03, AH=08, AH=0E, and AH=0F, now use the
+guest BDA, paging, and VGA ports as the guest sees them. Mode 07 and other
+BIOS functions retain their existing paths.
+
+The final Windows 95 run reached the desktop after `EXIT`, including the
+Start bar and CD contents. The fresh restore remained in mode 0101 for the
+entire run, with no native handler override or alternate Enter path; the
+trace records 18 ATAPI packet commands and the termination path through
+INT 21h AH=4Ch in both VM86 and protected mode. Earlier startup input was
+intermittently ignored, but the final run settled without a workaround, so
+this does not establish a keyboard defect or its absence.
+
+An earlier diagnostic run rendered only part of the DOS text. The final
+normal and restored runs rendered `ver`, `dir d:`, the copy command, and
+`EXIT` successfully before returning to the desktop. This does not claim
+complete DOS text compatibility, a new ATAPI fix, or a result for the
+separate user-reported black-screen case.
+
+The focused BIOS text tests pass 71/71, the final non-slow suite passes
+1,486/1,486, and the Release solution build completes with zero errors and
+zero warnings.
+
 ## CD ownership across snapshots (11 September)
 
 A cold machine with a mounted ISO registers the emulated CD filesystem.
@@ -350,11 +378,11 @@ After restoring the paired snapshot into a fresh machine, a distinct
 ISO with SHA-256
 `8028cacc62cf84ebc47546e0784f363b09f54485c5ae97b2e71816f84c9a46a8`.
 The trace records an ATAPI packet at port `01F7` from `0028:C101B4B9`.
-After `EXIT` the guest remained in text mode; graphics return was not
-verified and DOS text was only partially rendered. These results verify CD
-reads and copies across restore; the graphical directory listing was
-verified before restore. No new ATAPI fix or complete guest result is
-claimed.
+An earlier diagnostic run remained in text mode after `EXIT` and rendered
+only part of the DOS text. The final normal and restored runs returned to the
+desktop; the graphical directory listing was verified after restore. These
+results verify CD reads and copies across restore without claiming a new
+ATAPI fix or complete guest compatibility.
 
 ## Empty diskette drive type (11 September)
 
