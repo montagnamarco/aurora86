@@ -603,6 +603,29 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// image is therefore held separately from the disk drives.
     /// </summary>
     [RelayCommand]
+    private async Task MountUsbStorage(string? mode)
+    {
+        if (PickFileAsync is null) return;
+        string? path = await PickFileAsync("Select a USB disk image", HardDiskFilters);
+        if (path is null) return;
+        try
+        {
+            bool wasEnabled = Session.WithMachine(machine => machine.Usb is not null);
+            Session.WithMachine(machine => machine.AttachUsbStorage(
+                Aurora386.Core.Devices.Usb.UsbMassStorageDevice.Open(path, mode == "readonly")));
+            StatusText = $"USB: {Path.GetFileName(path)}" + (wasEnabled ? " inserted" : " inserted; restart the guest to detect the USB controllers");
+        }
+        catch (Exception ex) { StatusText = $"Could not insert USB disk: {ex.Message}"; }
+    }
+
+    [RelayCommand]
+    private void EjectUsbStorage()
+    {
+        Session.WithMachine(machine => machine.EjectUsbStorage());
+        StatusText = "USB disk removed";
+    }
+
+    [RelayCommand]
     private async Task MountCompactDisc()
     {
         if (PickFileAsync is null) return;
@@ -759,6 +782,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Session.WithMachine(machine =>
         {
             configuration.Cpu = machine.CpuModel;
+            configuration.UsbEnabled = machine.Usb is not null;
+            configuration.UsbStorage = machine.UsbStorage?.SourcePath is { } usbPath
+                ? new VmConfiguration.UsbDiskEntry { Path = usbPath, ReadOnly = machine.UsbStorage.ReadOnly }
+                : null;
             configuration.Mouse = machine.MouseInterface;
             configuration.BootOrder = machine.BootDrives.ToList();
             configuration.Network.Mode = machine.Network.Backend is NatBackend

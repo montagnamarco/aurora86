@@ -29,7 +29,12 @@ public partial class MainWindow : Window
         // window -- a toolbar button stealing focus permanently would be a
         // nasty surprise mid-typing.
         Opened += (_, _) => Screen.Focus();
-        PointerPressed += (_, _) => Screen.Focus();
+        MainMenu.Opened += (_, _) =>
+        {
+            ReleaseHeldKeys();
+            Screen.Capture.Release();
+        };
+        MainMenu.Closed += (_, _) => ReturnFocusToGuest();
 
         // Give the guest the keyboard back after any toolbar command.
         //
@@ -172,8 +177,30 @@ public partial class MainWindow : Window
     /// </summary>
     private readonly HashSet<PhysicalKey> _divertedToText = new();
 
+    private WindowState _windowedState = WindowState.Normal;
+
+    private void ToggleFullScreen(object? sender, RoutedEventArgs eventArgs)
+    {
+        if (WindowState == WindowState.FullScreen)
+        {
+            WindowState = _windowedState;
+        }
+        else
+        {
+            _windowedState = WindowState;
+            WindowState = WindowState.FullScreen;
+        }
+    }
+
     protected override void OnKeyDown(KeyEventArgs e)
     {
+        // Host menu navigation must not become keyboard input in the guest.
+        if (MainMenu.IsOpen || MainMenu.IsKeyboardFocusWithin)
+        {
+            base.OnKeyDown(e);
+            return;
+        }
+
         // A repeat of a key we already told the guest about: swallow it. The
         // emulated keyboard generates its own repeats, on its own clock, the
         // way the hardware does -- letting the host's repeats through as well
@@ -247,6 +274,13 @@ public partial class MainWindow : Window
 
     protected override void OnKeyUp(KeyEventArgs e)
     {
+        // Host menu navigation must not become keyboard input in the guest.
+        if (MainMenu.IsOpen || MainMenu.IsKeyboardFocusWithin)
+        {
+            base.OnKeyUp(e);
+            return;
+        }
+
         _keysHeld.Remove(e.PhysicalKey);
 
         // The release gesture is recognised on the way up rather than the way
@@ -340,6 +374,13 @@ public partial class MainWindow : Window
     /// </summary>
     protected override void OnTextInput(TextInputEventArgs e)
     {
+        // Host menu navigation must not become keyboard input in the guest.
+        if (MainMenu.IsOpen || MainMenu.IsKeyboardFocusWithin)
+        {
+            base.OnTextInput(e);
+            return;
+        }
+
         // Only reached when the key had no position we recognised, since a
         // recognised one marks the event handled. So this is the last resort:
         // ask which key of the guest's own layout would produce the character

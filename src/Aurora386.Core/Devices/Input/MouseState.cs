@@ -115,8 +115,12 @@ public sealed class MouseState
     /// <summary>
     /// Reports movement since the last report, in mickeys.
     /// </summary>
+    public Func<int, int, bool>? MotionInterceptor { get; set; }
+    public Func<MouseButtons, bool, bool>? ButtonInterceptor { get; set; }
+
     public void Move(int deltaX, int deltaY)
     {
+        if (MotionInterceptor?.Invoke(deltaX, deltaY) == true) return;
         if (deltaX == 0 && deltaY == 0) return;
         if (ConnectedInterface == MouseInterface.None) return;
 
@@ -185,6 +189,7 @@ public sealed class MouseState
     /// <summary>Presses or releases a button.</summary>
     public void SetButton(MouseButtons button, bool pressed)
     {
+        if (ButtonInterceptor?.Invoke(button, pressed) == true) return;
         // A mouse that is not plugged in has no buttons to press. Letting
         // clicks through while blocking motion would give the guest a mouse
         // that cannot move but can still click, which is worse than no mouse

@@ -8,6 +8,7 @@
         x:Class="Aurora386.Gui.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
         Width="900" Height="700"
+        RequestedThemeVariant="Dark"
         Background="#1E1E1E"
         Title="{Binding WindowTitle}">
 
@@ -106,12 +107,71 @@
 
   <DockPanel>
 
-    <!-- ==================== toolbar ==================== -->
+    <Menu DockPanel.Dock="Top" Name="MainMenu">
+      <MenuItem Header="_File">
+        <MenuItem Header="_Open virtual machine…" Command="{Binding OpenVmCommand}" />
+        <MenuItem Header="_Save virtual machine…" Command="{Binding SaveVmCommand}" />
+        <Separator />
+        <MenuItem Header="Create disk image…" Command="{Binding CreateDiskCommand}" />
+      </MenuItem>
+      <MenuItem Header="_Virtual Machine">
+        <MenuItem Header="_Start" Command="{Binding StartCommand}" />
+        <MenuItem Header="_Pause / Resume" Command="{Binding TogglePauseCommand}" />
+        <MenuItem Header="_Reset" Command="{Binding ResetCommand}" />
+        <MenuItem Header="Turbo" ToggleType="CheckBox" IsChecked="{Binding Turbo, Mode=OneWay}" Command="{Binding ToggleTurboCommand}" />
+        <Separator />
+        <MenuItem Header="Save snapshot…" Command="{Binding SaveStateCommand}" />
+        <MenuItem Header="Restore snapshot…" Command="{Binding RestoreStateCommand}" />
+        <MenuItem Header="Processor (next reset)">
+          <MenuItem Header="486DX" ToggleType="Radio" IsChecked="{Binding CpuIs486, Mode=TwoWay}" />
+          <MenuItem Header="386DX" ToggleType="Radio" IsChecked="{Binding CpuIs386, Mode=TwoWay}" />
+        </MenuItem>
+      </MenuItem>
+      <MenuItem Header="_View">
+        <MenuItem Header="Full screen / Windowed" Click="ToggleFullScreen" />
+        <MenuItem Header="Save screenshot…" Command="{Binding ScreenshotCommand}" />
+        <MenuItem Header="Video inspector…" Command="{Binding OpenVideoInspectorCommand}" />
+      </MenuItem>
+      <MenuItem Header="_Devices">
+        <MenuItem Header="Floppy A:">
+          <MenuItem Header="Insert image…" Command="{Binding MountFloppyACommand}" />
+          <MenuItem Header="Eject" Command="{Binding EjectFloppyACommand}" />
+        </MenuItem>
+        <MenuItem Header="Floppy B:">
+          <MenuItem Header="Insert image…" Command="{Binding MountFloppyBCommand}" />
+          <MenuItem Header="Eject" Command="{Binding EjectFloppyBCommand}" />
+        </MenuItem>
+        <MenuItem Header="Hard disk image…" Command="{Binding MountHardDiskCommand}" />
+        <MenuItem Header="CD-ROM">
+          <MenuItem Header="Insert ISO…" Command="{Binding MountCompactDiscCommand}" />
+          <MenuItem Header="Eject" Command="{Binding EjectCompactDiscCommand}" />
+        </MenuItem>
+        <MenuItem Header="USB storage">
+          <MenuItem Header="Insert image…" Command="{Binding MountUsbStorageCommand}" />
+          <MenuItem Header="Insert read-only image…" Command="{Binding MountUsbStorageCommand}" CommandParameter="readonly" />
+          <MenuItem Header="Eject" Command="{Binding EjectUsbStorageCommand}" />
+        </MenuItem>
+        <MenuItem Header="Share host folder…" Command="{Binding ShareFolderCommand}" />
+        <Separator />
+        <MenuItem Header="Mouse">
+          <MenuItem Header="PS/2" ToggleType="Radio" IsChecked="{Binding MouseIsPs2, Mode=TwoWay}" />
+          <MenuItem Header="Serial (COM1)" ToggleType="Radio" IsChecked="{Binding MouseIsSerial, Mode=TwoWay}" />
+          <MenuItem Header="Disconnected" ToggleType="Radio" IsChecked="{Binding MouseIsDisconnected, Mode=TwoWay}" />
+        </MenuItem>
+        <MenuItem Header="Network">
+          <MenuItem Header="NAT" ToggleType="Radio" IsChecked="{Binding NetworkIsNat, Mode=TwoWay}" />
+          <MenuItem Header="Disconnected" ToggleType="Radio" IsChecked="{Binding NetworkIsOff, Mode=TwoWay}" />
+        </MenuItem>
+      </MenuItem>
+      <MenuItem Header="_Debug">
+        <MenuItem Header="Open debugger…" Command="{Binding OpenDebuggerCommand}" />
+        <MenuItem Header="Step instruction" Command="{Binding StepInstructionCommand}" />
+      </MenuItem>
+    </Menu>
+
     <Border DockPanel.Dock="Top" Background="#252525"
             BorderBrush="#3A3A3A" BorderThickness="0,0,0,1">
-      <StackPanel Orientation="Horizontal" Margin="4,3">
-
-        <!-- Power: the IEC symbol, a broken ring with an upright bar. -->
+      <StackPanel Name="MainToolbar" Orientation="Horizontal" Margin="4,3">
         <Button Classes="tool" Command="{Binding StartCommand}"
                 ToolTip.Tip="Power on the machine">
           <StackPanel>
@@ -128,7 +188,6 @@
           </StackPanel>
         </Button>
 
-        <!-- Reset: an arrow chasing its own tail. -->
         <Button Classes="tool" Command="{Binding ResetCommand}"
                 ToolTip.Tip="Cold reset: rebuild the machine and re-insert media">
           <StackPanel>
@@ -137,222 +196,27 @@
           </StackPanel>
         </Button>
 
-        <ToggleButton Classes="tool" IsChecked="{Binding Turbo}"
-                Command="{Binding ToggleTurboCommand}"
-                ToolTip.Tip="Run as fast as the host allows. Key repeat and anything else the guest times will run fast too.">
-          <StackPanel>
-            <Path Classes="icon filled" Data="M 13,2 L 5,13 L 11,13 L 10,22 L 18,10 L 12,10 Z" />
-            <TextBlock Classes="toollabel" Text="Turbo" />
-          </StackPanel>
-        </ToggleButton>
-
-        <Separator Classes="vertical" />
-
-        <!-- A 3.5-inch diskette: the shutter across the top, the label below. -->
-        <Button Classes="tool" Command="{Binding MountFloppyACommand}"
-                ToolTip.Tip="Insert a floppy image into drive A:">
-          <StackPanel>
-            <Path Classes="icon" Data="M 4,4 L 16,4 L 20,8 L 20,20 L 4,20 Z M 8,4 L 8,10 L 16,10 L 16,4 M 7,14 L 17,14 L 17,20 L 7,20 Z" />
-            <TextBlock Classes="toollabel" Text="Floppy A" />
-          </StackPanel>
-        </Button>
-
-        <Button Classes="tool" Command="{Binding MountFloppyBCommand}"
-                ToolTip.Tip="Insert a floppy image into drive B:">
-          <StackPanel>
-            <Path Classes="icon" Data="M 4,4 L 16,4 L 20,8 L 20,20 L 4,20 Z M 8,4 L 8,10 L 16,10 L 16,4 M 7,14 L 17,14 L 17,20 L 7,20 Z" />
-            <TextBlock Classes="toollabel" Text="Floppy B" />
-          </StackPanel>
-        </Button>
-
-        <!-- A stack of platters, drawn the way disks have been drawn since
-             the days when they really were a stack of platters. -->
-        <Button Classes="tool" Command="{Binding MountHardDiskCommand}"
-                ToolTip.Tip="Attach a hard disk image (up to four)">
-          <StackPanel>
-            <Path Classes="icon" Data="M 3,6 A 9,3 0 1 0 21,6 A 9,3 0 1 0 3,6 M 3,6 L 3,18 A 9,3 0 0 0 21,18 L 21,6 M 3,12 A 9,3 0 0 0 21,12" />
-            <TextBlock Classes="toollabel" Text="Hard disk" />
-          </StackPanel>
-        </Button>
-
-        <Button Classes="tool" Command="{Binding MountCompactDiscCommand}"
-                ToolTip.Tip="Insert a CD-ROM image (ISO 9660)">
-          <StackPanel>
-            <Path Classes="icon" Data="M 12,3 A 9,9 0 1 1 11.99,3 Z M 12,10 A 2,2 0 1 1 11.99,10 Z" />
-            <TextBlock Classes="toollabel" Text="CD-ROM" />
-          </StackPanel>
-        </Button>
-
-        <!-- A folder shared with the guest: the folder with an arrow going
-             into it. -->
-        <Button Classes="tool" Command="{Binding ShareFolderCommand}"
-                ToolTip.Tip="Share a folder of this computer with the guest, as drive E:">
-          <StackPanel>
-            <Path Classes="icon" Data="M 3,6 L 9,6 L 11,9 L 21,9 L 21,19 L 3,19 Z M 12,11 L 12,17 M 9,14 L 12,17 L 15,14" />
-            <TextBlock Classes="toollabel" Text="Share" />
-          </StackPanel>
-        </Button>
-
-        <!-- A machine folder: a box with its lid, opening and closing. -->
-        <Button Classes="tool" Command="{Binding OpenVmCommand}"
-                ToolTip.Tip="Open a machine from its folder (one with vm.json in it)">
-          <StackPanel>
-            <Path Classes="icon" Data="M 3,9 L 12,5 L 21,9 L 21,19 L 12,23 L 3,19 Z M 3,9 L 12,13 L 21,9 M 12,13 L 12,23" />
-            <TextBlock Classes="toollabel" Text="Open VM" />
-          </StackPanel>
-        </Button>
-        <Button Classes="tool" Command="{Binding SaveVmCommand}"
-                ToolTip.Tip="Save this machine -- drives, mouse, processor, boot order -- to its folder">
-          <StackPanel>
-            <Path Classes="icon" Data="M 4,4 L 17,4 L 21,8 L 21,21 L 4,21 Z M 7,4 L 7,10 L 15,10 L 15,4 M 7,21 L 7,15 L 18,15 L 18,21" />
-            <TextBlock Classes="toollabel" Text="Save VM" />
-          </StackPanel>
-        </Button>
-
-        <!-- A saved state: the machine frozen, a camera. -->
         <Button Classes="tool" Command="{Binding SaveStateCommand}"
-                ToolTip.Tip="Save the whole state of the machine -- memory, processor, devices, screen -- to come back to in an instant">
+                ToolTip.Tip="Save a runtime snapshot. Keep matching disk images to restore it.">
           <StackPanel>
             <Path Classes="icon" Data="M 3,8 L 8,8 L 10,5 L 14,5 L 16,8 L 21,8 L 21,20 L 3,20 Z M 12,10 A 4,4 0 1 0 12,18 A 4,4 0 1 0 12,10" />
             <TextBlock Classes="toollabel" Text="Save state" />
           </StackPanel>
         </Button>
+
         <Button Classes="tool" Command="{Binding RestoreStateCommand}"
-                ToolTip.Tip="Put a saved state back into the machine">
+                ToolTip.Tip="Restore runtime state using matching disk images">
           <StackPanel>
             <Path Classes="icon" Data="M 4,12 A 8,8 0 1 1 12,20 M 4,12 L 4,7 M 4,12 L 9,12 M 12,8 L 12,12 L 15,14" />
             <TextBlock Classes="toollabel" Text="Restore" />
           </StackPanel>
         </Button>
-
-        <!-- A new disk: the stack of platters with a plus beside it. -->
-        <Button Classes="tool" Command="{Binding CreateDiskCommand}"
-                ToolTip.Tip="Make a new hard disk image, formatted and ready, and attach it">
+        <Button Classes="tool" Click="ToggleFullScreen" ToolTip.Tip="Toggle full screen">
           <StackPanel>
-            <Path Classes="icon" Data="M 3,7 A 6,3 0 1 0 15,7 A 6,3 0 1 0 3,7 M 3,7 L 3,15 A 6,3 0 0 0 15,15 L 15,7 M 19,9 L 19,17 M 15,13 L 23,13" />
-            <TextBlock Classes="toollabel" Text="New disk" />
+            <Path Classes="icon" Data="M 3,9 L 3,3 L 9,3 M 15,3 L 21,3 L 21,9 M 21,15 L 21,21 L 15,21 M 9,21 L 3,21 L 3,15" />
+            <TextBlock Classes="toollabel" Text="Full screen" />
           </StackPanel>
         </Button>
-
-        <!-- Eject: the triangle-over-bar found on every optical drive. -->
-        <Button Classes="tool" ToolTip.Tip="Take out a floppy or the disc">
-          <StackPanel>
-            <Path Classes="icon filled" Data="M 12,4 L 20,14 L 4,14 Z M 4,17 L 20,17 L 20,20 L 4,20 Z" />
-            <TextBlock Classes="toollabel" Text="Eject ▾" />
-          </StackPanel>
-          <Button.Flyout>
-            <MenuFlyout>
-              <MenuItem Header="Floppy A:" Command="{Binding EjectFloppyACommand}" />
-              <MenuItem Header="Floppy B:" Command="{Binding EjectFloppyBCommand}" />
-              <MenuItem Header="CD-ROM" Command="{Binding EjectCompactDiscCommand}" />
-            </MenuFlyout>
-          </Button.Flyout>
-        </Button>
-
-        <Separator Classes="vertical" />
-
-        <!-- A mouse seen from above: the body, and the split between the two
-             buttons. Which port it is plugged into is the guest's business,
-             not a preference, so the choices are exclusive and shown ticked. -->
-        <Button Classes="tool"
-                ToolTip.Tip="Which port the mouse is plugged into. Software of the period looks for one specific port, so this decides whether a given program finds a mouse at all.">
-          <StackPanel>
-            <Path Classes="icon" Data="M 12,3 A 6,6 0 0 1 18,9 L 18,15 A 6,6 0 0 1 6,15 L 6,9 A 6,6 0 0 1 12,3 Z M 12,3 L 12,10 M 6,10 L 18,10" />
-            <TextBlock Classes="toollabel" Text="Mouse ▾" />
-          </StackPanel>
-          <Button.Flyout>
-            <MenuFlyout>
-              <MenuItem Header="PS/2 port" ToggleType="Radio"
-                        IsChecked="{Binding MouseIsPs2, Mode=TwoWay}" />
-              <MenuItem Header="Serial, on COM1" ToggleType="Radio"
-                        IsChecked="{Binding MouseIsSerial, Mode=TwoWay}" />
-              <MenuItem Header="No mouse" ToggleType="Radio"
-                        IsChecked="{Binding MouseIsDisconnected, Mode=TwoWay}" />
-            </MenuFlyout>
-          </Button.Flyout>
-        </Button>
-
-        <!-- The network card is always there; what changes is whether its
-             cable goes anywhere. NAT needs no privileges and reaches the
-             world through this computer's own connections. -->
-        <Button Classes="tool"
-                ToolTip.Tip="Where the NE2000's cable goes. NAT gives the guest a private network (10.0.2.15) that reaches the outside through this computer; the guest is not reachable from outside unless a port is forwarded in vm.json.">
-          <StackPanel>
-            <Path Classes="icon" Data="M 4,16 L 10,16 L 10,20 L 4,20 Z M 14,16 L 20,16 L 20,20 L 14,20 Z M 9,4 L 15,4 L 15,8 L 9,8 Z M 12,8 L 12,12 M 7,12 L 17,12 M 7,12 L 7,16 M 17,12 L 17,16" />
-            <TextBlock Classes="toollabel" Text="Network ▾" />
-          </StackPanel>
-          <Button.Flyout>
-            <MenuFlyout>
-              <MenuItem Header="NAT, through this computer" ToggleType="Radio"
-                        IsChecked="{Binding NetworkIsNat, Mode=TwoWay}" />
-              <MenuItem Header="Unplugged" ToggleType="Radio"
-                        IsChecked="{Binding NetworkIsOff, Mode=TwoWay}" />
-            </MenuFlyout>
-          </Button.Flyout>
-        </Button>
-
-        <Separator Classes="vertical" />
-
-        <!-- A chip seen from above: the package, and the legs down both
-             sides. Unlike the mouse this cannot be changed under a running
-             guest, so the choice takes effect at the next reset. -->
-        <Button Classes="tool"
-                ToolTip.Tip="Which processor is fitted. A program asks once, at startup, so the choice takes effect at the next reset.">
-          <StackPanel>
-            <Path Classes="icon" Data="M 7,7 L 17,7 L 17,17 L 7,17 Z M 4,10 L 7,10 M 4,14 L 7,14 M 17,10 L 20,10 M 17,14 L 20,14 M 10,4 L 10,7 M 14,4 L 14,7 M 10,17 L 10,20 M 14,17 L 14,20" />
-            <TextBlock Classes="toollabel" Text="CPU ▾" />
-          </StackPanel>
-          <Button.Flyout>
-            <MenuFlyout>
-              <MenuItem Header="486DX" ToggleType="Radio"
-                        IsChecked="{Binding CpuIs486, Mode=TwoWay}" />
-              <MenuItem Header="386DX" ToggleType="Radio"
-                        IsChecked="{Binding CpuIs386, Mode=TwoWay}" />
-            </MenuFlyout>
-          </Button.Flyout>
-        </Button>
-
-        <Separator Classes="vertical" />
-
-        <!-- A screen with a magnifier: what is actually in video memory,
-             which is not always what the monitor shows. -->
-        <Button Classes="tool" Command="{Binding OpenVideoInspectorCommand}"
-                ToolTip.Tip="Video memory: the card's registers and a picture of what the guest has written, which is not always what the monitor shows.">
-          <StackPanel>
-            <Path Classes="icon" Data="M 3,4 L 21,4 L 21,15 L 3,15 Z M 9,19 L 15,19 M 12,15 L 12,19 M 8,8 A 3,3 0 1 0 14,8 A 3,3 0 1 0 8,8 M 13,10 L 16,13" />
-            <TextBlock Classes="toollabel" Text="Video" />
-          </StackPanel>
-        </Button>
-
-        <!-- A bug, for the debugger: body, legs and antennae. -->
-        <Button Classes="tool" Command="{Binding OpenDebuggerCommand}"
-                ToolTip.Tip="Open the debugger: registers, disassembly, memory, breakpoints">
-          <StackPanel>
-            <Path Classes="icon" Data="M 8,8 A 4,5 0 0 1 16,8 L 16,14 A 4,5 0 0 1 8,14 Z M 3,10 L 8,11 M 21,10 L 16,11 M 3,17 L 8,15 M 21,17 L 16,15 M 9,4 L 10,7 M 15,4 L 14,7" />
-            <TextBlock Classes="toollabel" Text="Debugger" />
-          </StackPanel>
-        </Button>
-
-        <!-- Step: a footfall onto the next stair. -->
-        <Button Classes="tool" Command="{Binding StepInstructionCommand}"
-                ToolTip.Tip="Execute a single instruction and stop">
-          <StackPanel>
-            <Path Classes="icon" Data="M 3,20 L 9,20 L 9,15 L 15,15 L 15,10 L 21,10 L 21,5 M 5,11 L 9,7 L 5,3" />
-            <TextBlock Classes="toollabel" Text="Step" />
-          </StackPanel>
-        </Button>
-
-        <Separator Classes="vertical" />
-
-        <!-- A camera: body, lens and the bump of the viewfinder. -->
-        <Button Classes="tool" Command="{Binding ScreenshotCommand}"
-                ToolTip.Tip="Save a picture of the screen to the desktop">
-          <StackPanel>
-            <Path Classes="icon" Data="M 3,7 L 8,7 L 10,4 L 14,4 L 16,7 L 21,7 L 21,20 L 3,20 Z M 12,10 A 4,4 0 1 1 11.99,10 Z" />
-            <TextBlock Classes="toollabel" Text="Screenshot" />
-          </StackPanel>
-        </Button>
-
       </StackPanel>
     </Border>
 

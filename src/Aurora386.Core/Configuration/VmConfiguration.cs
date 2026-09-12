@@ -49,6 +49,13 @@ public sealed class VmConfiguration
     public List<string> Floppies { get; set; } = new();
 
     public string? CompactDisc { get; set; }
+    public bool UsbEnabled { get; set; }
+    public UsbDiskEntry? UsbStorage { get; set; }
+    public sealed class UsbDiskEntry
+    {
+        public string Path { get; set; } = "";
+        public bool ReadOnly { get; set; }
+    }
     public List<SharedFolder> SharedFolders { get; set; } = new();
     public MouseInterface Mouse { get; set; } = MouseInterface.Serial;
 
@@ -151,6 +158,7 @@ public sealed class VmConfiguration
         foreach (DiskEntry disk in Disks) disk.Path = map(disk.Path);
         for (int i = 0; i < Floppies.Count; i++) Floppies[i] = map(Floppies[i]);
         if (CompactDisc is not null) CompactDisc = map(CompactDisc);
+        if (UsbStorage is not null) UsbStorage.Path = map(UsbStorage.Path);
         foreach (SharedFolder shared in SharedFolders) shared.Path = map(shared.Path);
     }
 
@@ -189,6 +197,9 @@ public sealed class VmConfiguration
     {
         var machine = new Machine(RamMegabytes * 1024 * 1024);
         machine.CpuModel = Cpu;
+        if (UsbEnabled) machine.EnableUsb();
+        if (UsbStorage is not null)
+            machine.AttachUsbStorage(Devices.Usb.UsbMassStorageDevice.Open(UsbStorage.Path, UsbStorage.ReadOnly));
 
         for (int i = 0; i < Floppies.Count && i < 2; i++)
             machine.AttachDisk(DiskImage.OpenFloppy(Floppies[i], (byte)i));

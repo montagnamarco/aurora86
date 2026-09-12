@@ -328,6 +328,8 @@ public sealed partial class Machine
         // emulated time, converted from the instructions just executed.
         double microseconds = (double)instructions * 1_000_000.0 / CpuFrequencyHz;
         SoundBlaster.Advance(microseconds);
+        Usb?.Advance(microseconds);
+        UsbStorageController?.Advance(microseconds);
 
         // And so is the video beam. A program polling for vertical retrace is
         // waiting for a moment that has a duration; without the clock behind

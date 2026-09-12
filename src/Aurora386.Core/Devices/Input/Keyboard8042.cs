@@ -200,8 +200,11 @@ public sealed class Keyboard8042 : IIoDevice
     /// Queues a scancode as though a key had been pressed or released, and
     /// raises IRQ 1 if the controller is currently allowed to interrupt.
     /// </summary>
+    public Func<byte, bool>? InputInterceptor { get; set; }
+
     public void PushScanCode(byte scanCode)
     {
+        if (InputInterceptor?.Invoke(scanCode) == true) { ClearHeldKeys(); return; }
         if (_pendingScanCodes.Count >= 16) return;       // buffer full, just like real hardware
         _pendingScanCodes.Enqueue(scanCode);
         DeliverScanCode();
