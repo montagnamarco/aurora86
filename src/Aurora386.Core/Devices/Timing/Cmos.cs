@@ -41,6 +41,21 @@ public sealed class Cmos : IIoDevice
         _registers[0x12] = 0xF0;
     }
 
+    /// <summary>Publishes installed diskette drives, independent of inserted media.</summary>
+    public void ConfigureFloppyDrives(byte firstBiosType, byte secondBiosType)
+    {
+        // The 2.88 MB drive is type 6 in INT 13h but type 5 in CMOS.
+        byte firstCmosType = firstBiosType == 6 ? (byte)5 : firstBiosType;
+        byte secondCmosType = secondBiosType == 6 ? (byte)5 : secondBiosType;
+        _registers[0x10] = (byte)((firstCmosType << 4) | secondCmosType);
+        int count = (firstBiosType != 0 ? 1 : 0) + (secondBiosType != 0 ? 1 : 0);
+        _registers[0x14] &= 0x3E;
+        if (count != 0)
+        {
+            _registers[0x14] |= (byte)(1 | ((count - 1) << 6));
+        }
+    }
+
     private void ConfigureMemory(uint totalBytes)
     {
         // Conventional memory: always 640 KB. That is the architectural

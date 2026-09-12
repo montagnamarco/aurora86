@@ -65,6 +65,7 @@ public sealed partial class Machine
         // Area: its first byte is its size in KB, and INT 12h stops short of
         // it so that no program overwrites the BIOS's own state.
         Bda.Initialize(639, DiskServices.HardDiskCount);
+        UpdateFloppyConfiguration();
         Bda.ExtendedBiosDataSegment = ExtendedBiosDataSegment;
         Memory.WriteByte((uint)ExtendedBiosDataSegment << 4, 1);
         PublishPointingDeviceInEquipment();
