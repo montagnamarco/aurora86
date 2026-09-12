@@ -594,6 +594,27 @@ public sealed class VgaRegisters : IIoDevice
     // flickers. At 1024x768 that was the difference between a pointer that
     // kept up with the hand and one that lagged behind it.
 
+    /// <summary>The Hardware Graphics Cursor Mode register resets both colour stacks' shared pointer.</summary>
+    private const byte CursorModeRegister = 0x45;
+
+    /// <summary>The Hardware Graphics Cursor Foreground Stack register.</summary>
+    private const byte CursorForegroundStackRegister = 0x4A;
+
+    /// <summary>The Hardware Graphics Cursor Background Stack register.</summary>
+    private const byte CursorBackgroundStackRegister = 0x4B;
+
+    /// <summary>The marker after the old snapshot tail that identifies saved cursor colour stacks.</summary>
+    private const byte CursorColourSnapshotMarker = 0xC3;
+
+    /// <summary>
+    /// The S3 cursor colour stacks contain three bytes, so the value is a
+    /// 24-bit RGB colour with blue in the low byte. Reading CR45 resets the
+    /// shared stack pointer before a driver programs either colour.
+    /// </summary>
+    private uint _cursorForegroundColour;
+    private uint _cursorBackgroundColour;
+    private int _cursorColourStackPointer;
+
     /// <summary>Whether the hardware pointer is being drawn (register 0x45 bit 0).</summary>
     public bool CursorEnabled => (_crtc[0x45] & 0x01) != 0;
 
@@ -616,8 +637,9 @@ public sealed class VgaRegisters : IIoDevice
     /// </summary>
     public uint CursorPatternAddress => (uint)(((_crtc[0x4C] << 8) | _crtc[0x4D]) * 1024);
 
-    /// <summary>The colours the pointer is drawn in, from registers 0x4A and 0x4B.</summary>
-    public (byte Foreground, byte Background) CursorColours => (_crtc[0x4A], _crtc[0x4B]);
+    /// <summary>The 24-bit colours the hardware pointer is drawn in.</summary>
+    public (uint Foreground, uint Background) CursorColours =>
+        (_cursorForegroundColour, _cursorBackgroundColour);
 
     // --- Paradise/Western Digital compatibility -------------------------------
     //
@@ -720,6 +742,13 @@ public sealed class VgaRegisters : IIoDevice
     {
         switch (index)
         {
+            // The Trio64V+ manual states that a CR45 read resets the one
+            // stack pointer shared by CR4A and CR4B. Windows 95 does exactly
+            // that before each three-byte colour write.
+            case CursorModeRegister:
+                _cursorColourStackPointer = 0;
+                return _crtc[index];
+
             // The identification registers. These come first because they
             // sit below 0x30, in the range a VGA also uses -- and an earlier
             // version of this method returned from the VGA range before
@@ -824,8 +853,46 @@ public sealed class VgaRegisters : IIoDevice
         if (index < 0x40 && !_systemUnlocked) return;
         if (index >= 0x40 && !_extendedUnlocked) return;
 
+        if (index is CursorForegroundStackRegister or CursorBackgroundStackRegister)
+        {
+            WriteCursorColour(index, value);
+            _crtc[index] = value;
+            return;
+        }
+
         _crtc[index] = value;
     }
+
+    /// <summary>
+    /// Writes one byte through CR4A or CR4B's three-byte colour stack.
+    ///
+    /// The documented first three writes select the low, middle, and high
+    /// bytes. 86Box models the physical two-bit pointer too: its fourth
+    /// position ignores the byte and its fifth returns to the low byte.
+    /// Keeping that behaviour makes an overlong driver sequence deterministic
+    /// without inventing a fourth colour component.
+    /// </summary>
+    private void WriteCursorColour(byte register, byte value)
+    {
+        if (_cursorColourStackPointer < 3)
+        {
+            int shift = _cursorColourStackPointer * 8;
+            uint componentMask = 0xFFu << shift;
+            uint component = (uint)value << shift;
+
+            if (register == CursorForegroundStackRegister)
+            {
+                _cursorForegroundColour = (_cursorForegroundColour & ~componentMask) | component;
+            }
+            else
+            {
+                _cursorBackgroundColour = (_cursorBackgroundColour & ~componentMask) | component;
+            }
+        }
+
+        _cursorColourStackPointer = (_cursorColourStackPointer + 1) & 0x03;
+    }
+
     public byte Attribute(int index) => _attribute[index & 0x1F];
 
     /// <summary>Writes one attribute controller register, as INT 10h AH=10h does.</summary>
@@ -1252,6 +1319,10 @@ public sealed class VgaRegisters : IIoDevice
         state[at++] = (byte)(VesaDisplayStart >> 8);
         state[at++] = (byte)(VesaDisplayStart >> 16);
         state[at++] = _featureControl; // formerly zero padding; old snapshots read as reset
+        state[at++] = CursorColourSnapshotMarker;
+        WriteCursorColourToSnapshot(state, ref at, _cursorForegroundColour);
+        WriteCursorColourToSnapshot(state, ref at, _cursorBackgroundColour);
+        state[at++] = (byte)_cursorColourStackPointer;
 
         return state;
     }
@@ -1289,8 +1360,43 @@ public sealed class VgaRegisters : IIoDevice
         VesaScanLineBytes = state[at] | (state[at + 1] << 8); at += 2;
         VesaDisplayStart = state[at] | (state[at + 1] << 8) | (state[at + 2] << 16); at += 3;
         _featureControl = (byte)(state[at] & 0x08);
+        at++;
+
+        if (state[at++] == CursorColourSnapshotMarker)
+        {
+            _cursorForegroundColour = ReadCursorColourFromSnapshot(state, ref at);
+            _cursorBackgroundColour = ReadCursorColourFromSnapshot(state, ref at);
+            _cursorColourStackPointer = state[at] & 0x03;
+        }
+        else
+        {
+            // The old snapshot tail had no colour stacks. Its CR4A and CR4B
+            // bytes can supply the legacy low byte, but the two bytes above
+            // it were never saved and must be reprogrammed after restore.
+            _cursorForegroundColour = _crtc[CursorForegroundStackRegister];
+            _cursorBackgroundColour = _crtc[CursorBackgroundStackRegister];
+            _cursorColourStackPointer = 0;
+        }
 
         ModeChanged?.Invoke();
+    }
+
+    /// <summary>Writes the three stored bytes of one cursor colour into a register snapshot.</summary>
+    private static void WriteCursorColourToSnapshot(byte[] state, ref int at, uint colour)
+    {
+        state[at++] = (byte)colour;
+        state[at++] = (byte)(colour >> 8);
+        state[at++] = (byte)(colour >> 16);
+    }
+
+    /// <summary>Reads the three stored bytes of one cursor colour from a register snapshot.</summary>
+    private static uint ReadCursorColourFromSnapshot(ReadOnlySpan<byte> state, ref int at)
+    {
+        uint lowByte = state[at++];
+        uint middleByte = (uint)state[at++] << 8;
+        uint highByte = (uint)state[at++] << 16;
+
+        return lowByte | middleByte | highByte;
     }
 
     /// <summary>

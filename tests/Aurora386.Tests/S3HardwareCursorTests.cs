@@ -25,14 +25,14 @@ public class S3HardwareCursorTests
     private const uint PatternBlock = 1024;
     private const uint PatternAddress = PatternBlock * 1024;
 
-    private static Machine WithCursor()
+    private static Machine WithCursor(ushort vesaMode = 0x101)
     {
         var machine = new Machine();
         machine.RunInstructions(3000);
         machine.Cpu.State.Halted = false;
 
         machine.Cpu.State.Ax = 0x4F02;
-        machine.Cpu.State.Bx = 0x101;               // 640x480 at 256 colours
+        machine.Cpu.State.Bx = vesaMode;
         machine.VideoServices.Handle(machine.Cpu);
 
         Crtc(machine, 0x38, 0x48);                  // unlock
@@ -50,6 +50,22 @@ public class S3HardwareCursorTests
     {
         machine.Io.WriteByte(0x3D4, (byte)index);
         machine.Io.WriteByte(0x3D5, value);
+    }
+
+    private static byte ReadCrtc(Machine machine, int index)
+    {
+        machine.Io.WriteByte(0x3D4, (byte)index);
+
+        return machine.Io.ReadByte(0x3D5);
+    }
+
+    /// <summary>Programs one cursor stack in the documented blue, green, red byte order.</summary>
+    private static void CursorColour(Machine machine, int index, byte blue, byte green, byte red)
+    {
+        ReadCrtc(machine, 0x45);
+        Crtc(machine, index, blue);
+        Crtc(machine, index, green);
+        Crtc(machine, index, red);
     }
 
     /// <summary>Fills the whole 64x64 pattern with one AND/XOR combination.</summary>
@@ -72,6 +88,131 @@ public class S3HardwareCursorTests
         Crtc(machine, 0x47, (byte)x);
         Crtc(machine, 0x48, (byte)(y >> 8));
         Crtc(machine, 0x49, (byte)y);
+    }
+
+    private static uint RenderForegroundCursor(Machine machine)
+    {
+        FillPattern(machine, and: false, xor: true);
+        Place(machine, 100, 50);
+        Crtc(machine, 0x45, 0x01);
+        machine.Video.Render(force: true);
+
+        int cursorPixel = 60 * machine.Video.Width + 110;
+
+        return machine.Video.Framebuffer[cursorPixel];
+    }
+
+    [Fact]
+    public void ReadingCursorModeResetsTheSharedColourStackPointer()
+    {
+        using Machine machine = WithCursor();
+
+        Crtc(machine, 0x4A, 0x11);
+        Crtc(machine, 0x4B, 0x22);
+        ReadCrtc(machine, 0x45);
+        Crtc(machine, 0x4B, 0x33);
+
+        Assert.Equal(0x000011u, machine.VideoRegisters.CursorColours.Foreground);
+        Assert.Equal(0x002233u, machine.VideoRegisters.CursorColours.Background);
+    }
+
+    [Fact]
+    public void CursorColourStacksStoreDistinctBlueGreenRedValues()
+    {
+        using Machine machine = WithCursor();
+
+        CursorColour(machine, 0x4A, 0x11, 0x22, 0x33);
+        CursorColour(machine, 0x4B, 0x44, 0x55, 0x66);
+
+        Assert.Equal(0x332211u, machine.VideoRegisters.CursorColours.Foreground);
+        Assert.Equal(0x665544u, machine.VideoRegisters.CursorColours.Background);
+    }
+
+    [Fact]
+    public void ATrueColourWhiteCursorDoesNotUsePaletteEntry255()
+    {
+        using Machine machine = WithCursor(0x114);
+        machine.VideoRegisters.SetPaletteEntry(0xFF, 0, 0, 0);
+        CursorColour(machine, 0x4A, 0xFF, 0xFF, 0xFF);
+
+        uint cursor = RenderForegroundCursor(machine);
+
+        Assert.Equal(0xFFFFFFFFu, cursor);
+    }
+
+    [Theory]
+    [InlineData((ushort)0x113, 0x7C00, 0xFF0000FFu)]
+    [InlineData((ushort)0x113, 0x03E0, 0xFF00FF00u)]
+    [InlineData((ushort)0x113, 0x001F, 0xFFFF0000u)]
+    [InlineData((ushort)0x114, 0xF800, 0xFF0000FFu)]
+    [InlineData((ushort)0x114, 0x07E0, 0xFF00FF00u)]
+    [InlineData((ushort)0x114, 0x001F, 0xFFFF0000u)]
+    public void FifteenAndSixteenBitCursorColoursUseTheScreenPixelFormat(
+        ushort vesaMode,
+        ushort packedColour,
+        uint expected)
+    {
+        using Machine machine = WithCursor(vesaMode);
+        CursorColour(machine,
+                     0x4A,
+                     (byte)packedColour,
+                     (byte)(packedColour >> 8),
+                     0);
+
+        uint cursor = RenderForegroundCursor(machine);
+
+        Assert.Equal(expected, cursor);
+    }
+
+    [Fact]
+    public void AThirtyTwoBitCursorUsesBlueGreenRedStackOrder()
+    {
+        using Machine machine = WithCursor(0x140);
+        CursorColour(machine, 0x4A, 0x11, 0x22, 0x33);
+
+        uint cursor = RenderForegroundCursor(machine);
+
+        Assert.Equal(0xFF112233u, cursor);
+    }
+
+    [Fact]
+    public void AnEightBitCursorStillSelectsTheDacWithItsLowByte()
+    {
+        using Machine machine = WithCursor();
+        machine.VideoRegisters.DacBitsPerColour = 8;
+        machine.VideoRegisters.SetPaletteEntry(0x05, 0x12, 0x34, 0x56);
+        CursorColour(machine, 0x4A, 0x05, 0xFF, 0xFF);
+
+        uint cursor = RenderForegroundCursor(machine);
+
+        Assert.Equal(0xFF563412u, cursor);
+    }
+
+    [Fact]
+    public void APlanarFourBitCursorStillSelectsTheDacWithItsLowByte()
+    {
+        using Machine machine = WithCursor(0x102);
+        machine.VideoRegisters.DacBitsPerColour = 8;
+        machine.VideoRegisters.SetPaletteEntry(0x0C, 0x12, 0x34, 0x56);
+        CursorColour(machine, 0x4A, 0x0C, 0xFF, 0xFF);
+
+        uint cursor = RenderForegroundCursor(machine);
+
+        Assert.Equal(0xFF563412u, cursor);
+    }
+
+    [Fact]
+    public void RegisterSnapshotsPreserveAColourStackPartWayThroughAWrite()
+    {
+        using Machine machine = WithCursor();
+
+        Crtc(machine, 0x4A, 0xAA);
+        byte[] saved = machine.VideoRegisters.CaptureRegisters();
+        Crtc(machine, 0x4A, 0xBB);
+        machine.VideoRegisters.RestoreRegisters(saved);
+        Crtc(machine, 0x4A, 0xCC);
+
+        Assert.Equal(0x00CCAAu, machine.VideoRegisters.CursorColours.Foreground);
     }
 
     [Theory]

@@ -262,12 +262,12 @@ public sealed class VgaRenderer
     {
         (int originX, int originY) = _registers.CursorPosition;
         (int offsetX, int offsetY) = _registers.CursorOffset;
-        (byte foreground, byte background) = _registers.CursorColours;
+        (uint foreground, uint background) = _registers.CursorColours;
 
         uint pattern = _registers.CursorPatternAddress;
 
-        uint foregroundColour = ToRgba(_registers.GetPaletteColor(foreground));
-        uint backgroundColour = ToRgba(_registers.GetPaletteColor(background));
+        uint foregroundColour = HardwareCursorColour(foreground);
+        uint backgroundColour = HardwareCursorColour(background);
 
         for (int row = offsetY; row < 64; row++)
         {
@@ -304,6 +304,53 @@ public sealed class VgaRenderer
                     // visible over a background of any colour.
                     _framebuffer[destination] ^= 0x00FFFFFF;
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Converts an S3 cursor colour in the same format as the current screen.
+    ///
+    /// The cursor stack is a direct colour value above 8 bits per pixel. It
+    /// reaches the DAC only in 8-bit modes, where its low byte remains the
+    /// palette index that older S3 software programs into CR4A and CR4B.
+    /// </summary>
+    private uint HardwareCursorColour(uint colour)
+    {
+        int depth = _registers.EffectiveMode.BitsPerPixel;
+
+        switch (depth)
+        {
+            case 15:
+            {
+                int rgb555 = (int)(colour & 0xFFFF);
+
+                return From15(rgb555);
+            }
+            case 16:
+            {
+                int rgb565 = (int)(colour & 0xFFFF);
+
+                return From16(rgb565);
+            }
+            case 24:
+            case 32:
+            {
+                byte red = (byte)(colour >> 16);
+                byte green = (byte)(colour >> 8);
+                byte blue = (byte)colour;
+
+                return FromBytes(red, green, blue);
+            }
+            default:
+            {
+                // The original renderer used the DAC for every cursor mode.
+                // Preserve that path for VGA-compatible depths such as the
+                // planar 4-bit VBE mode; only true-colour modes reinterpret
+                // the stack as an RGB value.
+                byte paletteIndex = (byte)colour;
+
+                return ToRgba(_registers.GetPaletteColor(paletteIndex));
             }
         }
     }
