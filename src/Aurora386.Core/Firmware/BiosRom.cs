@@ -99,6 +99,10 @@ public static partial class BiosRom
         /// <summary>The 256 DAC triples streamed by <see cref="TextModeCompletion"/>.</summary>
         public const ushort TextModePalette = 0x3000;
 
+        /// <summary>Guest text services, after the DAC table and published font.</summary>
+        public const ushort TextServices = 0x3300;
+        public const ushort TextServicesEnd = 0x3800;
+
         /// <summary>
         /// The system configuration table INT 15h AH=C0 hands back, which says
         /// what kind of machine this is and which BIOS features it has.
@@ -589,10 +593,10 @@ public static partial class BiosRom
     }
 
     /// <summary>
-    /// INT 10h. A mode set (AH = 0) first runs the ROM routine that writes
-    /// the adapter's registers through the ports, then the native handler
-    /// does the rest -- BIOS data area, screen clear, palette, cursor -- as
-    /// for every other function.
+    /// INT 10h. Mode sets program the adapter through guest ports, and colour
+    /// text services use the guest's BDA and memory. A display monitor can
+    /// intercept these instructions without changing the physical desktop.
+    /// Other services retain their existing native completion.
     /// </summary>
     private static void WriteVideoEntry(byte[] rom)
     {
@@ -610,15 +614,8 @@ public static partial class BiosRom
         a.CallNear(Entry.TextModeCompletion);
         a.B(0xCF);                          // IRET
         a.Label("not_mode");
-        a.B(0x80, 0xFC, 0x10);              // CMP AH,10h
-        a.Jcc(0x75, "not_palette");         // JNE
-        a.CallNear(Entry.VgaPalette);
-        a.Jmp("hook");
-        a.Label("not_palette");
-        a.CallNear(Entry.VesaProgram);      // does nothing unless AX = 4F02h
-        a.Label("hook");
-        a.B(HookByte1, HookByte2, (byte)Handler.Video);
-        a.B(0xCF);                          // IRET
+        int textDisplacement = Entry.TextServices - (a.Position + 3);
+        a.B(0xE9, (byte)textDisplacement, (byte)(textDisplacement >> 8));
         a.Resolve();
         if (a.Position > Entry.VgaPalette) throw new InvalidOperationException("video dispatch overruns the palette routine");
 
@@ -627,6 +624,7 @@ public static partial class BiosRom
         WriteVgaTables(rom);
         WriteVgaPalette(rom);
         WriteTextModeCompletion(rom);
+        WriteTextServices(rom);
     }
 
     /// <summary>
@@ -752,6 +750,13 @@ public static partial class BiosRom
         /// <summary>An unconditional jump with a 16-bit displacement, for targets further than 127 bytes.</summary>
         public void JmpNear(string label) { B(0xE9, 0, 0); _nearFixups.Add((Position - 2, label)); }
         private readonly List<(int At, string Label)> _nearFixups = new();
+
+        /// <summary>A near call to a helper in the same emitted routine.</summary>
+        public void CallNear(string label)
+        {
+            B(0xE8, 0, 0);
+            _nearFixups.Add((Position - 2, label));
+        }
 
         public void CallNear(int target) { int rel = target - (Position + 3); B(0xE8, (byte)rel, (byte)(rel >> 8)); }
 

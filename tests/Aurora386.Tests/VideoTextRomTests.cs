@@ -6,8 +6,8 @@ using Aurora386.Core.IO;
 namespace Aurora386.Tests;
 
 /// <summary>
-/// The text-mode half of INT 10h AH=00 runs in ROM so a virtual display
-/// device can redirect a DOS console without changing the Windows desktop.
+/// BIOS colour text services run in ROM so a virtual display device can
+/// redirect a DOS console without changing the Windows desktop.
 /// These tests exercise the interrupt instead of calling video services,
 /// because the order and origin of the guest stores are the contract.
 /// </summary>
@@ -129,6 +129,50 @@ public sealed class VideoTextRomTests
         public ushort PrivateVideoWord(uint offset) => Machine.Memory.ReadWord(PrivateVideo + offset);
         public byte PrivateVideoByte(uint offset) => Machine.Memory.ReadByte(PrivateVideo + offset);
 
+        public void SetGuestTextState(ushort cursor = 0, ushort columns = 80, byte mode = 3)
+        {
+            Machine.Memory.WriteByte(PrivateBda + 0x449, mode);
+            Machine.Memory.WriteWord(PrivateBda + 0x44A, columns);
+            Machine.Memory.WriteWord(PrivateBda + 0x450, cursor);
+            Machine.Memory.WriteWord(PrivateBda + 0x460, 0x0607);
+            Machine.Memory.WriteByte(PrivateBda + 0x462, 2);
+            Machine.Memory.WriteByte(PrivateBda + 0x484, 24);
+        }
+
+        public void SetGuestVideoWord(uint offset, ushort value)
+        {
+            Machine.Memory.WriteWord(PrivateVideo + offset, value);
+        }
+
+        public void MapVideoPage(uint page, bool present)
+        {
+            Machine.Memory.WriteDword(PageTable + page * 4,
+                (PrivateVideo + (page - 0xB8) * 0x1000) | (present ? 3u : 2u));
+            Machine.Cpu.InvalidatePage(page << 12);
+        }
+
+        public void InstallFaultReturn()
+        {
+            // The 16-bit fault frame starts with its error code. Return to
+            // the faulting ROM instruction, preserving its REP progress.
+            Machine.Memory.WriteByte(0x20200, 0x83);
+            Machine.Memory.WriteByte(0x20201, 0xC4);
+            Machine.Memory.WriteByte(0x20202, 0x02);
+            Machine.Memory.WriteByte(0x20203, 0xCF);
+        }
+
+        public void AssertPhysicalDesktopUnchanged()
+        {
+            Assert.Equal(PhysicalRegistersBefore, Machine.VideoRegisters.CaptureRegisters());
+            Assert.Equal(PhysicalVideoBefore, Machine.VideoMemory.CaptureMemory());
+            Assert.Equal(PhysicalBdaBefore, Enumerable.Range(0, 0x100)
+                .Select(index => Machine.Memory.ReadByte(0x400u + (uint)index)).ToArray());
+            Assert.Equal(PhysicalVideoModeBefore, Machine.VideoRegisters.VideoMode);
+            Assert.Equal(PhysicalTextColumnsBefore, Machine.VideoRegisters.TextColumns);
+            Assert.Equal(PhysicalTextRowsBefore, Machine.VideoRegisters.TextRows);
+            Assert.Equal(PhysicalCharacterHeightBefore, Machine.VideoRegisters.CharacterHeight);
+        }
+
         public void Dispose() => Machine.Dispose();
 
         private void WriteDescriptor(ushort selector, uint baseAddress, byte access)
@@ -180,6 +224,232 @@ public sealed class VideoTextRomTests
         machine.Cpu.State.Bx = 0x8101;
         RunInt10(machine, 0x4F02);
         Assert.NotNull(machine.VideoRegisters.VesaMode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AVideoModeQueryReadsTheVirtualBda(bool direction)
+    {
+        using var fixture = new ProtectedTextModeFixture(true, 0x0F00, direction);
+        fixture.SetGuestTextState(columns: 40);
+        Machine machine = fixture.Machine;
+        RunInt10(machine, 0x0F00);
+
+        Assert.Equal(0xA1B22803u, machine.Cpu.State.Eax);
+        Assert.Equal(0xB2C302E5u, machine.Cpu.State.Ebx);
+        Assert.Equal(0xC3D4E5F6u, machine.Cpu.State.Ecx);
+        Assert.Equal(0xD4E5F607u, machine.Cpu.State.Edx);
+        Assert.Equal(0xE5F60718u, machine.Cpu.State.Esi);
+        Assert.Equal(0xF6071829u, machine.Cpu.State.Edi);
+        Assert.Equal(0x0718293Au, machine.Cpu.State.Ebp);
+        Assert.Equal((ushort)0x0040, machine.Cpu.State.Ds.Selector);
+        Assert.Equal((ushort)0x3000, machine.Cpu.State.Es.Selector);
+        Assert.Equal(direction, machine.Cpu.Flags.Direction);
+        fixture.AssertPhysicalDesktopUnchanged();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TextCursorAndReadCallsUseTheVirtualBdaAndCrtc(bool direction)
+    {
+        using var fixture = new ProtectedTextModeFixture(true, direction: direction);
+        fixture.SetGuestTextState(columns: 40);
+        Machine machine = fixture.Machine;
+        machine.Cpu.State.Dx = 0x0513;
+        RunInt10(machine, 0x0200);
+        Assert.Equal((ushort)0x0513, fixture.PrivateBdaWord(0x450));
+        Assert.Equal((ushort)219, fixture.Shadow.CursorAddress);
+
+        machine.Cpu.State.Dx = 0;
+        RunInt10(machine, 0x0300);
+        Assert.Equal((ushort)0x0513, machine.Cpu.State.Dx);
+        Assert.Equal((ushort)0x0607, machine.Cpu.State.Cx);
+
+        fixture.Shadow.WriteByte(0x3D4, 0x0C);
+        fixture.Shadow.WriteByte(0x3D5, 0);
+        fixture.Shadow.WriteByte(0x3D4, 0x0D);
+        fixture.Shadow.WriteByte(0x3D5, 43);
+        fixture.SetGuestVideoWord(524, 0x1E41);
+        RunInt10(machine, 0x0800);
+        Assert.Equal((ushort)0x1E41, machine.Cpu.State.Ax);
+        Assert.Equal(0xB2C3D4E5u, machine.Cpu.State.Ebx);
+        Assert.Equal(0xE5F60718u, machine.Cpu.State.Esi);
+        Assert.Equal(0xF6071829u, machine.Cpu.State.Edi);
+        Assert.Equal(0x0718293Au, machine.Cpu.State.Ebp);
+        Assert.Equal(direction, machine.Cpu.Flags.Direction);
+        fixture.AssertPhysicalDesktopUnchanged();
+    }
+
+    [Fact]
+    public void ATeletypeCharacterUsesTheGuestVideoPageAndGeometry()
+    {
+        using var fixture = new ProtectedTextModeFixture(true, 0x0E76);
+        fixture.SetGuestTextState(0x0513);
+        fixture.SetGuestVideoWord(0x346, 0x0620);
+        fixture.Machine.Cpu.State.Bx = 7;
+        RunInt10(fixture.Machine, 0x0E76);
+
+        Assert.Equal((ushort)0x0676, fixture.PrivateVideoWord(0x346));
+        Assert.Equal((ushort)0x0514, fixture.PrivateBdaWord(0x450));
+        fixture.AssertPhysicalDesktopUnchanged();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ATextCharacterFaultCanRetryWithoutAdvancingTheCursorTwice(bool direction)
+    {
+        using var fixture = new ProtectedTextModeFixture(false, 0x0E76, direction);
+        fixture.SetGuestTextState(0x0513);
+        fixture.SetGuestVideoWord(0x346, 0x0620);
+        Machine machine = fixture.Machine;
+        (byte Vector, uint Error, uint Ip)? fault = null;
+        machine.Cpu.ProcessorException += (vector, error, ip, _) => fault = (vector, error, ip);
+        for (int instruction = 0; instruction < 2000 && fault is null; instruction++)
+        {
+            machine.Cpu.Step();
+        }
+
+        Assert.Equal((byte)14, fault?.Vector);
+        Assert.Equal(2u, fault?.Error);
+        Assert.Equal(0xB8346u, machine.Cpu.State.Cr2);
+        Assert.Equal((byte)0x26, machine.Cpu.PeekLinear(0xF0000 + fault!.Value.Ip));
+        Assert.Equal((byte)0x88, machine.Cpu.PeekLinear(0xF0001 + fault.Value.Ip));
+        Assert.Equal((ushort)0x0513, fixture.PrivateBdaWord(0x450));
+        Assert.Equal((ushort)0x0620, fixture.PrivateVideoWord(0x346));
+        fixture.AssertPhysicalDesktopUnchanged();
+
+        fixture.MapVideoPage(0xB8, true);
+        fixture.InstallFaultReturn();
+        ContinueToHalt(machine);
+        Assert.Equal((ushort)0x0676, fixture.PrivateVideoWord(0x346));
+        Assert.Equal((ushort)0x0514, fixture.PrivateBdaWord(0x450));
+        AssertTextCallerPreserved(machine, 0x0E76, direction);
+        fixture.AssertPhysicalDesktopUnchanged();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ATextScrollRetriesInGuestMemoryAndPreservesAttributes(bool direction)
+    {
+        using var fixture = new ProtectedTextModeFixture(true, 0x0E0A, direction);
+        fixture.SetGuestTextState(0x1800);
+        fixture.MapVideoPage(0xB9, false);
+        fixture.Shadow.WriteByte(0x3D4, 0x0C);
+        fixture.Shadow.WriteByte(0x3D5, 1);                 // Display start = 256 cells
+        fixture.Shadow.WriteByte(0x3D4, 0x0D);
+        fixture.Shadow.WriteByte(0x3D5, 0);
+        const uint screenStart = 512;
+        fixture.SetGuestVideoWord(screenStart - 2, 0xCAFE);
+        fixture.SetGuestVideoWord(screenStart + 4000, 0xBEEF);
+        for (uint row = 0; row < 25; row++)
+        {
+            for (uint column = 0; column < 80; column++)
+            {
+                fixture.SetGuestVideoWord(screenStart + (row * 80 + column) * 2,
+                    (ushort)(0x1000 + row * 256 + column));
+            }
+        }
+
+        Machine machine = fixture.Machine;
+        (byte Vector, uint Error, uint Ip)? fault = null;
+        machine.Cpu.ProcessorException += (vector, error, ip, _) => fault = (vector, error, ip);
+        for (int instruction = 0; instruction < 5000 && fault is null; instruction++)
+        {
+            machine.Cpu.Step();
+        }
+
+        Assert.Equal((byte)14, fault?.Vector);
+        Assert.Equal(0u, fault?.Error);                    // Missing MOVSW source page
+        Assert.Equal(0xB9000u, machine.Cpu.State.Cr2);
+        Assert.Equal((byte)0xF3, machine.Cpu.PeekLinear(0xF0000 + fault!.Value.Ip));
+        Assert.Equal((byte)0xA5, machine.Cpu.PeekLinear(0xF0001 + fault.Value.Ip));
+        Assert.Equal((ushort)0x1100, fixture.PrivateVideoWord(screenStart));
+        Assert.Equal((ushort)0x1800, fixture.PrivateBdaWord(0x450));
+        fixture.MapVideoPage(0xB9, true);
+        fixture.InstallFaultReturn();
+        ContinueToHalt(machine);
+
+        for (uint row = 0; row < 25; row++)
+        {
+            for (uint column = 0; column < 80; column++)
+            {
+                ushort expected = row == 24 ? (ushort)0x0720 : (ushort)(0x1100 + row * 256 + column);
+                Assert.Equal(expected, fixture.PrivateVideoWord(screenStart + (row * 80 + column) * 2));
+            }
+        }
+
+        Assert.Equal((ushort)0xCAFE, fixture.PrivateVideoWord(screenStart - 2));
+        Assert.Equal((ushort)0xBEEF, fixture.PrivateVideoWord(screenStart + 4000));
+        Assert.Equal((ushort)0x1800, fixture.PrivateBdaWord(0x450));
+        AssertTextCallerPreserved(machine, 0x0E0A, direction);
+        fixture.AssertPhysicalDesktopUnchanged();
+    }
+
+    [Theory]
+    [InlineData(0x004F, 0x41, 0x0050)]
+    [InlineData(0x0050, 0x41, 0x0101)]
+    [InlineData(0x0050, 0x0D, 0x0000)]
+    [InlineData(0x0050, 0x0A, 0x0150)]
+    [InlineData(0x0050, 0x08, 0x004F)]
+    [InlineData(0x0000, 0x08, 0x0000)]
+    [InlineData(0x0050, 0x07, 0x0050)]
+    public void TextTeletypeControlsKeepTheExistingWrapBehaviour(int cursor, int character, int expected)
+    {
+        using var fixture = new ProtectedTextModeFixture(true);
+        fixture.SetGuestTextState((ushort)cursor);
+        RunInt10(fixture.Machine, (ushort)(0x0E00 | character));
+        Assert.Equal((ushort)expected, fixture.PrivateBdaWord(0x450));
+        fixture.AssertPhysicalDesktopUnchanged();
+
+        using var forwarded = new Machine();
+        forwarded.RunInstructions(3000);
+        RunInt10(forwarded, 0x0003);
+        forwarded.Cpu.State.Dx = (ushort)cursor;
+        RunInt10(forwarded, 0x0200);
+        RunInt10(forwarded, (ushort)(0x0E00 | character));
+        Assert.Equal((ushort)expected, forwarded.Memory.ReadWord(0x450));
+    }
+
+    private static void ContinueToHalt(Machine machine)
+    {
+        for (int instruction = 0; instruction < 20_000 && !machine.Cpu.State.Halted; instruction++)
+        {
+            machine.Cpu.Step();
+        }
+
+        Assert.True(machine.Cpu.State.Halted);
+        Assert.Equal((ushort)0x2000, machine.Cpu.State.Cs.Selector);
+        Assert.Equal(0x106u, machine.Cpu.State.Eip);
+    }
+
+    private static void AssertTextCallerPreserved(Machine machine, ushort ax, bool direction)
+    {
+        Assert.Equal(0xA1B20000u | ax, machine.Cpu.State.Eax);
+        Assert.Equal(0xB2C3D4E5u, machine.Cpu.State.Ebx);
+        Assert.Equal(0xC3D4E5F6u, machine.Cpu.State.Ecx);
+        Assert.Equal(0xD4E5F607u, machine.Cpu.State.Edx);
+        Assert.Equal(0xE5F60718u, machine.Cpu.State.Esi);
+        Assert.Equal(0xF6071829u, machine.Cpu.State.Edi);
+        Assert.Equal(0x0718293Au, machine.Cpu.State.Ebp);
+        Assert.Equal((ushort)0x0040, machine.Cpu.State.Ds.Selector);
+        Assert.Equal((ushort)0x3000, machine.Cpu.State.Es.Selector);
+        Assert.Equal(direction, machine.Cpu.Flags.Direction);
+    }
+
+    [Theory]
+    [InlineData(7)]
+    [InlineData(0x13)]
+    public void OtherGuestModesKeepTheNativeTextServiceFallback(byte mode)
+    {
+        using var fixture = new ProtectedTextModeFixture(true);
+        fixture.SetGuestTextState(mode: mode);
+        RunInt10(fixture.Machine, 0x0F00);
+        Assert.Equal(fixture.Machine.Memory.ReadByte(0x449), fixture.Machine.Cpu.State.GetReg8(0));
+        fixture.AssertPhysicalDesktopUnchanged();
     }
 
     [Fact]
