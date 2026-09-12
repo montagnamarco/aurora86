@@ -118,6 +118,12 @@ public static class VesaModes
         // XRGB8888 uses four bytes per pixel; 1024x768 would exceed 2 MB.
         new(0x140, 640, 480, 32),
         new(0x141, 800, 600, 32),
+
+        // The Windows 95 S3 driver requests these aliases for the same
+        // XRGB8888 timings. Its mode records name 0220h for 640x480 and
+        // 0221h for 800x600 before falling back to the standard 24-bit modes.
+        new(0x220, 640, 480, 32),
+        new(0x221, 800, 600, 32),
     ];
 
     /// <summary>
