@@ -388,33 +388,54 @@ public sealed partial class Machine : IDisposable
     /// </summary>
     private void WatchForCommandProcessor()
     {
+        const int maximumDosPathBytes = 64;
+        const string commandProcessorName = "COMMAND.COM";
+
         Cpu.SoftwareInterruptIssued += vector =>
         {
-            if (CommandProcessorStarted || vector != 0x21) return;
-            if ((byte)(Cpu.State.Eax >> 8) != 0x4B) return;
+            if (CommandProcessorStarted || vector != 0x21)
+            {
+                return;
+            }
+            if ((byte)(Cpu.State.Eax >> 8) != 0x4B)
+            {
+                return;
+            }
 
-            // The name is at DS:DX, and DOS launches it by a path that ends
-            // in COMMAND.COM whether or not a SHELL= line moved it.
+            // The name is at DS:DX. Windows 95 launches C:\WINDOWS\COMMAND.COM,
+            // so filling this tail buffer must not stop the path scan.
             uint at = Cpu.State.Ds.Base + Cpu.State.Dx;
             Span<char> name = stackalloc char[16];
             int length = 0;
+            bool terminated = false;
 
-            for (uint i = 0; i < 64 && length < name.Length; i++)
+            for (uint i = 0; i < maximumDosPathBytes; i++)
             {
                 byte character = Memory.ReadByte(at + i);
-                if (character == 0) break;
+                if (character == 0)
+                {
+                    terminated = true;
+                    break;
+                }
 
                 // Only the tail is needed, so the window slides.
                 if (length == name.Length)
                 {
-                    for (int j = 1; j < length; j++) name[j - 1] = name[j];
+                    for (int j = 1; j < length; j++)
+                    {
+                        name[j - 1] = name[j];
+                    }
                     length--;
                 }
                 name[length++] = char.ToUpperInvariant((char)character);
             }
 
-            if (length >= 11 && name[..length].EndsWith("COMMAND.COM"))
+            // A suffix at the read bound is not a complete DOS ASCIIZ path.
+            if (terminated && length >= commandProcessorName.Length &&
+                name[..length].EndsWith(commandProcessorName))
+            {
                 CommandProcessorStarted = true;
+            }
         };
     }
 
