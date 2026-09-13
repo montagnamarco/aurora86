@@ -20,7 +20,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     public const int PageSize = 1 << PageShift;   // 4096
     public const uint PageMask = PageSize - 1;
 
-    private readonly uint _addressableBytes;
+    private readonly ulong _addressableBytes;
     private readonly int _pageCount;
 
     /// <summary>Pointer to the page's backing RAM, or null for MMIO and unmapped pages.</summary>
@@ -100,12 +100,23 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
     public uint RamSize => _ramSize;
 
-    public PhysicalMemoryBus(uint ramSize = 16 * 1024 * 1024, uint addressableBytes = 16 * 1024 * 1024)
+    /// <summary>
+    /// Allocates the installed RAM and a separate table for decoded physical
+    /// addresses. PCI apertures can reach the 4 GB boundary without adding
+    /// that address space to guest RAM; the exclusive endpoint needs 33 bits.
+    /// </summary>
+    public PhysicalMemoryBus(uint ramSize = 16 * 1024 * 1024,
+        ulong addressableBytes = 16 * 1024 * 1024)
     {
         if (ramSize == 0 || (ramSize & PageMask) != 0)
             throw new ArgumentException("RAM size must be a multiple of 4 KB.", nameof(ramSize));
         if (addressableBytes < ramSize)
             throw new ArgumentException("The addressable space cannot be smaller than the installed RAM.", nameof(addressableBytes));
+        if ((addressableBytes & PageMask) != 0 || addressableBytes > (1UL << 32))
+        {
+            throw new ArgumentOutOfRangeException(nameof(addressableBytes),
+                "The addressable space must be 4 KB aligned and no larger than 4 GB.");
+        }
 
         _ramSize = ramSize;
         _addressableBytes = addressableBytes;
@@ -229,7 +240,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         uint length = AlignUp((uint)content.Length);
         ValidateRange(physicalBase, length);
 
-        if (physicalBase + length > _ramSize)
+        if ((ulong)physicalBase + length > _ramSize)
             throw new ArgumentException("A ROM must lie within the installed RAM.", nameof(physicalBase));
 
         content.CopyTo(new Span<byte>(_ram + physicalBase, content.Length));
@@ -259,7 +270,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     public void WriteRomWord(uint address, ushort value)
     {
-        if (address + 2 > _ramSize)
+        if ((ulong)address + sizeof(ushort) > _ramSize)
             throw new ArgumentOutOfRangeException(nameof(address));
 
         _ram[address] = (byte)value;
@@ -305,7 +316,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     public void MapRam(uint physicalBase, uint length)
     {
         ValidateRange(physicalBase, length);
-        if (physicalBase + length > _ramSize)
+        if ((ulong)physicalBase + length > _ramSize)
             throw new ArgumentException("The range extends past the installed RAM.", nameof(physicalBase));
 
         int first = (int)(physicalBase >> PageShift);
@@ -685,8 +696,14 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     public Span<byte> GetRamSpan(uint physicalBase, int length)
     {
-        if (physicalBase + (uint)length > _ramSize)
-            throw new ArgumentOutOfRangeException(nameof(length), "The range extends past the installed RAM.");
+        // Direct host pointers must be bounded by installed RAM, even when
+        // the bus can decode PCI windows all the way up to 4 GB.
+        if (length < 0 || (ulong)physicalBase + (uint)length > _ramSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(length),
+                "The range extends past the installed RAM.");
+        }
+
         return new Span<byte>(_ram + physicalBase, length);
     }
 
@@ -698,8 +715,14 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
             throw new ArgumentException("The base address must be 4 KB aligned.", nameof(physicalBase));
         if (length == 0 || (length & PageMask) != 0)
             throw new ArgumentException("The length must be a multiple of 4 KB.", nameof(length));
-        if (physicalBase + length > _addressableBytes)
-            throw new ArgumentOutOfRangeException(nameof(length), "The range extends past the addressable space.");
+        // The final PCI aperture can end exactly at 4 GB. Add in 64 bits
+        // before touching any page entry, so an overflowing range cannot
+        // wrap to zero and partially replace a valid mapping.
+        if ((ulong)physicalBase + length > _addressableBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(length),
+                "The range extends past the addressable space.");
+        }
     }
 
     public void Dispose()
