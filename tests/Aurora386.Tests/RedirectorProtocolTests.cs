@@ -1,6 +1,7 @@
 using System.Text;
 using Aurora386.Core;
 using Aurora386.Core.Dos;
+using Aurora386.Core.Firmware;
 using CpuNs = Aurora386.Core.Cpu;
 
 namespace Aurora386.Tests;
@@ -148,6 +149,184 @@ public class RedirectorProtocolTests : IDisposable
         bool carry = (_machine.Memory.ReadWord(0x7004) & 1) != 0;
 
         return (handled, carry, cpu.State);
+    }
+
+    /// <summary>Runs the redirector through a real INT 2Fh frame and its ROM entry.</summary>
+    private CpuNs.CpuState CallGuest(byte subfunction, Action<CpuNs.CpuState>? setup = null)
+    {
+        _machine.Memory.WriteWord(0x2F * 4, BiosRom.Entry.RedirectorMultiplex);
+        _machine.Memory.WriteWord(0x2F * 4 + 2, 0xF000);
+        byte[] code = [0xB8, subfunction, 0x11, 0xCD, 0x2F, 0xF4];
+        for (uint offset = 0; offset < code.Length; offset++)
+        {
+            _machine.Memory.WriteByte(0x7000 + offset, code[offset]);
+        }
+
+        CpuNs.Cpu cpu = _machine.Cpu;
+        cpu.SetSegment(CpuNs.SegReg.Cs, 0);
+        cpu.SetSegment(CpuNs.SegReg.Ss, 0);
+        cpu.SetSegment(CpuNs.SegReg.Es, 0);
+        cpu.State.Eip = 0x7000;
+        cpu.State.Esp = 0x9000;
+        cpu.State.Di = (ushort)SftAddress;
+        cpu.State.Halted = false;
+        setup?.Invoke(cpu.State);
+        for (int step = 0; step < 256 && !cpu.State.Halted; step++)
+        {
+            cpu.Step();
+        }
+
+        Assert.True(cpu.State.Halted);
+        return cpu.State;
+    }
+
+    [Fact]
+    public void AttributeSetThroughInt2FIsVisibleToTheNextGuestAttributeQuery()
+    {
+        MountShare();
+        WriteHostFile("ATTR.TXT", "unchanged contents");
+        SetFilename("E:\\ATTR.TXT");
+
+        CallGuest(0x0E, state => state.Cx = 0x21);
+        Assert.False(_machine.Cpu.Flags.Carry);
+        CpuNs.CpuState result = CallGuest(0x0F);
+        Assert.False(_machine.Cpu.Flags.Carry);
+        Assert.Equal((ushort)0x21, result.Ax);
+    }
+
+    [Theory]
+    [InlineData(0x16, 1, 0)]
+    [InlineData(0x16, 2, 0)]
+    [InlineData(0x2E, 2, 1)]
+    [InlineData(0x2E, 0, 2)]
+    [InlineData(0x17, 2, 0)]
+    [InlineData(0x13, 0, 0)]
+    public void DosReadOnlyRejectsNewWriteOpensReplacementAndDeletion(int function, int mode, int action)
+    {
+        MountShare();
+        WriteHostFile("ATTR.TXT", "preserved bytes");
+        SetFilename("E:\\ATTR.TXT");
+        CallGuest(0x0E, state => state.Cx = 0x21);
+        Assert.False(_machine.Cpu.Flags.Carry);
+        _machine.Memory.WriteByte(SdaAddress + DosStructures.SdaOpenMode, (byte)mode);
+        _machine.Memory.WriteWord(SdaAddress + DosStructures.SdaExtendedOpenMode, (ushort)mode);
+        SetExtendedOpenAction((ushort)action);
+
+        CpuNs.CpuState result = CallGuest((byte)function, state => state.Cx = 0x20);
+        Assert.True(_machine.Cpu.Flags.Carry);
+        Assert.Equal((ushort)5, result.Ax);
+        Assert.Equal("preserved bytes", File.ReadAllText(Path.Combine(_root, "ATTR.TXT")));
+    }
+
+    [Fact]
+    public void AnAlreadyOpenDosHandleRemainsWritableAfterSettingReadOnly()
+    {
+        MountShare();
+        WriteHostFile("ATTR.TXT", "old bytes");
+        SetFilename("E:\\ATTR.TXT");
+        _machine.Memory.WriteByte(SdaAddress + DosStructures.SdaOpenMode, 2);
+        CallGuest(0x16);
+        Assert.False(_machine.Cpu.Flags.Carry);
+        CallGuest(0x0E, state => state.Cx = 0x21);
+        Assert.False(_machine.Cpu.Flags.Carry);
+
+        _machine.Memory.WriteByte(DtaAddress, (byte)'X');
+        CallGuest(0x09, state => state.Cx = 1);
+        Assert.False(_machine.Cpu.Flags.Carry);
+        Assert.StartsWith("X", File.ReadAllText(Path.Combine(_root, "ATTR.TXT")));
+        CallGuest(0x09, state => state.Cx = 0); // Existing-handle truncate follows the same rule.
+        Assert.False(_machine.Cpu.Flags.Carry);
+        Assert.Equal("X", File.ReadAllText(Path.Combine(_root, "ATTR.TXT")));
+        CallGuest(0x06);
+        CallGuest(0x0E, state => state.Cx = 0x20);
+        Assert.False(_machine.Cpu.Flags.Carry);
+        CallGuest(0x13);
+        Assert.False(_machine.Cpu.Flags.Carry);
+        Assert.False(File.Exists(Path.Combine(_root, "ATTR.TXT")));
+    }
+
+    [Fact]
+    public void SearchAndAttributeQueryReadTheSamePersistedDosFlags()
+    {
+        MountShare();
+        WriteHostFile("ATTR.TXT", "content");
+        SetFilename("E:\\ATTR.TXT");
+        CallGuest(0x0E, state => state.Cx = 0x27);
+        Assert.False(_machine.Cpu.Flags.Carry);
+        SetSearchAttributes(RedirectedFileAttributes.Hidden | RedirectedFileAttributes.System);
+        CallGuest(0x1B);
+        Assert.False(_machine.Cpu.Flags.Carry);
+        Assert.Equal((byte)0x27, _machine.Memory.ReadByte(SdaAddress + DosStructures.SdaFoundDirectoryEntry + 11));
+        Assert.Equal((ushort)0x27, CallGuest(0x0F).Ax);
+        Assert.False(_machine.Cpu.Flags.Carry);
+    }
+
+    [Fact]
+    public void AReadOnlyShareRejectsAttributeMutationWithoutCreatingMetadata()
+    {
+        WriteHostFile("ATTR.TXT", "content");
+        _machine.Redirector.Mount(ShareDrive, new HostDirectoryFileSystem(_root) { IsReadOnly = true });
+        SetFilename("E:\\ATTR.TXT");
+        Assert.Equal((ushort)5, CallGuest(0x0E, state => state.Cx = 0).Ax);
+        Assert.True(_machine.Cpu.Flags.Carry);
+        Assert.False(File.Exists(Path.Combine(_root, HostDosAttributeStore.FileName)));
+    }
+
+    [Fact]
+    public void MissingAttributeTargetsReturnFileNotFoundThroughTheRealFlagsFrame()
+    {
+        MountShare();
+        SetFilename("E:\\MISSING.TXT");
+        Assert.Equal((ushort)2, CallGuest(0x0E, state => state.Cx = 0x21).Ax);
+        Assert.True(_machine.Cpu.Flags.Carry);
+    }
+
+    [Fact]
+    public void MetadataPersistenceFailureReturnsAccessDeniedRatherThanSuccess()
+    {
+        MountShare();
+        WriteHostFile("ATTR.TXT", "content");
+        WriteHostFile(HostDosAttributeStore.FileName, "user file");
+        SetFilename("E:\\ATTR.TXT");
+        Assert.Equal((ushort)5, CallGuest(0x0E, state => state.Cx = 0x21).Ax);
+        Assert.True(_machine.Cpu.Flags.Carry);
+        Assert.Equal((ushort)0x20, CallGuest(0x0F).Ax);
+        Assert.False(_machine.Cpu.Flags.Carry);
+        Assert.Equal("user file", File.ReadAllText(Path.Combine(_root, HostDosAttributeStore.FileName)));
+    }
+
+    [Theory]
+    [InlineData(0x0E)]
+    [InlineData(0x0F)]
+    [InlineData(0x16)]
+    [InlineData(0x1B)]
+    public void UnreadableOwnedMetadataReturnsDosAccessDeniedInsteadOfEscapingTheInterrupt(int function)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        HostDirectoryFileSystem share = MountShare();
+        WriteHostFile("ATTR.TXT", "content");
+        share.SetAttributes("\\ATTR.TXT", RedirectedFileAttributes.Hidden);
+        SetFilename("E:\\ATTR.TXT");
+        SetSearchAttributes(RedirectedFileAttributes.Hidden);
+        string metadata = Path.Combine(_root, HostDosAttributeStore.FileName);
+        UnixFileMode mode = File.GetUnixFileMode(metadata);
+        byte[] original = File.ReadAllBytes(metadata);
+        File.SetUnixFileMode(metadata, UnixFileMode.None);
+        try
+        {
+            Assert.Equal((ushort)5, CallGuest((byte)function, state => state.Cx = 0x20).Ax);
+            Assert.True(_machine.Cpu.Flags.Carry);
+        }
+        finally
+        {
+            File.SetUnixFileMode(metadata, mode);
+        }
+
+        Assert.Equal(original, File.ReadAllBytes(metadata));
     }
 
     private byte ReadDta(uint offset) => _machine.Memory.ReadByte(DtaAddress + offset);

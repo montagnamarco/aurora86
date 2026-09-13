@@ -82,6 +82,10 @@ public interface IRedirectedFileSystem
     /// <summary>Truncates or extends a file to an exact length.</summary>
     void SetLength(string path, long length);
 
+    /// <summary>Sets mutable DOS R/H/S/A flags without changing file or directory identity.</summary>
+    void SetAttributes(string path, RedirectedFileAttributes attributes)
+        => throw new NotSupportedException("This filesystem cannot change DOS attributes.");
+
     void Delete(string path);
     void Rename(string fromPath, string toPath);
     void CreateDirectory(string path);

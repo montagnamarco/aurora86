@@ -282,7 +282,20 @@ public sealed class RedirectorServices(Machine machine)
 
         if (!IsInstalled) return false;
 
-        bool handled = Dispatch(cpu, subfunction);
+        bool handled;
+        try
+        {
+            handled = Dispatch(cpu, subfunction);
+        }
+        catch (Exception error) when (IsHostFileError(error))
+        {
+            // Attribute reads and directory enumeration can fail before a
+            // service reaches its data operation. Report that host failure
+            // through DOS rather than letting it escape the guest interrupt.
+            Fail(cpu, DosStructures.ErrorAccessDenied);
+            handled = true;
+        }
+
         TraceResult?.Invoke(subfunction, handled, cpu.State.Ax);
         return handled;
     }
@@ -849,7 +862,15 @@ public sealed class RedirectorServices(Machine machine)
             return true;
         }
 
-        FillSftForOpenFile(cpu, fs, path, info, ClassicOpenMode());
+        ushort mode = ClassicOpenMode();
+        if ((mode & 0x07) != 0 && (fs.IsReadOnly ||
+            (info.Attributes & RedirectedFileAttributes.ReadOnly) != 0))
+        {
+            Fail(cpu, DosStructures.ErrorAccessDenied);
+            return true;
+        }
+
+        FillSftForOpenFile(cpu, fs, path, info, mode);
         Succeed(cpu);
         return true;
     }
@@ -947,7 +968,11 @@ public sealed class RedirectorServices(Machine machine)
         }
         else if (replaceIfExists)
         {
-            if (fs.IsReadOnly) { Fail(cpu, DosStructures.ErrorAccessDenied); return true; }
+            if (fs.IsReadOnly || (info.Attributes & RedirectedFileAttributes.ReadOnly) != 0)
+            {
+                Fail(cpu, DosStructures.ErrorAccessDenied);
+                return true;
+            }
 
             try { fs.SetLength(path, 0); }
             catch (Exception e) when (IsHostFileError(e))
@@ -961,6 +986,13 @@ public sealed class RedirectorServices(Machine machine)
         }
         else if (openIfExists)
         {
+            if ((ExtendedOpenMode() & 0x07) != 0 && (fs.IsReadOnly ||
+                (info.Attributes & RedirectedFileAttributes.ReadOnly) != 0))
+            {
+                Fail(cpu, DosStructures.ErrorAccessDenied);
+                return true;
+            }
+
             cpu.State.Cx = 1;
         }
         else
@@ -1313,21 +1345,31 @@ public sealed class RedirectorServices(Machine machine)
     }
 
     /// <summary>
-    /// Subfunction 0Eh: set a file's attributes. Accepted but not acted on
-    /// for a writable share, because the DOS attribute bits have no faithful
-    /// equivalent on the host and inventing one -- chmod'ing a file because
-    /// DOS marked it read-only -- would surprise the user of the host far
-    /// more than it would help the program inside DOS.
+    /// Subfunction 0Eh: set the DOS attribute byte supplied in CL. Writable
+    /// host shares persist R/H/S/A separately from host permissions; success
+    /// means the next query can observe the change, not merely that it parsed.
     /// </summary>
     private bool SetFileAttributes(CpuNs.Cpu cpu)
     {
         if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
+        if (fs.IsReadOnly)
+        {
+            Fail(cpu, DosStructures.ErrorAccessDenied);
+            return true;
+        }
 
-        if (fs.IsReadOnly) { Fail(cpu, DosStructures.ErrorAccessDenied); return true; }
-
-        if (fs.GetInfo(path) is null)
+        try
+        {
+            fs.SetAttributes(path, (RedirectedFileAttributes)cpu.State.GetReg8(1));
+        }
+        catch (FileNotFoundException)
         {
             Fail(cpu, DosStructures.ErrorFileNotFound);
+            return true;
+        }
+        catch (Exception error) when (IsHostFileError(error))
+        {
+            Fail(cpu, DosStructures.ErrorAccessDenied);
             return true;
         }
 

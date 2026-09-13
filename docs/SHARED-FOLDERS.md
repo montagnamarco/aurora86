@@ -61,11 +61,36 @@ COPY without creating a host file. Source-file hashes remain unchanged.
 The CD appears as F: in this configuration; its letter must not be assumed
 to remain the same after adding a share.
 
-DOS attribute changes remain incomplete. In the current implementation,
-`ATTRIB +R` can report success while a subsequent attribute query still
-reports only the archive bit. Persistent DOS attributes and their write
-restrictions are being implemented separately. The verified read-only
-configuration option above does not depend on ATTRIB.
+DOS Read-only, Hidden, System and Archive attributes persist in an owned
+`.aurora386-dos-attributes.json` file at the share root. The backend creates
+it only when a writable operation needs metadata; mounting, listing and
+reading a share create nothing. Host permissions are preserved. A file with
+that name is private only when it has the recognized format and version.
+An unrelated existing file remains visible and is never overwritten; changes
+that require metadata fail with DOS access denied until the collision is
+resolved. The owned file is excluded from guest listings and path lookup,
+including DOS short-name aliases.
+
+Windows 95 `ATTRIB +R` now reads back as A R after a fresh machine restore.
+DELETE and an explicitly confirmed COPY overwrite both return access denied.
+A read-only share rejects `ATTRIB -R`; on a writable share, clearing R reads
+back as A and permits deletion. Handles opened for writing before R was set
+remain writable, matching the measured local DOS 7 FAT behavior. Existing
+directory identity is preserved, the volume-label bit is ignored by the
+setter, and invalid attribute masks return access denied.
+
+Metadata follows guest renames, including directory descendants, and is
+removed with deleted entries. Metadata is saved atomically before destructive
+host changes; if a host operation fails, the backend attempts to restore the
+previous metadata and reports failures to DOS. This is runtime rollback,
+not a crash-atomic transaction across the metadata and host file. External
+host renames are not tracked. Unreadable metadata also returns a DOS error
+instead of escaping the guest interrupt as a host exception.
+
+Automatic Archive updates after writes remain unfinished: the measured local
+DOS 7 filesystem sets A after a write and close, while the shared-folder
+backend currently retains explicitly stored flags. The persistent attribute
+setter and read-only restrictions above do not establish that behavior.
 
 `SharedFolderLettersTests` cover live CDS changes, occupied local/remote
 letters, LASTDRIVE and exhaustion through Z:. `CompactDiscLetterTests` use
