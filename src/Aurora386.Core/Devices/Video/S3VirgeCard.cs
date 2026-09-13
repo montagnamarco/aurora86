@@ -9,7 +9,7 @@ namespace Aurora386.Core.Devices.Video;
 /// CRTC address latches and the S3d triangle engine share one VRAM and display.
 /// Drivers reach registers through configuration mechanism 1 or the new MMIO
 /// window described in the August 1996 databook, sections 15, 17, 18 and 25.
-/// This subset has no option ROM, legacy VGA memory window, old MMIO, big-endian
+/// This subset has standard VGA memory decoding but no option ROM, old MMIO, big-endian
 /// decoding, Trio accelerator or IRQ timing; it does not provide VGA boot.
 /// </summary>
 public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
@@ -19,10 +19,14 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
     private const int BarRegister = 0x10;
     private const ushort PciMemoryEnable = 0x02;
     private const ushort PciIoEnable = 0x01;
+    private readonly PhysicalMemoryBus.DeviceMapping _legacyMapping;
     private readonly PhysicalMemoryBus.DeviceMapping _mapping;
     private bool _synchronizing;
     private bool _disposed;
     private bool _oldMmioRequested;
+    private bool _enhancedLegacyRequested;
+    private bool _writingVgaRegisters;
+    private bool _apertureWritePending;
     private uint _lastPciBase;
 
     /// <summary>
@@ -51,18 +55,30 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
         // Validate both owners before touching ports. A disposed memory bus
         // must not leave a PCI function behind; duplicate topology must not
         // retain even a disabled decoder in the memory bus.
-        _mapping = memory.CreateDeviceMapping(this);
+        // The legacy window has stable lower priority than BAR0, even if
+        // software later relocates the BAR over the first megabyte.
+        _legacyMapping = memory.CreateDeviceMapping(new LegacyWindow(this));
         try
         {
-            pci.Add(Function);
+            _mapping = memory.CreateDeviceMapping(this);
+            try
+            {
+                pci.Add(Function);
+            }
+            catch
+            {
+                _mapping.Dispose();
+                throw;
+            }
         }
         catch
         {
-            _mapping.Dispose();
+            _legacyMapping.Dispose();
             throw;
         }
         Function.ConfigurationChanged += OnPciChanged;
         Registers.VirgeAperture!.Changed += OnApertureChanged;
+        Registers.ModeChanged += SynchronizeMappings;
         RegisterPorts(io);
     }
 
@@ -73,7 +89,7 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
     public IVideoOutput Display { get; }
 
     /// <summary>
-    /// One notification per unsupported access or transition to old MMIO.
+    /// One notification per unsupported access or unsupported legacy mode transition.
     /// No logging or retained history is allocated when nobody listens.
     /// </summary>
     public event Action<S3VirgeUnsupportedAccess>? UnsupportedAccess;
@@ -89,8 +105,19 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
     {
         if (CanAccessPort(port))
         {
-            Registers.WriteByte(port, value);
+            WriteVgaPortGroup(port, 1, value);
         }
+    }
+
+    /// <summary>
+    /// Reconciles host-side register edits after a complete mode change or
+    /// restore. Guest port and MMIO writes do this automatically. Call after a
+    /// group of direct SetGraphics/SetCrtc edits, not halfway through a restore.
+    /// </summary>
+    public void SynchronizeMappings()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        OnApertureChanged();
     }
 
     /// <summary>Releases decoding while leaving the bus-owned PCI topology intact.</summary>
@@ -103,7 +130,9 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
 
         Function.ConfigurationChanged -= OnPciChanged;
         Registers.VirgeAperture!.Changed -= OnApertureChanged;
+        Registers.ModeChanged -= SynchronizeMappings;
         _mapping.Dispose();
+        _legacyMapping.Dispose();
         _disposed = true;
     }
 
@@ -159,6 +188,12 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
 
     private void OnApertureChanged()
     {
+        if (_writingVgaRegisters)
+        {
+            _apertureWritePending = true;
+            return;
+        }
+
         if (_synchronizing)
         {
             return;
@@ -179,6 +214,7 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
 
     private void UpdateMapping()
     {
+        UpdateLegacyMapping();
         // A disabled PCI function must reveal RAM or another underlying map.
         // Reserved holes are handled only inside an actively decoded aperture.
         if ((Function.Command & PciMemoryEnable) != 0)
@@ -197,6 +233,36 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
         }
 
         _oldMmioRequested = oldMmio;
+    }
+
+    /// <summary>
+    /// Commits a whole indexed MMIO operation before rebuilding address maps.
+    /// CR59 can change while the following byte still belongs to the old
+    /// transaction, so the address decoder must not move between its bytes.
+    /// </summary>
+    private void WriteVgaPortGroup(ushort firstPort, int width, uint value)
+    {
+        _writingVgaRegisters = true;
+        try
+        {
+            for (int index = 0; index < width; index++)
+            {
+                Registers.WriteByte((ushort)(firstPort + index), (byte)(value >> (index * 8)));
+            }
+        }
+        finally
+        {
+            _writingVgaRegisters = false;
+            if (_apertureWritePending)
+            {
+                _apertureWritePending = false;
+                OnApertureChanged();
+            }
+            else
+            {
+                UpdateMapping();
+            }
+        }
     }
 
     private void RegisterPorts(IoBus io)
@@ -229,12 +295,13 @@ public enum S3VirgeUnsupportedReason
     ReservedOrUnimplemented,
     BigEndian,
     OldMmio,
+    EnhancedLegacy,
     MisalignedConfiguration
 }
 
 /// <summary>
 /// A bounded diagnostic of one unsupported operation. Memory offsets are
-/// relative to BAR0; OldMmio reports the triggering CRTC index instead.
+/// relative to BAR0; legacy mode transitions report the triggering CRTC index.
 /// </summary>
 public readonly record struct S3VirgeUnsupportedAccess(
     uint Offset, int Width, bool Write, S3VirgeUnsupportedReason Reason);

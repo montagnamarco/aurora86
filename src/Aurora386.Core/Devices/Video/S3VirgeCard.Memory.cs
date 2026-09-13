@@ -132,12 +132,7 @@ public sealed partial class S3VirgeCard
 
             if (IsWithin(register, width, VgaAliasStart, VgaAliasEnd))
             {
-                for (int index = 0; index < width; index++)
-                {
-                    ushort port = (ushort)((register + (uint)index) & 0x3FF);
-                    Registers.WriteByte(port, (byte)(value >> (index * 8)));
-                }
-
+                WriteVgaPortGroup((ushort)(register & 0x3FF), width, value);
                 return;
             }
 
@@ -162,6 +157,53 @@ public sealed partial class S3VirgeCard
         }
 
         ReportUnsupported(offset, width, true, UnsupportedReason(offset));
+    }
+
+    /// <summary>
+    /// Selects the standard VGA memory window from GDC6. Enhanced banking and
+    /// old MMIO need separate protocols; disabling legacy decoding for those
+    /// requests is a diagnosed emulator limitation, not a silicon behaviour.
+    /// </summary>
+    private void UpdateLegacyMapping()
+    {
+        bool enhanced = (Registers.Crtc(0x31) & 8) != 0;
+        bool oldMmio = Registers.VirgeAperture!.OldMmioEnabled;
+        if ((Function.Command & PciMemoryEnable) == 0 || enhanced || oldMmio)
+        {
+            _legacyMapping.Disable();
+        }
+        else
+        {
+            (uint physicalBase, uint size) = Registers.MemoryWindow;
+            _legacyMapping.Update(physicalBase, size);
+        }
+
+        if (enhanced && !_enhancedLegacyRequested)
+        {
+            ReportUnsupported(0x31, 1, true, S3VirgeUnsupportedReason.EnhancedLegacy);
+        }
+
+        _enhancedLegacyRequested = enhanced;
+    }
+
+    /// <summary>
+    /// Adapts the currently selected legacy window to VgaMemory's fixed
+    /// A0000-relative offsets. In particular, B8000 must arrive as 18000h,
+    /// otherwise text characters are written to the graphics planes instead.
+    /// </summary>
+    private sealed class LegacyWindow(S3VirgeCard card) : IMemoryDevice
+    {
+        public byte ReadByte(uint offset)
+        {
+            uint vgaOffset = card._legacyMapping.PhysicalBase - VgaMemory.Base + offset;
+            return card.VideoMemory.ReadByte(vgaOffset);
+        }
+
+        public void WriteByte(uint offset, byte value)
+        {
+            uint vgaOffset = card._legacyMapping.PhysicalBase - VgaMemory.Base + offset;
+            card.VideoMemory.WriteByte(vgaOffset, value);
+        }
     }
 
     private bool IsLinearAccess(uint offset, int width)

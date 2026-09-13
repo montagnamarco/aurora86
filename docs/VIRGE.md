@@ -42,9 +42,20 @@ and RAM read watches. Disabling PCI memory decoding reveals that current
 mapping. Overlapping windows use a documented, stable creation order; this
 is an emulator mapping policy, not a claim about electrical bus arbitration.
 
-Old MMIO, big-endian windows, image transfer and ViRGE 2D commands remain
-unsupported and are diagnosed. This standalone card has no option ROM,
-legacy VGA memory window, IRQ timing, or machine-topology snapshot integration.
+The standard VGA legacy memory window follows GDC6: 128 KB at `A0000`,
+64 KB at `A0000`, 32 KB at `B0000`, or 32 KB at `B8000`. PCI memory enable
+controls decoding. Guest PIO and MMIO register writes update the same window;
+host register edits can be completed with `SynchronizeMappings()`. The BAR
+retains priority if relocated over legacy memory. A CPU word write at `B8000`
+has been checked against the character and attribute planes and the 720x400
+text display produced by mode 03h's nine-dot cells.
+
+Enhanced/banked legacy memory and old MMIO remain unsupported: requesting
+either disables the legacy window and emits a diagnostic. This is an explicit
+emulator limitation, not the documented response of physical ViRGE hardware.
+Big-endian windows, image transfer and ViRGE 2D commands are also unsupported
+and diagnosed. This standalone card has no option ROM, IRQ timing, or
+machine-topology snapshot integration. Machine and boot integration are pending.
 It does not borrow the Trio accelerator to impersonate ViRGE 2D support.
 
 The frontend consumes the common `IVideoOutput` interface. The default VM
