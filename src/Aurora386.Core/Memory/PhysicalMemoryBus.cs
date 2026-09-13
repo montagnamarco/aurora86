@@ -8,13 +8,12 @@ namespace Aurora386.Core.Memory;
 /// pages; each page is either plain RAM (a non-null pointer, taking the fast
 /// path with no indirection at all) or a mapped device served by a handler.
 ///
-/// The 386 addresses 32 bits, but a page table covering the full 4 GB would
-/// need a million entries. Since the emulated machine has 16 MB of RAM and
-/// nothing is mapped above it, the table covers only the first 16 MB;
-/// everything higher reads 0xFF and swallows writes, exactly like a bus with
-/// nothing connected to it.
+/// Installed RAM and decoded address space are separate: PCI devices can
+/// occupy high addresses without advertising those addresses as guest RAM.
+/// Unmapped addresses read 0xFF and swallow writes. Relocatable device windows
+/// rebuild these same page caches when their decoding changes.
 /// </summary>
-public sealed unsafe class PhysicalMemoryBus : IDisposable
+public sealed unsafe partial class PhysicalMemoryBus : IDisposable
 {
     public const int PageShift = 12;
     public const int PageSize = 1 << PageShift;   // 4096
@@ -100,6 +99,9 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
     public uint RamSize => _ramSize;
 
+    /// <summary>The decoded physical address space, independent of installed RAM.</summary>
+    public ulong AddressableBytes => _addressableBytes;
+
     /// <summary>
     /// Allocates the installed RAM and a separate table for decoded physical
     /// addresses. PCI apertures can reach the 4 GB boundary without adding
@@ -146,6 +148,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     public void MapDevice(uint physicalBase, uint length, IMemoryDevice device)
     {
+        ArgumentNullException.ThrowIfNull(device);
         ValidateRange(physicalBase, length);
         int first = (int)(physicalBase >> PageShift);
         int count = (int)(length >> PageShift);
@@ -153,10 +156,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         for (int i = 0; i < count; i++)
         {
             int page = first + i;
-            _pageRam[page] = null;              // forces the slow path through the handler
-            _pageDevice[page] = device;
-            _pageDeviceBase[page] = physicalBase;
-            _pageReadOnly[page] = false;
+            SetBaseMapping(page, new PageMapping(false, device, physicalBase, false));
         }
     }
 
@@ -172,18 +172,11 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         int count = (int)(length >> PageShift);
         for (int page = first; page < first + count; page++)
         {
-            _pageRam[page] = null;
-            _pageWatchedRam[page] = null;
-            _pageDevice[page] = null;
-            _pageDeviceBase[page] = 0;
-            _pageReadOnly[page] = false;
+            SetBaseMapping(page, default);
         }
     }
 
     /// <summary>
-    /// Maps a ROM: the contents are copied into the underlying RAM and the
-    /// pages are marked read-only. Reads therefore keep taking the fast path,
-    /// which matters because a ROM is read constantly and written never, and
     /// Copies the whole of installed RAM out, for a snapshot.
     ///
     /// The page table is deliberately not part of this: it is rebuilt from the
@@ -226,14 +219,18 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
         for (int page = 0; page < _pageCount && ((uint)page << PageShift) < _ramSize; page++)
         {
-            if (_pageReadOnly[page]) continue;
+            bool readOnly = _coveredBasePages.TryGetValue(page, out PageMapping underlying)
+                ? underlying.ReadOnly : _pageReadOnly[page];
+            if (readOnly) continue;
             uint at = (uint)page << PageShift;
             content.Slice((int)at, PageSize).CopyTo(new Span<byte>(_ram + at, PageSize));
         }
     }
 
     /// <summary>
-    /// writes are discarded without complaint.
+    /// Maps a ROM by copying its contents into the underlying installed RAM.
+    /// Reads use the RAM fast path, while guest writes are discarded. A
+    /// relocatable device can cover the ROM without changing its base mapping.
     /// </summary>
     public void MapRom(uint physicalBase, ReadOnlySpan<byte> content)
     {
@@ -250,9 +247,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         for (int i = 0; i < count; i++)
         {
             int page = first + i;
-            _pageRam[page] = _ram + ((uint)page << PageShift);
-            _pageDevice[page] = null;
-            _pageReadOnly[page] = true;
+            SetBaseMapping(page, new PageMapping(true, null, 0, true));
         }
     }
 
@@ -324,9 +319,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         for (int i = 0; i < count; i++)
         {
             int page = first + i;
-            _pageRam[page] = _ram + ((uint)page << PageShift);
-            _pageDevice[page] = null;
-            _pageReadOnly[page] = false;
+            SetBaseMapping(page, new PageMapping(true, null, 0, false));
         }
     }
 
@@ -537,7 +530,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         foreach ((uint start, uint length) in _readWatchRanges)
         {
             long first = start >> PageShift;
-            long last = (start + length - 1) >> PageShift;
+            long last = (long)(((ulong)start + length - 1) >> PageShift);
             for (long page = first; page <= last && page < _pageCount; page++)
             {
                 if (_pageRam[page] is null) continue;       // a device, or nothing: already slow
