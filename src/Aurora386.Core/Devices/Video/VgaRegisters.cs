@@ -22,6 +22,7 @@ namespace Aurora386.Core.Devices.Video;
 public sealed class VgaRegisters : IIoDevice
 {
     private readonly S3VideoIdentity _identity;
+    private uint _apertureBase;
 
     // --- CRTC ----------------------------------------------------------------
     /// <summary>
@@ -517,8 +518,8 @@ public sealed class VgaRegisters : IIoDevice
 
     /// <summary>
     /// Creates the VGA register file with a selected S3 identity profile.
-    /// The profile supplies identification values only; it does not claim to
-    /// provide complete emulation of that chip.
+    /// The ViRGE profile also supplies its aperture control latches; the card
+    /// owner still provides physical decoding and drawing engine integration.
     /// </summary>
     public VgaRegisters(S3VideoIdentity identity)
     {
@@ -531,6 +532,10 @@ public sealed class VgaRegisters : IIoDevice
 
         // The full register set for 80x25 text, which is how a PC comes up.
         LoadStandardRegisters(0x03);
+        if (identity == S3VideoIdentity.Virge325)
+        {
+            VirgeAperture = new S3VirgeApertureControls(_crtc);
+        }
     }
 
     /// <summary>
@@ -620,12 +625,28 @@ public sealed class VgaRegisters : IIoDevice
     /// </summary>
     public const byte S3DeviceId = 0xE1;
 
+    /// <summary>ViRGE-specific address latches, absent on the fixed Trio path.</summary>
+    public S3VirgeApertureControls? VirgeAperture { get; }
+
     /// <summary>
-    /// Where the linear aperture is, as the machine actually mapped it. Set
-    /// by the machine at construction; a driver reads it back through the
-    /// extended registers 0x59 and 0x5A.
+    /// The Trio's fixed host aperture, or the ViRGE's raw CR59/CR5A address.
+    /// A ViRGE card owner must separately apply size alignment and decode gates
+    /// before mapping memory; changing these latches alone does not map a device.
     /// </summary>
-    public uint ApertureBase { get; set; }
+    public uint ApertureBase
+    {
+        get => VirgeAperture?.RawLinearBase ?? _apertureBase;
+        set
+        {
+            if (VirgeAperture is not null)
+            {
+                VirgeAperture.SetRawLinearBase(value);
+                return;
+            }
+
+            _apertureBase = value;
+        }
+    }
 
     /// <summary>
     /// Where the drawing engine's registers appear as memory: a 64 KB window
@@ -801,6 +822,11 @@ public sealed class VgaRegisters : IIoDevice
 
     private byte ReadCrtc(byte index)
     {
+        if (VirgeAperture is not null && VirgeAperture.TryReadCrtc(index, out byte value))
+        {
+            return value;
+        }
+
         switch (index)
         {
             // The Trio64V+ manual states that a CR45 read resets the one
@@ -912,6 +938,11 @@ public sealed class VgaRegisters : IIoDevice
 
         if (index < 0x40 && !_systemUnlocked) return;
         if (index >= 0x40 && !_extendedUnlocked) return;
+
+        if (VirgeAperture is not null && VirgeAperture.TryWriteCrtc(index, value))
+        {
+            return;
+        }
 
         if (index is CursorForegroundStackRegister or CursorBackgroundStackRegister)
         {
@@ -1438,6 +1469,7 @@ public sealed class VgaRegisters : IIoDevice
             _cursorColourStackPointer = 0;
         }
 
+        VirgeAperture?.NotifyRestored();
         ModeChanged?.Invoke();
     }
 
