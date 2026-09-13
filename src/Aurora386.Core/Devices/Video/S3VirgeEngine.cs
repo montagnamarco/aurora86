@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Aurora386.Core.Memory;
 
 namespace Aurora386.Core.Devices.Video;
@@ -40,6 +41,34 @@ public sealed class S3VirgeEngine : IMemoryDevice
     private const uint AllowedCommandOptions = AutoExecute | HardwareClipping;
     private const int CoordinateFractionBits = 20;
     private const long CoordinateUnit = 1L << CoordinateFractionBits;
+    private const uint SnapshotMagic = 0x31475256;
+    private const ushort SnapshotVersion = 1;
+    private const ushort SnapshotRegisterCount = 19;
+    private const int SnapshotHeaderSize = 8;
+    private const int SnapshotSize = SnapshotHeaderSize + SnapshotRegisterCount * sizeof(uint);
+
+    private static readonly uint[] SnapshotRegisters =
+    [
+        DestinationBase,
+        ClipLeftRight,
+        ClipTopBottom,
+        DestinationStride,
+        CommandSet,
+        GreenBlueDeltaX,
+        AlphaRedDeltaX,
+        GreenBlueDeltaY,
+        AlphaRedDeltaY,
+        GreenBlueStart,
+        AlphaRedStart,
+        Edge12Slope,
+        Edge12Start,
+        Edge01Slope,
+        Edge01Start,
+        Edge02Slope,
+        Edge02Start,
+        YStart,
+        YCount
+    ];
 
     private readonly VgaMemory _memory;
     private readonly Dictionary<uint, uint> _registers = new();
@@ -47,6 +76,76 @@ public sealed class S3VirgeEngine : IMemoryDevice
     public S3VirgeEngine(VgaMemory memory)
     {
         _memory = memory;
+    }
+
+    /// <summary>
+    /// Captures the nineteen programmed triangle latches in a fixed little
+    /// endian payload. Video memory and host diagnostic events are external
+    /// state and are deliberately excluded from this engine snapshot.
+    /// </summary>
+    public byte[] Capture()
+    {
+        byte[] snapshot = new byte[SnapshotSize];
+        BinaryPrimitives.WriteUInt32LittleEndian(snapshot, SnapshotMagic);
+        BinaryPrimitives.WriteUInt16LittleEndian(snapshot.AsSpan(4), SnapshotVersion);
+        BinaryPrimitives.WriteUInt16LittleEndian(snapshot.AsSpan(6), SnapshotRegisterCount);
+
+        for (int index = 0; index < SnapshotRegisters.Length; index++)
+        {
+            uint value = ReadDword(SnapshotRegisters[index]);
+            BinaryPrimitives.WriteUInt32LittleEndian(
+                snapshot.AsSpan(SnapshotHeaderSize + index * sizeof(uint)), value);
+        }
+
+        return snapshot;
+    }
+
+    /// <summary>
+    /// Validates the fixed latch payload without changing registers, raising
+    /// diagnostics, or writing video memory.
+    /// </summary>
+    public static void ValidateSnapshot(ReadOnlySpan<byte> snapshot)
+    {
+        if (snapshot.Length < SnapshotHeaderSize)
+        {
+            throw new ArgumentException("ViRGE snapshot header is truncated.", nameof(snapshot));
+        }
+
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(snapshot);
+        ushort version = BinaryPrimitives.ReadUInt16LittleEndian(snapshot[4..]);
+        ushort count = BinaryPrimitives.ReadUInt16LittleEndian(snapshot[6..]);
+        if (magic != SnapshotMagic || version != SnapshotVersion || count != SnapshotRegisterCount)
+        {
+            throw new ArgumentException("ViRGE snapshot header is invalid.", nameof(snapshot));
+        }
+
+        int expectedLength = SnapshotHeaderSize + count * sizeof(uint);
+        if (snapshot.Length != expectedLength)
+        {
+            throw new ArgumentException("ViRGE snapshot length is invalid.", nameof(snapshot));
+        }
+    }
+
+    /// <summary>
+    /// Restores the fixed latch payload after validation, without executing a
+    /// command, raising diagnostics, or writing video memory.
+    /// </summary>
+    public void Restore(ReadOnlySpan<byte> snapshot)
+    {
+        ValidateSnapshot(snapshot);
+
+        uint[] values = new uint[SnapshotRegisterCount];
+        for (int index = 0; index < values.Length; index++)
+        {
+            values[index] = BinaryPrimitives.ReadUInt32LittleEndian(
+                snapshot.Slice(SnapshotHeaderSize + index * sizeof(uint), sizeof(uint)));
+        }
+
+        _registers.Clear();
+        for (int index = 0; index < SnapshotRegisters.Length; index++)
+        {
+            _registers[SnapshotRegisters[index]] = MaskRegister(SnapshotRegisters[index], values[index]);
+        }
     }
 
     /// <summary>
