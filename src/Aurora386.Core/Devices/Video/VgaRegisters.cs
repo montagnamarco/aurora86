@@ -21,6 +21,8 @@ namespace Aurora386.Core.Devices.Video;
 /// </summary>
 public sealed class VgaRegisters : IIoDevice
 {
+    private readonly S3VideoIdentity _identity;
+
     // --- CRTC ----------------------------------------------------------------
     /// <summary>
     /// The CRTC registers. A VGA has 25 of them, ending at 0x18; the array is
@@ -509,7 +511,20 @@ public sealed class VgaRegisters : IIoDevice
     public event Action? ModeChanged;
 
     public VgaRegisters()
+        : this(S3VideoIdentity.Trio64VPlus)
     {
+    }
+
+    /// <summary>
+    /// Creates the VGA register file with a selected S3 identity profile.
+    /// The profile supplies identification values only; it does not claim to
+    /// provide complete emulation of that chip.
+    /// </summary>
+    public VgaRegisters(S3VideoIdentity identity)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        _identity = identity;
+
         // Default palette: the 16 CGA colours in the first sixteen slots,
         // which is what text mode draws with.
         LoadDefaultPalette();
@@ -802,21 +817,20 @@ public sealed class VgaRegisters : IIoDevice
             // and concluded there was no S3 here at all.
 
             // 0x2D and 0x2E are the device identifier, high byte then low.
-            // Together they name the part precisely, where 0x30 only names
-            // the family: 0x88 0x11 is a Trio64V+, which is the card this
-            // emulator claims to be.
-            case 0x2D: return 0x88;
-            case 0x2E: return 0x11;
+            // Together they name the selected profile precisely: 0x88 0x11
+            // is the Trio64V+ profile and 0x56 0x31 is the ViRGE 86C325
+            // profile, while 0x30 names the shared S3 family.
+            case 0x2D: return (byte)(_identity.DeviceId >> 8);
+            case 0x2E: return (byte)_identity.DeviceId;
 
-            // 0x2F is the revision. Drivers read it to work around errata in
-            // particular steppings; zero is the first, which has none to work
-            // around.
-            case 0x2F: return 0x00;
+            // 0x2F is the profile-specific revision that drivers use for
+            // card detection and stepping-specific workarounds.
+            case 0x2F: return _identity.CrtcRevision;
 
             // 0x30 is the chip identifier, and it is readable whether or not
             // anything has been unlocked: a driver has to be able to ask what
             // card this is before it knows which unlock sequence to use.
-            case 0x30: return S3DeviceId;
+            case 0x30: return _identity.ChipId;
         }
 
         // Below 0x30 the rest is the VGA's own, always readable.

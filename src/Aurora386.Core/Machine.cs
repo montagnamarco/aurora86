@@ -216,7 +216,8 @@ public sealed partial class Machine : IDisposable
         SerialMouse = new SerialMouse(Mouse, Interrupts);
         SerialMouse.Register(Io);
 
-        VideoRegisters = new VgaRegisters();
+        S3VideoIdentity videoIdentity = S3VideoIdentity.Trio64VPlus;
+        VideoRegisters = new VgaRegisters(videoIdentity);
         VideoRegisters.Register(Io);
         VideoMemory = new VgaMemory(VideoRegisters);
         Memory.MapDevice(VgaMemory.Base, VgaMemory.Size, VideoMemory);
@@ -334,8 +335,7 @@ public sealed partial class Machine : IDisposable
         // is where the driver expects the aperture: prefetchable memory, and
         // the low bits read back as zero so that software sizing the region
         // sees how large it is.
-        var pciVideo = new PciFunction(0x0020, 0x5333, 0x8811, 0x030000);
-        pciVideo.Define(8, 0x03000000 | 0x54, 4);      // class, with revision 0x54
+        var pciVideo = videoIdentity.CreatePciFunction(0x0020);
 
         // The base address register advertises the linear framebuffer:
         // prefetchable memory, at the address the aperture really answers.
