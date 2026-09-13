@@ -257,27 +257,38 @@ public sealed partial class Machine
         if (--_redirectorInstallCountdown > 0) return;
         _redirectorInstallCountdown = RedirectorInstallInterval;
 
-        uint before = Redirector.CurrentDirectoryStructure;
+        uint previousSda = Redirector.SwappableDataArea;
+        uint previousCds = Redirector.CurrentDirectoryStructure;
+        byte previousDriveCount = Redirector.DriveCount;
         bool known = Redirector.IsInstalled;
 
-        _redirectorInstaller.TryInstall(Redirector, force: known);
-
-        // The addresses are re-checked until they stop moving, and then the
-        // machine is left alone.
-        //
-        // Both halves matter. Re-checking is necessary because DOS builds a
-        // small Current Directory Structure array early -- one entry per
-        // physical drive -- and discards it for a bigger one when CONFIG.SYS
-        // names a LASTDRIVE; a redirector that asked once during the boot
-        // sector's first moments is holding the address of memory DOS has
-        // since given to something else. Stopping is equally necessary,
-        // because every check borrows the CPU to make two INT 21h calls in
-        // the guest, and doing that at an arbitrary moment for the rest of
-        // the machine's life eventually catches DOS in the middle of
-        // something of its own.
-        if (!known || Redirector.CurrentDirectoryStructure != before)
+        if (!_redirectorInstaller.TryInstall(Redirector, force: known))
         {
             _redirectorStableChecks = 0;
+            if (CommandProcessorStarted && RedirectorHooksMultiplex && !_multiplexHooked)
+            {
+                // Windows 95 briefly releases InDOS while COMMAND.COM starts,
+                // then waits for input with InDOS set. Keep a due query due:
+                // another 200 batches can miss every safe interval.
+                _redirectorInstallCountdown = 1;
+            }
+
+            return;
+        }
+
+        if (!known || Redirector.SwappableDataArea != previousSda ||
+            Redirector.CurrentDirectoryStructure != previousCds ||
+            Redirector.DriveCount != previousDriveCount)
+        {
+            _redirectorStableChecks = 0;
+            if (CommandProcessorStarted && RedirectorHooksMultiplex && !_multiplexHooked)
+            {
+                // The next successful unchanged query confirms the final DOS
+                // tables and lets the installer take INT 2Fh. Do not lose that
+                // second safe opportunity after learning the new addresses.
+                _redirectorInstallCountdown = 1;
+            }
+
             return;
         }
 
