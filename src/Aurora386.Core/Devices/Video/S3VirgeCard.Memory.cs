@@ -11,6 +11,9 @@ public sealed partial class S3VirgeCard
     private const uint ConfigurationEnd = 0x8044;
     private const uint VgaAliasStart = 0x83B0;
     private const uint VgaAliasEnd = 0x83E0;
+    private const uint ImageTransferEnd = 0x8000;
+    private const uint EngineStatus = 0x8504;
+    private const uint EngineIdle = 0x2000; // SUBSYS_STAT bit 13.
     private const uint BankedWindowBase = 0xA0000;
     private const uint BankedWindowSize = 0x10000;
     private const byte EnhancedMappingEnable = 0x08; // CR31 bit 3.
@@ -86,6 +89,17 @@ public sealed partial class S3VirgeCard
 
             if (IsEngineAccess(register, width))
             {
+                if (IsWithin(register, width, EngineStatus, EngineStatus + 4))
+                {
+                    uint status = Engine.ReadDword(EngineStatus);
+                    if (Blitter.IsBusy)
+                    {
+                        status &= ~EngineIdle;
+                    }
+
+                    return status >> ((int)(register - EngineStatus) * 8);
+                }
+
                 IMemoryDevice engine = Engine;
                 return width switch
                 {
@@ -93,6 +107,11 @@ public sealed partial class S3VirgeCard
                     2 => engine.ReadWord(register),
                     _ => engine.ReadDword(register)
                 };
+            }
+
+            if (width == 4 && S3Virge2DEngine.IsRegister(register))
+            {
+                return Blitter.ReadDword(register);
             }
         }
 
@@ -124,6 +143,20 @@ public sealed partial class S3VirgeCard
         if (TryGetMmio(offset, width, out uint register))
         {
             MmioWriteObserved?.Invoke(new S3VirgeMmioWrite(register, width, value));
+
+            if (width == 4 && (register & 3) == 0)
+            {
+                if (S3Virge2DEngine.IsRegister(register))
+                {
+                    Blitter.WriteDword(register, value);
+                    return;
+                }
+
+                if (register < ImageTransferEnd && Blitter.WriteImageDword(value))
+                {
+                    return;
+                }
+            }
 
             if (IsWithin(register, width, ConfigurationStart, ConfigurationEnd))
             {

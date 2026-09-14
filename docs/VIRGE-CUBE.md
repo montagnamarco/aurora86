@@ -101,3 +101,27 @@ The implementation order is 2D clear/copy/upload with regression vectors,
 then Gouraud and Z with explicit coverage tests. Page presentation remains a
 separate integration check because this capture does not record PIO writes.
 The full demo must render and return to DOS before its compatibility task closes.
+
+## Result with the first BitBLT subset
+
+The 2D implementation now accepts the four measured A500 variants. CUBE's
+background and instructions appear at 640x480, with RGB frame hash
+`0E1908F147D05A35A0D3DBC5A392D58F921F4E26444C6AFD28E7C3FB97F2CD5D`.
+Esc returns to the DOS prompt. The observed fault and selected-interrupt counts
+remain 84 and 18; unsupported notifications fall from 4,852,563 to 2,094.
+No unsupported 2D command is reported. The 1,728 unsupported triangle
+submissions remain, and streams accesses account for the other notifications.
+
+The retained write trace also shows primary streams registers 8180=03000000,
+81C8=00000500, 81F0=00010001 and 81F4=027F01E0. Writes to 81C0 and 81D0
+alternate between base addresses 00096000 and 00000000. These are evidence for
+a later presentation task, not implemented streams functionality. The 2D
+background alone must not be treated as proof that page flipping or the
+offscreen triangle destination is visible.
+
+The BitBLT engine snapshots all fifteen latches and a frozen upload descriptor
+with its row/DWORD position in a 112-byte V2D1 block. VGE1 bundles that block
+with the existing 84-byte VRG1 triangle payload. Machine tests save in the middle
+of an odd-width RGB1555 row, restore from disk and complete the upload with the
+same VRAM as uninterrupted execution. Legacy triangle-only snapshots remain
+readable; malformed nested state is rejected before RAM or VRAM changes.

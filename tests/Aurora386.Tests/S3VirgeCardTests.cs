@@ -162,12 +162,15 @@ public class S3VirgeCardTests
         fixture.Memory.WriteDword(0x1000, 0x11223344);
         fixture.WritePci(4, 2);
         var accesses = new List<S3VirgeUnsupportedAccess>();
+        var commands = new List<uint>();
         fixture.Card.UnsupportedAccess += accesses.Add;
+        fixture.Card.Blitter.UnsupportedCommandIssued += commands.Add;
         Assert.Equal(uint.MaxValue, fixture.Memory.ReadDword(0x1000));
         fixture.Memory.WriteDword(0x0300B500, 0x83000008);
         fixture.Memory.WriteDword(0x0100A500, 0x83000008);
         fixture.Memory.WriteDword(0x01000000, 0xFFFFFFFF);
-        Assert.Equal(4, accesses.Count);
+        Assert.Equal(3, accesses.Count);
+        Assert.Equal(0x83000008u, Assert.Single(commands)); // A500 now reaches the 2D decoder.
         Assert.Equal(S3VirgeUnsupportedReason.BigEndian, accesses[1].Reason);
         Assert.Equal(4, accesses[1].Width);
         Assert.True(accesses[1].Write);

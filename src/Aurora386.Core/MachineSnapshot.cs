@@ -109,7 +109,7 @@ public sealed class MachineSnapshot
         _videoMemory = machine.VideoMemory.CaptureMemory();
         _videoRegisters = machine.VideoRegisters.CaptureRegisters();
         _videoModel = machine.VideoModel;
-        _videoEngine = machine.Virge?.Engine.Capture() ?? [];
+        _videoEngine = machine.Virge?.CaptureEngines() ?? [];
 
         _interruptControllers = machine.Interrupts.Capture();
         _timer = machine.Timer.Capture();
@@ -165,7 +165,7 @@ public sealed class MachineSnapshot
 
             if (_videoEngine.Length > 0)
             {
-                machine.Virge!.Engine.Restore(_videoEngine);
+                machine.Virge!.RestoreEngines(_videoEngine);
             }
 
             if (_videoRegisters.Length > 0)
@@ -286,7 +286,7 @@ public sealed class MachineSnapshot
     {
         try
         {
-            S3VirgeEngine.ValidateSnapshot(snapshot);
+            S3VirgeCard.ValidateEngineSnapshot(snapshot);
         }
         catch (ArgumentException error)
         {

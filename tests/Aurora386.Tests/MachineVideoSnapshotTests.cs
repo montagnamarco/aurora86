@@ -8,7 +8,7 @@ namespace Aurora386.Tests;
 
 /// <summary>
 /// Verifies machine-level video snapshot topology, atomic preflight, and the
-/// ViRGE mapping and triangle latches that must resume together.
+/// ViRGE mapping, triangle latches and BitBLT state that must resume together.
 /// </summary>
 public sealed class MachineVideoSnapshotTests
 {
@@ -16,16 +16,18 @@ public sealed class MachineVideoSnapshotTests
     private const uint VirgeMmioOffset = 0x01000000;
     private const uint Command = 0x83000008;
     private const int TrioVideoTailLength = sizeof(int) + 12;
+    // VGE1 header + VRG1 triangle block + V2D1 (15 latches and 11 upload fields).
+    private const int VirgeBundleLength = 16 + 84 + 112;
 
     [Theory]
-    [InlineData(VmVideoModel.S3Trio64VPlus, 12, 0)]
-    [InlineData(VmVideoModel.S3Virge325, 96, 84)]
+    [InlineData(VmVideoModel.S3Trio64VPlus)]
+    [InlineData(VmVideoModel.S3Virge325)]
     public void VideoTailUsesDocumentedVid1Format(
-        VmVideoModel model,
-        int expectedPayloadLength,
-        int expectedEngineLength)
+        VmVideoModel model)
     {
         using var machine = new Machine(videoModel: model);
+        int expectedEngineLength = model == VmVideoModel.S3Virge325 ? VirgeBundleLength : 0;
+        int expectedPayloadLength = 12 + expectedEngineLength;
         string path = Path.GetTempFileName();
 
         try
@@ -59,7 +61,7 @@ public sealed class MachineVideoSnapshotTests
     public void InvalidVideoTailIsRejected(VideoTailFault fault)
     {
         byte[] bytes = SavedSnapshot(VmVideoModel.S3Virge325);
-        const int payloadLength = 96;
+        int payloadLength = 12 + VirgeBundleLength;
         int tail = bytes.Length - sizeof(int) - payloadLength;
 
         switch (fault)
@@ -107,8 +109,8 @@ public sealed class MachineVideoSnapshotTests
         AssertInvalidFile(trio);
 
         byte[] virge = SavedSnapshot(VmVideoModel.S3Virge325);
-        int virgeTail = virge.Length - sizeof(int) - 96;
-        Array.Resize(ref virge, virge.Length - 84);
+        int virgeTail = virge.Length - sizeof(int) - 12 - VirgeBundleLength;
+        Array.Resize(ref virge, virge.Length - VirgeBundleLength);
         BinaryPrimitives.WriteInt32LittleEndian(virge.AsSpan(virgeTail), 12);
         BinaryPrimitives.WriteInt32LittleEndian(virge.AsSpan(virgeTail + 12), 0);
         AssertInvalidFile(virge);
@@ -492,7 +494,7 @@ public sealed class MachineVideoSnapshotTests
             machine.Cpu.State.Eip,
             machine.VideoMemory.CaptureMemory(),
             machine.VideoRegisters.CaptureRegisters(),
-            machine.Virge?.Engine.Capture() ?? [],
+            machine.Virge?.CaptureEngines() ?? [],
             machine.Pci.Capture(),
             machine.Interrupts.Capture());
     }
@@ -505,7 +507,7 @@ public sealed class MachineVideoSnapshotTests
         Assert.Equal(expected.Eip, actual.Cpu.State.Eip);
         Assert.Equal(expected.VideoMemory, actual.VideoMemory.CaptureMemory());
         Assert.Equal(expected.VideoRegisters, actual.VideoRegisters.CaptureRegisters());
-        Assert.Equal(expected.VideoEngine, actual.Virge?.Engine.Capture() ?? []);
+        Assert.Equal(expected.VideoEngine, actual.Virge?.CaptureEngines() ?? []);
         Assert.Equal(expected.Pci, actual.Pci.Capture());
         Assert.Equal(expected.Interrupts, actual.Interrupts.Capture());
     }

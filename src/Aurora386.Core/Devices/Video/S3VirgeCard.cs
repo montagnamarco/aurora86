@@ -6,7 +6,8 @@ namespace Aurora386.Core.Devices.Video;
 
 /// <summary>
 /// An experimental original 1996 ViRGE 86C325 PCI card. PCI enumeration,
-/// CRTC address latches and the S3d triangle engine share one VRAM and display.
+/// CRTC address latches, the BitBLT engine and the S3d triangle engine share
+/// one VRAM and display.
 /// Drivers reach registers through configuration mechanism 1 or the new MMIO
 /// window described in the August 1996 databook, sections 15, 17, 18 and 25.
 /// This subset has standard VGA and enhanced banked memory decoding but no
@@ -49,6 +50,7 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
         VideoMemory = new VgaMemory(Registers);
         Renderer = new VgaRenderer(VideoMemory, Registers);
         Engine = new S3VirgeEngine(VideoMemory);
+        Blitter = new S3Virge2DEngine(VideoMemory);
         Function = S3VideoIdentity.Virge325.CreatePciFunction(address, commandMask: 0x0027);
         Function.DefineBar(0, ApertureSize, io: false, address: ResetBase);
         _lastPciBase = ResetBase;
@@ -86,6 +88,7 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
     public VgaRegisters Registers { get; }
     public VgaMemory VideoMemory { get; }
     public S3VirgeEngine Engine { get; }
+    public S3Virge2DEngine Blitter { get; }
     public PciFunction Function { get; }
     public IVideoOutput Display => Renderer;
 

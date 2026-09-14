@@ -1,8 +1,8 @@
 # S3 ViRGE 86C325
 
 Aurora386 implements an experimental S3 ViRGE 86C325 PCI card.
-It owns the VGA register bank, 2 MB of VRAM, the display renderer, and a limited
-triangle engine. Internal callers can select it with
+It owns the VGA register bank, 2 MB of VRAM, the display renderer, a limited
+BitBLT engine and a triangle engine. Internal callers can select it with
 `new Machine(videoModel: VmVideoModel.S3Virge325)`. POST enables PCI I/O and
 memory decoding before initializing standard VGA. The real CPU INT 10h path
 has produced and rendered text at 720x400. Windows 95 driver compatibility
@@ -27,13 +27,17 @@ banked and relocated linear pixel writes against the rendered scanlines,
 snapshot restoration, and the return to B8000 text memory.
 
 Machine snapshots include the selected video model and ViRGE drawing-engine
-latches in a versioned `VID1` tail after serial mouse state. Older files without
+state in a versioned `VID1` tail after serial mouse state. A `VGE1` envelope
+contains the triangle and BitBLT payloads, including pending CPU uploads.
+Original triangle-only `VRG1` payloads remain readable and reset the target's
+blitter when restored. Loaded legacy files resave without rewriting their
+payload format. Older files without
 this tail retain their Trio identity and remain without the tail when resaved.
 Restore checks the model, RAM and video payload sizes, engine state, PCI
 topology, interrupt sources, and agreement between BAR0 and CR59 before changing
 guest state. VGA/PCI synchronization is suspended while both register banks
 are restored, then the memory windows are reconciled once. Restoring engine
-latches does not submit a drawing command.
+latches does not submit a drawing command or replay consumed upload pixels.
 
 An independent save/load probe resumes the CPU immediately before an
 auto-execute trigger. Its 39,340-pixel frame matches uninterrupted execution
@@ -94,9 +98,18 @@ overrides `CR35[3:0]` and `CR51[3:2]`; disabling the CPU base selects page zero.
 The old-linear exception for a 64 KB aperture based at A0000 remains unsupported.
 Old MMIO and an enhanced request without `CR66.0` still disable the legacy
 window and emit diagnostics. These limitations are not silicon behaviour.
-Big-endian windows, image transfer and ViRGE 2D commands are also unsupported
-and diagnosed. This card has no OEM option ROM or IRQ timing.
+Big-endian windows remain unsupported and diagnosed.
+This card has no OEM option ROM or IRQ timing.
 It does not borrow the Trio accelerator to impersonate ViRGE 2D support.
+
+The ViRGE BitBLT subset provides 16-bit PATCOPY rectangle fills, 8/16-bit
+SRCCOPY screen copies and 16-bit SRCCOPY CPU image uploads. Aligned DWORD
+writes program the native A4D4h–A50Ch registers; image data arrives through
+the lower half of the new-MMIO window. Uploads consume clipped pixels and
+discard DWORD row padding. The shared status register reports busy while an
+upload awaits data. Other operations and formats remain explicitly unsupported,
+including 2D autoexecute. Without a modeled FIFO, a new command cancels a
+pending upload; this is a documented emulator limitation.
 
 The frontend consumes the common `IVideoOutput` interface. The default VM
 continues to use the existing Trio implementation.
@@ -105,16 +118,16 @@ The [DOS startup probe](../tools/Virge3DProbe/README.md) now runs the original
 Toolkit 2.6 cube sample on a private image and supports a hash-checked DOS
 prompt checkpoint. The sample reaches DPMI mappings for `70000000h` and
 `71000000h` and enters VBE mode `0110h` through INT 10h `AX=4F02`. Observed
-unsupported accesses include a DWORD at new-MMIO offset `8208h` and the
-2D register range `A4D4h` through `A50Ch`, as well as triangle command
-`80C00006h`. The captured display is a black 640x480 graphics frame, and Esc
-returns to the DOS prompt. No period-program 3D frame has been demonstrated.
+unsupported accesses include streams controls at `8180h`–`8208h` and triangle
+command `80C00006h`. The captured 640x480 display now shows the demo's tiled
+background and instructions. Esc returns to the DOS prompt. The cube itself
+is still absent; no period-program 3D frame has been demonstrated.
 
 The [drawing capture](VIRGE-CUBE.md) records the first command values and
 their setup, including uploads and attributes absent from the implemented
-engine latches. The next work is to implement these measured operations,
-including the sample's format and shading requirements beyond the current
-flat RGB888 engine. The VBE mode program alone does not establish compatibility.
+engine latches. The next work is Gouraud shading and depth in RGB1555, followed
+by the measured streams/page-presentation controls. The current 2D background
+does not establish complete demo compatibility.
 The startup log records 84 CPU fault events as well; their presence alone does
 not establish a CPU defect, and this probe makes no instruction changes.
 Earlier experimental logs using physical-memory write watches are invalid for

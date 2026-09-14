@@ -167,6 +167,11 @@ internal static class VirgeProbe
             unsupportedCount++;
             Trace("COMMAND", $"UNSUPPORTED CMD_SET={command:X8}");
         };
+        machine.Virge.Blitter.UnsupportedCommandIssued += command =>
+        {
+            unsupportedCount++;
+            Trace("COMMAND2D", $"UNSUPPORTED 2D CMD_SET={command:X8}");
+        };
 
         // Do not install PhysicalMemoryBus write watches: they split DWORD
         // accesses into bytes, which changes the engine's command semantics.

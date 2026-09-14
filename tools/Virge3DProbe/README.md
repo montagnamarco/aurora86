@@ -47,7 +47,7 @@ instructions after typing. `after.txt` and `after.ppm` preserve the resulting
 screen. Esc then requests the sample's normal exit, and `exit.txt` records the
 screen after 20 million more instructions. The log contains the RGB hash,
 selected INT calls, faults, unsupported card accesses with their original
-widths, unsupported triangle commands, final registers and source-image hashes.
+widths, unsupported 2D and triangle commands, final registers and source-image hashes.
 Counts include repeated events; card-access lines are deduplicated by PC,
 reason and 4 KB offset page. Each category has a 256-line limit.
 
@@ -66,9 +66,9 @@ This is a bounded write trace; it does not record status reads, PIO writes,
 linear pixel writes, or accesses outside the enabled new-MMIO decoder.
 The card and CPU events only observe execution.
 
-With the experimental VBE firmware, the sample requests INT 10h `AX=4F02`,
-`BX=0110` and reaches a black 640×480 graphics frame. It still accesses
-unimplemented 2D registers and submits unsupported `CMD_SET=80C00006`.
-Esc returns to the DOS prompt. This is a reproducible missing-capability
-result, not a rendered cube. A new prompt checkpoint is required after the
-Core build changes. See [ViRGE status](../../docs/VIRGE.md).
+With the experimental VBE firmware and BitBLT engine, the sample requests
+INT 10h `AX=4F02`, `BX=0110` and displays its tiled background and instructions
+at 640×480. It still accesses unimplemented streams controls and submits
+unsupported triangle `CMD_SET=80C00006`. Esc returns to the DOS prompt.
+This demonstrates the 2D setup, not a rendered cube. A new prompt checkpoint
+is required after the Core build changes. See [ViRGE status](../../docs/VIRGE.md).
