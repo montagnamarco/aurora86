@@ -110,7 +110,9 @@ unsupported accesses include a DWORD at new-MMIO offset `8208h` and the
 `80C00006h`. The captured display is a black 640x480 graphics frame, and Esc
 returns to the DOS prompt. No period-program 3D frame has been demonstrated.
 
-The next work is to identify and implement the measured drawing operations,
+The [drawing capture](VIRGE-CUBE.md) records the first command values and
+their setup, including uploads and attributes absent from the implemented
+engine latches. The next work is to implement these measured operations,
 including the sample's format and shading requirements beyond the current
 flat RGB888 engine. The VBE mode program alone does not establish compatibility.
 The startup log records 84 CPU fault events as well; their presence alone does

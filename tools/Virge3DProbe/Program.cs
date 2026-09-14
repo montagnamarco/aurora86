@@ -18,6 +18,9 @@ internal static class VirgeProbe
     private const long BootBudget = 400_000_000;
     private const long SampleBudget = 80_000_000;
     private const int TraceLimitPerCategory = 256;
+    private const int MmioWriteLimit = 8192;
+    private const int LowMmioWriteLimit = 64;
+    private const uint MmioRegisterStart = 0x8000;
 
     public static int Run(string[] args)
     {
@@ -52,6 +55,7 @@ internal static class VirgeProbe
         string disk = Path.Combine(output, "run.img");
         File.Copy(args[0], disk);
         using var log = new StreamWriter(Path.Combine(output, "trace.log")) { AutoFlush = true };
+        using var mmioLog = new StreamWriter(Path.Combine(output, "mmio-writes.log"));
         using var machine = new Machine(videoModel: VmVideoModel.S3Virge325);
         machine.CpuModel = CpuModel.Intel486;
         machine.AttachDisk(DiskImage.OpenHardDisk(disk));
@@ -96,6 +100,31 @@ internal static class VirgeProbe
         long interruptCount = 0;
         long faultCount = 0;
         long unsupportedCount = 0;
+        long mmioWriteCount = 0;
+        long lowMmioWriteCount = 0;
+        long registerWriteCount = 0;
+        machine.Virge!.MmioWriteObserved += access =>
+        {
+            mmioWriteCount++;
+            // Image uploads in the lower window must not exhaust the
+            // register budget before the first triangle submission.
+            bool retain;
+            if (access.Register < MmioRegisterStart)
+            {
+                lowMmioWriteCount++;
+                retain = lowMmioWriteCount <= LowMmioWriteLimit;
+            }
+            else
+            {
+                registerWriteCount++;
+                retain = registerWriteCount <= MmioWriteLimit;
+            }
+            if (retain)
+            {
+                CpuState state = machine.Cpu.State;
+                mmioLog.WriteLine($"{mmioWriteCount} {state.Cs.Selector:X4}:{state.Eip:X8} register={access.Register:X4} width={access.Width} value={access.Value:X8}");
+            }
+        };
         void Trace(string category, string message)
         {
             long count = traceCounts.GetValueOrDefault(category);
@@ -165,6 +194,8 @@ internal static class VirgeProbe
         machine.RunInstructions(20_000_000);
         File.WriteAllText(Path.Combine(output, "exit.txt"), ReadScreen(machine));
         log.WriteLine($"observed-interrupts={interruptCount} faults={faultCount} unsupported={unsupportedCount}");
+        mmioLog.WriteLine($"observed-writes={mmioWriteCount} register-writes={registerWriteCount} retained-registers={Math.Min(registerWriteCount, MmioWriteLimit)} register-limit={MmioWriteLimit}");
+        mmioLog.WriteLine($"low-writes={lowMmioWriteCount} retained-low={Math.Min(lowMmioWriteCount, LowMmioWriteLimit)} low-limit={LowMmioWriteLimit}");
         CpuState final = machine.Cpu.State;
         log.WriteLine($"final={final.Cs.Selector:X4}:{final.Eip:X8} EAX={final.Eax:X8} ECX={final.Ecx:X8} EDI={final.Edi:X8} ESbase={final.Es.Base:X8}");
         log.WriteLine($"BAR={machine.LinearFrameBufferBase:X8} CR31={machine.VideoRegisters.Crtc(0x31):X2} CR36={machine.VideoRegisters.Crtc(0x36):X2} CR53={machine.VideoRegisters.Crtc(0x53):X2} CR58={machine.VideoRegisters.Crtc(0x58):X2} CR66={machine.VideoRegisters.Crtc(0x66):X2}");

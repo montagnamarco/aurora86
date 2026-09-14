@@ -98,6 +98,13 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
     /// </summary>
     public event Action<S3VirgeUnsupportedAccess>? UnsupportedAccess;
 
+    /// <summary>
+    /// Observes each decoded new-MMIO write before dispatch, including
+    /// unimplemented registers. The original transaction is neither split
+    /// nor replayed. Diagnostic listeners must not change guest state.
+    /// </summary>
+    public event Action<S3VirgeMmioWrite>? MmioWriteObserved;
+
     /// <summary>Reads VGA PIO subject to PCI IO and the SR9 MMIO-only gate.</summary>
     public byte ReadByte(ushort port)
     {
@@ -357,3 +364,10 @@ public enum S3VirgeUnsupportedReason
 /// </summary>
 public readonly record struct S3VirgeUnsupportedAccess(
     uint Offset, int Width, bool Write, S3VirgeUnsupportedReason Reason);
+
+/// <summary>
+/// A write to the 1996 ViRGE new-MMIO window as submitted by guest software.
+/// Register is relative to the 64 KB MMIO window; Width is in bytes and Value
+/// contains the original little-endian transaction, before register masking.
+/// </summary>
+public readonly record struct S3VirgeMmioWrite(uint Register, int Width, uint Value);

@@ -51,10 +51,20 @@ widths, unsupported triangle commands, final registers and source-image hashes.
 Counts include repeated events; card-access lines are deduplicated by PC,
 reason and 4 KB offset page. Each category has a 256-line limit.
 
+`mmio-writes.log` retains the first 8192 decoded new-MMIO writes at offsets
+8000h and above, plus the first 64 writes below 8000h after the prompt
+checkpoint. Separate limits prevent image uploads from exhausting the register
+budget before triangle setup. Writes to unimplemented registers are included. Each line
+records its sequence number, CPU location, register offset within the 64 KB
+MMIO window, original transaction width and unmasked value. The final lines
+report observed and retained counts, making truncation explicit. The card
+event runs before dispatch and does not split or replay the transaction.
+
 No physical-memory write watches are installed: the existing bus watch path
 splits DWORD writes into bytes and would change ViRGE command semantics.
-Consequently this is not a complete trace of successful MMIO accesses or
-status reads. The existing card and CPU events only observe execution.
+This is a bounded write trace; it does not record status reads, PIO writes,
+linear pixel writes, or accesses outside the enabled new-MMIO decoder.
+The card and CPU events only observe execution.
 
 With the experimental VBE firmware, the sample requests INT 10h `AX=4F02`,
 `BX=0110` and reaches a black 640×480 graphics frame. It still accesses

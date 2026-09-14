@@ -257,10 +257,17 @@ public class S3VirgeCardTests
         Assert.Equal(uint.MaxValue, fixture.Memory.ReadDword(0x75008504));
     }
 
-    [Fact]
-    public void CpuProgramsPciAndDrawsTriangleAtTheConfiguredBar()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CpuB500DwordDrawsTheSameTriangleWithOrWithoutMmioObserver(bool observe)
     {
         using var fixture = new CardFixture();
+        var writes = new List<S3VirgeMmioWrite>();
+        if (observe)
+        {
+            fixture.Card.MmioWriteObserved += writes.Add;
+        }
         fixture.Card.Registers.SetVesaMode(VesaModes.Get(0x112, VgaMemory.TotalSize), true);
         const uint mmio = 0x75000000;
         using var stream = new MemoryStream();
@@ -294,6 +301,13 @@ public class S3VirgeCardTests
         Assert.Equal(0x1000u + (uint)code.Length, cpu.State.Eip);
         Assert.Equal(0x74000000u, fixture.ReadPci(0x10));
         Assert.Equal(0x3000u, fixture.Memory.ReadDword(mmio + 0x8504));
+        if (observe)
+        {
+            Assert.Equal(10, writes.Count);
+            Assert.Equal(new S3VirgeMmioWrite(0xB500, 4, 0x83000008), writes[^1]);
+            Assert.All(writes, write => Assert.Equal(4, write.Width));
+        }
+
         var expected = new byte[VgaMemory.TotalSize];
         (int X, int Y)[] pixels = [(1, 4), (2, 4), (3, 4), (4, 4),
             (1, 3), (2, 3), (3, 3), (1, 2), (2, 2), (1, 1)];
@@ -313,6 +327,56 @@ public class S3VirgeCardTests
         Assert.True(fixture.Card.Display.Render(true));
         Assert.Equal(0xFF2040E0u, fixture.Card.Display.Framebuffer[4 * 640 + 1]);
         Assert.Equal(0xFF000000u, fixture.Card.Display.Framebuffer[4 * 640 + 5]);
+    }
+
+    [Fact]
+    public void MmioObserverPreserves8208WidthsAndHonoursPciAndCr53DecodeGates()
+    {
+        using var fixture = new CardFixture();
+        var writes = new List<S3VirgeMmioWrite>();
+        fixture.Card.MmioWriteObserved += writes.Add;
+        fixture.Memory.WriteDword(ResetMmio + 0x8208, 0x11223344);
+        Assert.Empty(writes); // PCI memory decoding is still disabled.
+
+        fixture.WritePci(4, 2);
+        fixture.Memory.WriteByte(ResetMmio + 0x8208, 0x12);
+        fixture.Memory.WriteWord(ResetMmio + 0x8208, 0x3456);
+        fixture.Memory.WriteDword(ResetMmio + 0x8208, 0x789ABCDE);
+        Assert.Equal(new S3VirgeMmioWrite[]
+        {
+            new(0x8208, 1, 0x12),
+            new(0x8208, 2, 0x3456),
+            new(0x8208, 4, 0x789ABCDE)
+        }, writes);
+
+        fixture.WritePci(0x10, 0x74000000);
+        writes.Clear();
+        fixture.Memory.WriteDword(ResetMmio + 0x8208, 1);
+        fixture.Memory.WriteDword(0x75008208, 2);
+        Assert.Equal(new S3VirgeMmioWrite(0x8208, 4, 2), Assert.Single(writes));
+        fixture.WriteCrtc(0x39, 0xA0, 0x75000000);
+        fixture.WriteCrtc(0x53, 0, 0x75000000);
+        writes.Clear();
+        fixture.Memory.WriteDword(0x75008208, 3);
+        Assert.Empty(writes);
+    }
+
+    [Fact]
+    public void MmioObserverReportsB57CAutoexecuteOnceWithoutSplittingOrReplaying()
+    {
+        using var fixture = new CardFixture();
+        fixture.WritePci(4, 2);
+        var writes = new List<S3VirgeMmioWrite>();
+        var commands = new List<uint>();
+        fixture.Card.MmioWriteObserved += writes.Add;
+        fixture.Card.Engine.UnsupportedCommandIssued += commands.Add;
+        fixture.Memory.WriteDword(ResetMmio + 0xB500, 0x80C00007);
+        Assert.Empty(commands); // CMD bit 0 defers submission to Y_COUNT.
+        fixture.Memory.WriteDword(ResetMmio + 0xB57C, 0x80010000);
+        Assert.Equal(0x80C00007u, Assert.Single(commands));
+        Assert.Equal(2, writes.Count);
+        Assert.Equal(new S3VirgeMmioWrite(0xB57C, 4, 0x80010000), writes[1]);
+        Assert.Equal(0x80010000u, fixture.Card.Engine.ReadDword(0xB57C));
     }
 
     /// <summary>Emits MOV DX,port; MOV EAX,value; OUT DX,EAX from a 16-bit CS.</summary>

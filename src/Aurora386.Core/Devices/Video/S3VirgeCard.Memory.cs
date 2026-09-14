@@ -123,6 +123,8 @@ public sealed partial class S3VirgeCard
 
         if (TryGetMmio(offset, width, out uint register))
         {
+            MmioWriteObserved?.Invoke(new S3VirgeMmioWrite(register, width, value));
+
             if (IsWithin(register, width, ConfigurationStart, ConfigurationEnd))
             {
                 if ((register & (uint)(width - 1)) == 0)
