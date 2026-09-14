@@ -1,9 +1,18 @@
 # S3 ViRGE 86C325
 
-Aurora386 implements an experimental standalone S3 ViRGE 86C325 PCI card.
+Aurora386 implements an experimental S3 ViRGE 86C325 PCI card.
 It owns the VGA register bank, 2 MB of VRAM, the display renderer, and a limited
-triangle engine. It is not yet a selectable VM model or a bootable VGA card,
-and Windows 95 driver compatibility remains unverified.
+triangle engine. Internal callers can select it with
+`new Machine(videoModel: VmVideoModel.S3Virge325)`. POST enables PCI I/O and
+memory decoding before initializing standard VGA. The real CPU INT 10h path
+has produced and rendered text at 720x400. Windows 95 driver compatibility
+remains unverified; GUI and configuration-file selection are not exposed yet.
+
+The generated firmware supplies VGA only for ViRGE. VBE calls return
+`AX=014F` before changing VGA registers, VRAM, or caller buffers. The default
+Trio BIOS remains byte-identical to the previous version. Machine snapshot
+capture and restore reject ViRGE before changing guest state until video
+topology and drawing-engine state are integrated into the snapshot format.
 
 The end-to-end fixture submits `CMD_SET` through a real CPU `MOV`, reaches the
 MMIO engine, updates VRAM, and renders the result. It produced a 640x480 frame
@@ -54,8 +63,8 @@ Enhanced/banked legacy memory and old MMIO remain unsupported: requesting
 either disables the legacy window and emits a diagnostic. This is an explicit
 emulator limitation, not the documented response of physical ViRGE hardware.
 Big-endian windows, image transfer and ViRGE 2D commands are also unsupported
-and diagnosed. This standalone card has no option ROM, IRQ timing, or
-machine-topology snapshot integration. Machine and boot integration are pending.
+and diagnosed. This card has no OEM option ROM, IRQ timing, or
+machine-topology snapshot integration.
 It does not borrow the Trio accelerator to impersonate ViRGE 2D support.
 
 The frontend consumes the common `IVideoOutput` interface. The default VM

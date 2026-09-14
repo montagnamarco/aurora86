@@ -1,4 +1,5 @@
 using Aurora386.Core.Devices.Video;
+using Aurora386.Core.Configuration;
 using CpuNs = Aurora386.Core.Cpu;
 
 namespace Aurora386.Core.Firmware;
@@ -43,6 +44,15 @@ public sealed class VesaServices
 
     public bool Handle(CpuNs.Cpu cpu)
     {
+        // The first ViRGE milestone supplies standard VGA and its native S3d
+        // engine, but no VBE mode program. Fail before inspecting buffers or
+        // touching registers so callers cannot observe a partially set mode.
+        if (_machine.VideoModel == VmVideoModel.S3Virge325)
+        {
+            cpu.State.Ax = 0x014F;
+            return true;
+        }
+
         byte function = cpu.State.GetReg8(0);   // AL
 
         switch (function)

@@ -46,7 +46,7 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
 
         Registers = new VgaRegisters(S3VideoIdentity.Virge325);
         VideoMemory = new VgaMemory(Registers);
-        Display = new VgaRenderer(VideoMemory, Registers);
+        Renderer = new VgaRenderer(VideoMemory, Registers);
         Engine = new S3VirgeEngine(VideoMemory);
         Function = S3VideoIdentity.Virge325.CreatePciFunction(address, commandMask: 0x0027);
         Function.DefineBar(0, ApertureSize, io: false, address: ResetBase);
@@ -86,7 +86,10 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
     public VgaMemory VideoMemory { get; }
     public S3VirgeEngine Engine { get; }
     public PciFunction Function { get; }
-    public IVideoOutput Display { get; }
+    public IVideoOutput Display => Renderer;
+
+    /// <summary>The concrete VGA renderer shared with the machine video pipeline.</summary>
+    internal VgaRenderer Renderer { get; }
 
     /// <summary>
     /// One notification per unsupported access or unsupported legacy mode transition.

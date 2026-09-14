@@ -11,6 +11,7 @@ using Aurora386.Core.Devices.IsaPnp;
 using Aurora386.Core.Devices.Pci;
 using Aurora386.Core.Devices.Audio;
 using Aurora386.Core.Devices.Video;
+using Aurora386.Core.Configuration;
 using Aurora386.Core.Dos;
 using Aurora386.Core.IO;
 using Aurora386.Core.Memory;
@@ -57,8 +58,18 @@ public sealed partial class Machine : IDisposable
     public VgaMemory VideoMemory { get; }
     public VgaRenderer Video { get; }
 
+    /// <summary>The primary display adapter selected when this machine was constructed.</summary>
+    public VmVideoModel VideoModel { get; }
+
+    /// <summary>The ViRGE card when that primary adapter is installed.</summary>
+    public S3VirgeCard? Virge { get; }
+
     /// <summary>The S3's 2D drawing engine: fills, copies and lines.</summary>
-    public S3Accelerator Accelerator { get; }
+    public S3Accelerator Accelerator => _trioAccelerator
+        ?? throw new InvalidOperationException("The S3 Trio64V+ accelerator is unavailable on a ViRGE machine.");
+
+    /// <summary>The Trio64V+ drawing engine, or null when another video model is installed.</summary>
+    public S3Accelerator? TrioAccelerator => _trioAccelerator;
 
     // Audio: the DMA controller is a system device rather than part of the
     // sound card, but the card is the only thing here that uses it.
@@ -157,19 +168,39 @@ public sealed partial class Machine : IDisposable
     /// whole of video memory as one flat array, which is what a display
     /// driver in protected mode uses instead of moving a 64 KB window about.
     /// </summary>
-    public uint LinearFrameBufferBase { get; private set; }
+    public uint LinearFrameBufferBase => Virge?.Registers.VirgeAperture!.PciBase
+        ?? _trioLinearFrameBufferBase;
 
     /// <summary>
-    /// Where the drawing engine's registers appear as memory: a 64 KB window
-    /// directly above the frame buffer.
+    /// Where the selected drawing engine's 64 KB register window appears in
+    /// physical memory. Trio retains its legacy mapping; ViRGE uses new MMIO.
     /// </summary>
-    public uint MmioBase { get; private set; }
+    public uint MmioBase => Virge is not null
+        ? Virge.Registers.VirgeAperture!.PciBase + VirgeMmioOffset
+        : _trioMmioBase;
 
     /// <summary>The Trio64V+ memory-mapped registers sit this far above the linear frame buffer.</summary>
     public const uint TrioMmioOffset = 0x1000000;
 
-    public Machine(uint ramSize = 16 * 1024 * 1024)
+    /// <summary>The ViRGE new-MMIO register window sits 16 MB into its PCI aperture.</summary>
+    public const uint VirgeMmioOffset = 0x1000000;
+
+    private readonly S3Accelerator? _trioAccelerator;
+    private readonly PciFunction _pciVideoFunction;
+    private readonly uint _trioLinearFrameBufferBase;
+    private readonly uint _trioMmioBase;
+
+    public Machine(
+        uint ramSize = 16 * 1024 * 1024,
+        VmVideoModel videoModel = VmVideoModel.S3Trio64VPlus)
     {
+        if (videoModel is not (VmVideoModel.S3Trio64VPlus or VmVideoModel.S3Virge325))
+        {
+            throw new ArgumentOutOfRangeException(nameof(videoModel), videoModel, "Unknown VM video model.");
+        }
+
+        VideoModel = videoModel;
+
         // The addressable space is larger than the RAM, because the linear
         // frame buffer lives above it. A real card put it above the 16 MB
         // line -- below that is the ISA hole and whatever memory the machine
@@ -183,13 +214,17 @@ public sealed partial class Machine : IDisposable
         // and that silence is what a display driver drawing through those
         // registers looked like: icons drawn by the processor, and nothing
         // where the engine should have filled.
-        Memory = new PhysicalMemoryBus(ramSize, frameBufferBase + TrioMmioOffset + 0x10000);
+        ulong addressableBytes = videoModel == VmVideoModel.S3Virge325
+            ? 1UL << 32
+            : frameBufferBase + TrioMmioOffset + 0x10000;
+        Memory = new PhysicalMemoryBus(ramSize, addressableBytes);
         // No option ROMs are fitted here. Reporting writable RAM makes
         // EMM386 reserve the entire range instead of mapping UMB pages into
         // it. Its page tables supply extended RAM behind these addresses.
         Memory.Unmap(0xC0000, 0x30000);
-        LinearFrameBufferBase = frameBufferBase;
+        _trioLinearFrameBufferBase = frameBufferBase;
         Io = new IoBus();
+        Pci = new PciBus();
 
         Interrupts = new InterruptController();
         Interrupts.Register(Io);
@@ -216,45 +251,63 @@ public sealed partial class Machine : IDisposable
         SerialMouse = new SerialMouse(Mouse, Interrupts);
         SerialMouse.Register(Io);
 
-        S3VideoIdentity videoIdentity = S3VideoIdentity.Trio64VPlus;
-        VideoRegisters = new VgaRegisters(videoIdentity);
-        VideoRegisters.Register(Io);
-        VideoMemory = new VgaMemory(VideoRegisters);
-        Memory.MapDevice(VgaMemory.Base, VgaMemory.Size, VideoMemory);
+        if (videoModel == VmVideoModel.S3Trio64VPlus)
+        {
+            S3VideoIdentity videoIdentity = S3VideoIdentity.Trio64VPlus;
+            VideoRegisters = new VgaRegisters(videoIdentity);
+            VideoRegisters.Register(Io);
+            VideoMemory = new VgaMemory(VideoRegisters);
+            Memory.MapDevice(VgaMemory.Base, VgaMemory.Size, VideoMemory);
 
-        // And the same memory again, flat, above the RAM. A protected-mode
-        // display driver writes here and never touches the bank register.
-        Memory.MapDevice(LinearFrameBufferBase, VgaMemory.TotalSize, VideoMemory.Linear);
+            // And the same memory again, flat, above the RAM. A protected-mode
+            // display driver writes here and never touches the bank register.
+            Memory.MapDevice(LinearFrameBufferBase, VgaMemory.TotalSize, VideoMemory.Linear);
 
-        // And the card is told where that is, because a driver asks the
-        // hardware rather than being configured with the answer.
-        VideoRegisters.ApertureBase = LinearFrameBufferBase;
+            // And the card is told where that is, because a driver asks the
+            // hardware rather than being configured with the answer.
+            VideoRegisters.ApertureBase = LinearFrameBufferBase;
 
-        Video = new VgaRenderer(VideoMemory, VideoRegisters);
+            Video = new VgaRenderer(VideoMemory, VideoRegisters);
+            Display = Video;
 
-        // The 2D engine, which is what makes the SVGA resolutions usable: at
-        // 1024x768 a window scroll done by the processor means three quarters
-        // of a megabyte across the bus, and done by the card means a dozen
-        // register writes.
-        Accelerator = new S3Accelerator(VideoMemory, VideoRegisters);
-        Accelerator.Register(Io);
-        VideoMemory.Engine = Accelerator.Mmio;
+            // The 2D engine, which is what makes the SVGA resolutions usable: at
+            // 1024x768 a window scroll done by the processor means three quarters
+            // of a megabyte across the bus, and done by the card means a dozen
+            // register writes.
+            _trioAccelerator = new S3Accelerator(VideoMemory, VideoRegisters);
+            _trioAccelerator.Register(Io);
+            VideoMemory.Engine = _trioAccelerator.Mmio;
 
-        // The engine's registers again, mapped as memory directly above the
-        // frame buffer. A protected-mode driver writes there rather than to
-        // the I/O ports: an OUT from protected-mode code is a fault the
-        // monitor has to catch and emulate, and a memory write is not -- on a
-        // 486 that is a few hundred cycles per register against a few.
-        MmioBase = LinearFrameBufferBase + VgaMemory.TotalSize;
-        Memory.MapDevice(MmioBase, 0x10000, Accelerator.Mmio);
-        VideoRegisters.MmioBase = MmioBase;
+            // The engine's registers again, mapped as memory directly above the
+            // frame buffer. A protected-mode driver writes there rather than to
+            // the I/O ports: an OUT from protected-mode code is a fault the
+            // monitor has to catch and emulate, and a memory write is not -- on a
+            // 486 that is a few hundred cycles per register against a few.
+            _trioMmioBase = LinearFrameBufferBase + VgaMemory.TotalSize;
+            Memory.MapDevice(MmioBase, 0x10000, _trioAccelerator.Mmio);
+            VideoRegisters.MmioBase = MmioBase;
 
-        // And where the Trio64V+ actually puts them: 16 MB above the
-        // linear frame buffer, whatever the card's memory size. The S3
-        // Windows driver for that chip writes there without asking, and
-        // without being told to by any register; the emulator learnt this
-        // from a trace of a driver that filled nothing.
-        Memory.MapDevice(LinearFrameBufferBase + TrioMmioOffset, 0x10000, Accelerator.Mmio);
+            // And where the Trio64V+ actually puts them: 16 MB above the
+            // linear frame buffer, whatever the card's memory size. The S3
+            // Windows driver for that chip writes there without asking, and
+            // without being told to by any register; the emulator learnt this
+            // from a trace of a driver that filled nothing.
+            Memory.MapDevice(LinearFrameBufferBase + TrioMmioOffset, 0x10000, _trioAccelerator.Mmio);
+
+            _pciVideoFunction = videoIdentity.CreatePciFunction(0x0020);
+            const uint apertureMask = ~(uint)(VgaMemory.TotalSize - 1);
+            _pciVideoFunction.Define(0x10, LinearFrameBufferBase | 0x08, 4, apertureMask);
+            Pci.Add(_pciVideoFunction);
+        }
+        else
+        {
+            Virge = new S3VirgeCard(Memory, Io, Pci);
+            VideoRegisters = Virge.Registers;
+            VideoMemory = Virge.VideoMemory;
+            Video = Virge.Renderer;
+            Display = Virge.Display;
+            _pciVideoFunction = Virge.Function;
+        }
 
         // The 8237 DMA pair and the Sound Blaster 16 that streams through it.
         // Registering the card also claims the OPL3's own ports at 0x388.
@@ -295,7 +348,6 @@ public sealed partial class Machine : IDisposable
         // is the slave of the first, where drivers of the period expect it.
         IdeSecondary = new IdeController(this, Interrupts, IdeController.Channel.Secondary);
         IdeSecondary.Register(Io);
-        Pci = new PciBus();
         Pci.Add(new PciFunction(0x0000, 0x8086, 0x122D, 0x060000));
         var pciIsa = new PciFunction(0x0008, 0x8086, 0x122E, 0x060100, headerType: 0x80);
         Pci.Add(pciIsa);
@@ -318,38 +370,6 @@ public sealed partial class Machine : IDisposable
             IdeSecondary.SetIoDecoding(Io, ioEnabled && secondaryEnabled);
         };
         Pci.Add(pciIde);
-
-        // The S3 Trio64V+ as a PCI display adapter.
-        //
-        // Windows 95 will not use a card-specific display driver unless it can
-        // identify the card, and for an S3 of this generation it identifies it
-        // by PCI vendor and device ID -- its driver database lists the Trio64V+
-        // as PCI\VEN_5333&DEV_8811 and nothing else. With the card absent from
-        // the bus, Plug and Play found no display device, Windows fell back to
-        // the standard VGA driver, and the desktop ran 640x480 in sixteen
-        // colours with the accelerator never touched. The registers and the
-        // memory windows are reached the same way they always were; this entry
-        // exists so that the card can be found.
-        //
-        // The base address register advertises the linear framebuffer, which
-        // is where the driver expects the aperture: prefetchable memory, and
-        // the low bits read back as zero so that software sizing the region
-        // sees how large it is.
-        var pciVideo = videoIdentity.CreatePciFunction(0x0020);
-
-        // The base address register advertises the linear framebuffer:
-        // prefetchable memory, at the address the aperture really answers.
-        //
-        // The writable mask is what states the size, and it has to state the
-        // true one. Software sizes a region by writing all ones and reading
-        // back: the bits that stay clear are the ones the card does not
-        // decode, so the lowest bit that can be set is the size. A mask of
-        // 0xFC000000 claims 64 MB of aperture over 2 MB of memory, and a
-        // driver that maps what it is told to then addresses memory the card
-        // never answers at.
-        const uint apertureMask = ~(uint)(VgaMemory.TotalSize - 1);
-        pciVideo.Define(0x10, LinearFrameBufferBase | 0x08, 4, apertureMask);
-        Pci.Add(pciVideo);
 
         Pci.Register(Io);
         PciServices = new PciBios(Pci);
@@ -560,6 +580,7 @@ public sealed partial class Machine : IDisposable
         foreach (DiskImage disk in _disks) disk.Dispose();
         CompactDisc?.Dispose();
         UsbStorage?.Dispose();
+        Virge?.Dispose();
         Memory.Dispose();
     }
 }

@@ -322,7 +322,7 @@ public static partial class BiosRom
         Post = 0xFF,
     }
 
-    public static byte[] Build()
+    public static byte[] Build(bool enableVesa = true)
     {
         var rom = new byte[Size];
 
@@ -539,6 +539,13 @@ public static partial class BiosRom
 
         // Model identification byte: 0xFC = AT and compatibles.
         rom[0xFFFE] = 0xFC;
+
+        // A VGA-only machine still reaches the native INT 10h handler, but it
+        // must not run the Trio-specific VBE register program on the way in.
+        if (!enableVesa)
+        {
+            rom[Entry.VesaProgram] = 0xC3;               // RET
+        }
 
         return rom;
     }

@@ -77,6 +77,7 @@ public sealed class MachineSnapshot
 
     private MachineSnapshot(Machine machine)
     {
+        RequireSupportedVideoModel(machine);
         CpuState state = machine.Cpu.State;
 
         _ram = machine.Memory.CaptureRam();
@@ -116,6 +117,7 @@ public sealed class MachineSnapshot
     /// <summary>Puts this state back into a machine.</summary>
     public void RestoreTo(Machine machine)
     {
+        RequireSupportedVideoModel(machine);
         CpuState state = machine.Cpu.State;
 
         // Remove the host CD mount before restoring RAM: unmounting clears
@@ -167,6 +169,20 @@ public sealed class MachineSnapshot
         // Paging translations cached from the old contents of memory describe
         // an address space that no longer exists.
         machine.Cpu.FlushTlb();
+    }
+
+    /// <summary>
+    /// Keeps the experimental ViRGE machine outside the legacy snapshot
+    /// format until video topology and drawing-engine state are represented.
+    /// This check must precede CD ownership and all RAM/device mutations.
+    /// </summary>
+    private static void RequireSupportedVideoModel(Machine machine)
+    {
+        if (machine.VideoModel == Configuration.VmVideoModel.S3Virge325)
+        {
+            throw new NotSupportedException(
+                "ViRGE machine snapshots require video topology and drawing-engine state support.");
+        }
     }
 
     /// <summary>Writes a snapshot to a file.</summary>

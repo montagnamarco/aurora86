@@ -5,5 +5,5 @@ namespace Aurora386.Core;
 public sealed partial class Machine
 {
     /// <summary>The video output contract consumed by emulator frontends.</summary>
-    public IVideoOutput Display => Video;
+    public IVideoOutput Display { get; }
 }

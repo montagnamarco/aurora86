@@ -31,7 +31,8 @@ public sealed partial class Machine
 
     private void InstallBios()
     {
-        Memory.MapRom(BiosRom.Base, BiosRom.Build());
+        bool enableVesa = VideoModel == Configuration.VmVideoModel.S3Trio64VPlus;
+        Memory.MapRom(BiosRom.Base, BiosRom.Build(enableVesa));
 
         // The 386 begins fetching at 0xFFFFFFF0, so the top 64 KB of the
         // 32-bit space must show the same ROM that is mapped at 0xF0000.
@@ -50,6 +51,12 @@ public sealed partial class Machine
     private void RunPost()
     {
         Pci.Reset();
+        if (VideoModel == Configuration.VmVideoModel.S3Virge325)
+        {
+            // The ViRGE gates standard VGA behind its PCI command register.
+            // Firmware enables both decoders before its first text-mode store.
+            Pci.WriteConfiguration(_pciVideoFunction.Address, 4, 2, 0x0003);
+        }
         Interrupts.ResetTriggerModes();
         Usb?.Reset();
         UsbStorageController?.Reset();
