@@ -55,10 +55,12 @@ VRAM notification.
 
 With `CMD_SET` bit 0 clear, a dword write to `B500` submits the command;
 with bit 0 set, a write to `B57C` submits it. The engine supports fixed-point edge values,
-inclusive clipping, and constant-colour RGB888 output. The implementation
-does not provide Gouraud gradients, textures, depth, fog, alpha, FIFO timing,
-interrupts, or capture of every machine device. The engine's 19 register
-latches have a separate 84-byte `VRG1` snapshot payload. Restore validates the
+inclusive clipping, and constant-colour RGB888 output. The measured
+`80C00006h` command additionally draws Gouraud RGB1555 with strict less-than
+16-bit Z comparison and Z updates. Other 3D command variants, textures, fog,
+alpha, FIFO timing, interrupts and capture of every machine device remain
+unsupported. The engine's 24 register latches have a separate 104-byte `VRG1`
+version 2 snapshot payload; version 1's 84 bytes restore with zero Z latches. Restore validates the
 whole header and length before changing latches, without submitting commands,
 touching VRAM, or raising command diagnostics. VRAM remains separate state.
 
@@ -118,17 +120,21 @@ The [DOS startup probe](../tools/Virge3DProbe/README.md) now runs the original
 Toolkit 2.6 cube sample on a private image and supports a hash-checked DOS
 prompt checkpoint. The sample reaches DPMI mappings for `70000000h` and
 `71000000h` and enters VBE mode `0110h` through INT 10h `AX=4F02`. Observed
-unsupported accesses include streams controls at `8180h`–`8208h` and triangle
-command `80C00006h`. The captured 640x480 display now shows the demo's tiled
-background and instructions. Esc returns to the DOS prompt. The cube itself
-is still absent; no period-program 3D frame has been demonstrated.
+unsupported accesses remain in streams controls at `8180h`–`8208h`.
+The triangle engine now accepts command `80C00006h`. Raw page `096000h` shows
+the cube's front face with the expected green, magenta, blue and white vertex
+colours over the tiled background. Esc returns to the DOS prompt. Streams
+page presentation remains unimplemented, so the displayed page can show only
+a partially drawn frame; complete demo compatibility remains open.
 
-The [drawing capture](VIRGE-CUBE.md) records the first command values and
-their setup, including uploads and attributes absent from the implemented
-engine latches. The next work is Gouraud shading and depth in RGB1555, followed
-by the measured streams/page-presentation controls. The current 2D background
-does not establish complete demo compatibility.
-The startup log records 84 CPU fault events as well; their presence alone does
+The [drawing capture](VIRGE-CUBE.md) records the command setup, implementation
+limits and observed output. The first triangle updates 4,880 depth pixels
+before the next guest command. At the final sample boundary, the guest has
+already cleared Z for another frame; this is why the probe also captures
+immediately after the first triangle. The next work is the measured streams
+and page-presentation controls.
+The earlier startup log recorded 84 CPU fault events; the recreated DOS input
+records 102. Their presence alone does
 not establish a CPU defect, and this probe makes no instruction changes.
 Earlier experimental logs using physical-memory write watches are invalid for
 hardware conclusions: those watches split DWORD transactions into bytes.

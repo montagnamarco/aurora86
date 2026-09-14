@@ -17,7 +17,7 @@ public sealed class MachineVideoSnapshotTests
     private const uint Command = 0x83000008;
     private const int TrioVideoTailLength = sizeof(int) + 12;
     // VGE1 header + VRG1 triangle block + V2D1 (15 latches and 11 upload fields).
-    private const int VirgeBundleLength = 16 + 84 + 112;
+    private const int VirgeBundleLength = 16 + 104 + 112;
 
     [Theory]
     [InlineData(VmVideoModel.S3Trio64VPlus)]

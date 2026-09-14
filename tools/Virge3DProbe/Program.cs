@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -21,6 +22,8 @@ internal static class VirgeProbe
     private const int MmioWriteLimit = 8192;
     private const int LowMmioWriteLimit = 64;
     private const uint MmioRegisterStart = 0x8000;
+    private const uint TriangleCommandRegister = 0xB500;
+    private const uint ObservedGouraudDepthCommand = 0x80C00006;
 
     public static int Run(string[] args)
     {
@@ -103,8 +106,29 @@ internal static class VirgeProbe
         long mmioWriteCount = 0;
         long lowMmioWriteCount = 0;
         long registerWriteCount = 0;
+        bool firstTrianglePending = false;
+        bool firstTriangleSaved = false;
         machine.Virge!.MmioWriteObserved += access =>
         {
+            // The observer runs before dispatch. The following MMIO write
+            // therefore sees the synchronous triangle after it has completed,
+            // before a later guest command can clear or overwrite its depth.
+            if (firstTrianglePending)
+            {
+                string triangleOutput = Path.Combine(output, "first-triangle");
+                Directory.CreateDirectory(triangleOutput);
+                log.WriteLine("surface-boundary=first-triangle-completed");
+                SaveDrawingSurfaces(machine, triangleOutput, log);
+                firstTrianglePending = false;
+                firstTriangleSaved = true;
+            }
+
+            if (!firstTriangleSaved && access.Register == TriangleCommandRegister
+                && access.Width == 4 && access.Value == ObservedGouraudDepthCommand)
+            {
+                firstTrianglePending = true;
+            }
+
             mmioWriteCount++;
             // Image uploads in the lower window must not exhaust the
             // register budget before the first triangle submission.
@@ -189,6 +213,7 @@ internal static class VirgeProbe
         machine.RunInstructions(SampleBudget);
         File.WriteAllText(Path.Combine(output, "after.txt"), ReadScreen(machine));
         SaveFrame(machine, Path.Combine(output, "after.ppm"), log);
+        SaveDrawingSurfaces(machine, output, log);
         log.WriteLine($"sample-boundary={machine.Cpu.State.Cs.Selector:X4}:{machine.Cpu.State.Eip:X8}");
 
         // Esc is the unmodified sample's exit command. Preserve the earlier
@@ -235,6 +260,51 @@ internal static class VirgeProbe
             text.AppendLine(new string(line).TrimEnd());
         }
         return text.ToString();
+    }
+
+    /// <summary>
+    /// Exports the two RGB1555 pages and Z surface observed in the CUBE trace.
+    /// These are raw VRAM observations, independent of display/Streams selection.
+    /// No register writes or guest-memory watches are used to obtain them.
+    /// </summary>
+    private static void SaveDrawingSurfaces(Machine machine, string output, StreamWriter log)
+    {
+        const int width = 640;
+        const int height = 480;
+        const int surfaceBytes = width * height * sizeof(ushort);
+        const uint depthBase = 0x12C000;
+        foreach (uint pageBase in new uint[] { 0, 0x96000 })
+        {
+            ReadOnlySpan<byte> pixels = machine.VideoMemory.GetSpan(pageBase, surfaceBytes);
+            byte[] rgb = new byte[width * height * 3];
+            for (int pixel = 0; pixel < width * height; pixel++)
+            {
+                ushort packed = BinaryPrimitives.ReadUInt16LittleEndian(
+                    pixels.Slice(pixel * sizeof(ushort), sizeof(ushort)));
+                for (int channel = 0; channel < 3; channel++)
+                {
+                    int component = (packed >> ((2 - channel) * 5)) & 31;
+                    rgb[pixel * 3 + channel] = (byte)((component << 3) | (component >> 2));
+                }
+            }
+
+            using FileStream file = File.Create(Path.Combine(output, $"vram-{pageBase:X6}.ppm"));
+            file.Write(Encoding.ASCII.GetBytes($"P6\n{width} {height}\n255\n"));
+            file.Write(rgb);
+            log.WriteLine($"vram-page={pageBase:X6} rgb-sha256={Convert.ToHexString(SHA256.HashData(rgb))}");
+        }
+
+        ReadOnlySpan<byte> depth = machine.VideoMemory.GetSpan(depthBase, surfaceBytes);
+        File.WriteAllBytes(Path.Combine(output, "depth-12C000.bin"), depth.ToArray());
+        int writtenDepthPixels = 0;
+        for (int offset = 0; offset < depth.Length; offset += sizeof(ushort))
+        {
+            if (BinaryPrimitives.ReadUInt16LittleEndian(depth[offset..]) != ushort.MaxValue)
+            {
+                writtenDepthPixels++;
+            }
+        }
+        log.WriteLine($"depth-base={depthBase:X6} pixels-not-FFFF={writtenDepthPixels} sha256={Convert.ToHexString(SHA256.HashData(depth))}");
     }
 
     private static void SaveFrame(Machine machine, string path, StreamWriter log)

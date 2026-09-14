@@ -47,8 +47,8 @@ B560=FFF00000 B564=0F000000 B568=00033333 B56C=0C800000
 B570=00000000 B574=0C800000 B578=00000168 B57C=80C80029
 ```
 
-These are observed bus values. The current engine ignores several of these
-registers and rejects the command; reading its implemented latches alone would
+These are observed bus values. At the capture revision, the engine ignored several
+of these registers and rejected the command; reading its implemented latches alone would
 lose the missing parameters. PIO and status reads are outside this capture,
 so display-start changes and polling protocol still need separate observation.
 
@@ -125,3 +125,62 @@ with the existing 84-byte VRG1 triangle payload. Machine tests save in the middl
 of an odd-width RGB1555 row, restore from disk and complete the upload with the
 same VRAM as uninterrupted execution. Legacy triangle-only snapshots remain
 readable; malformed nested state is rejected before RAM or VRAM changes.
+
+
+## Gouraud/Z implementation contract
+
+The triangle engine accepts the measured `B500=80C00006` command with signed
+S8.7 RGB gradients and S16.15 depth. Register latches now include B4D4, B4E8,
+B554, B558 and B55C. The programmed attributes are anchored at point A on the
+long edge, as in databook 15-23/24. Each upward scanline advances the Y
+accumulators; X deltas advance from that row's integer long-edge origin in
+the rendering direction selected by B57C.31. This follows the observed Toolkit
+triangle whose white starting vertex must interpolate to green and magenta;
+using signed screen-X distance instead saturates its right-to-left colours.
+Clipping preserves that origin and the number of elapsed rows. A source depth
+must be strictly smaller than the stored word before depth and colour change.
+Destination and depth addresses are checked independently against VRAM bounds.
+
+Fractional-edge attribute correction has not been measured on hardware. The
+current conversion discards fractional/low RGB bits, saturates the result to
+five bits per component, and truncates then saturates depth to a 16-bit word.
+These are explicit approximation boundaries, not established silicon rounding
+rules. Texture, dithering, blending and other Z comparison commands remain
+outside this subset. The legacy constant-colour RGB888 path remains supported.
+
+New captures use a 104-byte VRG1 version 2 payload with 24 latches. The original
+19 latches retain their positions; five depth latches are appended. Version 1
+restores with zero depth latches. Both bare legacy triangle snapshots and VGE1
+bundles containing a version 1 triangle remain loadable and resave byte-identically
+before restoration. Restoring either version never submits a command.
+
+
+## Result with Gouraud and Z
+
+A fresh DOS checkpoint with the new Core builds the first triangle in page
+096000h and updates 4,880 Z pixels before the following MMIO write. Its depth
+surface SHA-256 is
+`103BEA0787506B513A914F17371548AE0453486490557D7E1D0420B2882CED4F`.
+The final raw page shows the cube's front face: green at top left, magenta at
+top right, blue at bottom left and white at bottom right. Its RGB SHA-256 is
+`3FE2C6EC5A71F48B08E13CDA61EA515E53A0565CF8D82967C5161AC512370076`.
+The visible page's hash differs because Streams presentation is still absent.
+At that final boundary the sample has already cleared its depth surface for
+the next frame; an all-FFFF dump there does not mean the triangles skipped Z.
+
+The right-to-left regression uses the captured third triangle and the vertex
+colours in the Toolkit's [EXAMPLE.C](https://github.com/kytulendu/S3DTK/blob/16ea84eb03b5209718106fd0f51ae420698185b2/SAMPLES/EXAMPLE.C).
+Its source SHA-256 is
+`1DEA0F4CBEA7FCB14D9CC3C2AA534DE86770FC0646CAADDEE816DDA94D73004A`.
+An earlier implementation multiplied the deltas by signed screen-X distance,
+which inverted their effect in right-to-left triangles and saturated colours.
+The captured vertices establish that these deltas advance in drawing order.
+Tests retain that reproducer along with signed X/Y gradients, clipping, both
+halves, independent colour/Z bounds, strict depth ordering and CPU snapshots.
+
+The recreated input uses an existing DOS disk backup with its configuration
+preserved; the Toolkit binary hashes match the original capture. This run
+reports 18 selected interrupts, 102 fault events and 366 unsupported card
+notifications, with no rejected BitBLT or triangle commands. These fault counts
+are from a different DOS input and do not establish a CPU regression. Esc
+returns to `C:\>`, and the probe's source-image hash is unchanged.

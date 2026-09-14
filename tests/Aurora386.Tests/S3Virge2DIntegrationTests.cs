@@ -103,12 +103,30 @@ public sealed class S3Virge2DIntegrationTests
         Assert.NotEqual(pending, machine.Virge.Blitter.Capture());
     }
 
-    [Fact]
-    public void LegacyVrg1MachineSnapshotResavesUnchangedAndResetsTargetBlitter()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LegacyVrg1MachineSnapshotResavesUnchangedAndResetsTargetBlitter(bool bundled)
     {
         using Machine source = Started();
         MachineSnapshot legacy = MachineSnapshot.Capture(source);
-        EngineField.SetValue(legacy, source.Virge!.Engine.Capture());
+        byte[] legacyTriangle = source.Virge!.Engine.Capture()[..84];
+        BinaryPrimitives.WriteUInt16LittleEndian(legacyTriangle.AsSpan(4), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(legacyTriangle.AsSpan(6), 19);
+        byte[] legacyPayload = legacyTriangle;
+        if (bundled)
+        {
+            // VG-03C2 files wrapped a v1 triangle and a BitBLT block in VGE1.
+            byte[] blitter = source.Virge.Blitter.Capture();
+            legacyPayload = new byte[16 + legacyTriangle.Length + blitter.Length];
+            BinaryPrimitives.WriteUInt32LittleEndian(legacyPayload, 0x31454756);
+            BinaryPrimitives.WriteUInt16LittleEndian(legacyPayload.AsSpan(4), 1);
+            BinaryPrimitives.WriteInt32LittleEndian(legacyPayload.AsSpan(8), legacyTriangle.Length);
+            BinaryPrimitives.WriteInt32LittleEndian(legacyPayload.AsSpan(12), blitter.Length);
+            legacyTriangle.CopyTo(legacyPayload, 16);
+            blitter.CopyTo(legacyPayload, 16 + legacyTriangle.Length);
+        }
+        EngineField.SetValue(legacy, legacyPayload);
         string original = Path.GetTempFileName();
         string resaved = Path.GetTempFileName();
         try
@@ -140,14 +158,14 @@ public sealed class S3Virge2DIntegrationTests
     [InlineData(8)] // Triangle length.
     [InlineData(12)] // Blitter length.
     [InlineData(16)] // Triangle header.
-    [InlineData(100)] // Blitter header, after 16-byte envelope and 84-byte VRG1.
+    [InlineData(120)] // Blitter header, after 16-byte envelope and 104-byte VRG1 v2.
     public void InvalidEngineBundlePreflightLeavesPendingUploadAndRamUntouched(int corruptOffset)
     {
         using Machine source = Started();
         MachineSnapshot snapshot = MachineSnapshot.Capture(source);
         byte[] payload = (byte[])EngineField.GetValue(snapshot)!;
         Assert.Equal(0x31454756u, BinaryPrimitives.ReadUInt32LittleEndian(payload));
-        Assert.Equal(84, BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(8)));
+        Assert.Equal(104, BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(8)));
         payload[corruptOffset] ^= 0xFF;
         using Machine target = Started();
         BeginImage(target);

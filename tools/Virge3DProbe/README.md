@@ -45,7 +45,16 @@ dotnet tools/Virge3DProbe/bin/Release/net10.0/Virge3DProbe.dll /tmp/cube-first/p
 Keyboard scan codes launch `cube`; the sample receives another 80 million
 instructions after typing. `after.txt` and `after.ppm` preserve the resulting
 screen. Esc then requests the sample's normal exit, and `exit.txt` records the
-screen after 20 million more instructions. The log contains the RGB hash,
+screen after 20 million more instructions. Before Esc, the probe also exports
+`vram-000000.ppm` and `vram-096000.ppm`, decoding the two observed 640×480
+RGB1555 pages directly from VRAM. `depth-12C000.bin` preserves the corresponding
+16-bit depth surface; the log records its hash and count of values other than
+FFFFh. These fixed surface addresses come from the CUBE capture. They do not
+select a displayed page or establish Streams support. The `first-triangle/`
+subdirectory captures the same surfaces on the MMIO write following the first
+`B500=80C00006` submission. Since drawing is synchronous, this observes its
+completed colour and depth before a subsequent command can clear the Z buffer.
+The log contains the RGB hash,
 selected INT calls, faults, unsupported card accesses with their original
 widths, unsupported 2D and triangle commands, final registers and source-image hashes.
 Counts include repeated events; card-access lines are deduplicated by PC,
@@ -68,7 +77,9 @@ The card and CPU events only observe execution.
 
 With the experimental VBE firmware and BitBLT engine, the sample requests
 INT 10h `AX=4F02`, `BX=0110` and displays its tiled background and instructions
-at 640×480. It still accesses unimplemented streams controls and submits
-unsupported triangle `CMD_SET=80C00006`. Esc returns to the DOS prompt.
-This demonstrates the 2D setup, not a rendered cube. A new prompt checkpoint
+at 640×480. It submits supported
+Gouraud/Z triangle `CMD_SET=80C00006` but still accesses unimplemented streams
+controls. The raw `vram-096000.ppm` page shows the cube's front face with the
+sample's vertex colours. The displayed page can remain incomplete until
+Streams presentation is implemented. Esc returns to the DOS prompt. A new prompt checkpoint
 is required after the Core build changes. See [ViRGE status](../../docs/VIRGE.md).

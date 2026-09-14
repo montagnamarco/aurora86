@@ -7,19 +7,22 @@ namespace Aurora386.Core.Devices.Video;
 /// The triangle register block of S3's 1996 ViRGE 86C325 accelerator.
 /// Software supplies fixed-point edge slopes through memory-mapped registers;
 /// the engine walks scan lines into the same video memory used for display.
-/// This first subset draws constant-colour RGB888 triangles synchronously.
-/// Textures, interpolated colours, depth, interrupts and FIFO timing are not
-/// implemented, and unsupported drawing requests are reported to diagnostics.
+/// The implemented synchronous subsets draw legacy flat RGB888 triangles and
+/// the Gouraud-shaded ZRGB1555 command measured from S3d Toolkit 2.6 CUBE.
+/// Textures, blending, fog, interrupts and FIFO timing remain unsupported and
+/// unsupported drawing requests are reported to diagnostics.
 /// Register definitions follow S3's August 1996 ViRGE databook, sections 19
 /// and 22. Offsets are relative to the card's 64 KB MMIO register window.
 /// </summary>
 public sealed class S3VirgeEngine : IMemoryDevice
 {
     private const uint StatusRegister = 0x8504;
+    private const uint DepthBase = 0xB4D4;
     private const uint DestinationBase = 0xB4D8;
     private const uint ClipLeftRight = 0xB4DC;
     private const uint ClipTopBottom = 0xB4E0;
     private const uint DestinationStride = 0xB4E4;
+    private const uint DepthStride = 0xB4E8;
     private const uint CommandSet = 0xB500;
     private const uint GreenBlueDeltaX = 0xB53C;
     private const uint AlphaRedDeltaX = 0xB540;
@@ -27,6 +30,9 @@ public sealed class S3VirgeEngine : IMemoryDevice
     private const uint AlphaRedDeltaY = 0xB548;
     private const uint GreenBlueStart = 0xB54C;
     private const uint AlphaRedStart = 0xB550;
+    private const uint DepthDeltaX = 0xB554;
+    private const uint DepthDeltaY = 0xB558;
+    private const uint DepthStart = 0xB55C;
     private const uint Edge12Slope = 0xB560;
     private const uint Edge12Start = 0xB564;
     private const uint Edge01Slope = 0xB568;
@@ -38,12 +44,18 @@ public sealed class S3VirgeEngine : IMemoryDevice
     private const uint AutoExecute = 1;
     private const uint HardwareClipping = 2;
     private const uint FlatRgb888Command = 0x83000008;
+    private const uint GouraudZRgb1555Command = 0x80C00006;
     private const uint AllowedCommandOptions = AutoExecute | HardwareClipping;
     private const int CoordinateFractionBits = 20;
     private const long CoordinateUnit = 1L << CoordinateFractionBits;
+    private const int ColourFractionBits = 7;
+    private const int Rgb1555DiscardedBits = ColourFractionBits + 3;
+    private const int DepthFractionBits = 15;
     private const uint SnapshotMagic = 0x31475256;
-    private const ushort SnapshotVersion = 1;
-    private const ushort SnapshotRegisterCount = 19;
+    private const ushort LegacySnapshotVersion = 1;
+    private const ushort LegacySnapshotRegisterCount = 19;
+    private const ushort SnapshotVersion = 2;
+    private const ushort SnapshotRegisterCount = 24;
     private const int SnapshotHeaderSize = 8;
     private const int SnapshotSize = SnapshotHeaderSize + SnapshotRegisterCount * sizeof(uint);
 
@@ -67,7 +79,12 @@ public sealed class S3VirgeEngine : IMemoryDevice
         Edge02Slope,
         Edge02Start,
         YStart,
-        YCount
+        YCount,
+        DepthBase,
+        DepthStride,
+        DepthDeltaX,
+        DepthDeltaY,
+        DepthStart
     ];
 
     private readonly VgaMemory _memory;
@@ -79,7 +96,7 @@ public sealed class S3VirgeEngine : IMemoryDevice
     }
 
     /// <summary>
-    /// Captures the nineteen programmed triangle latches in a fixed little
+    /// Captures the twenty-four programmed triangle latches in a fixed little
     /// endian payload. Video memory and host diagnostic events are external
     /// state and are deliberately excluded from this engine snapshot.
     /// </summary>
@@ -114,7 +131,11 @@ public sealed class S3VirgeEngine : IMemoryDevice
         uint magic = BinaryPrimitives.ReadUInt32LittleEndian(snapshot);
         ushort version = BinaryPrimitives.ReadUInt16LittleEndian(snapshot[4..]);
         ushort count = BinaryPrimitives.ReadUInt16LittleEndian(snapshot[6..]);
-        if (magic != SnapshotMagic || version != SnapshotVersion || count != SnapshotRegisterCount)
+        bool legacyHeader = version == LegacySnapshotVersion
+            && count == LegacySnapshotRegisterCount;
+        bool currentHeader = version == SnapshotVersion
+            && count == SnapshotRegisterCount;
+        if (magic != SnapshotMagic || (!legacyHeader && !currentHeader))
         {
             throw new ArgumentException("ViRGE snapshot header is invalid.", nameof(snapshot));
         }
@@ -134,7 +155,8 @@ public sealed class S3VirgeEngine : IMemoryDevice
     {
         ValidateSnapshot(snapshot);
 
-        uint[] values = new uint[SnapshotRegisterCount];
+        ushort count = BinaryPrimitives.ReadUInt16LittleEndian(snapshot[6..]);
+        uint[] values = new uint[count];
         for (int index = 0; index < values.Length; index++)
         {
             values[index] = BinaryPrimitives.ReadUInt32LittleEndian(
@@ -142,7 +164,7 @@ public sealed class S3VirgeEngine : IMemoryDevice
         }
 
         _registers.Clear();
-        for (int index = 0; index < SnapshotRegisters.Length; index++)
+        for (int index = 0; index < values.Length; index++)
         {
             _registers[SnapshotRegisters[index]] = MaskRegister(SnapshotRegisters[index], values[index]);
         }
@@ -224,10 +246,12 @@ public sealed class S3VirgeEngine : IMemoryDevice
     private static bool IsTriangleRegister(uint offset)
     {
         return (offset & 3) == 0
-            && (offset == DestinationBase || offset == ClipLeftRight
+            && (offset == DepthBase || offset == DestinationBase || offset == ClipLeftRight
                 || offset == ClipTopBottom || offset == DestinationStride
+                || offset == DepthStride
                 || offset == CommandSet
                 || (offset >= GreenBlueDeltaX && offset <= AlphaRedStart)
+                || (offset >= DepthDeltaX && offset <= DepthStart)
                 || (offset >= Edge12Slope && offset <= YCount));
     }
 
@@ -236,6 +260,7 @@ public sealed class S3VirgeEngine : IMemoryDevice
     {
         switch (offset)
         {
+            case DepthBase:
             case DestinationBase:
                 return value & 0x003FFFF8;
             case ClipLeftRight:
@@ -243,6 +268,8 @@ public sealed class S3VirgeEngine : IMemoryDevice
                 return value & 0x07FF07FF;
             case DestinationStride:
                 return value & 0x0FF80FF8;
+            case DepthStride:
+                return value & 0x00000FF8;
             case YStart:
                 return value & 0x7FF;
             case YCount:
@@ -252,7 +279,7 @@ public sealed class S3VirgeEngine : IMemoryDevice
         }
     }
 
-    /// <summary>Completes one flat triangle before the next guest register access.</summary>
+    /// <summary>Completes one supported triangle before the next guest register access.</summary>
     private void Execute(uint command)
     {
         // NOP is also the documented way to disable autoexecute safely.
@@ -265,12 +292,146 @@ public sealed class S3VirgeEngine : IMemoryDevice
             && ReadDword(AlphaRedDeltaX) == 0
             && ReadDword(GreenBlueDeltaY) == 0
             && ReadDword(AlphaRedDeltaY) == 0;
-        if ((command & ~AllowedCommandOptions) != FlatRgb888Command || !constantColour)
+        if ((command & ~AllowedCommandOptions) == FlatRgb888Command && constantColour)
         {
-            UnsupportedCommandIssued?.Invoke(command);
+            DrawFlatRgb888(command);
             return;
         }
 
+        if (command == GouraudZRgb1555Command)
+        {
+            DrawGouraudZRgb1555(command);
+            return;
+        }
+
+        UnsupportedCommandIssued?.Invoke(command);
+    }
+
+    /// <summary>Draws the original constant-colour RGB888 compatibility subset.</summary>
+    private void DrawFlatRgb888(uint command)
+    {
+        byte blue = ColourComponent(ReadDword(GreenBlueStart));
+        byte green = ColourComponent(ReadDword(GreenBlueStart) >> 16);
+        byte red = ColourComponent(ReadDword(AlphaRedStart));
+
+        WalkTriangle((currentY, longEdge, shortEdge, direction, _) =>
+        {
+            if (!TryGetScanLineBounds(
+                currentY,
+                longEdge,
+                shortEdge,
+                direction,
+                command,
+                out int minimum,
+                out int maximum,
+                out _))
+            {
+                return;
+            }
+
+            long rowAddress = ReadDword(DestinationBase)
+                + (long)currentY * (ReadDword(DestinationStride) >> 16);
+            for (int x = minimum; x <= maximum; x++)
+            {
+                long address = rowAddress + (long)x * 3;
+                if (address < 0 || address + 2 >= VgaMemory.TotalSize)
+                {
+                    continue;
+                }
+
+                _memory.WriteLinear((uint)address, blue);
+                _memory.WriteLinear((uint)address + 1, green);
+                _memory.WriteLinear((uint)address + 2, red);
+            }
+        });
+    }
+
+    /// <summary>
+    /// Draws the measured Gouraud ZRGB1555 command with strict less-than depth
+    /// comparison and updates the separate sixteen-bit Z buffer on a pass. The
+    /// point-A attributes advance by their Y deltas on each upward scan line;
+    /// X deltas advance in the B57C-selected rendering direction from that
+    /// row's long-edge integer origin. Fractional edge correction is not
+    /// specified by the databook and remains unclaimed.
+    /// </summary>
+    private void DrawGouraudZRgb1555(uint command)
+    {
+        int blueStart = SignedColourComponent(ReadDword(GreenBlueStart));
+        int greenStart = SignedColourComponent(ReadDword(GreenBlueStart) >> 16);
+        int redStart = SignedColourComponent(ReadDword(AlphaRedStart));
+        int blueDeltaX = SignedColourComponent(ReadDword(GreenBlueDeltaX));
+        int greenDeltaX = SignedColourComponent(ReadDword(GreenBlueDeltaX) >> 16);
+        int redDeltaX = SignedColourComponent(ReadDword(AlphaRedDeltaX));
+        int blueDeltaY = SignedColourComponent(ReadDword(GreenBlueDeltaY));
+        int greenDeltaY = SignedColourComponent(ReadDword(GreenBlueDeltaY) >> 16);
+        int redDeltaY = SignedColourComponent(ReadDword(AlphaRedDeltaY));
+        int depthStart = unchecked((int)ReadDword(DepthStart));
+        int depthDeltaX = unchecked((int)ReadDword(DepthDeltaX));
+        int depthDeltaY = unchecked((int)ReadDword(DepthDeltaY));
+
+        WalkTriangle((currentY, longEdge, shortEdge, direction, rowIndex) =>
+        {
+            if (!TryGetScanLineBounds(
+                currentY,
+                longEdge,
+                shortEdge,
+                direction,
+                command,
+                out int minimum,
+                out int maximum,
+                out int attributeOriginX))
+            {
+                return;
+            }
+
+            long rowBlue = blueStart + (long)blueDeltaY * rowIndex;
+            long rowGreen = greenStart + (long)greenDeltaY * rowIndex;
+            long rowRed = redStart + (long)redDeltaY * rowIndex;
+            long rowDepth = depthStart + (long)depthDeltaY * rowIndex;
+            for (int x = minimum; x <= maximum; x++)
+            {
+                if (!TryGetPixelAddress(
+                    ReadDword(DestinationBase),
+                    ReadDword(DestinationStride) >> 16,
+                    currentY,
+                    x,
+                    out uint destinationAddress)
+                    || !TryGetPixelAddress(
+                        ReadDword(DepthBase),
+                        ReadDword(DepthStride),
+                        currentY,
+                        x,
+                        out uint depthAddress))
+                {
+                    continue;
+                }
+
+                int traversalOffset = direction > 0
+                    ? x - attributeOriginX
+                    : attributeOriginX - x;
+                ushort sourceDepth = DepthValue(
+                    rowDepth + (long)depthDeltaX * traversalOffset);
+                ushort bufferedDepth = ReadWordLinear(depthAddress);
+                if (sourceDepth >= bufferedDepth)
+                {
+                    continue;
+                }
+
+                // Section 15.4.6 requires the depth comparison and update to
+                // precede all pixel-colour generation for a passing fragment.
+                WriteWordLinear(depthAddress, sourceDepth);
+                ushort colour = PackRgb1555(
+                    rowRed + (long)redDeltaX * traversalOffset,
+                    rowGreen + (long)greenDeltaX * traversalOffset,
+                    rowBlue + (long)blueDeltaX * traversalOffset);
+                WriteWordLinear(destinationAddress, colour);
+            }
+        });
+    }
+
+    /// <summary>Walks both triangle halves while preserving every programmed latch.</summary>
+    private void WalkTriangle(Action<int, int, int, int, int> drawScanLine)
+    {
         // Local edge accumulators preserve the programmed latches for the
         // next autoexecute submission, including submissions with zero rows.
         uint counts = ReadDword(YCount);
@@ -278,9 +439,7 @@ public sealed class S3VirgeEngine : IMemoryDevice
         int currentY = (int)ReadDword(YStart);
         int longEdge = unchecked((int)ReadDword(Edge02Start));
         int longSlope = unchecked((int)ReadDword(Edge02Slope));
-        byte blue = ColourComponent(ReadDword(GreenBlueStart));
-        byte green = ColourComponent(ReadDword(GreenBlueStart) >> 16);
-        byte red = ColourComponent(ReadDword(AlphaRedStart));
+        int rowIndex = 0;
 
         DrawHalf((int)((counts >> 16) & 0x7FF), Edge01Start, Edge01Slope);
         DrawHalf((int)(counts & 0x7FF), Edge12Start, Edge12Slope);
@@ -293,10 +452,11 @@ public sealed class S3VirgeEngine : IMemoryDevice
             int shortSlope = unchecked((int)ReadDword(slopeRegister));
             for (int line = 0; line < lineCount; line++)
             {
-                DrawScanLine(currentY, longEdge, shortEdge, direction, command, blue, green, red);
+                drawScanLine(currentY, longEdge, shortEdge, direction, rowIndex);
                 longEdge = unchecked(longEdge + longSlope);
                 shortEdge = unchecked(shortEdge + shortSlope);
                 currentY--;
+                rowIndex++;
             }
         }
     }
@@ -308,9 +468,34 @@ public sealed class S3VirgeEngine : IMemoryDevice
         return (byte)Math.Clamp(component >> 7, 0, 255);
     }
 
-    /// <summary>Writes the covered pixels after inclusive hardware clipping.</summary>
-    private void DrawScanLine(int y, int longEdge, int shortEdge, int direction,
-        uint command, byte blue, byte green, byte red)
+    /// <summary>Extracts one signed S8.7 component without discarding its fraction.</summary>
+    private static short SignedColourComponent(uint packed)
+    {
+        return unchecked((short)(packed & 0xFFFF));
+    }
+
+    /// <summary>
+    /// Converts three S8.7 accumulators to RGB1555. The databook does not state
+    /// a rounding rule, so this measured subset discards fractional and low
+    /// colour bits and saturates values outside the representable range.
+    /// </summary>
+    private static ushort PackRgb1555(long red, long green, long blue)
+    {
+        int red5 = (int)Math.Clamp(red >> Rgb1555DiscardedBits, 0, 31);
+        int green5 = (int)Math.Clamp(green >> Rgb1555DiscardedBits, 0, 31);
+        int blue5 = (int)Math.Clamp(blue >> Rgb1555DiscardedBits, 0, 31);
+        return (ushort)((red5 << 10) | (green5 << 5) | blue5);
+    }
+
+    /// <summary>Discards the S16.15 fraction and saturates it to the Z-buffer word.</summary>
+    private static ushort DepthValue(long depth)
+    {
+        return (ushort)Math.Clamp(depth >> DepthFractionBits, 0, ushort.MaxValue);
+    }
+
+    /// <summary>Finds covered pixels and the integer point-A attribute origin for a row.</summary>
+    private bool TryGetScanLineBounds(int y, int longEdge, int shortEdge, int direction,
+        uint command, out int minimum, out int maximum, out int attributeOriginX)
     {
         int first = (int)(((long)longEdge + CoordinateUnit - 1) >> CoordinateFractionBits);
         int end = (int)(((long)shortEdge + CoordinateUnit - 1) >> CoordinateFractionBits);
@@ -323,14 +508,15 @@ public sealed class S3VirgeEngine : IMemoryDevice
         // The reference excludes the opposite edge in both directions.
         // Integer-edge regression vectors pin that coverage without claiming
         // that all subpixel rounding has already been measured on silicon.
-        int minimum = direction > 0 ? first : end + 1;
-        int maximum = direction > 0 ? end - 1 : first;
+        minimum = direction > 0 ? first : end + 1;
+        maximum = direction > 0 ? end - 1 : first;
+        attributeOriginX = direction > 0 ? first : first + 1;
         if ((command & HardwareClipping) != 0)
         {
             uint verticalClip = ReadDword(ClipTopBottom);
             if (y < (int)(verticalClip >> 16) || y > (int)(verticalClip & 0x7FF))
             {
-                return;
+                return false;
             }
 
             uint horizontalClip = ReadDword(ClipLeftRight);
@@ -338,21 +524,38 @@ public sealed class S3VirgeEngine : IMemoryDevice
             maximum = Math.Min(maximum, (int)(horizontalClip & 0x7FF));
         }
 
-        // Bounds checks keep incomplete out-of-range bus semantics from
-        // turning a guest register value into a host memory error.
-        long rowAddress = ReadDword(DestinationBase)
-            + (long)y * (ReadDword(DestinationStride) >> 16);
-        for (int x = minimum; x <= maximum; x++)
-        {
-            long address = rowAddress + (long)x * 3;
-            if (address < 0 || address + 2 >= VgaMemory.TotalSize)
-            {
-                continue;
-            }
+        return minimum <= maximum;
+    }
 
-            _memory.WriteLinear((uint)address, blue);
-            _memory.WriteLinear((uint)address + 1, green);
-            _memory.WriteLinear((uint)address + 2, red);
+    /// <summary>Keeps incomplete out-of-range bus semantics outside host memory.</summary>
+    private static bool TryGetPixelAddress(
+        uint baseAddress,
+        uint stride,
+        int y,
+        int x,
+        out uint address)
+    {
+        long candidate = baseAddress + (long)y * stride + (long)x * 2;
+        if (candidate < 0 || candidate + 1 >= VgaMemory.TotalSize)
+        {
+            address = 0;
+            return false;
         }
+
+        address = (uint)candidate;
+        return true;
+    }
+
+    /// <summary>Reads one little-endian ZRGB1555 or depth word from video memory.</summary>
+    private ushort ReadWordLinear(uint address)
+    {
+        return (ushort)(_memory.ReadLinear(address) | (_memory.ReadLinear(address + 1) << 8));
+    }
+
+    /// <summary>Writes one little-endian ZRGB1555 or depth word to video memory.</summary>
+    private void WriteWordLinear(uint address, ushort value)
+    {
+        _memory.WriteLinear(address, (byte)value);
+        _memory.WriteLinear(address + 1, (byte)(value >> 8));
     }
 }
