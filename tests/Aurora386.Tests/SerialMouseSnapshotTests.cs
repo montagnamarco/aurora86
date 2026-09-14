@@ -182,7 +182,7 @@ public sealed class SerialMouseSnapshotTests
             int serialStateLength = sizeof(int) + source.SerialMouse.Capture().Length;
             using (FileStream file = File.OpenWrite(legacyPath))
             {
-                RemoveTrioVideoTail(file);
+                RemoveTrioVideoTail(file, source);
                 file.SetLength(file.Length - serialStateLength);
             }
 
@@ -221,7 +221,7 @@ public sealed class SerialMouseSnapshotTests
             MachineSnapshot.Capture(machine).Save(path);
             using (FileStream file = File.OpenWrite(path))
             {
-                RemoveTrioVideoTail(file);
+                RemoveTrioVideoTail(file, machine);
                 file.SetLength(file.Length - 1);
             }
 
@@ -245,7 +245,7 @@ public sealed class SerialMouseSnapshotTests
             MachineSnapshot.Capture(machine).Save(path);
             using (FileStream file = File.OpenWrite(path))
             {
-                RemoveTrioVideoTail(file);
+                RemoveTrioVideoTail(file, machine);
                 file.Position = file.Length - serialState.Length;
                 file.WriteByte(2);
             }
@@ -276,8 +276,8 @@ public sealed class SerialMouseSnapshotTests
         Assert.Equal(0, events);
     }
 
-    private static void RemoveTrioVideoTail(FileStream file)
+    private static void RemoveTrioVideoTail(FileStream file, Machine machine)
     {
-        file.SetLength(file.Length - TrioVideoTailLength);
+        file.SetLength(file.Length - TrioVideoTailLength - 24 - machine.Accelerator.Capture().Length);
     }
 }

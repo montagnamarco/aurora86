@@ -25,7 +25,7 @@ namespace Aurora386.Core.Devices.Video;
 /// space and it is why the addresses look arbitrary -- they are the ones IBM
 /// happened to choose in 1987.
 /// </summary>
-public sealed class S3Accelerator : IIoDwordDevice
+public sealed partial class S3Accelerator : IIoDwordDevice
 {
     // MULT_MISC selects the 32-bit PIO form with CMR32B. In its normal
     // sequential form, RSF selects the next half of every colour register.
@@ -991,10 +991,19 @@ public sealed class S3Accelerator : IIoDwordDevice
     /// foreground mix or the background one -- which is how a font glyph
     /// is drawn in one pass.
     /// </summary>
-    private sealed class Transfer(int left, int top, int width, int height, bool rightwards, bool downwards, bool mask)
+    private sealed class Transfer(int left, int top, int width, int height, bool rightwards, bool downwards, bool mask,
+        int column = 0, int row = 0)
     {
         public readonly bool Mask = mask;
-        private int _column, _row;
+        private int _column = column;
+        private int _row = row;
+
+        public uint[] Capture() =>
+        [
+            (uint)left, (uint)top, (uint)width, (uint)height,
+            rightwards ? 1u : 0u, downwards ? 1u : 0u, Mask ? 1u : 0u,
+            (uint)_column, (uint)_row,
+        ];
 
         public bool Done => _row >= height;
         public bool RowStarting => _column == 0;

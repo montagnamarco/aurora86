@@ -6,18 +6,50 @@ The scope is deterministic continuation of the existing Trio/ViRGE and SB16
 models at a stopped machine execution boundary. It does not add hardware
 features, change instruction semantics, or make disk snapshots transactional.
 
-SNAP-01 now implements the extension boundary: a new reader accepts and
-preserves an empty DVS1 version 1 trailer after VID1. Captures still omit DVS1,
-and all nonempty record sets are rejected before restore. Device continuation,
-record-specific validation and the omitted-device reset policy below remain
-future units. Existing snapshots ending at VID1 retain byte-identical output.
+SNAP-01 and SNAP-02 are implemented. A new Trio capture adds a DVS1 version 1
+trailer containing one kind 1/model 0/version 1 accelerator record; ViRGE keeps
+its existing engine format. Empty trailers and historical absence survive
+load/save cycles. Missing Trio state resets its latches and pending work on
+restore. DMA, audio and PnP continuation and their legacy reset policies remain
+future units. Older readers that do not support this record reject new Trio
+files rather than silently losing its state.
+
+### Implemented Trio payload
+
+`T3D1` contains a DWORD magic, WORD version 1 and WORD field count 40, followed
+by 40 DWORD slots in the `Field` order declared in
+[S3Accelerator.Snapshot.cs](../src/Aurora386.Core/Devices/Video/S3Accelerator.Snapshot.cs).
+These cover register latches, write-mask presence, selectors, partial processor
+unit/pixel bytes, transfer presence, geometry, directions, mask and row/column.
+A signed DWORD count follows, then sorted `(port:WORD, lowByte:BYTE)` entries.
+The payload is 172 bytes plus three bytes per pending port. These entries
+preserve the existing PIO low-byte latch behaviour, including retained values
+after a high-byte write. Even port addresses are unique and strictly ordered.
+
+Capture clones all state. Validation bounds lengths, fields and cursors before
+restore; restore installs raw state without commands, drawing or callbacks.
+Host diagnostics (operation counts and trace delegates) remain target-owned.
+Machine preflight validates the payload before RAM/CD/device mutation; ViRGE
+rejects Trio records. Historical fixtures cover files ending before VID1, at
+VID1 and with an empty DVS1 trailer. A historical file cannot recover the old
+accelerator settings: reset prevents stale work but does not promise seamless
+continuation of a previously unsaved transfer.
+
+Replay tests cover one byte of a word, monochrome expansion, a partially
+assembled 24-bit pixel, pending command bytes, 32-bit colour halves, read
+selection and an already executed XOR. They compare complete VRAM and engine
+state against uninterrupted execution, including a previously used target.
+A direct numeric assertion found the existing `PutPixel`/`GetPixel` path
+handles the third colour byte only when the pixel size is four. Consequently,
+24-bpp continuation is verified against current semantics, but correct 24-bpp
+rendering is not claimed; this separate defect is not changed by snapshot work.
 
 ## Current coverage and gaps
 
 | Owner | Current coverage | Missing continuation state |
 | --- | --- | --- |
-| [MachineSnapshot](../src/Aurora386.Core/MachineSnapshot.cs) | CPU/RAM, VGA memory/registers, PIC/PIT, keyboard, PCI, USB, serial mouse and selected firmware state | DMA, SB16, OPL, ISA PnP and Trio accelerator |
-| [S3Accelerator](../src/Aurora386.Core/Devices/Video/S3Accelerator.cs) | VRAM is saved separately | Register latches, byte/word sequencing and pending processor transfer |
+| [MachineSnapshot](../src/Aurora386.Core/MachineSnapshot.cs) | CPU/RAM, VGA memory/registers, PIC/PIT, keyboard, PCI, USB, serial mouse and selected firmware state | DMA, SB16, OPL and ISA PnP |
+| [S3Accelerator](../src/Aurora386.Core/Devices/Video/S3Accelerator.cs) | T3D1 plus separately saved VRAM | None identified for the current synchronous engine |
 | [ViRGE engines](../src/Aurora386.Core/Devices/Video/S3VirgeCard.Snapshot.cs) | VGE1 wraps triangle, BitBLT and primary Streams state | No new engine block needed for the implemented synchronous triangle subset |
 | [Dma8237](../src/Aurora386.Core/Devices/System/Dma8237.cs) | Not captured | All eight channels and both byte-pointer flip-flops |
 | [SoundBlaster16](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.cs) | Not captured | DSP parser/FIFO, playback, timing fractions, resources, mixer, PCM queue and OPL |
@@ -37,8 +69,8 @@ length-prefixed DVS1 trailer after VID1. Integers are little-endian. Proposed
 payload: `magic:u32`, `version:u16=1`, `recordCount:u16`, then records with
 `kind:u16`, `model:u16`, `version:u16`, `flags:u16=0`, `length:u32`, payload.
 Assign record kinds 1=Trio accelerator, 2=DMA, 3=SB16, 4=ISA PnP;
-model 0 denotes the current implementation of each kind. These identifiers
-are reserved by this design and become a wire contract only with implementation.
+model 0 denotes the current implementation of each kind. Kind 1/model 0/version 1 is implemented; the other identifiers
+remain reserved by this design until their implementation.
 SB16 owns nested versioned mixer/OPL payloads; DMA remains a system device.
 
 Before SNAP-01 the loader required VID1's declared length to equal all remaining
@@ -50,7 +82,7 @@ truncated data, trailing garbage and invalid field ranges before mutation.
 Require exact payload consumption and bounded allocations. Tests must include
 existing files ending before VID1 and files ending exactly after VID1.
 
-For a current capture, require DMA, SB16 and ISA PnP records, plus Trio state
+After all six units, require DMA, SB16 and ISA PnP records, plus Trio state
 only for Trio topology. Keep ViRGE engines in the existing VID1/VGE1 path.
 For historical files without DVS1, retain an explicit absent-state marker:
 restore resets omitted devices to the target machine's constructed defaults,
@@ -94,14 +126,14 @@ Each unit uses a direct owner and affected tests. Machine integration runs the
 full `Speed!=Slow` suite and solution build. Obtain independent review for any
 new concurrency guarantee or destructive transition; do not add these implicitly.
 
-1. **SNAP-01 — Trailer and compatibility.** Files: `MachineSnapshot.cs`,
+1. **SNAP-01 — Trailer and compatibility (implemented).** Files: `MachineSnapshot.cs`,
    snapshot tests. Implement bounded DVS1 parsing and presence tracking,
    initially with no newly claimed device continuation. Test VID1 length versus
    trailer length, legacy round-trip, duplicate/unknown records and truncation.
    Reject malformed state with CPU/RAM/VRAM/PIC/CD ownership unchanged.
    Done when the extension infrastructure is tested without rewriting old bytes
    or accepting unsupported records as successfully restored.
-2. **SNAP-02 — Trio accelerator.** Files: `S3Accelerator.cs`, a focused snapshot
+2. **SNAP-02 — Trio accelerator (implemented).** Files: `S3Accelerator.cs`, a focused snapshot
    partial/helper, machine integration and accelerator tests. Capture all
    register latches, `_pendingLow`, multifunction/read/colour selectors,
    write-mask-written flag, transfer geometry/directions/mask/row/column,

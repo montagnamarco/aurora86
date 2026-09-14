@@ -29,9 +29,12 @@ public sealed class MachineSnapshot
     private const ushort DeviceStateVersion = 1;
     private const int DeviceStateHeaderLength = 8;
 
-    // Absence must survive a load/save cycle. New captures omit the trailer
-    // until a device serializer can actually supply continuation state.
+    // Absence survives historical load/save cycles; modern Trio captures
+    // supply one accelerator record while other device kinds remain absent.
     private readonly bool _hasDeviceStateTrailer;
+    private readonly byte[] _trioAccelerator = [];
+    private const int DeviceRecordHeaderLength = 12;
+    private const ushort TrioAcceleratorRecordKind = 1;
 
     private readonly byte[] _ram;
     private readonly uint[] _gpr;
@@ -117,6 +120,8 @@ public sealed class MachineSnapshot
         _videoRegisters = machine.VideoRegisters.CaptureRegisters();
         _videoModel = machine.VideoModel;
         _videoEngine = machine.Virge?.CaptureEngines() ?? [];
+        _trioAccelerator = machine.TrioAccelerator?.Capture() ?? [];
+        _hasDeviceStateTrailer = _trioAccelerator.Length > 0;
 
         _interruptControllers = machine.Interrupts.Capture();
         _timer = machine.Timer.Capture();
@@ -180,6 +185,18 @@ public sealed class MachineSnapshot
                 machine.VideoRegisters.RestoreRegisters(_videoRegisters);
             }
 
+            if (machine.TrioAccelerator is { } trio)
+            {
+                if (_trioAccelerator.Length > 0)
+                {
+                    trio.Restore(_trioAccelerator);
+                }
+                else
+                {
+                    trio.ResetSnapshotState();
+                }
+            }
+
             // The keyboard controller owns A20, so it is restored after the bus:
             // the other order would leave the line as the snapshot's own field
             // said rather than as the controller had it.
@@ -228,6 +245,14 @@ public sealed class MachineSnapshot
         }
 
         bool virge = snapshotModel == VmVideoModel.S3Virge325;
+        if (_trioAccelerator.Length > 0)
+        {
+            if (virge)
+            {
+                throw new InvalidDataException("ViRGE snapshot contains Trio accelerator state.");
+            }
+            S3Accelerator.ValidateSnapshot(_trioAccelerator);
+        }
         ValidateVideoBlockLength(_videoMemory.Length, VgaMemory.TotalSize, virge, "memory");
         ValidateVideoBlockLength(
             _videoRegisters.Length,
@@ -376,10 +401,20 @@ public sealed class MachineSnapshot
 
         if (_hasDeviceStateTrailer)
         {
-            file.Write(DeviceStateHeaderLength);
+            file.Write(DeviceStateHeaderLength + (_trioAccelerator.Length == 0
+                ? 0 : DeviceRecordHeaderLength + _trioAccelerator.Length));
             file.Write(DeviceStateMagic);
             file.Write(DeviceStateVersion);
-            file.Write((ushort)0); // No device record kinds are implemented yet.
+            file.Write((ushort)(_trioAccelerator.Length == 0 ? 0 : 1));
+            if (_trioAccelerator.Length > 0)
+            {
+                file.Write(TrioAcceleratorRecordKind);
+                file.Write((ushort)0); // Current Trio model.
+                file.Write((ushort)1); // Record version.
+                file.Write((ushort)0); // Reserved flags.
+                file.Write(_trioAccelerator.Length);
+                file.Write(_trioAccelerator);
+            }
         }
     }
 
@@ -555,20 +590,24 @@ public sealed class MachineSnapshot
             ValidateVirgeEngineSnapshot(_videoEngine);
         }
 
-        _hasDeviceStateTrailer = ReadDeviceStateTrailer(file);
+        (_hasDeviceStateTrailer, _trioAccelerator) = ReadDeviceStateTrailer(file);
+        if (_videoModel != VmVideoModel.S3Trio64VPlus && _trioAccelerator.Length > 0)
+        {
+            throw new InvalidDataException("ViRGE snapshot contains Trio accelerator state.");
+        }
     }
 
     /// <summary>
     /// Reads the optional device-state extension without treating unsupported
-    /// hardware state as successfully restored. The initial version accepts
-    /// only an empty record set; device serializers will extend this boundary.
+    /// hardware state as successfully restored. Only the Trio accelerator record
+    /// is implemented; all other record kinds, models and versions are rejected.
     /// </summary>
-    private static bool ReadDeviceStateTrailer(BinaryReader file)
+    private static (bool Present, byte[] Trio) ReadDeviceStateTrailer(BinaryReader file)
     {
         long remaining = file.BaseStream.Length - file.BaseStream.Position;
         if (remaining == 0)
         {
-            return false;
+            return (false, []);
         }
 
         if (remaining < sizeof(int))
@@ -593,17 +632,28 @@ public sealed class MachineSnapshot
             throw new InvalidDataException("The device state snapshot header is invalid.");
         }
 
-        if (recordCount != 0)
+        if (recordCount == 0 && payloadLength == DeviceStateHeaderLength)
         {
-            throw new InvalidDataException("Device state snapshot records are not supported yet.");
+            return (true, []);
         }
-
-        if (payloadLength != DeviceStateHeaderLength)
+        if (recordCount != 1 || payloadLength < DeviceStateHeaderLength + DeviceRecordHeaderLength)
         {
-            throw new InvalidDataException("The empty device state snapshot contains trailing data.");
+            throw new InvalidDataException("Invalid or unsupported device snapshot record set.");
         }
-
-        return true;
+        ushort kind = file.ReadUInt16();
+        ushort model = file.ReadUInt16();
+        ushort recordVersion = file.ReadUInt16();
+        ushort flags = file.ReadUInt16();
+        int length = file.ReadInt32();
+        if (kind != TrioAcceleratorRecordKind || model != 0 || recordVersion != 1 || flags != 0
+            || length < 0 || length > S3Accelerator.MaximumSnapshotLength
+            || length != payloadLength - DeviceStateHeaderLength - DeviceRecordHeaderLength)
+        {
+            throw new InvalidDataException("Invalid or unsupported device snapshot record.");
+        }
+        byte[] trio = file.ReadBytes(length);
+        S3Accelerator.ValidateSnapshot(trio);
+        return (true, trio);
     }
 
     /// <summary>Reads a snapshot back from a file.</summary>

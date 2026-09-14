@@ -26,6 +26,8 @@ public sealed class MachineDeviceSnapshotTests
         {
             MachineSnapshot.Capture(source).Save(path);
             byte[] original = File.ReadAllBytes(path);
+            if (model == VmVideoModel.S3Trio64VPlus)
+                original = original[..^(24 + source.Accelerator.Capture().Length)];
             byte[] expected = present ? [.. original, .. EmptyTrailer()] : original;
             File.WriteAllBytes(path, expected);
             MachineSnapshot loaded = MachineSnapshot.Load(path);
@@ -69,7 +71,7 @@ public sealed class MachineDeviceSnapshotTests
         try
         {
             MachineSnapshot.Capture(source).Save(path);
-            byte[] prefix = File.ReadAllBytes(path);
+            byte[] prefix = File.ReadAllBytes(path)[..^(24 + source.Accelerator.Capture().Length)];
             byte[] trailer = EmptyTrailer();
             switch (fault)
             {

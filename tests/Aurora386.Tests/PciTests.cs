@@ -112,7 +112,7 @@ public class PciTests
                 using FileStream file = File.OpenWrite(path);
                 int serialStateLength = sizeof(int) + machine.SerialMouse.Capture().Length;
                 const int trioVideoTailLength = sizeof(int) + 12;
-                file.SetLength(file.Length - trioVideoTailLength - serialStateLength - 1);
+                file.SetLength(file.Length - 24 - machine.Accelerator.Capture().Length - trioVideoTailLength - serialStateLength - 1);
             }
             machine.Pci.Reset();
             MachineSnapshot.Load(path).RestoreTo(machine);
@@ -354,6 +354,7 @@ public class PciTests
                 const int trioVideoTailLength = sizeof(int) + 12;
                 file.SetLength(
                     file.Length
+                    - 24 - m.Accelerator.Capture().Length
                     - trioVideoTailLength
                     - serialStateLength
                     - 10
