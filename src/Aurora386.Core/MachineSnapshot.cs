@@ -25,6 +25,13 @@ public sealed class MachineSnapshot
     private const uint VideoTopologyMagic = 0x31444956;
     private const ushort VideoTopologyVersion = 1;
     private const int VideoTopologyHeaderLength = 12;
+    private const uint DeviceStateMagic = 0x31535644; // DVS1, after the VID1 payload.
+    private const ushort DeviceStateVersion = 1;
+    private const int DeviceStateHeaderLength = 8;
+
+    // Absence must survive a load/save cycle. New captures omit the trailer
+    // until a device serializer can actually supply continuation state.
+    private readonly bool _hasDeviceStateTrailer;
 
     private readonly byte[] _ram;
     private readonly uint[] _gpr;
@@ -366,6 +373,14 @@ public sealed class MachineSnapshot
             file.Write(_videoEngine.Length);
             file.Write(_videoEngine);
         }
+
+        if (_hasDeviceStateTrailer)
+        {
+            file.Write(DeviceStateHeaderLength);
+            file.Write(DeviceStateMagic);
+            file.Write(DeviceStateVersion);
+            file.Write((ushort)0); // No device record kinds are implemented yet.
+        }
     }
 
     private MachineSnapshot(BinaryReader file)
@@ -501,7 +516,7 @@ public sealed class MachineSnapshot
         int videoPayloadLength = file.ReadInt32();
         long availableVideoPayload = file.BaseStream.Length - file.BaseStream.Position;
         if (videoPayloadLength < VideoTopologyHeaderLength
-            || videoPayloadLength != availableVideoPayload)
+            || videoPayloadLength > availableVideoPayload)
         {
             throw new InvalidDataException("The video topology snapshot length is invalid.");
         }
@@ -539,6 +554,56 @@ public sealed class MachineSnapshot
         {
             ValidateVirgeEngineSnapshot(_videoEngine);
         }
+
+        _hasDeviceStateTrailer = ReadDeviceStateTrailer(file);
+    }
+
+    /// <summary>
+    /// Reads the optional device-state extension without treating unsupported
+    /// hardware state as successfully restored. The initial version accepts
+    /// only an empty record set; device serializers will extend this boundary.
+    /// </summary>
+    private static bool ReadDeviceStateTrailer(BinaryReader file)
+    {
+        long remaining = file.BaseStream.Length - file.BaseStream.Position;
+        if (remaining == 0)
+        {
+            return false;
+        }
+
+        if (remaining < sizeof(int))
+        {
+            throw new InvalidDataException("The device state snapshot length is truncated.");
+        }
+
+        int payloadLength = file.ReadInt32();
+        remaining -= sizeof(int);
+        if (payloadLength < DeviceStateHeaderLength || payloadLength != remaining)
+        {
+            throw new InvalidDataException("The device state snapshot length is invalid.");
+        }
+
+        // Read the fixed header before allocating any record payload. Unknown
+        // or future records must fail even if their declared length is huge.
+        uint magic = file.ReadUInt32();
+        ushort version = file.ReadUInt16();
+        ushort recordCount = file.ReadUInt16();
+        if (magic != DeviceStateMagic || version != DeviceStateVersion)
+        {
+            throw new InvalidDataException("The device state snapshot header is invalid.");
+        }
+
+        if (recordCount != 0)
+        {
+            throw new InvalidDataException("Device state snapshot records are not supported yet.");
+        }
+
+        if (payloadLength != DeviceStateHeaderLength)
+        {
+            throw new InvalidDataException("The empty device state snapshot contains trailing data.");
+        }
+
+        return true;
     }
 
     /// <summary>Reads a snapshot back from a file.</summary>

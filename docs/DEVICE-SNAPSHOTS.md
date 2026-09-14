@@ -6,6 +6,12 @@ The scope is deterministic continuation of the existing Trio/ViRGE and SB16
 models at a stopped machine execution boundary. It does not add hardware
 features, change instruction semantics, or make disk snapshots transactional.
 
+SNAP-01 now implements the extension boundary: a new reader accepts and
+preserves an empty DVS1 version 1 trailer after VID1. Captures still omit DVS1,
+and all nonempty record sets are rejected before restore. Device continuation,
+record-specific validation and the omitted-device reset policy below remain
+future units. Existing snapshots ending at VID1 retain byte-identical output.
+
 ## Current coverage and gaps
 
 | Owner | Current coverage | Missing continuation state |
@@ -35,9 +41,9 @@ model 0 denotes the current implementation of each kind. These identifiers
 are reserved by this design and become a wire contract only with implementation.
 SB16 owns nested versioned mixer/OPL payloads; DMA remains a system device.
 
-The current loader requires VID1's declared length to equal all remaining
-bytes. The new loader must instead bound VID1 to its declared length and parse
-the trailer separately. Old readers will reject new files: compatibility means
+Before SNAP-01 the loader required VID1's declared length to equal all remaining
+bytes. The loader now bounds VID1 to its declared length and parses the trailer
+separately. Old readers reject files containing DVS1: compatibility means
 new readers accept old files, not that old readers can load new state.
 Reject unknown kinds/models/versions, duplicate records, nonzero flags,
 truncated data, trailing garbage and invalid field ranges before mutation.
