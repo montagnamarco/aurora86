@@ -6,7 +6,11 @@ triangle engine. Internal callers can select it with
 `new Machine(videoModel: VmVideoModel.S3Virge325)`. POST enables PCI I/O and
 memory decoding before initializing standard VGA. The real CPU INT 10h path
 has produced and rendered text at 720x400. Windows 95 driver compatibility
-remains unverified; GUI and configuration-file selection are not exposed yet.
+remains unverified. To select the experimental card in `vm.json`, set
+`"video": "S3Virge325"`. Omitting `video` selects `S3Trio64VPlus`, preserving
+existing machines. Both frontends apply this setting when opening a VM folder;
+a graphical GPU selector is not exposed yet. Unknown models are rejected
+before the machine is built or its disks are opened.
 
 The generated firmware supplies VGA only for ViRGE. VBE calls return
 `AX=014F` before changing VGA registers, VRAM, or caller buffers. The default

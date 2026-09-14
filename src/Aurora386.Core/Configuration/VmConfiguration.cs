@@ -40,6 +40,10 @@ public sealed class VmConfiguration
     public int Version { get; set; } = CurrentVersion;
     public string Name { get; set; } = "PC";
     public CpuModel Cpu { get; set; } = CpuModel.Intel486;
+
+    /// <summary>The primary GPU. ViRGE currently provides experimental VGA and flat triangles.</summary>
+    public VmVideoModel Video { get; set; } = VmVideoModel.S3Trio64VPlus;
+
     public uint RamMegabytes { get; set; } = 16;
 
     /// <summary>Hard disks by BIOS drive number: 0x80 is the first.</summary>
@@ -123,6 +127,7 @@ public sealed class VmConfiguration
             JsonSerializer.Deserialize<VmConfiguration>(File.ReadAllText(file), Options)
             ?? throw new InvalidDataException($"{file} does not describe a machine.");
 
+        configuration.ValidateVideoModel();
         configuration.Migrate();
         configuration.MapPaths(path => System.IO.Path.IsPathRooted(path)
             ? path
@@ -133,6 +138,7 @@ public sealed class VmConfiguration
     /// <summary>Writes the machine's folder. Paths inside it are stored relative to it.</summary>
     public void Save(string folder)
     {
+        ValidateVideoModel();
         Directory.CreateDirectory(folder);
         string root = System.IO.Path.GetFullPath(folder);
         string prefix = root.EndsWith(System.IO.Path.DirectorySeparatorChar)
@@ -195,7 +201,8 @@ public sealed class VmConfiguration
 
     public Machine BuildMachine()
     {
-        var machine = new Machine(RamMegabytes * 1024 * 1024);
+        ValidateVideoModel();
+        var machine = new Machine(RamMegabytes * 1024 * 1024, Video);
         machine.CpuModel = Cpu;
         if (UsbEnabled) machine.EnableUsb();
         if (UsbStorage is not null)
@@ -217,5 +224,15 @@ public sealed class VmConfiguration
         machine.BootDrives = BootOrder;
         if (Network.Mode == NetworkMode.Nat) machine.ConnectNetwork(BuildNat(Network.Forwards));
         return machine;
+    }
+
+    private void ValidateVideoModel()
+    {
+        // The shared enum converter accepts integers as well as names. Reject
+        // undefined values before allocating a machine or opening its disks.
+        if (Video is not (VmVideoModel.S3Trio64VPlus or VmVideoModel.S3Virge325))
+        {
+            throw new InvalidDataException($"Unknown video model: {Video}.");
+        }
     }
 }
