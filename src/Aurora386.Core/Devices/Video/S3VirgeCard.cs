@@ -9,8 +9,8 @@ namespace Aurora386.Core.Devices.Video;
 /// CRTC address latches and the S3d triangle engine share one VRAM and display.
 /// Drivers reach registers through configuration mechanism 1 or the new MMIO
 /// window described in the August 1996 databook, sections 15, 17, 18 and 25.
-/// This subset has standard VGA memory decoding but no option ROM, old MMIO, big-endian
-/// decoding, Trio accelerator or IRQ timing; it does not provide VGA boot.
+/// This subset has standard VGA and enhanced banked memory decoding but no
+/// OEM option ROM, old MMIO, big-endian decoding, Trio accelerator or IRQ timing.
 /// </summary>
 public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
 {
@@ -270,7 +270,8 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
         _snapshotRestoreSuspended = false;
         _lastPciBase = Function.Read(BarRegister, 4);
         _apertureWritePending = false;
-        _enhancedLegacyRequested = (Registers.Crtc(0x31) & 8) != 0;
+        _enhancedLegacyRequested = (Registers.Crtc(0x31) & EnhancedMappingEnable) != 0
+            && (Registers.Crtc(0x66) & EnhancedFunctionsEnable) == 0;
         _oldMmioRequested = Registers.VirgeAperture!.OldMmioEnabled;
         UpdateMapping();
     }

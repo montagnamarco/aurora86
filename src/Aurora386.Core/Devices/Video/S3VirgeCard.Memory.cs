@@ -11,6 +11,11 @@ public sealed partial class S3VirgeCard
     private const uint ConfigurationEnd = 0x8044;
     private const uint VgaAliasStart = 0x83B0;
     private const uint VgaAliasEnd = 0x83E0;
+    private const uint BankedWindowBase = 0xA0000;
+    private const uint BankedWindowSize = 0x10000;
+    private const byte EnhancedMappingEnable = 0x08; // CR31 bit 3.
+    private const byte CpuBankEnable = 0x01;        // CR31 bit 0.
+    private const byte EnhancedFunctionsEnable = 0x01; // CR66 bit 0.
 
     byte IMemoryDevice.ReadByte(uint offset) => (byte)ReadMemory(offset, 1);
     ushort IMemoryDevice.ReadWord(uint offset) => (ushort)ReadMemory(offset, 2);
@@ -160,17 +165,24 @@ public sealed partial class S3VirgeCard
     }
 
     /// <summary>
-    /// Selects the standard VGA memory window from GDC6. Enhanced banking and
-    /// old MMIO need separate protocols; disabling legacy decoding for those
-    /// requests is a diagnosed emulator limitation, not a silicon behaviour.
+    /// Selects standard VGA mapping or the enhanced 64 KB window. ViRGE
+    /// databook 18-3 makes CR31 bit 3 override GDC6, and 18-20 disables that
+    /// window when linear addressing is enabled. The old-linear exception
+    /// and old MMIO remain outside this decoder's supported protocols.
     /// </summary>
     private void UpdateLegacyMapping()
     {
-        bool enhanced = (Registers.Crtc(0x31) & 8) != 0;
+        bool enhanced = (Registers.Crtc(0x31) & EnhancedMappingEnable) != 0;
+        bool enhancedFunctions = (Registers.Crtc(0x66) & EnhancedFunctionsEnable) != 0;
         bool oldMmio = Registers.VirgeAperture!.OldMmioEnabled;
-        if ((Function.Command & PciMemoryEnable) == 0 || enhanced || oldMmio)
+        if ((Function.Command & PciMemoryEnable) == 0 || oldMmio
+            || (enhanced && (Registers.VirgeAperture.LinearEnabled || !enhancedFunctions)))
         {
             _legacyMapping.Disable();
+        }
+        else if (enhanced)
+        {
+            _legacyMapping.Update(BankedWindowBase, BankedWindowSize);
         }
         else
         {
@@ -178,12 +190,39 @@ public sealed partial class S3VirgeCard
             _legacyMapping.Update(physicalBase, size);
         }
 
-        if (enhanced && !_enhancedLegacyRequested)
+        bool unsupportedEnhanced = enhanced && !enhancedFunctions;
+        if (unsupportedEnhanced && !_enhancedLegacyRequested)
         {
             ReportUnsupported(0x31, 1, true, S3VirgeUnsupportedReason.EnhancedLegacy);
         }
 
-        _enhancedLegacyRequested = enhanced;
+        _enhancedLegacyRequested = unsupportedEnhanced;
+    }
+
+    /// <summary>
+    /// Resolves the 64 KB CPU page from CR31/35/51/6A (databook 18-2, 18-6,
+    /// 18-16 and 18-27). Enhanced mapping uses this hardware latch even before
+    /// firmware has adopted a VBE mode; neither Chain-4 nor host VBE banking
+    /// selects the page. A disabled CPU base always means page zero.
+    /// </summary>
+    private uint EnhancedBankOffset
+    {
+        get
+        {
+            if ((Registers.Crtc(0x31) & CpuBankEnable) == 0)
+            {
+                return 0;
+            }
+
+            int bank = Registers.Crtc(0x6A) & 0x3F;
+            if (bank == 0)
+            {
+                bank = (Registers.Crtc(0x35) & 0x0F)
+                    | ((Registers.Crtc(0x51) & 0x0C) << 2);
+            }
+
+            return (uint)bank * BankedWindowSize;
+        }
     }
 
     /// <summary>
@@ -195,12 +234,23 @@ public sealed partial class S3VirgeCard
     {
         public byte ReadByte(uint offset)
         {
+            if ((card.Registers.Crtc(0x31) & EnhancedMappingEnable) != 0)
+            {
+                return card.VideoMemory.ReadLinear(card.EnhancedBankOffset + offset);
+            }
+
             uint vgaOffset = card._legacyMapping.PhysicalBase - VgaMemory.Base + offset;
             return card.VideoMemory.ReadByte(vgaOffset);
         }
 
         public void WriteByte(uint offset, byte value)
         {
+            if ((card.Registers.Crtc(0x31) & EnhancedMappingEnable) != 0)
+            {
+                card.VideoMemory.WriteLinear(card.EnhancedBankOffset + offset, value);
+                return;
+            }
+
             uint vgaOffset = card._legacyMapping.PhysicalBase - VgaMemory.Base + offset;
             card.VideoMemory.WriteByte(vgaOffset, value);
         }

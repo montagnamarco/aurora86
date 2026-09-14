@@ -76,9 +76,14 @@ retains priority if relocated over legacy memory. A CPU word write at `B8000`
 has been checked against the character and attribute planes and the 720x400
 text display produced by mode 03h's nine-dot cells.
 
-Enhanced/banked legacy memory and old MMIO remain unsupported: requesting
-either disables the legacy window and emits a diagnostic. This is an explicit
-emulator limitation, not the documented response of physical ViRGE hardware.
+Enhanced banked access now uses a fixed 64 KB window at `A0000h` when
+`CR31.3` and `CR66.0` are set. This overrides GDC6 independently of VBE mode
+metadata or Chain-4. `CR31.0` enables 64 KB pages: a nonzero `CR6A[5:0]`
+overrides `CR35[3:0]` and `CR51[3:2]`; disabling the CPU base selects page zero.
+`CR58.4` disables this enhanced banked window when linear addressing is enabled.
+The old-linear exception for a 64 KB aperture based at A0000 remains unsupported.
+Old MMIO and an enhanced request without `CR66.0` still disable the legacy
+window and emit diagnostics. These limitations are not silicon behaviour.
 Big-endian windows, image transfer and ViRGE 2D commands are also unsupported
 and diagnosed. This card has no OEM option ROM or IRQ timing.
 It does not borrow the Trio accelerator to impersonate ViRGE 2D support.
