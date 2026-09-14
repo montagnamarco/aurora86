@@ -56,8 +56,9 @@ splits DWORD writes into bytes and would change ViRGE command semantics.
 Consequently this is not a complete trace of successful MMIO accesses or
 status reads. The existing card and CPU events only observe execution.
 
-On the measured baseline, the sample requests INT 10h `AX=4F02`, `BX=0110`
-and later submits unsupported `CMD_SET=80C00006`. The firmware currently
-rejects ViRGE VBE calls. The display remains text at 720×400; Esc returns to
-the DOS prompt. This is a reproducible missing-capability result, not a
-rendered cube. See [ViRGE status](../../docs/VIRGE.md).
+With the experimental VBE firmware, the sample requests INT 10h `AX=4F02`,
+`BX=0110` and reaches a black 640×480 graphics frame. It still accesses
+unimplemented 2D registers and submits unsupported `CMD_SET=80C00006`.
+Esc returns to the DOS prompt. This is a reproducible missing-capability
+result, not a rendered cube. A new prompt checkpoint is required after the
+Core build changes. See [ViRGE status](../../docs/VIRGE.md).

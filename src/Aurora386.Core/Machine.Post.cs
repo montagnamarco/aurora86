@@ -31,8 +31,7 @@ public sealed partial class Machine
 
     private void InstallBios()
     {
-        bool enableVesa = VideoModel == Configuration.VmVideoModel.S3Trio64VPlus;
-        Memory.MapRom(BiosRom.Base, BiosRom.Build(enableVesa));
+        Memory.MapRom(BiosRom.Base, BiosRom.Build(videoModel: VideoModel));
 
         // The 386 begins fetching at 0xFFFFFFF0, so the top 64 KB of the
         // 32-bit space must show the same ROM that is mapped at 0xF0000.

@@ -9,7 +9,7 @@ namespace Aurora386.Tests;
 /// <summary>
 /// Exercises machine-level selection of the 1995 Trio64V+ and original 1996
 /// ViRGE 86C325 through PCI, VGA ports, the real INT 10h ROM path and CPU MMIO.
-/// The ViRGE is deliberately VGA-only until its VBE register program exists.
+/// ViRGE VBE modes are offered only when their register program exists.
 /// </summary>
 public sealed class MachineVideoModelTests
 {
@@ -105,7 +105,7 @@ public sealed class MachineVideoModelTests
     }
 
     [Fact]
-    public void VirgeCapabilityFailureDoesNotWriteTheCallersBuffer()
+    public void VirgeUnsupportedModeInfoDoesNotWriteTheCallersBuffer()
     {
         using var machine = StartedVirge();
         const uint callerBuffer = 0x50000;
@@ -113,7 +113,8 @@ public sealed class MachineVideoModelTests
         machine.Cpu.SetSegment(SegReg.Es, 0x5000);
 
         RunCpuProgram(machine,
-            0xB8, 0x00, 0x4F,       // MOV AX,4F00h: report capabilities.
+            0xB8, 0x01, 0x4F,       // MOV AX,4F01h: unsupported RGB888 mode information.
+            0xB9, 0x12, 0x01,       // MOV CX,0112h.
             0xBF, 0x00, 0x00,       // MOV DI,0.
             0xCD, 0x10);
 
@@ -140,7 +141,7 @@ public sealed class MachineVideoModelTests
     {
         using var machine = StartedVirge();
 
-        // Fixture display timing only: ViRGE guest VBE remains unsupported.
+        // Fixture display timing only: ViRGE RGB888 VBE remains unsupported.
         // RGB888 makes the engine's BGR bytes visible without a palette oracle.
         for (uint offset = 0; offset < VgaMemory.TotalSize; offset++)
         {
@@ -200,6 +201,10 @@ public sealed class MachineVideoModelTests
         byte[] vgaOnlyRom = BiosRom.Build(enableVesa: false);
 
         Assert.Equal(defaultRom, explicitDefaultRom);
+        // Captured before ViRGE VBE work; the Trio firmware is an established
+        // guest dependency, not merely equal to another call of the new builder.
+        Assert.Equal("92F4E138A5A4CC1F1FA2E3DD57BA96C8F31B06B19158125035607C0948ADE7A8",
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(defaultRom)));
         Assert.Equal(0xC3, vgaOnlyRom[BiosRom.Entry.VesaProgram]);
         Assert.Equal(
             new[] { (int)BiosRom.Entry.VesaProgram },

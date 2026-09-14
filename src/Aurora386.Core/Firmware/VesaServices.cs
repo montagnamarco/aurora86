@@ -25,6 +25,9 @@ namespace Aurora386.Core.Firmware;
 public sealed class VesaServices
 {
     private readonly Machine _machine;
+    private const ushort VirgeMode = 0x0110; // 640x480, RGB1555.
+
+    private bool IsVirge => _machine.VideoModel == VmVideoModel.S3Virge325;
 
     public VesaServices(Machine machine) => _machine = machine;
 
@@ -44,16 +47,16 @@ public sealed class VesaServices
 
     public bool Handle(CpuNs.Cpu cpu)
     {
-        // The first ViRGE milestone supplies standard VGA and its native S3d
-        // engine, but no VBE mode program. Fail before inspecting buffers or
-        // touching registers so callers cannot observe a partially set mode.
-        if (_machine.VideoModel == VmVideoModel.S3Virge325)
+        byte function = cpu.State.GetReg8(0);   // AL
+
+        // The ViRGE ROM supplies one measured mode and hardware banking.
+        // Do not expose the Trio's additional host-only VBE services through
+        // this card until their corresponding register programs exist.
+        if (IsVirge && function is not (0x00 or 0x01 or 0x02 or 0x03 or 0x05))
         {
             cpu.State.Ax = 0x014F;
             return true;
         }
-
-        byte function = cpu.State.GetReg8(0);   // AL
 
         switch (function)
         {
@@ -100,7 +103,7 @@ public sealed class VesaServices
 
         WriteWord(buffer + 4, 0x0200);                  // VBE version 2.0
         WriteFar(buffer + 6, BiosRom.Entry.VesaOemName);
-        WriteDword(buffer + 10, 0x00000001);            // capabilities: 8-bit DAC
+        WriteDword(buffer + 10, IsVirge ? 0u : 1u);     // Only Trio offers 8-bit DAC switching.
         WriteFar(buffer + 14, BiosRom.Entry.VesaModeList);
 
         // Memory in 64 KB units, which is the unit VBE chose and the reason a
@@ -125,7 +128,7 @@ public sealed class VesaServices
     /// </summary>
     private void ReportMode(CpuNs.Cpu cpu)
     {
-        VesaModes.VesaModeInfo? found = VesaModes.Get(cpu.State.Cx, VideoMemory);
+        VesaModes.VesaModeInfo? found = SupportedMode(cpu.State.Cx);
         if (found is not { } mode)
         {
             cpu.State.Ax = 0x014F;      // no such mode on this card
@@ -203,6 +206,11 @@ public sealed class VesaServices
     private void SetMode(CpuNs.Cpu cpu)
     {
         ushort requested = cpu.State.Bx;
+        if (IsVirge && (requested & 0x3FFF) is not (VirgeMode or 0x03))
+        {
+            cpu.State.Ax = 0x014F;
+            return;
+        }
 
         // A VBE call can also be used to return to an ordinary VGA mode, and
         // programs do exactly that on the way out.
@@ -215,7 +223,7 @@ public sealed class VesaServices
             return;
         }
 
-        VesaModes.VesaModeInfo? found = VesaModes.Get(requested, VideoMemory);
+        VesaModes.VesaModeInfo? found = SupportedMode(requested);
         if (found is not { } mode)
         {
             cpu.State.Ax = 0x014F;
@@ -257,6 +265,40 @@ public sealed class VesaServices
     /// </summary>
     private void WindowControl(CpuNs.Cpu cpu)
     {
+        if (IsVirge)
+        {
+            // The ROM already wrote CR6A through CPU OUT for a valid set.
+            // Reading the hardware page also observes direct driver writes;
+            // VesaWindowBank is a separate legacy Trio implementation detail.
+            if (cpu.State.Bx == 0 && cpu.State.Dx < VideoMemory / 0x10000)
+            {
+                cpu.State.Ax = 0x004F;
+            }
+            else if (cpu.State.Bx == 0x0100)
+            {
+                VgaRegisters registers = _machine.VideoRegisters;
+                int bank = 0;
+                if ((registers.Crtc(0x31) & 1) != 0)
+                {
+                    bank = registers.Crtc(0x6A) & 0x3F;
+                    if (bank == 0)
+                    {
+                        bank = (registers.Crtc(0x35) & 0x0F)
+                            | ((registers.Crtc(0x51) & 0x0C) << 2);
+                    }
+                }
+
+                cpu.State.Dx = (ushort)bank;
+                cpu.State.Ax = 0x004F;
+            }
+            else
+            {
+                cpu.State.Ax = 0x014F;
+            }
+
+            return;
+        }
+
         byte operation = cpu.State.GetReg8(7);   // BH
 
         if (operation == 0x00)
@@ -274,6 +316,16 @@ public sealed class VesaServices
         }
 
         cpu.State.Ax = 0x014F;
+    }
+
+    private VesaModes.VesaModeInfo? SupportedMode(ushort requested)
+    {
+        if (IsVirge && (requested & 0x3FFF) != VirgeMode)
+        {
+            return null;
+        }
+
+        return VesaModes.Get(requested, VideoMemory);
     }
 
     /// <summary>

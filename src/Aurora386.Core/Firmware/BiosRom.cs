@@ -1,3 +1,5 @@
+using Aurora386.Core.Configuration;
+
 namespace Aurora386.Core.Firmware;
 
 /// <summary>
@@ -78,6 +80,7 @@ public static partial class BiosRom
         /// </summary>
         public const ushort VesaProgram = 0x16E0;
         public const ushort VesaModeProgram = 0x1D00;
+        public const ushort VirgeCrtcWrite = 0x1EF0;
         public const ushort VesaRegisterTable = 0x1E00;
 
         /// <summary>Where the INT 10h entry jumps: the mode-set and palette
@@ -322,7 +325,9 @@ public static partial class BiosRom
         Post = 0xFF,
     }
 
-    public static byte[] Build(bool enableVesa = true)
+    public static byte[] Build(
+        bool enableVesa = true,
+        VmVideoModel videoModel = VmVideoModel.S3Trio64VPlus)
     {
         var rom = new byte[Size];
 
@@ -332,7 +337,7 @@ public static partial class BiosRom
 
         // Interrupt entry points: call the native handler, then return with
         // IRET, which also restores the flags.
-        WriteVideoEntry(rom);
+        WriteVideoEntry(rom, videoModel);
         WriteInterruptEntry(rom, Entry.EquipmentList, Handler.EquipmentList);
         WriteInterruptEntry(rom, Entry.MemorySize, Handler.MemorySize);
         WriteInterruptEntry(rom, Entry.Disk, Handler.Disk);
@@ -442,14 +447,20 @@ public static partial class BiosRom
         // keep the pointer and read them later, long after the call that
         // handed it over has returned.
         {
-            const string name = "Aurora386 SVGA";
+            string name = videoModel == VmVideoModel.S3Virge325
+                ? "Aurora386 S3 ViRGE"
+                : "Aurora386 SVGA";
             for (int i = 0; i < name.Length; i++)
                 rom[Entry.VesaOemName + i] = (byte)name[i];
             rom[Entry.VesaOemName + name.Length] = 0;
 
             int at = Entry.VesaModeList;
-            foreach (Devices.Video.VesaModes.VesaModeInfo mode
-                     in Devices.Video.VesaModes.Available(Devices.Video.VgaMemory.TotalSize))
+            IEnumerable<Devices.Video.VesaModes.VesaModeInfo> publishedModes =
+                videoModel == VmVideoModel.S3Virge325
+                    ? Devices.Video.VesaModes.Available(Devices.Video.VgaMemory.TotalSize)
+                        .Where(mode => mode.Number == 0x110)
+                    : Devices.Video.VesaModes.Available(Devices.Video.VgaMemory.TotalSize);
+            foreach (Devices.Video.VesaModes.VesaModeInfo mode in publishedModes)
             {
                 rom[at++] = (byte)mode.Number;
                 rom[at++] = (byte)(mode.Number >> 8);
@@ -605,7 +616,7 @@ public static partial class BiosRom
     /// intercept these instructions without changing the physical desktop.
     /// Other services retain their existing native completion.
     /// </summary>
-    private static void WriteVideoEntry(byte[] rom)
+    private static void WriteVideoEntry(byte[] rom, VmVideoModel videoModel)
     {
         // The entry itself is a jump: the sixteen bytes of the slot are not
         // enough for the dispatch.
@@ -626,8 +637,9 @@ public static partial class BiosRom
         a.Resolve();
         if (a.Position > Entry.VgaPalette) throw new InvalidOperationException("video dispatch overruns the palette routine");
 
-        WriteVgaProgram(rom);
-        WriteVesaProgram(rom);
+        bool programVirge = videoModel == VmVideoModel.S3Virge325;
+        WriteVgaProgram(rom, programVirge);
+        WriteVesaProgram(rom, programVirge);
         WriteVgaTables(rom);
         WriteVgaPalette(rom);
         WriteTextModeCompletion(rom);
@@ -791,11 +803,17 @@ public static partial class BiosRom
     /// unlocking registers 0-7, the graphics controller, and the attribute
     /// controller through its index/data flip-flop.
     /// </summary>
-    private static void WriteVgaProgram(byte[] rom)
+    private static void WriteVgaProgram(byte[] rom, bool programVirge)
     {
         const int EntrySize = 62;
         int o = Entry.VgaProgram;
         void B(params byte[] bytes) { foreach (byte b in bytes) rom[o++] = b; }
+        void WriteVirgeCrtc(byte index, byte value)
+        {
+            B(0xB8, index, value);                         // MOV AX,(value << 8)|index
+            int relative = Entry.VirgeCrtcWrite - (o + 3);
+            B(0xE8, (byte)relative, (byte)(relative >> 8));
+        }
 
         B(0x50, 0x53, 0x51, 0x52, 0x56, 0x1E, 0x9C, 0xFC); // PUSH AX,BX,CX,DX,SI,DS,FLAGS / CLD
         B(0x0E, 0x1F);                                    // PUSH CS / POP DS
@@ -828,6 +846,29 @@ public static partial class BiosRom
         B(0xBA, 0xC0, 0x03, 0xB9, 0x15, 0x00, 0x30, 0xDB);   // MOV DX,3C0h / MOV CX,21 / XOR BL,BL
         B(0x88, 0xD8, 0xEE, 0xAC, 0xEE, 0xFE, 0xC3, 0xE2, 0xF7);   // loop: MOV AL,BL / OUT / LODSB / OUT / INC BL / LOOP (-9)
         B(0xB0, 0x20, 0xEE);                              // MOV AL,20h / OUT DX,AL  (display back on)
+        if (programVirge)
+        {
+            // An ordinary VGA mode leaves none of the ViRGE packed-pixel or
+            // aperture controls active. Clear them through the CPU ports so
+            // a monitor that shadows the adapter observes the same return to
+            // VGA as the physical card.
+            B(0xBA, 0xC4, 0x03);                          // MOV DX,3C4h
+            B(0xB8, 0x08, 0x00, 0xEE, 0x42, 0x88, 0xE0, 0xEE); // SR08=00h: lock extended sequencer.
+            B(0xBA, 0xD4, 0x03);                          // MOV DX,3D4h
+            WriteVirgeCrtc(0x38, 0x48);                   // Unlock CR30-3F.
+            WriteVirgeCrtc(0x39, 0xA0);                   // Unlock CR40 and above.
+            WriteVirgeCrtc(0x31, 0x00);                   // VGA mapping and bank zero.
+            WriteVirgeCrtc(0x35, 0x00);                   // Clear the old bank selector.
+            WriteVirgeCrtc(0x43, 0x00);                   // Clear the old pitch extension.
+            WriteVirgeCrtc(0x51, 0x00);                   // Clear pitch and old bank extensions.
+            WriteVirgeCrtc(0x58, 0x00);                   // Linear window disabled.
+            WriteVirgeCrtc(0x5D, 0x00);                   // Clear horizontal timing extensions.
+            WriteVirgeCrtc(0x5E, 0x00);                   // Clear vertical timing extensions.
+            WriteVirgeCrtc(0x66, 0x00);                   // Enhanced functions disabled.
+            WriteVirgeCrtc(0x67, 0x00);                   // VGA 8-bit colour mode.
+            WriteVirgeCrtc(0x69, 0x00);                   // Display start in the first megabyte.
+            WriteVirgeCrtc(0x6A, 0x00);                   // Select the first 64 KB page.
+        }
         B(0x9D, 0x1F, 0x5E, 0x5A, 0x59, 0x5B, 0x58);      // POP FLAGS,DS,SI,DX,CX,BX,AX
         B(0xC3);                                          // RET
         if (o > Entry.VgaTables) throw new InvalidOperationException("VGA routine overruns its tables");
@@ -842,12 +883,19 @@ public static partial class BiosRom
     /// pixel or more, graphics, decoded at A0000h. Every register is
     /// preserved for the native handler that follows.
     /// </summary>
-    private static void WriteVesaProgram(byte[] rom)
+    private static void WriteVesaProgram(byte[] rom, bool programVirge)
     {
         var entry = new Asm(rom, Entry.VesaProgram);
         entry.CallNear(Entry.VesaModeProgram);
         entry.B(0xC3);
-        WriteVesaModeProgram(rom);
+        if (programVirge)
+        {
+            WriteVirgeVesaModeProgram(rom);
+        }
+        else
+        {
+            WriteVesaModeProgram(rom);
+        }
     }
 
     private static void WriteVgaTables(byte[] rom)

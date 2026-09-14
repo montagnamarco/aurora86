@@ -1063,12 +1063,33 @@ public sealed class VgaRegisters : IIoDevice
     /// set left -- so its value alone says nothing about whether the card's
     /// own geometry is in force.
     /// </summary>
-    public bool HasExtendedRowOffset => (_crtc[0x43] & 0x04) != 0 || (_crtc[0x51] & 0x30) != 0;
+    public bool HasExtendedRowOffset => (_crtc[0x43] & 0x04) != 0
+        || (_crtc[0x51] & 0x30) != 0
+        || (VirgeAperture is not null && (_crtc[0x31] & 8) != 0);
 
-    public int ExtendedRowOffset =>
-        (_crtc[0x13]
-         | ((_crtc[0x43] & 0x04) << 6)
-         | ((_crtc[0x51] & 0x30) << 4)) * (Chain4 ? 8 : 2);
+    public int ExtendedRowOffset
+    {
+        get
+        {
+            if (VirgeAperture is not null && (_crtc[0x31] & 8) != 0)
+            {
+                // ViRGE CR13 (16-20): CR31.3 forces doubleword addressing,
+                // hence four bytes per offset unit, independently of Chain-4.
+                // CR51[5:4] overrides CR43.2 when nonzero (18-16).
+                int extension = (_crtc[0x51] & 0x30) << 4;
+                if (extension == 0)
+                {
+                    extension = (_crtc[0x43] & 4) << 6;
+                }
+
+                return (_crtc[0x13] | extension) * 4;
+            }
+
+            return (_crtc[0x13]
+                | ((_crtc[0x43] & 0x04) << 6)
+                | ((_crtc[0x51] & 0x30) << 4)) * (Chain4 ? 8 : 2);
+        }
+    }
 
     public ushort StartAddress => (ushort)((_crtc[0x0C] << 8) | _crtc[0x0D]);
 

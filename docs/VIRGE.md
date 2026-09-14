@@ -12,9 +12,19 @@ existing machines. Both frontends apply this setting when opening a VM folder;
 a graphical GPU selector is not exposed yet. Unknown models are rejected
 before the machine is built or its disks are opened.
 
-The generated firmware supplies VGA only for ViRGE. VBE calls return
-`AX=014F` before changing VGA registers, VRAM, or caller buffers. The default
-Trio BIOS remains byte-identical to the previous version.
+The generated firmware supplies standard VGA and experimental VBE mode `0110h`
+(640x480 RGB1555). Real CPU OUT instructions set VGA timing, the 15-bit pixel
+format, enhanced mapping and either a 64 KB banked window or a 2 MB linear
+aperture. Functions `4F00/01/02/03/05` report this mode, set/query it, return to
+text mode `03h`, and select/query window A. Other requests fail with `AX=014F`
+before changing video state or caller buffers. Mode bit 14 selects linear
+access; bit 15 preserves VRAM. The default Trio BIOS remains byte-identical.
+
+The mode uses `CR13=40h`, `CR51[5:4]=01b` and `CR31.3=1`: the forced
+doubleword address unit yields a 1280-byte pitch independently of Chain-4.
+Nonzero CR51 pitch extensions take precedence over CR43.2. CPU tests verify
+banked and relocated linear pixel writes against the rendered scanlines,
+snapshot restoration, and the return to B8000 text memory.
 
 Machine snapshots include the selected video model and ViRGE drawing-engine
 latches in a versioned `VID1` tail after serial mouse state. Older files without
@@ -94,15 +104,15 @@ continues to use the existing Trio implementation.
 The [DOS startup probe](../tools/Virge3DProbe/README.md) now runs the original
 Toolkit 2.6 cube sample on a private image and supports a hash-checked DOS
 prompt checkpoint. The sample reaches DPMI mappings for `70000000h` and
-`71000000h`, requests VBE mode `0110h` through INT 10h `AX=4F02`, and continues
-to issue commands despite the firmware's current VBE refusal. Observed
+`71000000h` and enters VBE mode `0110h` through INT 10h `AX=4F02`. Observed
 unsupported accesses include a DWORD at new-MMIO offset `8208h` and the
-triangle command `80C00006h`. The display remains 720x400 text, and Esc returns
-to the DOS prompt. No period-program 3D frame has been demonstrated.
+2D register range `A4D4h` through `A50Ch`, as well as triangle command
+`80C00006h`. The captured display is a black 640x480 graphics frame, and Esc
+returns to the DOS prompt. No period-program 3D frame has been demonstrated.
 
-The next prerequisite is an actual ViRGE VBE mode program, including aperture
-and pixel-format setup. The sample also needs capabilities beyond the current
-flat RGB888 engine; enabling VBE alone will not establish compatibility.
+The next work is to identify and implement the measured drawing operations,
+including the sample's format and shading requirements beyond the current
+flat RGB888 engine. The VBE mode program alone does not establish compatibility.
 The startup log records 84 CPU fault events as well; their presence alone does
 not establish a CPU defect, and this probe makes no instruction changes.
 Earlier experimental logs using physical-memory write watches are invalid for
