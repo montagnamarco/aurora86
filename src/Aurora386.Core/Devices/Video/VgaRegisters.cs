@@ -21,6 +21,7 @@ namespace Aurora386.Core.Devices.Video;
 /// </summary>
 public sealed class VgaRegisters : IIoDevice
 {
+    internal const int SnapshotLength = 1136;
     private readonly S3VideoIdentity _identity;
     private uint _apertureBase;
 
@@ -1418,9 +1419,20 @@ public sealed class VgaRegisters : IIoDevice
         return state;
     }
 
+    /// <summary>Validates the fixed register snapshot before any VGA bank is copied.</summary>
+    internal static void ValidateSnapshot(ReadOnlySpan<byte> state)
+    {
+        if (state.Length != SnapshotLength)
+        {
+            throw new InvalidDataException("Invalid VGA register snapshot length.");
+        }
+    }
+
     /// <summary>Puts the registers back, and tells whoever draws that they changed.</summary>
     public void RestoreRegisters(ReadOnlySpan<byte> state)
     {
+        ValidateSnapshot(state);
+
         int at = 0;
 
         state.Slice(at, _crtc.Length).CopyTo(_crtc); at += _crtc.Length;

@@ -10,9 +10,22 @@ remains unverified; GUI and configuration-file selection are not exposed yet.
 
 The generated firmware supplies VGA only for ViRGE. VBE calls return
 `AX=014F` before changing VGA registers, VRAM, or caller buffers. The default
-Trio BIOS remains byte-identical to the previous version. Machine snapshot
-capture and restore reject ViRGE before changing guest state until video
-topology and drawing-engine state are integrated into the snapshot format.
+Trio BIOS remains byte-identical to the previous version.
+
+Machine snapshots include the selected video model and ViRGE drawing-engine
+latches in a versioned `VID1` tail after serial mouse state. Older files without
+this tail retain their Trio identity and remain without the tail when resaved.
+Restore checks the model, RAM and video payload sizes, engine state, PCI
+topology, interrupt sources, and agreement between BAR0 and CR59 before changing
+guest state. VGA/PCI synchronization is suspended while both register banks
+are restored, then the memory windows are reconciled once. Restoring engine
+latches does not submit a drawing command.
+
+An independent save/load probe resumes the CPU immediately before an
+auto-execute trigger. Its 39,340-pixel frame matches uninterrupted execution
+byte for byte, and the target's former MMIO address no longer decodes. A Trio
+snapshot captured by the previous implementation also restores and resaves
+byte-identically with the new loader.
 
 The end-to-end fixture submits `CMD_SET` through a real CPU `MOV`, reaches the
 MMIO engine, updates VRAM, and renders the result. It produced a 640x480 frame
@@ -26,7 +39,7 @@ With `CMD_SET` bit 0 clear, a dword write to `B500` submits the command;
 with bit 0 set, a write to `B57C` submits it. The engine supports fixed-point edge values,
 inclusive clipping, and constant-colour RGB888 output. The implementation
 does not provide Gouraud gradients, textures, depth, fog, alpha, FIFO timing,
-interrupts, or complete machine snapshot support. The engine's 19 register
+interrupts, or capture of every machine device. The engine's 19 register
 latches have a separate 84-byte `VRG1` snapshot payload. Restore validates the
 whole header and length before changing latches, without submitting commands,
 touching VRAM, or raising command diagnostics. VRAM remains separate state.
@@ -63,8 +76,7 @@ Enhanced/banked legacy memory and old MMIO remain unsupported: requesting
 either disables the legacy window and emits a diagnostic. This is an explicit
 emulator limitation, not the documented response of physical ViRGE hardware.
 Big-endian windows, image transfer and ViRGE 2D commands are also unsupported
-and diagnosed. This card has no OEM option ROM, IRQ timing, or
-machine-topology snapshot integration.
+and diagnosed. This card has no OEM option ROM or IRQ timing.
 It does not borrow the Trio accelerator to impersonate ViRGE 2D support.
 
 The frontend consumes the common `IVideoOutput` interface. The default VM

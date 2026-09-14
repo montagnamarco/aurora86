@@ -1,4 +1,8 @@
+using System.Buffers.Binary;
+using Aurora386.Core.Configuration;
 using Aurora386.Core.Cpu;
+using Aurora386.Core.Devices.Pci;
+using Aurora386.Core.Devices.Video;
 
 namespace Aurora386.Core;
 
@@ -18,6 +22,10 @@ namespace Aurora386.Core;
 /// </summary>
 public sealed class MachineSnapshot
 {
+    private const uint VideoTopologyMagic = 0x31444956;
+    private const ushort VideoTopologyVersion = 1;
+    private const int VideoTopologyHeaderLength = 12;
+
     private readonly byte[] _ram;
     private readonly uint[] _gpr;
     private readonly SegmentCache[] _segments;
@@ -51,6 +59,8 @@ public sealed class MachineSnapshot
     /// </summary>
     private readonly byte[] _videoMemory;
     private readonly byte[] _videoRegisters;
+    private readonly VmVideoModel? _videoModel;
+    private readonly byte[] _videoEngine;
 
     /// <summary>
     /// The chips that decide whether the guest is ever interrupted again.
@@ -77,7 +87,6 @@ public sealed class MachineSnapshot
 
     private MachineSnapshot(Machine machine)
     {
-        RequireSupportedVideoModel(machine);
         CpuState state = machine.Cpu.State;
 
         _ram = machine.Memory.CaptureRam();
@@ -99,6 +108,8 @@ public sealed class MachineSnapshot
 
         _videoMemory = machine.VideoMemory.CaptureMemory();
         _videoRegisters = machine.VideoRegisters.CaptureRegisters();
+        _videoModel = machine.VideoModel;
+        _videoEngine = machine.Virge?.Engine.Capture() ?? [];
 
         _interruptControllers = machine.Interrupts.Capture();
         _timer = machine.Timer.Capture();
@@ -117,53 +128,74 @@ public sealed class MachineSnapshot
     /// <summary>Puts this state back into a machine.</summary>
     public void RestoreTo(Machine machine)
     {
-        RequireSupportedVideoModel(machine);
+        PreflightFor(machine);
         CpuState state = machine.Cpu.State;
+        IDisposable? videoRestoreScope = machine.Virge?.SuspendSnapshotRestore();
 
-        // Remove the host CD mount before restoring RAM: unmounting clears
-        // DOS drive flags, which may already belong to the guest's driver.
-        if (_guestOwnsCompactDisc is bool guestOwnsCompactDisc)
+        try
         {
-            machine.RestoreCompactDiscOwnership(guestOwnsCompactDisc);
+            // Remove the host CD mount before restoring RAM: unmounting clears
+            // DOS drive flags, which may already belong to the guest's driver.
+            if (_guestOwnsCompactDisc is bool guestOwnsCompactDisc)
+            {
+                machine.RestoreCompactDiscOwnership(guestOwnsCompactDisc);
+            }
+
+            machine.Memory.A20Enabled = _a20;
+            machine.Memory.RestoreRam(_ram);
+            _gpr.CopyTo(state.Gpr, 0);
+            _segments.CopyTo(state.Segments, 0);
+            machine.Cpu.Flags = _flags;
+
+            state.Eip = _eip;
+            state.Cr0 = _cr0; state.Cr2 = _cr2; state.Cr3 = _cr3;
+            state.GdtBase = _gdtBase; state.GdtLimit = _gdtLimit;
+            state.IdtBase = _idtBase; state.IdtLimit = _idtLimit;
+            state.Ldtr = _ldtr; state.LdtBase = _ldtBase; state.LdtLimit = _ldtLimit;
+            state.TaskRegister = _taskRegister; state.TssBase = _tssBase; state.TssLimit = _tssLimit;
+            state.OtherFlags = _otherFlags;
+            state.CplRaw = _cpl;
+            state.Halted = _halted;
+            state.Virtual8086Mode = _virtual8086;
+
+            if (_videoMemory.Length > 0)
+            {
+                machine.VideoMemory.RestoreMemory(_videoMemory);
+            }
+
+            if (_videoEngine.Length > 0)
+            {
+                machine.Virge!.Engine.Restore(_videoEngine);
+            }
+
+            if (_videoRegisters.Length > 0)
+            {
+                machine.VideoRegisters.RestoreRegisters(_videoRegisters);
+            }
+
+            // The keyboard controller owns A20, so it is restored after the bus:
+            // the other order would leave the line as the snapshot's own field
+            // said rather than as the controller had it.
+            if (_interruptControllers.Length > 0) machine.Interrupts.Restore(_interruptControllers);
+            if (_timer.Length > 0) machine.Timer.Restore(_timer);
+            if (_keyboard.Length > 0) machine.Keyboard.Restore(_keyboard);
+            if (_serialMouse is not null) machine.SerialMouse.Restore(_serialMouse);
+
+            // After the memory, because attaching marks the CDS entries in it.
+            machine.RestoreDosState(_dosState);
+            machine.Pci.Restore(_pci);
+            if (!_hasIdeTimingRegisters)
+            {
+                // Earlier PCI snapshots stored zero in unimplemented IDETIM
+                // registers while both channels actually decoded their ports.
+                machine.Pci.WriteConfiguration(0x0009, 0x40, 4, 0x80008000);
+            }
+        }
+        finally
+        {
+            videoRestoreScope?.Dispose();
         }
 
-        machine.Memory.A20Enabled = _a20;
-        machine.Memory.RestoreRam(_ram);
-        _gpr.CopyTo(state.Gpr, 0);
-        _segments.CopyTo(state.Segments, 0);
-        machine.Cpu.Flags = _flags;
-
-        state.Eip = _eip;
-        state.Cr0 = _cr0; state.Cr2 = _cr2; state.Cr3 = _cr3;
-        state.GdtBase = _gdtBase; state.GdtLimit = _gdtLimit;
-        state.IdtBase = _idtBase; state.IdtLimit = _idtLimit;
-        state.Ldtr = _ldtr; state.LdtBase = _ldtBase; state.LdtLimit = _ldtLimit;
-        state.TaskRegister = _taskRegister; state.TssBase = _tssBase; state.TssLimit = _tssLimit;
-        state.OtherFlags = _otherFlags;
-        state.CplRaw = _cpl;
-        state.Halted = _halted;
-        state.Virtual8086Mode = _virtual8086;
-
-        if (_videoMemory.Length > 0) machine.VideoMemory.RestoreMemory(_videoMemory);
-        if (_videoRegisters.Length > 0) machine.VideoRegisters.RestoreRegisters(_videoRegisters);
-
-        // The keyboard controller owns A20, so it is restored after the bus:
-        // the other order would leave the line as the snapshot's own field
-        // said rather than as the controller had it.
-        if (_interruptControllers.Length > 0) machine.Interrupts.Restore(_interruptControllers);
-        if (_timer.Length > 0) machine.Timer.Restore(_timer);
-        if (_keyboard.Length > 0) machine.Keyboard.Restore(_keyboard);
-        if (_serialMouse is not null) machine.SerialMouse.Restore(_serialMouse);
-
-        // After the memory, because attaching marks the CDS entries in it.
-        machine.RestoreDosState(_dosState);
-        machine.Pci.Restore(_pci);
-        if (!_hasIdeTimingRegisters)
-        {
-            // Earlier PCI snapshots stored zero in unimplemented IDETIM
-            // registers while both channels actually decoded their ports.
-            machine.Pci.WriteConfiguration(0x0009, 0x40, 4, 0x80008000);
-        }
         machine.RestoreUsbState(_usb);
 
         // Paging translations cached from the old contents of memory describe
@@ -172,16 +204,93 @@ public sealed class MachineSnapshot
     }
 
     /// <summary>
-    /// Keeps the experimental ViRGE machine outside the legacy snapshot
-    /// format until video topology and drawing-engine state are represented.
-    /// This check must precede CD ownership and all RAM/device mutations.
+    /// Validates every snapshot block whose restore can now participate in
+    /// video-card reconciliation before changing CD ownership, RAM, or devices.
     /// </summary>
-    private static void RequireSupportedVideoModel(Machine machine)
+    private void PreflightFor(Machine machine)
     {
-        if (machine.VideoModel == Configuration.VmVideoModel.S3Virge325)
+        VmVideoModel snapshotModel = _videoModel ?? VmVideoModel.S3Trio64VPlus;
+        if (snapshotModel != machine.VideoModel)
         {
-            throw new NotSupportedException(
-                "ViRGE machine snapshots require video topology and drawing-engine state support.");
+            throw new InvalidDataException("Snapshot video model differs from the machine.");
+        }
+
+        if (_ram.Length != machine.Memory.RamSize)
+        {
+            throw new InvalidDataException("Snapshot RAM size differs from the machine.");
+        }
+
+        bool virge = snapshotModel == VmVideoModel.S3Virge325;
+        ValidateVideoBlockLength(_videoMemory.Length, VgaMemory.TotalSize, virge, "memory");
+        ValidateVideoBlockLength(
+            _videoRegisters.Length,
+            VgaRegisters.SnapshotLength,
+            virge,
+            "register");
+        if (_videoRegisters.Length > 0)
+        {
+            VgaRegisters.ValidateSnapshot(_videoRegisters);
+        }
+
+        if (virge)
+        {
+            ValidateVirgeEngineSnapshot(_videoEngine);
+        }
+        else if (_videoEngine.Length != 0)
+        {
+            throw new InvalidDataException("Trio snapshot contains ViRGE engine state.");
+        }
+
+        PciBus.SnapshotState pciSnapshot = machine.Pci.ValidateSnapshot(_pci);
+        if (!virge)
+        {
+            return;
+        }
+
+        if (pciSnapshot.IsLegacyReset)
+        {
+            throw new InvalidDataException("ViRGE snapshot requires complete PCI state.");
+        }
+
+        ReadOnlySpan<byte> videoFunction = pciSnapshot.FunctionState(0x0020);
+        if (videoFunction.Length != 256
+            || BinaryPrimitives.ReadUInt16LittleEndian(videoFunction) != 0x5333
+            || BinaryPrimitives.ReadUInt16LittleEndian(videoFunction[2..]) != 0x5631)
+        {
+            throw new InvalidDataException("ViRGE PCI identity is missing or invalid.");
+        }
+
+        uint pciBase = BinaryPrimitives.ReadUInt32LittleEndian(videoFunction[0x10..]) & 0xFC000000;
+        uint crtcBase = (uint)(_videoRegisters[0x59] & 0xFC) << 24;
+        if (pciBase != crtcBase)
+        {
+            throw new InvalidDataException("ViRGE PCI BAR and CRTC base latches differ.");
+        }
+    }
+
+    private static void ValidateVideoBlockLength(
+        int actualLength,
+        int expectedLength,
+        bool required,
+        string blockName)
+    {
+        if (actualLength == expectedLength || (!required && actualLength == 0))
+        {
+            return;
+        }
+
+        throw new InvalidDataException($"Invalid video {blockName} snapshot length.");
+    }
+
+    private static void ValidateVirgeEngineSnapshot(ReadOnlySpan<byte> snapshot)
+    {
+        try
+        {
+            S3VirgeEngine.ValidateSnapshot(snapshot);
+        }
+        catch (ArgumentException error)
+        {
+            throw new InvalidDataException("Invalid ViRGE engine snapshot.", error);
         }
     }
 
@@ -245,6 +354,17 @@ public sealed class MachineSnapshot
         {
             file.Write(_serialMouse.Length);
             file.Write(_serialMouse);
+        }
+
+        if (_videoModel.HasValue)
+        {
+            int payloadLength = VideoTopologyHeaderLength + _videoEngine.Length;
+            file.Write(payloadLength);
+            file.Write(VideoTopologyMagic);
+            file.Write(VideoTopologyVersion);
+            file.Write((ushort)_videoModel.Value);
+            file.Write(_videoEngine.Length);
+            file.Write(_videoEngine);
         }
     }
 
@@ -339,6 +459,8 @@ public sealed class MachineSnapshot
         if (file.BaseStream.Position == file.BaseStream.Length)
         {
             _serialMouse = null;
+            _videoModel = null;
+            _videoEngine = [];
             return;
         }
 
@@ -362,6 +484,61 @@ public sealed class MachineSnapshot
         }
 
         Devices.Input.SerialMouse.ValidateSnapshot(_serialMouse);
+
+        if (file.BaseStream.Position == file.BaseStream.Length)
+        {
+            _videoModel = null;
+            _videoEngine = [];
+            return;
+        }
+
+        long videoTailLength = file.BaseStream.Length - file.BaseStream.Position;
+        if (videoTailLength < sizeof(int))
+        {
+            throw new InvalidDataException("The video topology snapshot length is truncated.");
+        }
+
+        int videoPayloadLength = file.ReadInt32();
+        long availableVideoPayload = file.BaseStream.Length - file.BaseStream.Position;
+        if (videoPayloadLength < VideoTopologyHeaderLength
+            || videoPayloadLength != availableVideoPayload)
+        {
+            throw new InvalidDataException("The video topology snapshot length is invalid.");
+        }
+
+        byte[] videoPayload = file.ReadBytes(videoPayloadLength);
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(videoPayload);
+        ushort version = BinaryPrimitives.ReadUInt16LittleEndian(videoPayload.AsSpan(4));
+        ushort model = BinaryPrimitives.ReadUInt16LittleEndian(videoPayload.AsSpan(6));
+        int engineLength = BinaryPrimitives.ReadInt32LittleEndian(videoPayload.AsSpan(8));
+        if (magic != VideoTopologyMagic || version != VideoTopologyVersion)
+        {
+            throw new InvalidDataException("The video topology snapshot header is invalid.");
+        }
+
+        if (model > (ushort)VmVideoModel.S3Virge325)
+        {
+            throw new InvalidDataException("The video topology snapshot model is invalid.");
+        }
+
+        if (engineLength < 0 || engineLength != videoPayloadLength - VideoTopologyHeaderLength)
+        {
+            throw new InvalidDataException("The video engine snapshot length is invalid.");
+        }
+
+        _videoModel = (VmVideoModel)model;
+        _videoEngine = videoPayload.AsSpan(VideoTopologyHeaderLength, engineLength).ToArray();
+        if (_videoModel == VmVideoModel.S3Trio64VPlus)
+        {
+            if (_videoEngine.Length != 0)
+            {
+                throw new InvalidDataException("Trio snapshot contains ViRGE engine state.");
+            }
+        }
+        else
+        {
+            ValidateVirgeEngineSnapshot(_videoEngine);
+        }
     }
 
     /// <summary>Reads a snapshot back from a file.</summary>

@@ -111,7 +111,8 @@ public class PciTests
                 // recorded zero for these then-unimplemented registers.
                 using FileStream file = File.OpenWrite(path);
                 int serialStateLength = sizeof(int) + machine.SerialMouse.Capture().Length;
-                file.SetLength(file.Length - serialStateLength - 1);
+                const int trioVideoTailLength = sizeof(int) + 12;
+                file.SetLength(file.Length - trioVideoTailLength - serialStateLength - 1);
             }
             machine.Pci.Reset();
             MachineSnapshot.Load(path).RestoreTo(machine);
@@ -350,7 +351,13 @@ public class PciTests
             using (FileStream file = File.OpenWrite(path))
             {
                 int serialStateLength = sizeof(int) + m.SerialMouse.Capture().Length;
-                file.SetLength(file.Length - serialStateLength - 10 - m.Pci.Capture().Length);
+                const int trioVideoTailLength = sizeof(int) + 12;
+                file.SetLength(
+                    file.Length
+                    - trioVideoTailLength
+                    - serialStateLength
+                    - 10
+                    - m.Pci.Capture().Length);
             }
             MachineSnapshot.Load(path).RestoreTo(m);
             Assert.Equal(1u, m.Pci.ReadConfiguration(9, 4, 2));

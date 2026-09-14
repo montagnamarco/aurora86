@@ -27,6 +27,7 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
     private bool _enhancedLegacyRequested;
     private bool _writingVgaRegisters;
     private bool _apertureWritePending;
+    private bool _snapshotRestoreSuspended;
     private uint _lastPciBase;
 
     /// <summary>
@@ -123,6 +124,22 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
         OnApertureChanged();
     }
 
+    /// <summary>
+    /// Suspends VGA/PCI cross-synchronization while a machine snapshot restores
+    /// both banks. Disposing reconciles the already-matching latches once.
+    /// </summary>
+    internal IDisposable SuspendSnapshotRestore()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_snapshotRestoreSuspended)
+        {
+            throw new InvalidOperationException("ViRGE snapshot restore is already suspended.");
+        }
+
+        _snapshotRestoreSuspended = true;
+        return new SnapshotRestoreScope(this);
+    }
+
     /// <summary>Releases decoding while leaving the bus-owned PCI topology intact.</summary>
     public void Dispose()
     {
@@ -165,6 +182,11 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
 
     private void OnPciChanged()
     {
+        if (_snapshotRestoreSuspended)
+        {
+            return;
+        }
+
         if (_synchronizing)
         {
             _lastPciBase = Function.Read(BarRegister, 4);
@@ -191,6 +213,11 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
 
     private void OnApertureChanged()
     {
+        if (_snapshotRestoreSuspended)
+        {
+            return;
+        }
+
         if (_writingVgaRegisters)
         {
             _apertureWritePending = true;
@@ -236,6 +263,27 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
         }
 
         _oldMmioRequested = oldMmio;
+    }
+
+    private void CompleteSnapshotRestore()
+    {
+        _snapshotRestoreSuspended = false;
+        _lastPciBase = Function.Read(BarRegister, 4);
+        _apertureWritePending = false;
+        _enhancedLegacyRequested = (Registers.Crtc(0x31) & 8) != 0;
+        _oldMmioRequested = Registers.VirgeAperture!.OldMmioEnabled;
+        UpdateMapping();
+    }
+
+    private sealed class SnapshotRestoreScope(S3VirgeCard card) : IDisposable
+    {
+        private S3VirgeCard? _card = card;
+
+        public void Dispose()
+        {
+            S3VirgeCard? cardToResume = Interlocked.Exchange(ref _card, null);
+            cardToResume?.CompleteSnapshotRestore();
+        }
     }
 
     /// <summary>

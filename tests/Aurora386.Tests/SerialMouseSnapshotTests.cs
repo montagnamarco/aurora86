@@ -15,6 +15,7 @@ namespace Aurora386.Tests;
 public sealed class SerialMouseSnapshotTests
 {
     private const ushort Com1 = SerialMouse.BasePort;
+    private const int TrioVideoTailLength = sizeof(int) + 12;
 
     private static Machine ConfiguredMachine()
     {
@@ -181,6 +182,7 @@ public sealed class SerialMouseSnapshotTests
             int serialStateLength = sizeof(int) + source.SerialMouse.Capture().Length;
             using (FileStream file = File.OpenWrite(legacyPath))
             {
+                RemoveTrioVideoTail(file);
                 file.SetLength(file.Length - serialStateLength);
             }
 
@@ -219,6 +221,7 @@ public sealed class SerialMouseSnapshotTests
             MachineSnapshot.Capture(machine).Save(path);
             using (FileStream file = File.OpenWrite(path))
             {
+                RemoveTrioVideoTail(file);
                 file.SetLength(file.Length - 1);
             }
 
@@ -242,6 +245,7 @@ public sealed class SerialMouseSnapshotTests
             MachineSnapshot.Capture(machine).Save(path);
             using (FileStream file = File.OpenWrite(path))
             {
+                RemoveTrioVideoTail(file);
                 file.Position = file.Length - serialState.Length;
                 file.WriteByte(2);
             }
@@ -270,5 +274,10 @@ public sealed class SerialMouseSnapshotTests
         Assert.Equal(before, target.SerialMouse.Capture());
         Assert.Equal(interruptState, target.Interrupts.Capture());
         Assert.Equal(0, events);
+    }
+
+    private static void RemoveTrioVideoTail(FileStream file)
+    {
+        file.SetLength(file.Length - TrioVideoTailLength);
     }
 }

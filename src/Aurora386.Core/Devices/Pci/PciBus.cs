@@ -68,33 +68,128 @@ public sealed class PciBus : IIoDwordDevice
         }
         return stream.ToArray();
     }
+
+    /// <summary>
+    /// Parses and validates a complete PCI snapshot against this bus without
+    /// changing configuration registers, interrupt sources, or device maps.
+    /// </summary>
+    internal SnapshotState ValidateSnapshot(ReadOnlySpan<byte> data)
+    {
+        return ParseSnapshot(data);
+    }
+
     public void Restore(ReadOnlySpan<byte> data)
     {
-        if (data.IsEmpty) { Reset(); return; }
+        SnapshotState snapshot = ParseSnapshot(data);
+        if (snapshot.IsLegacyReset)
+        {
+            Reset();
+            return;
+        }
+
+        InterruptRouter?.ResetSources();
+        foreach ((PciFunction function, byte[] state) in snapshot.Functions)
+        {
+            function.Restore(state);
+        }
+
+        _address = snapshot.Address & 0x80FFFFFC;
+        InterruptRouter?.Restore(snapshot.InterruptState);
+    }
+
+    private SnapshotState ParseSnapshot(ReadOnlySpan<byte> data)
+    {
+        if (data.IsEmpty)
+        {
+            return SnapshotState.LegacyReset;
+        }
+
         using var reader = new BinaryReader(new MemoryStream(data.ToArray()));
+        if (reader.BaseStream.Length < 2 * sizeof(int))
+        {
+            throw new InvalidDataException("PCI snapshot header is truncated.");
+        }
+
         uint address = reader.ReadUInt32();
         int count = reader.ReadInt32();
-        if (count != _functions.Count) throw new InvalidDataException("PCI snapshot topology differs from the machine.");
+        if (count != _functions.Count)
+        {
+            throw new InvalidDataException("PCI snapshot topology differs from the machine.");
+        }
+
         var blocks = new List<(PciFunction Function, byte[] Data)>();
         for (int i = 0; i < count; i++)
         {
+            const int functionBlockLength = sizeof(ushort) + 256;
+            if (reader.BaseStream.Length - reader.BaseStream.Position < functionBlockLength)
+            {
+                throw new InvalidDataException("PCI snapshot function is truncated.");
+            }
+
             ushort key = reader.ReadUInt16();
             byte[] state = reader.ReadBytes(256);
-            if (!_functions.TryGetValue(key, out var function) || state.Length != 256 || blocks.Any(b => b.Function == function))
+            if (!_functions.TryGetValue(key, out PciFunction? function)
+                || state.Length != 256
+                || blocks.Any(block => block.Function == function))
+            {
                 throw new InvalidDataException("Invalid PCI snapshot function.");
+            }
+
             blocks.Add((function, state));
         }
+
         byte[] interruptState = [];
         if (reader.BaseStream.Position < reader.BaseStream.Length)
         {
+            if (reader.BaseStream.Length - reader.BaseStream.Position < sizeof(int))
+            {
+                throw new InvalidDataException("PCI interrupt snapshot length is truncated.");
+            }
+
             int length = reader.ReadInt32();
             if (length < 0 || length != reader.BaseStream.Length - reader.BaseStream.Position)
+            {
                 throw new InvalidDataException("Invalid PCI interrupt snapshot length.");
+            }
+
             interruptState = reader.ReadBytes(length);
         }
-        InterruptRouter?.ResetSources();
-        foreach (var block in blocks) block.Function.Restore(block.Data);
-        _address = address & 0x80FFFFFC;
-        InterruptRouter?.Restore(interruptState);
+
+        if (InterruptRouter is null)
+        {
+            if (interruptState.Length > 0)
+            {
+                throw new InvalidDataException("PCI snapshot requires an interrupt router.");
+            }
+        }
+        else
+        {
+            PciInterruptRouter.ValidateSnapshot(interruptState);
+        }
+
+        return new SnapshotState(address, blocks, interruptState, false);
+    }
+
+    /// <summary>A validated PCI snapshot, retained so restore does not parse a second time.</summary>
+    internal sealed record SnapshotState(
+        uint Address,
+        IReadOnlyList<(PciFunction Function, byte[] Data)> Functions,
+        byte[] InterruptState,
+        bool IsLegacyReset)
+    {
+        internal static SnapshotState LegacyReset { get; } = new(0, [], [], true);
+
+        internal ReadOnlySpan<byte> FunctionState(ushort address)
+        {
+            foreach ((PciFunction function, byte[] state) in Functions)
+            {
+                if (function.Address == address)
+                {
+                    return state;
+                }
+            }
+
+            return [];
+        }
     }
 }

@@ -76,17 +76,38 @@ public sealed class PciInterruptRouter
     }
     public void Restore(ReadOnlySpan<byte> bytes)
     {
-        if (bytes.Length % 4 != 0) throw new InvalidDataException("Invalid PCI interrupt state.");
-        var restored = new HashSet<uint>();
-        for (int offset = 0; offset < bytes.Length; offset += 4)
-        {
-            uint source = BinaryPrimitives.ReadUInt32LittleEndian(bytes[offset..]);
-            if (source > 0x3FFFF || Link((ushort)(source >> 2), (byte)((source & 3) + 1)) < 0 || !restored.Add(source))
-                throw new InvalidDataException("Invalid PCI interrupt source.");
-        }
+        HashSet<uint> restored = ParseSnapshot(bytes);
+
         _asserted.Clear();
         _asserted.UnionWith(restored);
         Update();
+    }
+
+    /// <summary>Validates asserted PCI sources without changing the router or interrupt controller.</summary>
+    public static void ValidateSnapshot(ReadOnlySpan<byte> bytes)
+    {
+        _ = ParseSnapshot(bytes);
+    }
+
+    private static HashSet<uint> ParseSnapshot(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length % sizeof(uint) != 0)
+        {
+            throw new InvalidDataException("Invalid PCI interrupt state.");
+        }
+
+        var restored = new HashSet<uint>();
+        for (int offset = 0; offset < bytes.Length; offset += sizeof(uint))
+        {
+            uint source = BinaryPrimitives.ReadUInt32LittleEndian(bytes[offset..]);
+            int link = Link((ushort)(source >> 2), (byte)((source & 3) + 1));
+            if (source > 0x3FFFF || link < 0 || !restored.Add(source))
+            {
+                throw new InvalidDataException("Invalid PCI interrupt source.");
+            }
+        }
+
+        return restored;
     }
 
     /// <summary>The same slot wiring consumed by the OS and by SetInterrupt.</summary>
