@@ -86,6 +86,24 @@ It does not borrow the Trio accelerator to impersonate ViRGE 2D support.
 The frontend consumes the common `IVideoOutput` interface. The default VM
 continues to use the existing Trio implementation.
 
+The [DOS startup probe](../tools/Virge3DProbe/README.md) now runs the original
+Toolkit 2.6 cube sample on a private image and supports a hash-checked DOS
+prompt checkpoint. The sample reaches DPMI mappings for `70000000h` and
+`71000000h`, requests VBE mode `0110h` through INT 10h `AX=4F02`, and continues
+to issue commands despite the firmware's current VBE refusal. Observed
+unsupported accesses include a DWORD at new-MMIO offset `8208h` and the
+triangle command `80C00006h`. The display remains 720x400 text, and Esc returns
+to the DOS prompt. No period-program 3D frame has been demonstrated.
+
+The next prerequisite is an actual ViRGE VBE mode program, including aperture
+and pixel-format setup. The sample also needs capabilities beyond the current
+flat RGB888 engine; enabling VBE alone will not establish compatibility.
+The startup log records 84 CPU fault events as well; their presence alone does
+not establish a CPU defect, and this probe makes no instruction changes.
+Earlier experimental logs using physical-memory write watches are invalid for
+hardware conclusions: those watches split DWORD transactions into bytes.
+The retained probe uses passive CPU/card diagnostics only.
+
 References:
 
 - [S3 ViRGE 86C325 databook](https://vgamuseum.info/images/doc/s3/virge.pdf)
