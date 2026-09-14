@@ -139,6 +139,11 @@ renderer receives no Streams state and retains its existing behavior.
 The frontend consumes the common `IVideoOutput` interface. The default VM
 continues to use the existing Trio implementation.
 
+The [Trio guest regression matrix](TRIO-REGRESSION.md) verifies DOS 6.22,
+Windows 3.11 with VGA and native S3 drivers, and Windows 95 desktop interaction
+after primary Streams integration. It also records the unresolved Windows 95
+startup glyph symptom and the precise scope of these smoke checks.
+
 The [DOS startup probe](../tools/Virge3DProbe/README.md) now runs the original
 Toolkit 2.6 cube sample on a private image and supports a hash-checked DOS
 prompt checkpoint. The sample reaches DPMI mappings for `70000000h` and
