@@ -164,7 +164,8 @@ surface SHA-256 is
 The final raw page shows the cube's front face: green at top left, magenta at
 top right, blue at bottom left and white at bottom right. Its RGB SHA-256 is
 `3FE2C6EC5A71F48B08E13CDA61EA515E53A0565CF8D82967C5161AC512370076`.
-The visible page's hash differs because Streams presentation is still absent.
+At that stage the visible page's hash differed because Streams presentation
+was still absent.
 At that final boundary the sample has already cleared its depth surface for
 the next frame; an all-FFFF dump there does not mean the triangles skipped Z.
 
@@ -184,3 +185,39 @@ reports 18 selected interrupts, 102 fault events and 366 unsupported card
 notifications, with no rejected BitBLT or triangle commands. These fault counts
 are from a different DOS input and do not establish a CPU regression. Esc
 returns to `C:\>`, and the probe's source-image hash is unchanged.
+
+
+## Result with primary Streams presentation
+
+The primary display now follows CR67 bits 3:2 and the seven primary Streams
+registers. The final CUBE capture contains `CR67=3C`, `8180=03000000`,
+`81C0=00096000`, `81C4=0`, `81CC=0`, `81C8=00000500`, `81F0=00010001`
+and `81F4=027F01E0`. These select an unscaled KRGB1555 page at 096000h,
+1280 bytes per row, covering the full 640x480 display. The resulting display
+RGB hash is `3FE2C6EC5A71F48B08E13CDA61EA515E53A0565CF8D82967C5161AC512370076`,
+identical to the raw selected page. The unselected page is partially drawn at
+this boundary and has a different hash. The probe neither modifies a display
+register nor substitutes the raw image for the renderer's output.
+
+CR67 observations at MMIO boundaries show 00h initially and 3Ch after the mode
+setup. It returns to 00h when Esc exits to the DOS prompt. Counts remain 18
+selected interrupts and 102 fault events on the same DOS input; unsupported
+notifications decrease from 366 to 203. No BitBLT or triangle command is
+rejected. The input-image SHA-256 remains unchanged.
+
+Only primary presentation is implemented here. The capture selects primary
+opaque composition with `81A0=01000000` and places the secondary window outside
+the screen; secondary composition, scaling, chroma/color key and FIFO timing
+are still unsupported. The seven primary fields do not have a documented
+VSYNC-delayed shadow, so they update immediately. Beam-accurate effects of
+mid-scan writes remain unmeasured. `81CC.0` selection of address 1 is covered by
+CPU tests, although CUBE instead alternates address 0 in software.
+
+New VGE1 version 2 snapshots use a 20-byte header and include the 36-byte VST1
+primary latch block after VRG1 and V2D1. Old VGE1 version 1 and bare VRG1 files
+remain readable and resave unchanged; their absent Streams latches reset to
+zero on restore. An old snapshot captured while Streams was already enabled
+cannot recover presentation registers that were never saved. Tests verify
+both old triangle versions, nested-state preflight before RAM/VRAM changes,
+page/stride restoration through real CPU MMIO, page-only redraw, window
+clipping, zero/odd stride, out-of-range pixels and the unchanged Trio path.

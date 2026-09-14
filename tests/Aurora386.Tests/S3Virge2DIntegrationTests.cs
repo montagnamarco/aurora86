@@ -104,15 +104,22 @@ public sealed class S3Virge2DIntegrationTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void LegacyVrg1MachineSnapshotResavesUnchangedAndResetsTargetBlitter(bool bundled)
+    [InlineData(false, 1)]
+    [InlineData(false, 2)]
+    [InlineData(true, 1)]
+    [InlineData(true, 2)]
+    public void LegacyVrg1MachineSnapshotResavesUnchangedAndResetsBlitterAnd81C0(
+        bool bundled, ushort triangleVersion)
     {
         using Machine source = Started();
         MachineSnapshot legacy = MachineSnapshot.Capture(source);
-        byte[] legacyTriangle = source.Virge!.Engine.Capture()[..84];
-        BinaryPrimitives.WriteUInt16LittleEndian(legacyTriangle.AsSpan(4), 1);
-        BinaryPrimitives.WriteUInt16LittleEndian(legacyTriangle.AsSpan(6), 19);
+        byte[] legacyTriangle = source.Virge!.Engine.Capture();
+        if (triangleVersion == 1)
+        {
+            Array.Resize(ref legacyTriangle, 84);
+            BinaryPrimitives.WriteUInt16LittleEndian(legacyTriangle.AsSpan(4), 1);
+            BinaryPrimitives.WriteUInt16LittleEndian(legacyTriangle.AsSpan(6), 19);
+        }
         byte[] legacyPayload = legacyTriangle;
         if (bundled)
         {
@@ -137,10 +144,13 @@ public sealed class S3Virge2DIntegrationTests
             Assert.Equal(File.ReadAllBytes(original), File.ReadAllBytes(resaved));
             using Machine target = Started();
             BeginImage(target);
+            CpuStores(target, (0x81C0, 0x96000), (0x81CC, 1));
             Assert.True(target.Virge!.Blitter.IsBusy);
             loaded.RestoreTo(target);
             Assert.False(target.Virge.Blitter.IsBusy);
             Assert.Equal(0u, target.Virge.Blitter.ReadDword(0xA500));
+            Assert.Equal(0u, target.Memory.ReadDword(Mmio + 0x81C0));
+            Assert.Equal(0u, target.Memory.ReadDword(Mmio + 0x81CC));
             Assert.Equal(source.Virge.Engine.Capture(), target.Virge.Engine.Capture());
             Assert.Equal(source.VideoMemory.CaptureMemory(), target.VideoMemory.CaptureMemory());
         }
@@ -157,8 +167,11 @@ public sealed class S3Virge2DIntegrationTests
     [InlineData(6)] // Reserved envelope bits.
     [InlineData(8)] // Triangle length.
     [InlineData(12)] // Blitter length.
-    [InlineData(16)] // Triangle header.
-    [InlineData(120)] // Blitter header, after 16-byte envelope and 104-byte VRG1 v2.
+    [InlineData(16)] // Streams length.
+    [InlineData(20)] // Triangle header.
+    [InlineData(124)] // Blitter header, after 20-byte envelope and 104-byte VRG1 v2.
+    [InlineData(236)] // Streams header, after the 112-byte V2D1 block.
+    [InlineData(244)] // Reserved low bits in the primary-control latch.
     public void InvalidEngineBundlePreflightLeavesPendingUploadAndRamUntouched(int corruptOffset)
     {
         using Machine source = Started();
@@ -169,6 +182,7 @@ public sealed class S3Virge2DIntegrationTests
         payload[corruptOffset] ^= 0xFF;
         using Machine target = Started();
         BeginImage(target);
+        CpuStores(target, (0x81C0, 0x96000), (0x81CC, 1));
         target.Memory.WriteByte(0x1234, 0x66);
         byte[] engines = target.Virge!.CaptureEngines();
         byte[] pixels = target.VideoMemory.CaptureMemory();

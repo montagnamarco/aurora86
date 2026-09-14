@@ -16,8 +16,8 @@ public sealed class MachineVideoSnapshotTests
     private const uint VirgeMmioOffset = 0x01000000;
     private const uint Command = 0x83000008;
     private const int TrioVideoTailLength = sizeof(int) + 12;
-    // VGE1 header + VRG1 triangle block + V2D1 (15 latches and 11 upload fields).
-    private const int VirgeBundleLength = 16 + 104 + 112;
+    // VGE1 v2 header + VRG1 triangle + V2D1 upload state + VST1 primary Streams.
+    private const int VirgeBundleLength = 20 + 104 + 112 + 36;
 
     [Theory]
     [InlineData(VmVideoModel.S3Trio64VPlus)]

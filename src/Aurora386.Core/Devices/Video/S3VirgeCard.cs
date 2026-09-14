@@ -48,7 +48,8 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
 
         Registers = new VgaRegisters(S3VideoIdentity.Virge325);
         VideoMemory = new VgaMemory(Registers);
-        Renderer = new VgaRenderer(VideoMemory, Registers);
+        Streams = new S3VirgeStreams(Registers);
+        Renderer = new VgaRenderer(VideoMemory, Registers, Streams);
         Engine = new S3VirgeEngine(VideoMemory);
         Blitter = new S3Virge2DEngine(VideoMemory);
         Function = S3VideoIdentity.Virge325.CreatePciFunction(address, commandMask: 0x0027);
@@ -89,6 +90,7 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
     public VgaMemory VideoMemory { get; }
     public S3VirgeEngine Engine { get; }
     public S3Virge2DEngine Blitter { get; }
+    public S3VirgeStreams Streams { get; }
     public PciFunction Function { get; }
     public IVideoOutput Display => Renderer;
 

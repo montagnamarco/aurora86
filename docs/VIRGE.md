@@ -28,9 +28,12 @@ snapshot restoration, and the return to B8000 text memory.
 
 Machine snapshots include the selected video model and ViRGE drawing-engine
 state in a versioned `VID1` tail after serial mouse state. A `VGE1` envelope
-contains the triangle and BitBLT payloads, including pending CPU uploads.
+version 2 contains the triangle, BitBLT and primary Streams payloads, including
+pending CPU uploads. Its 20-byte header records all three block lengths.
+The 36-byte VST1 block stores seven primary presentation latches. Version 1
+bundles remain readable and reset the absent Streams state to zero.
 Original triangle-only `VRG1` payloads remain readable and reset the target's
-blitter when restored. Loaded legacy files resave without rewriting their
+blitter and Streams latches when restored. Loaded legacy files resave without rewriting their
 payload format. Older files without
 this tail retain their Trio identity and remain without the tail when resaved.
 Restore checks the model, RAM and video payload sizes, engine state, PCI
@@ -113,6 +116,26 @@ upload awaits data. Other operations and formats remain explicitly unsupported,
 including 2D autoexecute. Without a modeled FIFO, a new command cancels a
 pending upload; this is a documented emulator limitation.
 
+The primary Streams subset uses `CR67[3:2]=11b` to select presentation from
+its own MMIO latches. `8180=03000000h` selects unscaled KRGB1555; `81CC.0`
+selects the base in `81C0` or `81C4`; `81C8` supplies the byte stride, independently
+of VBE metadata. `81F0` positions the primary window with one-based screen
+coordinates, and `81F4` stores width minus one and the actual height. The
+window is clipped to the current screen. Page writes and CR67 transitions
+redraw even if VRAM is unchanged. Active Streams redraws all rows when VRAM
+changes because the existing dirty-row mapping describes the VGA surface.
+
+The databook does not specify VSYNC-delayed latches for these seven primary
+registers. They are stored immediately and sampled when the host renders;
+this does not model beam-accurate tearing or FIFO timing. Zero stride repeats
+a source row. Undefined power-on latches start at zero as an emulator policy.
+Primary registers accept aligned DWORD transactions. Secondary buffer fields
+in `81CC`, composition, scaling and other formats remain unsupported. Full
+Streams with an unsupported format/filter produces black, without falling
+back to an unrelated VGA page. `CR67[3:2]=00b` retains the VGA/VBE path; `01b`
+still displays its VGA background without a secondary overlay. The Trio
+renderer receives no Streams state and retains its existing behavior.
+
 The frontend consumes the common `IVideoOutput` interface. The default VM
 continues to use the existing Trio implementation.
 
@@ -120,19 +143,21 @@ The [DOS startup probe](../tools/Virge3DProbe/README.md) now runs the original
 Toolkit 2.6 cube sample on a private image and supports a hash-checked DOS
 prompt checkpoint. The sample reaches DPMI mappings for `70000000h` and
 `71000000h` and enters VBE mode `0110h` through INT 10h `AX=4F02`. Observed
-unsupported accesses remain in streams controls at `8180h`–`8208h`.
-The triangle engine now accepts command `80C00006h`. Raw page `096000h` shows
-the cube's front face with the expected green, magenta, blue and white vertex
-colours over the tiled background. Esc returns to the DOS prompt. Streams
-page presentation remains unimplemented, so the displayed page can show only
-a partially drawn frame; complete demo compatibility remains open.
+unsupported accesses remain in secondary-stream, composition and FIFO controls.
+The triangle engine accepts command `80C00006h`, and the primary Streams
+renderer now presents the page selected by the guest. The 640x480 display
+matches raw page `096000h` byte for byte, showing the cube's front face with
+green, magenta, blue and white vertex colours over the tiled background.
+Esc returns to the DOS prompt and clears the Streams enable bits in CR67.
+This establishes the sample's initial Gouraud/Z frame; texture modes, secondary
+composition and general period-driver compatibility remain unverified.
 
 The [drawing capture](VIRGE-CUBE.md) records the command setup, implementation
 limits and observed output. The first triangle updates 4,880 depth pixels
 before the next guest command. At the final sample boundary, the guest has
 already cleared Z for another frame; this is why the probe also captures
-immediately after the first triangle. The next work is the measured streams
-and page-presentation controls.
+immediately after the first triangle. Primary page selection now follows
+`81C0/81C4/81CC` independently of VGA/VBE display-start metadata.
 The earlier startup log recorded 84 CPU fault events; the recreated DOS input
 records 102. Their presence alone does
 not establish a CPU defect, and this probe makes no instruction changes.

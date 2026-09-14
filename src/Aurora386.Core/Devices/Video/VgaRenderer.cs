@@ -32,6 +32,9 @@ public sealed class VgaRenderer : IVideoOutput
 {
     private readonly VgaMemory _memory;
     private readonly VgaRegisters _registers;
+    private readonly S3VirgeStreams? _streams;
+    private ulong _lastStreamsRevision;
+    private byte _lastStreamsMode;
 
     /// <summary>Pixels in RGBA order, four bytes each.</summary>
     private uint[] _framebuffer;
@@ -51,10 +54,13 @@ public sealed class VgaRenderer : IVideoOutput
     /// <summary>Where the hardware pointer was in the last drawn frame.</summary>
     private int _lastCursorX = -1, _lastCursorY = -1;
 
-    public VgaRenderer(VgaMemory memory, VgaRegisters registers)
+    public VgaRenderer(VgaMemory memory, VgaRegisters registers, S3VirgeStreams? streams = null)
     {
         _memory = memory;
         _registers = registers;
+        _streams = streams;
+        _lastStreamsRevision = streams?.Revision ?? 0;
+        _lastStreamsMode = (byte)(registers.Crtc(0x67) & 0x0C);
         Width = registers.TextColumns * registers.CharacterWidth;
         Height = registers.TextRows * registers.CharacterHeight;
         _framebuffer = new uint[Width * Height];
@@ -111,6 +117,23 @@ public sealed class VgaRenderer : IVideoOutput
     /// </summary>
     public bool Render(bool force = false)
     {
+        byte streamsMode = (byte)(_registers.Crtc(0x67) & 0x0C);
+        ulong streamsRevision = _streams?.Revision ?? 0;
+        bool fullStreamsMode = _streams is not null && streamsMode == 0x0C;
+        bool streamsModeChanged = _streams is not null && streamsMode != _lastStreamsMode;
+        bool streamsRegistersChanged = fullStreamsMode && streamsRevision != _lastStreamsRevision;
+        _lastStreamsMode = streamsMode;
+        _lastStreamsRevision = streamsRevision;
+
+        // Streams addresses can change the visible page without touching
+        // VRAM. Conversely, VRAM's dirty rows are calculated from the VGA
+        // origin and pitch, which do not describe an off-screen Streams page.
+        // Repaint the complete primary window for either kind of change.
+        if (streamsModeChanged || streamsRegistersChanged || (fullStreamsMode && _memory.HasChanges))
+        {
+            force = true;
+        }
+
         InvalidatePointerRows();
         var textCursor = (_registers.CursorColumn, _registers.CursorRow,
             !_registers.EffectiveMode.IsGraphics && _registers.CursorVisible);
@@ -177,13 +200,20 @@ public sealed class VgaRenderer : IVideoOutput
             _memory.MarkRowsDirty(first, last - first + 1);
         }
 
-        switch (_registers.EffectiveMode.Layout)
+        if (fullStreamsMode)
         {
-            case VgaMemoryLayout.Planar4: RenderPlanar(force); break;
-            case VgaMemoryLayout.Linear8: RenderLinear(force); break;
-            case VgaMemoryLayout.Cga: RenderCga(force); break;
-            case VgaMemoryLayout.HighColour: RenderHighColour(force); break;
-            default: RenderText(force); break;
+            RenderPrimaryStream();
+        }
+        else
+        {
+            switch (_registers.EffectiveMode.Layout)
+            {
+                case VgaMemoryLayout.Planar4: RenderPlanar(force); break;
+                case VgaMemoryLayout.Linear8: RenderLinear(force); break;
+                case VgaMemoryLayout.Cga: RenderCga(force); break;
+                case VgaMemoryLayout.HighColour: RenderHighColour(force); break;
+                default: RenderText(force); break;
+            }
         }
 
         DrawPointer();
@@ -191,6 +221,50 @@ public sealed class VgaRenderer : IVideoOutput
         _memory.ClearDirty();
         FramesRendered++;
         return true;
+    }
+
+    /// <summary>
+    /// Presents the measured ViRGE primary-stream subset. A full Streams mode
+    /// with another format or filter is deliberately black: falling through
+    /// to VBE would display a surface the programmed hardware did not select.
+    /// </summary>
+    private void RenderPrimaryStream()
+    {
+        Array.Fill(_framebuffer, 0xFF000000u);
+        S3VirgeStreams streams = _streams!;
+        if (!streams.HasSupportedPrimaryFormat)
+        {
+            return;
+        }
+
+        (int windowX, int windowY) = streams.PrimaryWindowOrigin;
+        (int windowWidth, int windowHeight) = streams.PrimaryWindowSize;
+        int firstScreenX = Math.Max(0, windowX);
+        int firstScreenY = Math.Max(0, windowY);
+        int lastScreenX = Math.Min(Width, windowX + windowWidth);
+        int lastScreenY = Math.Min(Height, windowY + windowHeight);
+
+        for (int screenY = firstScreenY; screenY < lastScreenY; screenY++)
+        {
+            int sourceY = screenY - windowY;
+            ulong sourceRow = streams.PrimaryBufferAddress
+                + (ulong)sourceY * (uint)streams.PrimaryStride;
+            int destination = screenY * Width;
+
+            for (int screenX = firstScreenX; screenX < lastScreenX; screenX++)
+            {
+                int sourceX = screenX - windowX;
+                ulong pixelAddress = sourceRow + (ulong)sourceX * sizeof(ushort);
+                if (pixelAddress + 1 >= VgaMemory.TotalSize)
+                {
+                    continue;
+                }
+
+                int pixel = _memory.ReadLinear((uint)pixelAddress)
+                    | (_memory.ReadLinear((uint)pixelAddress + 1) << 8);
+                _framebuffer[destination + screenX] = From15(pixel);
+            }
+        }
     }
 
     /// <summary>

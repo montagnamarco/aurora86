@@ -6,6 +6,7 @@ using Aurora386.Core;
 using Aurora386.Core.Configuration;
 using Aurora386.Core.Cpu;
 using Aurora386.Core.Devices.Storage;
+using Aurora386.Core.Devices.Video;
 
 return VirgeProbe.Run(args);
 
@@ -108,8 +109,18 @@ internal static class VirgeProbe
         long registerWriteCount = 0;
         bool firstTrianglePending = false;
         bool firstTriangleSaved = false;
+        byte? lastStreamsControl = null;
         machine.Virge!.MmioWriteObserved += access =>
         {
+            // Observe the CRTC latch without injecting I/O or assuming that
+            // byte-only port diagnostics include the guest's word OUTs.
+            byte streamsControl = machine.VideoRegisters.Crtc(0x67);
+            if (streamsControl != lastStreamsControl)
+            {
+                log.WriteLine($"streams-control-at-mmio CR67={streamsControl:X2} next-register={access.Register:X4}");
+                lastStreamsControl = streamsControl;
+            }
+
             // The observer runs before dispatch. The following MMIO write
             // therefore sees the synchronous triangle after it has completed,
             // before a later guest command can clear or overwrite its depth.
@@ -226,6 +237,7 @@ internal static class VirgeProbe
         log.WriteLine($"observed-interrupts={interruptCount} faults={faultCount} unsupported={unsupportedCount}");
         mmioLog.WriteLine($"observed-writes={mmioWriteCount} register-writes={registerWriteCount} retained-registers={Math.Min(registerWriteCount, MmioWriteLimit)} register-limit={MmioWriteLimit}");
         mmioLog.WriteLine($"low-writes={lowMmioWriteCount} retained-low={Math.Min(lowMmioWriteCount, LowMmioWriteLimit)} low-limit={LowMmioWriteLimit}");
+        log.WriteLine($"streams-control-after-exit CR67={machine.VideoRegisters.Crtc(0x67):X2}");
         CpuState final = machine.Cpu.State;
         log.WriteLine($"final={final.Cs.Selector:X4}:{final.Eip:X8} EAX={final.Eax:X8} ECX={final.Ecx:X8} EDI={final.Edi:X8} ESbase={final.Es.Base:X8}");
         log.WriteLine($"BAR={machine.LinearFrameBufferBase:X8} CR31={machine.VideoRegisters.Crtc(0x31):X2} CR36={machine.VideoRegisters.Crtc(0x36):X2} CR53={machine.VideoRegisters.Crtc(0x53):X2} CR58={machine.VideoRegisters.Crtc(0x58):X2} CR66={machine.VideoRegisters.Crtc(0x66):X2}");
@@ -309,6 +321,14 @@ internal static class VirgeProbe
 
     private static void SaveFrame(Machine machine, string path, StreamWriter log)
     {
+        // Read the latches directly: diagnostic reads must not add guest bus
+        // transactions or select a page on behalf of the demo.
+        S3VirgeStreams streams = machine.Virge!.Streams;
+        log.WriteLine($"primary-stream CR67={machine.VideoRegisters.Crtc(0x67):X2}"
+            + $" control={streams.ReadDword(0x8180):X8} base0={streams.ReadDword(0x81C0):X8}"
+            + $" base1={streams.ReadDword(0x81C4):X8} select={streams.ReadDword(0x81CC):X8}"
+            + $" stride={streams.ReadDword(0x81C8):X8} start={streams.ReadDword(0x81F0):X8}"
+            + $" size={streams.ReadDword(0x81F4):X8}");
         machine.Display.Render(true);
         byte[] rgb = new byte[machine.Display.Width * machine.Display.Height * 3];
         int offset = 0;

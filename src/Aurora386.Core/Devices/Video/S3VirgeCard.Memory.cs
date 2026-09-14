@@ -113,6 +113,11 @@ public sealed partial class S3VirgeCard
             {
                 return Blitter.ReadDword(register);
             }
+
+            if (width == 4 && S3VirgeStreams.IsRegister(register))
+            {
+                return Streams.ReadDword(register);
+            }
         }
 
         ReportUnsupported(offset, width, false, UnsupportedReason(offset));
@@ -149,6 +154,12 @@ public sealed partial class S3VirgeCard
                 if (S3Virge2DEngine.IsRegister(register))
                 {
                     Blitter.WriteDword(register, value);
+                    return;
+                }
+
+                if (S3VirgeStreams.IsRegister(register))
+                {
+                    Streams.WriteDword(register, value);
                     return;
                 }
 
