@@ -42,6 +42,9 @@ public sealed class IoBus
 {
     private readonly IIoDevice?[] _devices = new IIoDevice?[0x10000];
 
+    /// <summary>Inspects decode ownership for snapshot preflight without issuing an IN.</summary>
+    internal IIoDevice? RegisteredDevice(ushort port) => _devices[port];
+
     public void Register(ushort port, IIoDevice device) => _devices[port] = device;
 
     public void Register(ushort firstPort, int count, IIoDevice device)

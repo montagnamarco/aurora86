@@ -186,6 +186,26 @@ public sealed partial class SoundBlaster16
         }
     }
 
+    /// <summary>Checks DSP and mixer resource owners against applied PnP configuration.</summary>
+    internal static void ValidateMachineSnapshotResources(byte[] data, ushort basePort,
+        bool enabled, int irq, int dma8, int dma16)
+    {
+        ValidateSnapshot(data);
+        int mixerOffset = SnapshotHeaderSize + ReadSnapshotInt(data, SnapshotFifoCountOffset)
+            + 2 * ReadSnapshotInt(data, SnapshotRingCountOffset);
+        var mixer = new SbMixer();
+        mixer.Restore(data.AsSpan(mixerOffset, ReadSnapshotInt(data, SnapshotMixerLengthOffset)).ToArray());
+        if (BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(SnapshotBasePortOffset)) != basePort
+            || (data[SnapshotEnabledOffset] != 0) != enabled
+            || ReadSnapshotInt(data, SnapshotIrqOffset) != irq
+            || ReadSnapshotInt(data, SnapshotDma8Offset) != dma8
+            || ReadSnapshotInt(data, SnapshotDma16Offset) != dma16
+            || mixer.Irq != irq || mixer.Dma8 != dma8 || mixer.Dma16 != dma16)
+        {
+            throw new InvalidDataException("DSP, mixer and applied ISA PnP resources differ.");
+        }
+    }
+
     /// <summary>Requires the target's fixed output rate and PCM capacity to match.</summary>
     public void ValidateSnapshotForRestore(byte[] data)
     {

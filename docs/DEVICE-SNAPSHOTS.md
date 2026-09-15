@@ -1,20 +1,21 @@
 # Device snapshot implementation contract
 
-This is the P3-01 design, based on source `fd3b728` (2026-09-14). It describes
-future implementation units, not capabilities of the current snapshot format.
+This contract began as the P3-01 design at source `fd3b728` (2026-09-14).
+It now records the implemented SNAP-01 through SNAP-06 continuation formats.
 The scope is deterministic continuation of the existing Trio/ViRGE and SB16
 models at a stopped machine execution boundary. It does not add hardware
 features, change instruction semantics, or make disk snapshots transactional.
 
-SNAP-01/02 and standalone SNAP-03 DMA, SNAP-04 mixer/OPL and SNAP-05
-DSP/PCM serializers are implemented.
-A new Trio capture adds a DVS1 version 1 trailer containing one
-kind 1/model 0/version 1 accelerator record; ViRGE keeps
-its existing engine format. Empty trailers and historical absence survive
-load/save cycles. Missing Trio state resets its latches and pending work on
-restore. Machine-level DMA, audio and PnP continuation and their legacy reset
-policies remain future integration work. Older readers that do not support
-this record reject new Trio files rather than silently losing its state.
+SNAP-01 through SNAP-06 are implemented. New captures contain DVS1 version 1
+records for DMA (kind 2), SB16 including mixer/OPL (kind 3), and ISA PnP
+(kind 4), plus the Trio accelerator (kind 1) on Trio machines. ViRGE engines
+remain in VID1/VGE1. Every record uses model 0, version 1 and zero flags.
+
+Historical absence, empty trailers and Trio-only trailers survive load/save
+byte-for-byte. Restoring those files resets omitted DMA/audio/PnP state to
+constructed defaults and rebuilds decode; it cannot reconstruct unsaved audio.
+Existing PIC state remains authoritative. Readers predating these records
+reject new files instead of silently discarding device state.
 
 ### Implemented Trio payload
 
@@ -61,8 +62,8 @@ provides capture, validation, raw restore and reset to constructed defaults.
 Capture owns its byte array; restore retains the target's channel objects and
 memory/bus references and performs no transfer or port access. Callers must
 stop device execution. This does not change transfer semantics or introduce
-thread safety. `MachineSnapshot` does not yet emit or accept a kind 2 record;
-its wiring and historical absence policy belong to SNAP-06.
+thread safety. `MachineSnapshot` stores this payload in kind 2 and resets omitted historical
+DMA state to constructed defaults.
 
 Port-driven tests replay channel 1/5 byte and word transfers with increment,
 decrement (mode bit 5), auto-init (mode bit 4), distinct base/current counters,
@@ -80,7 +81,7 @@ bytes are saved separately: mixer `80`/`81` readbacks come from the owner
 properties, and a later stereo write can differ from an earlier Pro alias.
 Restore must not replay alias writes or clear a pending IRQ. The current
 public properties accept arbitrary integers/status bytes; this serializer
-preserves them. Cross-device resource validation remains part of SNAP-06.
+preserves them. Machine preflight checks these against DSP and applied PnP resources.
 
 `OPL1` is exactly 1665 bytes: DWORD magic, WORD version 1, WORD operator count
 36, WORD voice count 18, signed DWORD output rate, 512 bank-major register
@@ -105,7 +106,7 @@ state rather than certify invalid caller input to those algorithms.
 [SbMixer.Snapshot.cs](../src/Aurora386.Core/Devices/Audio/SbMixer.Snapshot.cs)
 and [Opl3.Snapshot.cs](../src/Aurora386.Core/Devices/Audio/Opl3.Snapshot.cs)
 provide standalone capture, validation, restore and constructed-default reset.
-OPL also exposes target-rate validation for the future enclosing preflight.
+OPL also exposes target-rate validation used by the enclosing preflight.
 Restore performs no register writes, key edges, rendering, timer advancement
 or IRQ callbacks. Execution must be stopped; host buffers and audio handles
 are outside these payloads. Mixer reset restores resources 5/1/5 and clears
@@ -117,8 +118,7 @@ operators, stereo panning and mode-dependent cached values are exercised.
 Timers are checked across partial periods, masked/stopped operation, preload
 rewrites and latched status. Index/data continuation, mixer aliases/resource
 readbacks, malformed atomic rejection and rate mismatch are covered. The
-standalone payloads are nested in DSP1 by SNAP-05 but are not yet emitted by
-`MachineSnapshot`; SNAP-06 owns machine integration.
+standalone payloads are nested in DSP1 and emitted in the machine kind 3 record.
 
 ### Implemented standalone DSP/PCM payload
 
@@ -146,7 +146,8 @@ finite fractions in `[0,1)`, nested payloads and matching output rates. Block
 length and remaining count are independent: command `48` can rewrite the next
 block length while a longer current block is still playing. Legacy `1C` can
 increase the stored block length above 65536; the serializer preserves it.
-Resource integers remain independent of mixer readbacks until machine preflight.
+Standalone resource integers remain unrestricted; machine preflight requires
+agreement with mixer and applied PnP resources and supported decode.
 
 PCM is canonicalized into logical dequeue order. Odd queue counts and odd
 capacities are valid because the current host API accepts odd short reads.
@@ -154,7 +155,7 @@ Physical ring cursors and unused slots are not guest state. Restore retains
 chip objects, DMA/PIC references, bus registrations and the target's diagnostic
 `InterruptCount`; it performs no IRQ callback, transfer or render. Callers must
 stop both device execution and audio consumption. Restoring resources does not
-remap ports: enclosing machine integration must rebuild mappings in SNAP-06.
+remap ports: enclosing machine integration rebuilds mappings after preflight.
 Reset restores the constructor base/rate, default resources and empty DSP/PCM
 and nested state without emitting the guest reset handshake.
 
@@ -165,20 +166,95 @@ through `22E`/`22F`. Replay compares queued/future PCM, DMA state, PIC state and
 IRQ-count deltas on a used target. Wrapped queues, odd host reads, nonzero
 bank-1 FM release, timer fractions, nested selectors, reset and malformed
 atomic rejection are also covered. This proves standalone continuation of the
-existing audio model; machine snapshots and new audio semantics remain outside
-SNAP-05.
+existing audio model. Machine integration is described below; new audio
+semantics remain outside this work.
+
+### Implemented PnP payload and machine integration
+
+[IsaPnpBus.Snapshot.cs](../src/Aurora386.Core/Devices/IsaPnp/IsaPnpBus.Snapshot.cs)
+stores `PNP1` version 1. Its 21-byte header contains DWORD magic, WORD version,
+WORD card count, WORD READ_DATA port, signed DWORD initiation-key cursor,
+BYTE address selector, BYTE isolation phase, signed DWORD isolation bit and
+BYTE remembered isolation result. Each card stores its nine-byte serial ID,
+signed DWORD resource-data length and bytes, BYTE CSN, BYTE state, signed
+DWORD serial/resource/selected-LDN cursors, and WORD logical-device count.
+Each LDN stores seven ASCII ID bytes, a boolean compatible-ID presence byte
+and optional seven ID bytes, then 128 pending register bytes and 128 applied
+register bytes. All integers are little-endian.
+
+Applied registers record the last configuration delivered to the chip. Guest
+writes while inactive can prepare a new address without changing that applied
+configuration. Activation must agree between the two images; while active,
+all writable registers must agree. On restore, raw images are copied without
+invoking `Configured`, moving a resource cursor, or issuing a port access.
+Topology validation matches every card's identity/resource bytes and ordered
+logical devices before mutation. The standalone parser bounds cards to 255,
+LDNs per card to 256 and resource data per card to 1 MiB, with exact consumption.
+
+[MachineSnapshot.Devices.cs](../src/Aurora386.Core/MachineSnapshot.Devices.cs)
+requires the complete DMA/SB16/PnP set whenever any of those records is present;
+Trio additionally requires kind 1. Historical empty and Trio-only sets remain
+valid. Before allocating record bodies, the file reader checks exact remaining
+length, supported kinds/models/versions/flags, uniqueness, DMA's exact 106 bytes,
+Trio's existing maximum, and machine payload ceilings of 64 MiB for DSP and
+4 MiB for PnP. Capture rejects payloads beyond those same limits. These are
+snapshot-format limits, not new guest FIFO or hardware limits.
+
+Machine preflight validates all new payloads, output rate, the current SB16 and
+RTL8019 topology, DSP/mixer/applied-PnP agreement and supported applied resource
+choices. Disabled pending register values may be incomplete. It checks proposed
+ISA decode together with the saved UHCI BAR4 ranges, fixed PnP ports and OPL
+`388..38B`, while allowing current movable mappings on a used target to move
+away. Capture additionally requires actual port ownership to match the saved
+resources. Unrelated fixed decoders and overlaps are rejected before changing
+RAM, CD ownership or devices; invalid active target ranges are also rejected.
+
+Restore removes old enabled ISA ranges first, installs raw DMA/audio/PnP state,
+then rebuilds SB16, NE2000 and PnP mappings. Disabled old addresses have no
+mapping to remove. It preserves chip instances and does not repeat reset,
+key-on, DMA or IRQ callbacks. PIC and existing PCI/USB state are restored by
+the enclosing path. NE2000 **configuration** is preserved; packet buffers,
+remote DMA progress and backend traffic are not newly captured.
+
+Port-driven tests exercise key and isolation half-pairs, resource/LDN cursors,
+inactive pending resources, `60/61`, `70`, `74/75` relocation, audio/network
+port swaps, and nonzero 8/16-bit DMA audio with pending IRQs alongside USB PCI
+restore. They compare PCM, DMA, PIC, IRQ-count deltas and serialized state on
+new/used targets for both video models. Malformed records, mismatched owners,
+active/pending disagreement, fixed-port conflicts and invalid target decode
+are rejected atomically. Historical files remain byte-identical after resave.
+
+### Caller quiescence audit
+
+The GUI save/restore commands in
+[MainWindowViewModel.cs](../src/Aurora386.Gui/ViewModels/MainWindowViewModel.cs)
+call `Session.WithMachine` around the entire snapshot operation.
+[EmulatorSession.cs](../src/Aurora386.Gui/Emulation/EmulatorSession.cs) uses the
+same `_gate` for each emulation batch, stepping and `WithMachine` calls.
+[AudioOutput.cs](../src/Aurora386.Gui/Emulation/AudioOutput.cs) obtains core
+samples through that same gate. Thus capture/restore excludes both producers
+and the core PCM consumer; pausing alone would not establish this boundary.
+No new synchronization mechanism is introduced. Already submitted OpenAL
+buffers are host state and may finish playing after restore.
+
+SDL restores before creating/running its window. `Virge3DProbe`,
+`Win95SetupProbe` and `WindowsDosProbe` use synchronous machine execution and
+snapshot calls, with no core audio consumer. External callers retain the same
+obligation to exclude emulation and audio reads. Matching CPU frequency and
+output rate are required for continuation comparisons; this does not promise
+bit-identical audio across runtime architectures.
 
 ## Current coverage and gaps
 
 | Owner | Current coverage | Missing continuation state |
 | --- | --- | --- |
-| [MachineSnapshot](../src/Aurora386.Core/MachineSnapshot.cs) | CPU/RAM, VGA memory/registers, PIC/PIT, keyboard, PCI, USB, serial mouse and selected firmware state | DMA, SB16, OPL and ISA PnP |
+| [MachineSnapshot](../src/Aurora386.Core/MachineSnapshot.cs) | CPU/RAM, VGA memory/registers, PIC/PIT, keyboard, PCI, USB, DMA, SB16/OPL, ISA PnP, serial mouse and selected firmware state | In-flight IDE and network packet state remain outside this change |
 | [S3Accelerator](../src/Aurora386.Core/Devices/Video/S3Accelerator.cs) | T3D1 plus separately saved VRAM | None identified for the current synchronous engine |
 | [ViRGE engines](../src/Aurora386.Core/Devices/Video/S3VirgeCard.Snapshot.cs) | VGE1 wraps triangle, BitBLT and primary Streams state | No new engine block needed for the implemented synchronous triangle subset |
-| [Dma8237](../src/Aurora386.Core/Devices/System/Dma8237.cs) | Standalone DMA1 capture/restore for all eight channels and both byte pointers | MachineSnapshot integration (SNAP-06) |
-| [SbMixer / Opl3](../src/Aurora386.Core/Devices/Audio/SbMixer.Snapshot.cs) | Standalone MIX1/OPL1 with raw mixer, synthesis and timer state | Machine integration (SNAP-06) |
-| [SoundBlaster16](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.Snapshot.cs) | Standalone DSP1 with nested MIX1/OPL1 | Machine integration and bus mapping/preflight (SNAP-06) |
-| [IsaPnpBus](../src/Aurora386.Core/Devices/IsaPnp/IsaPnpBus.cs) | Not captured | Bus selection/isolation and card/logical-device configuration |
+| [Dma8237](../src/Aurora386.Core/Devices/System/Dma8237.cs) | Standalone DMA1 capture/restore for all eight channels and both byte pointers | None identified for the current synchronous DMA model |
+| [SbMixer / Opl3](../src/Aurora386.Core/Devices/Audio/SbMixer.Snapshot.cs) | Standalone MIX1/OPL1 with raw mixer, synthesis and timer state | No new synthesis fidelity claim |
+| [SoundBlaster16](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.Snapshot.cs) | Standalone DSP1 with nested MIX1/OPL1 | Existing audio-model limitations described below |
+| [IsaPnpBus](../src/Aurora386.Core/Devices/IsaPnp/IsaPnpBus.cs) | PNP1 bus/card/LDN state plus applied configuration | Network packet continuation is excluded |
 
 ViRGE colour, depth and future texture bytes stored in VRAM must not be copied
 into engine blocks a second time. Its triangles execute synchronously within
@@ -190,12 +266,11 @@ without issuing a guest command or drawing into VRAM.
 ## Format and migration
 
 Keep the existing positional prefix and VID1 video topology block. Add a
-length-prefixed DVS1 trailer after VID1. Integers are little-endian. Proposed
-payload: `magic:u32`, `version:u16=1`, `recordCount:u16`, then records with
+length-prefixed DVS1 trailer after VID1. Integers are little-endian. The
+payload is: `magic:u32`, `version:u16=1`, `recordCount:u16`, then records with
 `kind:u16`, `model:u16`, `version:u16`, `flags:u16=0`, `length:u32`, payload.
 Assign record kinds 1=Trio accelerator, 2=DMA, 3=SB16, 4=ISA PnP;
-model 0 denotes the current implementation of each kind. Kind 1/model 0/version 1 is implemented; the other identifiers
-remain reserved by this design until their implementation.
+model 0 denotes the current implementation of each kind. Kinds 1 through 4, model 0, version 1 are implemented.
 SB16 owns nested versioned mixer/OPL payloads; DMA remains a system device.
 
 Before SNAP-01 the loader required VID1's declared length to equal all remaining
@@ -207,7 +282,7 @@ truncated data, trailing garbage and invalid field ranges before mutation.
 Require exact payload consumption and bounded allocations. Tests must include
 existing files ending before VID1 and files ending exactly after VID1.
 
-After all six units, require DMA, SB16 and ISA PnP records, plus Trio state
+New captures require DMA, SB16 and ISA PnP records, plus Trio state
 only for Trio topology. Keep ViRGE engines in the existing VID1/VGE1 path.
 For historical files without DVS1, retain an explicit absent-state marker:
 restore resets omitted devices to the target machine's constructed defaults,
@@ -221,7 +296,7 @@ legacy prefix that lacks the required intermediate fields.
 ## Restore boundary and ownership
 
 Capture/restore requires the emulation loop and audio consumer to be stopped.
-Audit frontend callers before integration; device serializers do not introduce
+The caller audit above establishes this for current frontends; serializers do not introduce
 unsynchronised access or claim thread safety. Exclude native audio handles,
 frontend buffers, trace delegates, static tables and memory/bus references.
 Include the core PCM ring in logical dequeue order: it is already generated
@@ -298,7 +373,7 @@ new concurrency guarantee or destructive transition; do not add these implicitly
    counters and mixer `82` IRQ bits; acknowledge through base+`0E`/`0F`.
    Use a port-programmed DMA buffer, never a live DOS allocation. Done when
    replay preserves queued output and future samples without an extra IRQ.
-6. **SNAP-06 — PnP and machine integration.** Files: ISA PnP bus/card classes,
+6. **SNAP-06 — PnP and machine integration (implemented).** Files: ISA PnP bus/card classes,
    `MachineSnapshot.cs`, frontend snapshot callers and machine tests. Capture
    read-data port, initiation-key cursor, selected address, isolation state,
    each card's identity/CSN/state/resource cursor/selected logical device and

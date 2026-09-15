@@ -111,6 +111,10 @@ public sealed class IsaPnpLogicalDevice
     /// <summary>Registers 0x30 to 0x7F, indexed by register number.</summary>
     public byte[] Registers { get; } = new byte[0x80];
 
+    // Inactive resource writes remain pending until activation. The attached
+    // chip keeps the last configuration passed to its relocation callback.
+    internal byte[] AppliedRegisters { get; } = new byte[0x80];
+
     private readonly Action<ResourceWriter> _describe;
 
     /// <summary>
@@ -150,6 +154,7 @@ public sealed class IsaPnpLogicalDevice
         for (int i = 0; i < 2; i++) Registers[0x74 + i] = 4;   // channel 4 means "none"
         for (int i = 0; i < dmas.Length; i++) Registers[0x74 + i] = (byte)dmas[i];
         _defaults = (byte[])Registers.Clone();
+        Registers.CopyTo(AppliedRegisters, 0);
     }
 
     private byte[]? _defaults;
@@ -158,6 +163,19 @@ public sealed class IsaPnpLogicalDevice
     {
         if (_defaults is not null) _defaults.CopyTo(Registers, 0);
         else Array.Clear(Registers);
+    }
+
+    /// <summary>Returns detached constructed defaults for legacy snapshot preflight.</summary>
+    internal byte[] CaptureResetRegisters()
+    {
+        return _defaults is null ? new byte[Registers.Length] : (byte[])_defaults.Clone();
+    }
+
+    /// <summary>Records the resource image applied to the chip by a guest write.</summary>
+    internal void NotifyConfigured()
+    {
+        Configured?.Invoke(this);
+        Registers.CopyTo(AppliedRegisters, 0);
     }
 
     internal void WriteResources(ResourceWriter writer)

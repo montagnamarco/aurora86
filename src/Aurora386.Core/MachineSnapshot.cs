@@ -15,12 +15,12 @@ namespace Aurora386.Core;
 /// work at that rate and a few minutes with a snapshot taken just before it.
 ///
 /// Captures CPU and RAM together with video, interrupt, timer, keyboard,
-/// PCI, USB, DOS integration, and serial mouse state. Device coverage is
+/// PCI, USB, DMA, audio, ISA PnP, DOS integration and serial mouse state. Coverage is
 /// still incomplete: in-flight IDE transfers are not captured. Disk
 /// contents are external state and must be paired with the snapshot by the
 /// caller; restoring RAM alone does not undo guest writes to an image.
 /// </summary>
-public sealed class MachineSnapshot
+public sealed partial class MachineSnapshot
 {
     private const uint VideoTopologyMagic = 0x31444956;
     private const ushort VideoTopologyVersion = 1;
@@ -29,8 +29,7 @@ public sealed class MachineSnapshot
     private const ushort DeviceStateVersion = 1;
     private const int DeviceStateHeaderLength = 8;
 
-    // Absence survives historical load/save cycles; modern Trio captures
-    // supply one accelerator record while other device kinds remain absent.
+    // Absence and the historical Trio-only trailer survive load/save cycles.
     private readonly bool _hasDeviceStateTrailer;
     private readonly byte[] _trioAccelerator = [];
     private const int DeviceRecordHeaderLength = 12;
@@ -121,7 +120,10 @@ public sealed class MachineSnapshot
         _videoModel = machine.VideoModel;
         _videoEngine = machine.Virge?.CaptureEngines() ?? [];
         _trioAccelerator = machine.TrioAccelerator?.Capture() ?? [];
-        _hasDeviceStateTrailer = _trioAccelerator.Length > 0;
+        _dma = machine.Dma.Capture();
+        _soundBlaster = machine.SoundBlaster.Capture();
+        _isaPnp = machine.IsaPlugAndPlay.Capture();
+        _hasDeviceStateTrailer = true;
 
         _interruptControllers = machine.Interrupts.Capture();
         _timer = machine.Timer.Capture();
@@ -132,12 +134,13 @@ public sealed class MachineSnapshot
         _guestOwnsCompactDisc = machine.GuestHasItsOwnCompactDiscExtensions;
         _hasIdeTimingRegisters = true;
         _serialMouse = machine.SerialMouse.Capture();
+        PreflightDevicesFor(machine, capturing: true);
     }
 
-    /// <summary>Takes a snapshot of the machine as it stands.</summary>
+    /// <summary>Captures while the caller excludes emulation and audio consumption.</summary>
     public static MachineSnapshot Capture(Machine machine) => new(machine);
 
-    /// <summary>Puts this state back into a machine.</summary>
+    /// <summary>Restores while the caller excludes emulation and audio consumption.</summary>
     public void RestoreTo(Machine machine)
     {
         PreflightFor(machine);
@@ -197,6 +200,8 @@ public sealed class MachineSnapshot
                 }
             }
 
+            RestoreDevicesTo(machine);
+
             // The keyboard controller owns A20, so it is restored after the bus:
             // the other order would leave the line as the snapshot's own field
             // said rather than as the controller had it.
@@ -229,7 +234,7 @@ public sealed class MachineSnapshot
 
     /// <summary>
     /// Validates every snapshot block whose restore can now participate in
-    /// video-card reconciliation before changing CD ownership, RAM, or devices.
+    /// video and ISA resource reconciliation before changing CD ownership, RAM or devices.
     /// </summary>
     private void PreflightFor(Machine machine)
     {
@@ -273,6 +278,7 @@ public sealed class MachineSnapshot
             throw new InvalidDataException("Trio snapshot contains ViRGE engine state.");
         }
 
+        PreflightDevicesFor(machine);
         PciBus.SnapshotState pciSnapshot = machine.Pci.ValidateSnapshot(_pci);
         if (!virge)
         {
@@ -399,23 +405,7 @@ public sealed class MachineSnapshot
             file.Write(_videoEngine);
         }
 
-        if (_hasDeviceStateTrailer)
-        {
-            file.Write(DeviceStateHeaderLength + (_trioAccelerator.Length == 0
-                ? 0 : DeviceRecordHeaderLength + _trioAccelerator.Length));
-            file.Write(DeviceStateMagic);
-            file.Write(DeviceStateVersion);
-            file.Write((ushort)(_trioAccelerator.Length == 0 ? 0 : 1));
-            if (_trioAccelerator.Length > 0)
-            {
-                file.Write(TrioAcceleratorRecordKind);
-                file.Write((ushort)0); // Current Trio model.
-                file.Write((ushort)1); // Record version.
-                file.Write((ushort)0); // Reserved flags.
-                file.Write(_trioAccelerator.Length);
-                file.Write(_trioAccelerator);
-            }
-        }
+        WriteDeviceStateTrailer(file);
     }
 
     private MachineSnapshot(BinaryReader file)
@@ -590,70 +580,13 @@ public sealed class MachineSnapshot
             ValidateVirgeEngineSnapshot(_videoEngine);
         }
 
-        (_hasDeviceStateTrailer, _trioAccelerator) = ReadDeviceStateTrailer(file);
+        (_hasDeviceStateTrailer, _trioAccelerator, _dma, _soundBlaster, _isaPnp) =
+            ReadDeviceStateTrailer(file);
+        ValidateDeviceRecordSet();
         if (_videoModel != VmVideoModel.S3Trio64VPlus && _trioAccelerator.Length > 0)
         {
             throw new InvalidDataException("ViRGE snapshot contains Trio accelerator state.");
         }
-    }
-
-    /// <summary>
-    /// Reads the optional device-state extension without treating unsupported
-    /// hardware state as successfully restored. Only the Trio accelerator record
-    /// is implemented; all other record kinds, models and versions are rejected.
-    /// </summary>
-    private static (bool Present, byte[] Trio) ReadDeviceStateTrailer(BinaryReader file)
-    {
-        long remaining = file.BaseStream.Length - file.BaseStream.Position;
-        if (remaining == 0)
-        {
-            return (false, []);
-        }
-
-        if (remaining < sizeof(int))
-        {
-            throw new InvalidDataException("The device state snapshot length is truncated.");
-        }
-
-        int payloadLength = file.ReadInt32();
-        remaining -= sizeof(int);
-        if (payloadLength < DeviceStateHeaderLength || payloadLength != remaining)
-        {
-            throw new InvalidDataException("The device state snapshot length is invalid.");
-        }
-
-        // Read the fixed header before allocating any record payload. Unknown
-        // or future records must fail even if their declared length is huge.
-        uint magic = file.ReadUInt32();
-        ushort version = file.ReadUInt16();
-        ushort recordCount = file.ReadUInt16();
-        if (magic != DeviceStateMagic || version != DeviceStateVersion)
-        {
-            throw new InvalidDataException("The device state snapshot header is invalid.");
-        }
-
-        if (recordCount == 0 && payloadLength == DeviceStateHeaderLength)
-        {
-            return (true, []);
-        }
-        if (recordCount != 1 || payloadLength < DeviceStateHeaderLength + DeviceRecordHeaderLength)
-        {
-            throw new InvalidDataException("Invalid or unsupported device snapshot record set.");
-        }
-        ushort kind = file.ReadUInt16();
-        ushort model = file.ReadUInt16();
-        ushort recordVersion = file.ReadUInt16();
-        ushort flags = file.ReadUInt16();
-        int length = file.ReadInt32();
-        if (kind != TrioAcceleratorRecordKind || model != 0 || recordVersion != 1 || flags != 0
-            || length < 0 || length > S3Accelerator.MaximumSnapshotLength
-            || length != payloadLength - DeviceStateHeaderLength - DeviceRecordHeaderLength)
-        {
-            throw new InvalidDataException("Invalid or unsupported device snapshot record.");
-        }
-        byte[] trio = file.ReadBytes(length);
-        S3Accelerator.ValidateSnapshot(trio);
-        return (true, trio);
     }
 
     /// <summary>Reads a snapshot back from a file.</summary>

@@ -129,7 +129,7 @@ public sealed class S3AcceleratorSnapshotTests
         {
             MachineSnapshot.Capture(source).Save(path);
             byte[] bytes = File.ReadAllBytes(path);
-            File.WriteAllBytes(path, bytes[..^(24 + source.Accelerator.Capture().Length)]);
+            File.WriteAllBytes(path, SnapshotDeviceFile.WithoutTrailer(bytes));
             MachineSnapshot.Load(path).RestoreTo(target);
             byte[] before = target.VideoMemory.CaptureMemory();
             target.Accelerator.Mmio.WriteByte(0xE2E8, 0x5A);
@@ -212,7 +212,7 @@ public sealed class S3AcceleratorSnapshotTests
         {
             MachineSnapshot.Capture(machine).Save(path);
             byte[] bytes = File.ReadAllBytes(path);
-            int record = bytes.Length - machine.Accelerator.Capture().Length - 12;
+            int record = SnapshotDeviceFile.RecordOffset(bytes, 1);
             if (offset == 8)
                 BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(record + offset), value);
             else

@@ -34,8 +34,7 @@ public sealed class MachineVideoSnapshotTests
         {
             MachineSnapshot.Capture(machine).Save(path);
             byte[] bytes = File.ReadAllBytes(path);
-            if (model == VmVideoModel.S3Trio64VPlus)
-                bytes = bytes[..^(24 + machine.Accelerator.Capture().Length)];
+            bytes = SnapshotDeviceFile.WithoutTrailer(bytes);
             int tail = bytes.Length - sizeof(int) - expectedPayloadLength;
 
             Assert.Equal(expectedPayloadLength, BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(tail)));
@@ -133,7 +132,7 @@ public sealed class MachineVideoSnapshotTests
             File.Copy(currentPath, legacyPath, overwrite: true);
             using (FileStream file = File.OpenWrite(legacyPath))
             {
-                file.SetLength(file.Length - TrioVideoTailLength - 24 - source.Accelerator.Capture().Length);
+                file.SetLength(SnapshotDeviceFile.TrailerOffset(File.ReadAllBytes(currentPath)) - TrioVideoTailLength);
             }
 
             MachineSnapshot legacy = MachineSnapshot.Load(legacyPath);
@@ -393,8 +392,7 @@ public sealed class MachineVideoSnapshotTests
         {
             MachineSnapshot.Capture(machine).Save(path);
             byte[] bytes = File.ReadAllBytes(path);
-            return model == VmVideoModel.S3Trio64VPlus
-                ? bytes[..^(24 + machine.Accelerator.Capture().Length)] : bytes;
+            return SnapshotDeviceFile.WithoutTrailer(bytes);
         }
         finally
         {

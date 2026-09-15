@@ -179,10 +179,11 @@ public sealed class SerialMouseSnapshotTests
         try
         {
             MachineSnapshot.Capture(source).Save(legacyPath);
+            File.WriteAllBytes(legacyPath, SnapshotDeviceFile.WithoutTrailer(File.ReadAllBytes(legacyPath)));
             int serialStateLength = sizeof(int) + source.SerialMouse.Capture().Length;
             using (FileStream file = File.OpenWrite(legacyPath))
             {
-                RemoveTrioVideoTail(file, source);
+                RemoveTrioVideoTail(file);
                 file.SetLength(file.Length - serialStateLength);
             }
 
@@ -219,9 +220,10 @@ public sealed class SerialMouseSnapshotTests
         try
         {
             MachineSnapshot.Capture(machine).Save(path);
+            File.WriteAllBytes(path, SnapshotDeviceFile.WithoutTrailer(File.ReadAllBytes(path)));
             using (FileStream file = File.OpenWrite(path))
             {
-                RemoveTrioVideoTail(file, machine);
+                RemoveTrioVideoTail(file);
                 file.SetLength(file.Length - 1);
             }
 
@@ -243,9 +245,10 @@ public sealed class SerialMouseSnapshotTests
         {
             byte[] serialState = machine.SerialMouse.Capture();
             MachineSnapshot.Capture(machine).Save(path);
+            File.WriteAllBytes(path, SnapshotDeviceFile.WithoutTrailer(File.ReadAllBytes(path)));
             using (FileStream file = File.OpenWrite(path))
             {
-                RemoveTrioVideoTail(file, machine);
+                RemoveTrioVideoTail(file);
                 file.Position = file.Length - serialState.Length;
                 file.WriteByte(2);
             }
@@ -276,8 +279,8 @@ public sealed class SerialMouseSnapshotTests
         Assert.Equal(0, events);
     }
 
-    private static void RemoveTrioVideoTail(FileStream file, Machine machine)
+    private static void RemoveTrioVideoTail(FileStream file)
     {
-        file.SetLength(file.Length - TrioVideoTailLength - 24 - machine.Accelerator.Capture().Length);
+        file.SetLength(file.Length - TrioVideoTailLength);
     }
 }

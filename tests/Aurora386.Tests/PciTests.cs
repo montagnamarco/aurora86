@@ -107,12 +107,13 @@ public class PciTests
             MachineSnapshot.Capture(machine).Save(path);
             if (legacy)
             {
+                File.WriteAllBytes(path, SnapshotDeviceFile.WithoutTrailer(File.ReadAllBytes(path)));
                 // The preceding format had no IDETIM-presence flag and
                 // recorded zero for these then-unimplemented registers.
                 using FileStream file = File.OpenWrite(path);
                 int serialStateLength = sizeof(int) + machine.SerialMouse.Capture().Length;
                 const int trioVideoTailLength = sizeof(int) + 12;
-                file.SetLength(file.Length - 24 - machine.Accelerator.Capture().Length - trioVideoTailLength - serialStateLength - 1);
+                file.SetLength(file.Length - trioVideoTailLength - serialStateLength - 1);
             }
             machine.Pci.Reset();
             MachineSnapshot.Load(path).RestoreTo(machine);
@@ -346,6 +347,7 @@ public class PciTests
             Assert.Equal(0x80000904u, m.Io.ReadDword(0xCF8));
             Assert.Equal(0u, m.Io.ReadDword(0xCFC));
             Assert.Equal(0xFF, m.Io.ReadByte(0x1F2));
+            File.WriteAllBytes(path, SnapshotDeviceFile.WithoutTrailer(File.ReadAllBytes(path)));
             // Remove serial state first, then the PCI block, empty USB block,
             // and two device-state flags to reproduce the earlier format.
             using (FileStream file = File.OpenWrite(path))
@@ -354,7 +356,6 @@ public class PciTests
                 const int trioVideoTailLength = sizeof(int) + 12;
                 file.SetLength(
                     file.Length
-                    - 24 - m.Accelerator.Capture().Length
                     - trioVideoTailLength
                     - serialStateLength
                     - 10
