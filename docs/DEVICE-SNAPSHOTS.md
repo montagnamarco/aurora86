@@ -6,13 +6,14 @@ The scope is deterministic continuation of the existing Trio/ViRGE and SB16
 models at a stopped machine execution boundary. It does not add hardware
 features, change instruction semantics, or make disk snapshots transactional.
 
-SNAP-01 and SNAP-02 are implemented. A new Trio capture adds a DVS1 version 1
-trailer containing one kind 1/model 0/version 1 accelerator record; ViRGE keeps
+SNAP-01, SNAP-02 and the standalone SNAP-03 DMA serializer are implemented.
+A new Trio capture adds a DVS1 version 1 trailer containing one
+kind 1/model 0/version 1 accelerator record; ViRGE keeps
 its existing engine format. Empty trailers and historical absence survive
 load/save cycles. Missing Trio state resets its latches and pending work on
-restore. DMA, audio and PnP continuation and their legacy reset policies remain
-future units. Older readers that do not support this record reject new Trio
-files rather than silently losing its state.
+restore. Machine-level DMA, audio and PnP continuation and their legacy reset
+policies remain future integration work. Older readers that do not support
+this record reject new Trio files rather than silently losing its state.
 
 ### Implemented Trio payload
 
@@ -44,6 +45,31 @@ handles the third colour byte only when the pixel size is four. Consequently,
 24-bpp continuation is verified against current semantics, but correct 24-bpp
 rendering is not claimed; this separate defect is not changed by snapshot work.
 
+### Implemented standalone DMA payload
+
+`DMA1` is exactly 106 bytes: DWORD magic, WORD version 1, WORD channel count 8,
+then eight 12-byte channel records in channel order, followed by the two byte
+pointer flags (8-bit controller, then 16-bit controller). Each channel stores
+base address, base count, current address and current count as little-endian
+WORDs, followed by page, mode, masked and terminal-count bytes. Boolean bytes
+must be zero or one; every mode byte remains representable under the current
+model. Exact length, header and all booleans are validated before mutation.
+
+[Dma8237.Snapshot.cs](../src/Aurora386.Core/Devices/System/Dma8237.Snapshot.cs)
+provides capture, validation, raw restore and reset to constructed defaults.
+Capture owns its byte array; restore retains the target's channel objects and
+memory/bus references and performs no transfer or port access. Callers must
+stop device execution. This does not change transfer semantics or introduce
+thread safety. `MachineSnapshot` does not yet emit or accept a kind 2 record;
+its wiring and historical absence policy belong to SNAP-06.
+
+Port-driven tests replay channel 1/5 byte and word transfers with increment,
+decrement (mode bit 5), auto-init (mode bit 4), distinct base/current counters,
+page bit 0 suppression on word addressing, and terminal-count status at
+`08`/`D0` including read-to-clear. Other checks cover both independent byte
+pointers during address reads and writes, all eight channel records, reset,
+and malformed payload rejection without changing a used target.
+
 ## Current coverage and gaps
 
 | Owner | Current coverage | Missing continuation state |
@@ -51,7 +77,7 @@ rendering is not claimed; this separate defect is not changed by snapshot work.
 | [MachineSnapshot](../src/Aurora386.Core/MachineSnapshot.cs) | CPU/RAM, VGA memory/registers, PIC/PIT, keyboard, PCI, USB, serial mouse and selected firmware state | DMA, SB16, OPL and ISA PnP |
 | [S3Accelerator](../src/Aurora386.Core/Devices/Video/S3Accelerator.cs) | T3D1 plus separately saved VRAM | None identified for the current synchronous engine |
 | [ViRGE engines](../src/Aurora386.Core/Devices/Video/S3VirgeCard.Snapshot.cs) | VGE1 wraps triangle, BitBLT and primary Streams state | No new engine block needed for the implemented synchronous triangle subset |
-| [Dma8237](../src/Aurora386.Core/Devices/System/Dma8237.cs) | Not captured | All eight channels and both byte-pointer flip-flops |
+| [Dma8237](../src/Aurora386.Core/Devices/System/Dma8237.cs) | Standalone DMA1 capture/restore for all eight channels and both byte pointers | MachineSnapshot integration (SNAP-06) |
 | [SoundBlaster16](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.cs) | Not captured | DSP parser/FIFO, playback, timing fractions, resources, mixer, PCM queue and OPL |
 | [IsaPnpBus](../src/Aurora386.Core/Devices/IsaPnp/IsaPnpBus.cs) | Not captured | Bus selection/isolation and card/logical-device configuration |
 
@@ -145,7 +171,8 @@ new concurrency guarantee or destructive transition; do not add these implicitly
    pixel; replay the suffix and compare entire VRAM and subsequent readbacks.
    Verify immediate commands are not repeated. Done when fresh and previously
    used target machines continue identically and legacy pending work resets.
-3. **SNAP-03 — DMA.** Files: `Dma8237.cs`, DMA tests. Capture base/current
+3. **SNAP-03 — DMA (standalone serializer implemented).**
+   Files: `Dma8237.cs`, DMA tests. Capture base/current
    address/count, page, mode, mask, terminal-count flag for eight channels and
    `_highByte8`/`_highByte16`. Test channel 1 and 5 port programming, capture
    between low/high bytes, decrement, auto-init mode bit 4, word addressing,

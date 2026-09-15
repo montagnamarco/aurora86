@@ -30,7 +30,7 @@ namespace Aurora386.Core.Devices.System;
 /// register is shifted left by one and its page register only supplies bits
 /// 17-23 -- giving a 128 KB alignment constraint instead of 64 KB.
 /// </summary>
-public sealed class Dma8237
+public sealed partial class Dma8237
 {
     /// <summary>One of the eight DMA channels.</summary>
     public sealed class Channel
