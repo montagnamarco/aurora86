@@ -26,7 +26,7 @@ namespace Aurora386.Core.Devices.Audio;
 /// full frequency-modulation feedback path is deliberately simplified, so
 /// timbres are purer than real hardware.
 /// </summary>
-public sealed class Opl3 : IIoDevice
+public sealed partial class Opl3 : IIoDevice
 {
     /// <summary>
     /// The chip's master clock divided by 288, giving the rate at which the

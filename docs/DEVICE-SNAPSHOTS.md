@@ -6,7 +6,8 @@ The scope is deterministic continuation of the existing Trio/ViRGE and SB16
 models at a stopped machine execution boundary. It does not add hardware
 features, change instruction semantics, or make disk snapshots transactional.
 
-SNAP-01, SNAP-02 and the standalone SNAP-03 DMA serializer are implemented.
+SNAP-01/02 and standalone SNAP-03 DMA and SNAP-04 mixer/OPL serializers
+are implemented.
 A new Trio capture adds a DVS1 version 1 trailer containing one
 kind 1/model 0/version 1 accelerator record; ViRGE keeps
 its existing engine format. Empty trailers and historical absence survive
@@ -70,6 +71,55 @@ page bit 0 suppression on word addressing, and terminal-count status at
 pointers during address reads and writes, all eight channel records, reset,
 and malformed payload rejection without changing a used target.
 
+### Implemented standalone mixer and OPL payloads
+
+`MIX1` is exactly 278 bytes: DWORD magic, WORD version 1, WORD register count
+256, index BYTE, interrupt-status BYTE, then IRQ, DMA8 and DMA16 as signed
+DWORDs and the 256 raw register bytes. The resource properties and register
+bytes are saved separately: mixer `80`/`81` readbacks come from the owner
+properties, and a later stereo write can differ from an earlier Pro alias.
+Restore must not replay alias writes or clear a pending IRQ. The current
+public properties accept arbitrary integers/status bytes; this serializer
+preserves them. Cross-device resource validation remains part of SNAP-06.
+
+`OPL1` is exactly 1665 bytes: DWORD magic, WORD version 1, WORD operator count
+36, WORD voice count 18, signed DWORD output rate, 512 bank-major register
+bytes, two selector bytes, OPL3-mode boolean, timer1/timer2/control/status
+bytes, and two IEEE-754 binary64 timer accumulators. The 36 operator records
+follow at offset 549, each 27 bytes: ten parameter bytes (multiplier, total
+level, key-scale level, attack, decay, sustain level, release, sustain enabled,
+key-scale rate, waveform), binary64 oscillator phase, binary64 envelope level,
+and envelope-phase byte. The 18 voice records begin at offset 1521, each eight
+bytes: F-number WORD, block, key-on, feedback, additive, left and right bytes.
+All multibyte values are little-endian; boolean bytes are strictly zero/one.
+
+OPL validation bounds all cached parameters, envelope enums, finite phases and
+levels, and timer fractions. A timer fraction can exceed its current period
+after a preload rewrite, so its bound is the maximum 256-tick period. Target
+preflight also requires the same positive output rate. Cached parameters are
+saved raw: waveform and panning interpretations depend on the mode at the time
+of a register write, so replaying the banks would lose valid state. Render and
+timer algorithms are unchanged; snapshots reject nonfinite/negative timing
+state rather than certify invalid caller input to those algorithms.
+
+[SbMixer.Snapshot.cs](../src/Aurora386.Core/Devices/Audio/SbMixer.Snapshot.cs)
+and [Opl3.Snapshot.cs](../src/Aurora386.Core/Devices/Audio/Opl3.Snapshot.cs)
+provide standalone capture, validation, restore and constructed-default reset.
+OPL also exposes target-rate validation for the future enclosing preflight.
+Restore performs no register writes, key edges, rendering, timer advancement
+or IRQ callbacks. Execution must be stopped; host buffers and audio handles
+are outside these payloads. Mixer reset restores resources 5/1/5 and clears
+selection/status; OPL reset preserves the target output rate.
+
+Port-driven tests compare nonzero PCM suffixes during attack, decay, sustain
+and release, on new and used targets; both banks, all 18 voices and 36
+operators, stereo panning and mode-dependent cached values are exercised.
+Timers are checked across partial periods, masked/stopped operation, preload
+rewrites and latched status. Index/data continuation, mixer aliases/resource
+readbacks, malformed atomic rejection and rate mismatch are covered. The
+standalone payloads are not yet nested in DSP or emitted by `MachineSnapshot`;
+SNAP-05/06 own those steps. No complete SB16 playback continuation is claimed.
+
 ## Current coverage and gaps
 
 | Owner | Current coverage | Missing continuation state |
@@ -78,7 +128,8 @@ and malformed payload rejection without changing a used target.
 | [S3Accelerator](../src/Aurora386.Core/Devices/Video/S3Accelerator.cs) | T3D1 plus separately saved VRAM | None identified for the current synchronous engine |
 | [ViRGE engines](../src/Aurora386.Core/Devices/Video/S3VirgeCard.Snapshot.cs) | VGE1 wraps triangle, BitBLT and primary Streams state | No new engine block needed for the implemented synchronous triangle subset |
 | [Dma8237](../src/Aurora386.Core/Devices/System/Dma8237.cs) | Standalone DMA1 capture/restore for all eight channels and both byte pointers | MachineSnapshot integration (SNAP-06) |
-| [SoundBlaster16](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.cs) | Not captured | DSP parser/FIFO, playback, timing fractions, resources, mixer, PCM queue and OPL |
+| [SbMixer / Opl3](../src/Aurora386.Core/Devices/Audio/SbMixer.Snapshot.cs) | Standalone MIX1/OPL1 with raw mixer, synthesis and timer state | DSP nesting and machine integration |
+| [SoundBlaster16](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.cs) | Not captured | DSP parser/FIFO, playback, timing fractions, resources, PCM queue and nested mixer/OPL integration |
 | [IsaPnpBus](../src/Aurora386.Core/Devices/IsaPnp/IsaPnpBus.cs) | Not captured | Bus selection/isolation and card/logical-device configuration |
 
 ViRGE colour, depth and future texture bytes stored in VRAM must not be copied
@@ -179,7 +230,8 @@ new concurrency guarantee or destructive transition; do not add these implicitly
    and terminal-count status read-to-clear. Replay remaining transfers using
    explicit RAM data and compare bytes, address/count and status. Done when
    payload validation and continuation pass without transferring during restore.
-4. **SNAP-04 — Mixer and OPL.** Files: `SbMixer.cs`, `Opl3.cs`, audio tests.
+4. **SNAP-04 — Mixer and OPL (standalone serializers implemented).**
+   Files: `SbMixer.cs`, `Opl3.cs`, audio tests.
    Save mixer index/registers/resources/IRQ status; OPL banks and address
    selectors, mode, operator phase/envelope state, voice parameters, timer
    registers/status and both timer accumulators. Encode doubles losslessly;
