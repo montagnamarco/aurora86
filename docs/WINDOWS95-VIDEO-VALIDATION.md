@@ -24,6 +24,7 @@ repository source or a portable guest distribution.
 | ViRGE, PCI `5333:5631` | Identified as `S3 ViRGE PCI`, hardware revision 000. Installation initially requests `s3v.dll` from `WIN95_05.CAB`: the saved source is `D:\WIN95`, but the attached CD is actually `E:`. Selecting the real CD completes file installation. |
 | ViRGE, immediately after installation | No warning overlay in the tree, but Properties reports Code 24. The icon alone is insufficient evidence. |
 | ViRGE, subsequent cold boot | Device Manager reports that the device works. Driver files are `S3V.DRV`/`S3V.VXD`, Microsoft version `4.03.00.2030`. Windows still reports invalid display settings and falls back to VGA 640×480 at 16 colors. |
+| ViRGE, cold boot at `edc0d0a` | Desktop runs at 640×480, 256 colors through `S3V.DRV`; Device Manager reports the device works, no conflicts, no invalid-settings warning. See "ViRGE desktop at 640x480x8". |
 
 Removing the obsolete legacy `S3` installation on a backed-up Trio experiment
 copy does **not** establish a fix: after cold boot the sole remaining
@@ -73,8 +74,14 @@ in its own commit with a test naming the register or command:
 
 Cold boot of the driver-installed image at `edc0d0a` reaches the login dialog
 and a complete desktop (background, icons, labels, taskbar, tray) at
-640x480x8 through S3V.DRV. Device Manager has not been re-read after these
-fixes; that check remains open.
+640x480x8 through S3V.DRV. Device Manager, re-read from that boot by keyboard
+navigation (Start, Settings, Control Panel, System, Device Manager): the
+Display adapters branch carries no warning, `S3 ViRGE PCI` reports "This
+device is working properly", driver date 8-24-1996, resources A0000-AFFFF,
+B0000-BFFFF, 3B0-3BB and following with "No conflicts". Display Properties,
+Settings: 256 Color, 640 by 480 pixels, no invalid-settings warning. The
+remaining warnings in the same guest are the Standard PS/2 Port Mouse and the
+RTL8019 adapter, unchanged from before.
 
 ## Other warning entries
 
