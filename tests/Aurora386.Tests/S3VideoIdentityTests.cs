@@ -32,7 +32,7 @@ public class S3VideoIdentityTests
     [Fact]
     public void VirgeIdentityMatchesPciAndCrtc()
     {
-        var registers = new VgaRegisters(S3VideoIdentity.Virge325);
+        var registers = new S3VgaRegisters(S3VideoIdentity.Virge325);
         var io = new IoBus();
         registers.Register(io);
         PciFunction function = S3VideoIdentity.Virge325.CreatePciFunction(0x0020);
@@ -51,8 +51,8 @@ public class S3VideoIdentityTests
     [Fact]
     public void IdentitiesCannotChangeDuringRegisterProgramming()
     {
-        var trioRegisters = new VgaRegisters();
-        var virgeRegisters = new VgaRegisters(S3VideoIdentity.Virge325);
+        var trioRegisters = new S3VgaRegisters();
+        var virgeRegisters = new S3VgaRegisters(S3VideoIdentity.Virge325);
         var trioIo = new IoBus();
         var virgeIo = new IoBus();
         trioRegisters.Register(trioIo);

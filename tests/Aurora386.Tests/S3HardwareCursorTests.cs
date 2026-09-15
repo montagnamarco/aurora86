@@ -112,8 +112,8 @@ public class S3HardwareCursorTests
         ReadCrtc(machine, 0x45);
         Crtc(machine, 0x4B, 0x33);
 
-        Assert.Equal(0x000011u, machine.VideoRegisters.CursorColours.Foreground);
-        Assert.Equal(0x002233u, machine.VideoRegisters.CursorColours.Background);
+        Assert.Equal(0x000011u, machine.S3Registers.CursorColours.Foreground);
+        Assert.Equal(0x002233u, machine.S3Registers.CursorColours.Background);
     }
 
     [Fact]
@@ -124,8 +124,8 @@ public class S3HardwareCursorTests
         CursorColour(machine, 0x4A, 0x11, 0x22, 0x33);
         CursorColour(machine, 0x4B, 0x44, 0x55, 0x66);
 
-        Assert.Equal(0x332211u, machine.VideoRegisters.CursorColours.Foreground);
-        Assert.Equal(0x665544u, machine.VideoRegisters.CursorColours.Background);
+        Assert.Equal(0x332211u, machine.S3Registers.CursorColours.Foreground);
+        Assert.Equal(0x665544u, machine.S3Registers.CursorColours.Background);
     }
 
     [Fact]
@@ -212,7 +212,7 @@ public class S3HardwareCursorTests
         machine.VideoRegisters.RestoreRegisters(saved);
         Crtc(machine, 0x4A, 0xCC);
 
-        Assert.Equal(0x00CCAAu, machine.VideoRegisters.CursorColours.Foreground);
+        Assert.Equal(0x00CCAAu, machine.S3Registers.CursorColours.Foreground);
     }
 
     [Theory]
@@ -365,6 +365,6 @@ public class S3HardwareCursorTests
         // gets a megabyte of reach out of sixteen bits.
         using Machine machine = WithCursor();
 
-        Assert.Equal(PatternAddress, machine.VideoRegisters.CursorPatternAddress);
+        Assert.Equal(PatternAddress, machine.S3Registers.CursorPatternAddress);
     }
 }

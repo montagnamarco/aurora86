@@ -468,6 +468,25 @@ composed over the frame** (`MousePointer`), not written into video memory
 as the DOS driver did, so that a program reading the screen back never finds
 the pointer in its text.
 
+### Shared VGA and concrete adapters
+
+`Devices/Video/Vga/` contains standard VGA registers, memory, fonts, modes and
+scanout. `VgaCard` owns the register and VRAM instances; concrete adapters
+connect ports, memory decoders and PCI identity. `Machine.VideoCard` exposes
+this common ownership and `Machine.Display` supplies `IVideoOutput` to frontends.
+
+`Devices/Video/S3/` contains shared vendor extensions: `S3VgaRegisters` owns
+identification, unlocks, banking and cursor registers; `S3VgaRenderer` composes
+the hardware cursor. `S3/Trio/` contains `S3Trio64VPlusCard` and its classic
+2D engine. `S3/Virge/` contains `S3VirgeCard`, BitBLT, triangle and Streams
+engines, with `S3VirgeRenderer` presenting the selected primary surface.
+The generic register and renderer classes have no dependency on these chips.
+
+Both current adapters retain 2 MB of VRAM and the existing 1136-byte register
+snapshot format. Per-card memory capacity for future adapters remains a
+separate change. This organization preserves existing hardware behavior;
+Windows driver detection and device status require guest verification.
+
 ### The S3 engine: a card that draws, and three doors into it
 
 An SVGA driver does not paint pixels through the 64 KB window. It tells the
@@ -572,7 +591,7 @@ Aurora386
 │   │   ├── Input/            8042, PS/2 and serial mouse, mouse state
 │   │   ├── Storage/          disk and ISO images, IDE/ATAPI controller
 │   │   ├── System/           DMA 8237, system ports (61h, 92h)
-│   │   ├── Video/            VGA: registers, memory, fonts, renderer, pointer
+│   │   ├── Video/            Vga/ common base; S3/ shared extensions, Trio/, Virge/
 │   │   ├── Audio/            Sound Blaster 16, OPL3, mixer
 │   │   ├── Network/          NE2000, loopback, and Nat/ (the user-mode NAT)
 │   │   └── IsaPnp/           the ISA Plug and Play bus and the cards on it

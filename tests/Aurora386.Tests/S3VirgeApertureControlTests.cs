@@ -139,7 +139,7 @@ public class S3VirgeApertureControlTests
     [Fact]
     public void TrioKeepsItsFixedAperture()
     {
-        var registers = new VgaRegisters { ApertureBase = 0x01000000 };
+        var registers = new S3VgaRegisters { ApertureBase = 0x01000000 };
         Assert.Null(registers.VirgeAperture);
         Write(registers, 0x39, 0xA0);
         Write(registers, 0x58, 0);
@@ -149,9 +149,9 @@ public class S3VirgeApertureControlTests
         Assert.Equal(0x01000000u, registers.ApertureBase);
     }
 
-    private static VgaRegisters CreateVirge()
+    private static S3VgaRegisters CreateVirge()
     {
-        return new VgaRegisters(S3VideoIdentity.Virge325);
+        return new S3VgaRegisters(S3VideoIdentity.Virge325);
     }
 
     private static byte Read(VgaRegisters registers, byte index)

@@ -61,17 +61,12 @@ public sealed class VgaMemory : IMemoryDevice
     public const int PlaneSize = 64 * 1024;
 
     /// <summary>
-    /// The whole of video memory, which on this card is two megabytes.
-    ///
-    /// A VGA has 256 KB and cannot address more; the rest exists for the SVGA
-    /// modes, where the card is not four planes but one flat array of pixels.
-    ///
-    /// Two megabytes is what an S3 Trio64 shipped with, and the figure is not
-    /// arbitrary: it is what the card's own top mode needs. 1024x768 at 256
-    /// colours takes 786 KB, but at 16-bit colour it takes 1.5 MB, and a card
-    /// that offered the resolution without the depth would have been a poor
-    /// showing against its competitors. The remainder is the off-screen
-    /// scratch a 2D accelerator blits from.
+    /// The established two-megabyte VRAM allocation shared by the currently
+    /// implemented adapters and their snapshot format. Standard VGA addresses
+    /// only four 64 KB planes; additional capacity is reached through banking
+    /// or a linear frame buffer and also holds off-screen drawing surfaces.
+    /// Capacity selection for future adapters requires a separate snapshot
+    /// compatibility change, rather than changing this legacy constant.
     /// </summary>
     public const int TotalSize = 2 * 1024 * 1024;
 
@@ -564,7 +559,7 @@ public sealed class VgaMemory : IMemoryDevice
                 // outside that window belongs to no visible row at all.
                 // The same three sources the renderer uses, in the same
                 // order, and the middle one is the reason this is not just
-                // the VBE value: an S3 driver does not call 4F06, it writes
+                // the VBE value: a display driver does not call 4F06, it writes
                 // the CRTC. Reading only the VBE value gave a stride of zero
                 // there, so rows were attributed by the mode's natural width
                 // while the picture was drawn at the card's -- and the rows

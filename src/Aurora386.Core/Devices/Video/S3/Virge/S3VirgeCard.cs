@@ -13,7 +13,7 @@ namespace Aurora386.Core.Devices.Video;
 /// This subset has standard VGA and enhanced banked memory decoding but no
 /// OEM option ROM, old MMIO, big-endian decoding, Trio accelerator or IRQ timing.
 /// </summary>
-public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
+public sealed partial class S3VirgeCard : VgaCard, IIoDevice, IMemoryDevice
 {
     private const uint ApertureSize = 0x04000000;
     private const uint ResetBase = 0x70000000;
@@ -37,6 +37,7 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
     /// memory decoding; PCI topology removal is not supported by PciBus.
     /// </summary>
     public S3VirgeCard(PhysicalMemoryBus memory, IoBus io, PciBus pci, ushort address = 0x0020)
+        : base(new S3VgaRegisters(S3VideoIdentity.Virge325))
     {
         ArgumentNullException.ThrowIfNull(memory);
         ArgumentNullException.ThrowIfNull(io);
@@ -46,10 +47,8 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
             throw new ArgumentException("ViRGE requires a four-gigabyte physical address space.", nameof(memory));
         }
 
-        Registers = new VgaRegisters(S3VideoIdentity.Virge325);
-        VideoMemory = new VgaMemory(Registers);
         Streams = new S3VirgeStreams(Registers);
-        Renderer = new VgaRenderer(VideoMemory, Registers, Streams);
+        Renderer = new S3VirgeRenderer(VideoMemory, Registers, Streams);
         Engine = new S3VirgeEngine(VideoMemory);
         Blitter = new S3Virge2DEngine(VideoMemory);
         Function = S3VideoIdentity.Virge325.CreatePciFunction(address, commandMask: 0x0027);
@@ -86,16 +85,14 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
         RegisterPorts(io);
     }
 
-    public VgaRegisters Registers { get; }
-    public VgaMemory VideoMemory { get; }
+    public new S3VgaRegisters Registers => (S3VgaRegisters)base.Registers;
     public S3VirgeEngine Engine { get; }
     public S3Virge2DEngine Blitter { get; }
     public S3VirgeStreams Streams { get; }
     public PciFunction Function { get; }
-    public IVideoOutput Display => Renderer;
 
     /// <summary>The concrete VGA renderer shared with the machine video pipeline.</summary>
-    internal VgaRenderer Renderer { get; }
+    public override VgaRenderer Renderer { get; }
 
     /// <summary>
     /// One notification per unsupported access or unsupported legacy mode transition.
@@ -153,7 +150,7 @@ public sealed partial class S3VirgeCard : IIoDevice, IMemoryDevice, IDisposable
     }
 
     /// <summary>Releases decoding while leaving the bus-owned PCI topology intact.</summary>
-    public void Dispose()
+    public override void Dispose()
     {
         if (_disposed)
         {

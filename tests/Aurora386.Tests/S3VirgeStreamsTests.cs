@@ -31,7 +31,7 @@ public sealed class S3VirgeStreamsTests
     [Fact]
     public void MM8180MM81C0MM81C4MM81C8MM81CCMM81F0AndMM81F4ApplyTheirDocumentedMasks()
     {
-        var streams = new S3VirgeStreams(new VgaRegisters(S3VideoIdentity.Virge325));
+        var streams = new S3VirgeStreams(new S3VgaRegisters(S3VideoIdentity.Virge325));
 
         foreach (uint register in RegisterOffsets)
         {
@@ -61,7 +61,7 @@ public sealed class S3VirgeStreamsTests
     [Fact]
     public void MM81CCBitZeroSelectsEitherPrimaryAddressAndOddStrideIsPreserved()
     {
-        var streams = new S3VirgeStreams(new VgaRegisters(S3VideoIdentity.Virge325));
+        var streams = new S3VirgeStreams(new S3VgaRegisters(S3VideoIdentity.Virge325));
         streams.WriteDword(S3VirgeStreams.PrimaryBufferAddress0Register, FirstPage + 7);
         streams.WriteDword(S3VirgeStreams.PrimaryBufferAddress1Register, SecondPage + 7);
         streams.WriteDword(S3VirgeStreams.PrimaryStrideRegister, 1297);
@@ -77,7 +77,7 @@ public sealed class S3VirgeStreamsTests
     [Fact]
     public void MM81C0MM81C4AndMM81CCPageWritesRedrawAndCR67Bits3To2ReturnToVbe()
     {
-        VgaRenderer renderer = CreateRenderer(out VgaRegisters registers, out VgaMemory memory,
+        VgaRenderer renderer = CreateRenderer(out S3VgaRegisters registers, out VgaMemory memory,
             out S3VirgeStreams streams);
         WritePixel(memory, 0, 0x03E0);
         WritePixel(memory, FirstPage, 0x001F);
@@ -101,7 +101,7 @@ public sealed class S3VirgeStreamsTests
     [Fact]
     public void CR67Bits3To2SecondaryOverlayModeRetainsTheVgaBackground()
     {
-        VgaRenderer renderer = CreateRenderer(out VgaRegisters registers, out VgaMemory memory,
+        VgaRenderer renderer = CreateRenderer(out S3VgaRegisters registers, out VgaMemory memory,
             out S3VirgeStreams streams);
         WritePixel(memory, 0, 0x03E0);
         WritePixel(memory, FirstPage, 0x7C00);
@@ -118,7 +118,7 @@ public sealed class S3VirgeStreamsTests
     [InlineData(0x13000000)] // KRGB1555 with 2X replication is not pass-through.
     public void MM8180UnsupportedFullStreamsFormatsRenderBlackInsteadOfTheVbePage(uint primaryControl)
     {
-        VgaRenderer renderer = CreateRenderer(out VgaRegisters registers, out VgaMemory memory,
+        VgaRenderer renderer = CreateRenderer(out S3VgaRegisters registers, out VgaMemory memory,
             out S3VirgeStreams streams);
         WritePixel(memory, 0, 0x03E0);
         WritePixel(memory, FirstPage, 0x7C00);
@@ -134,7 +134,7 @@ public sealed class S3VirgeStreamsTests
     [Fact]
     public void MM81F0AndMM81F4OneBasedWindowPositionsTheSourceInsideTheScreen()
     {
-        VgaRenderer renderer = CreateRenderer(out VgaRegisters registers, out VgaMemory memory,
+        VgaRenderer renderer = CreateRenderer(out S3VgaRegisters registers, out VgaMemory memory,
             out S3VirgeStreams streams);
         WritePixel(memory, FirstPage, 0x7C00);
         WritePixel(memory, FirstPage + 3, 0x03E0);
@@ -153,7 +153,7 @@ public sealed class S3VirgeStreamsTests
     [Fact]
     public void MM81F0AndMM81F4ClipNegativeOriginAndTheRightEdgeWithoutMovingTheSource()
     {
-        VgaRenderer renderer = CreateRenderer(out VgaRegisters registers, out VgaMemory memory,
+        VgaRenderer renderer = CreateRenderer(out S3VgaRegisters registers, out VgaMemory memory,
             out S3VirgeStreams streams);
         WritePixel(memory, FirstPage, 0x7C00);
         WritePixel(memory, FirstPage + 2, 0x03E0);
@@ -179,7 +179,7 @@ public sealed class S3VirgeStreamsTests
     [Fact]
     public void MM81C0OffscreenPageVramWriteRedrawsVisibleStreamsRowZero()
     {
-        VgaRenderer renderer = CreateRenderer(out VgaRegisters registers, out VgaMemory memory,
+        VgaRenderer renderer = CreateRenderer(out S3VgaRegisters registers, out VgaMemory memory,
             out S3VirgeStreams streams);
         WritePixel(memory, FirstPage, 0x001F);
         ProgramPrimary(streams, FirstPage, stride: 1280, width: 640, height: 480);
@@ -196,7 +196,7 @@ public sealed class S3VirgeStreamsTests
     [Fact]
     public void MM81C8ZeroStrideRepeatsTheSameSourceRow()
     {
-        VgaRenderer renderer = CreateRenderer(out VgaRegisters registers, out VgaMemory memory,
+        VgaRenderer renderer = CreateRenderer(out S3VgaRegisters registers, out VgaMemory memory,
             out S3VirgeStreams streams);
         WritePixel(memory, FirstPage, 0x7C00);
         ProgramPrimary(streams, FirstPage, stride: 0, width: 1, height: 2);
@@ -211,7 +211,7 @@ public sealed class S3VirgeStreamsTests
     [Fact]
     public void MM81C0BaseAndMM81C8StrideOutsideTwoMegabytesRenderBlack()
     {
-        VgaRenderer renderer = CreateRenderer(out VgaRegisters registers, out VgaMemory memory,
+        VgaRenderer renderer = CreateRenderer(out S3VgaRegisters registers, out VgaMemory memory,
             out S3VirgeStreams streams);
         const uint lastAlignedBlock = VgaMemory.TotalSize - 8;
         WritePixel(memory, lastAlignedBlock, 0x001F);
@@ -227,7 +227,7 @@ public sealed class S3VirgeStreamsTests
     [Fact]
     public void VST1SnapshotRoundTripRestoresPrimaryLatchesWithoutChangingVideoMemory()
     {
-        var registers = new VgaRegisters(S3VideoIdentity.Virge325);
+        var registers = new S3VgaRegisters(S3VideoIdentity.Virge325);
         var memory = new VgaMemory(registers);
         var streams = new S3VirgeStreams(registers);
         ProgramPrimary(streams, FirstPage, stride: 1297, width: 17, height: 9,
@@ -259,7 +259,7 @@ public sealed class S3VirgeStreamsTests
     [InlineData(8)]
     public void VST1MalformedSnapshotLeavesPrimaryLatchesUnchanged(int corruptOffset)
     {
-        var streams = new S3VirgeStreams(new VgaRegisters(S3VideoIdentity.Virge325));
+        var streams = new S3VirgeStreams(new S3VgaRegisters(S3VideoIdentity.Virge325));
         ProgramPrimary(streams, FirstPage, stride: 1280, width: 640, height: 480);
         byte[] invalid = streams.Capture();
         if (corruptOffset == 0)
@@ -288,10 +288,10 @@ public sealed class S3VirgeStreamsTests
     [Fact]
     public void CR67DoesNotChangeTheRendererWithoutVirgeStreams()
     {
-        var registers = new VgaRegisters();
+        var registers = new S3VgaRegisters();
         registers.SetVesaMode(VesaModes.Get(0x110, VgaMemory.TotalSize), true);
         var memory = new VgaMemory(registers);
-        var renderer = new VgaRenderer(memory, registers);
+        var renderer = new S3VgaRenderer(memory, registers);
         WritePixel(memory, 0, 0x03E0);
         renderer.Render(true);
         Assert.Equal(Green, renderer.Framebuffer[0]);
@@ -303,15 +303,15 @@ public sealed class S3VirgeStreamsTests
     }
 
     private static VgaRenderer CreateRenderer(
-        out VgaRegisters registers,
+        out S3VgaRegisters registers,
         out VgaMemory memory,
         out S3VirgeStreams streams)
     {
-        registers = new VgaRegisters(S3VideoIdentity.Virge325);
+        registers = new S3VgaRegisters(S3VideoIdentity.Virge325);
         registers.SetVesaMode(VesaModes.Get(0x110, VgaMemory.TotalSize), true);
         memory = new VgaMemory(registers);
         streams = new S3VirgeStreams(registers);
-        return new VgaRenderer(memory, registers, streams);
+        return new S3VirgeRenderer(memory, registers, streams);
     }
 
     private static void ProgramPrimary(

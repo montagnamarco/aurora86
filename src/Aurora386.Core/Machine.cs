@@ -54,7 +54,11 @@ public sealed partial class Machine : IDisposable
     /// <summary>A Microsoft serial mouse on COM1, for drivers that expect one there.</summary>
     public SerialMouse SerialMouse { get; }
 
-    public VgaRegisters VideoRegisters { get; }
+    public VgaCard VideoCard { get; }
+    public VgaRegisters VideoRegisters => VideoCard.Registers;
+
+    /// <summary>S3 extension registers for model-specific diagnostics and firmware.</summary>
+    public S3VgaRegisters S3Registers => (S3VgaRegisters)VideoRegisters;
     public VgaMemory VideoMemory { get; }
     public VgaRenderer Video { get; }
 
@@ -253,61 +257,21 @@ public sealed partial class Machine : IDisposable
 
         if (videoModel == VmVideoModel.S3Trio64VPlus)
         {
-            S3VideoIdentity videoIdentity = S3VideoIdentity.Trio64VPlus;
-            VideoRegisters = new VgaRegisters(videoIdentity);
-            VideoRegisters.Register(Io);
-            VideoMemory = new VgaMemory(VideoRegisters);
-            Memory.MapDevice(VgaMemory.Base, VgaMemory.Size, VideoMemory);
-
-            // And the same memory again, flat, above the RAM. A protected-mode
-            // display driver writes here and never touches the bank register.
-            Memory.MapDevice(LinearFrameBufferBase, VgaMemory.TotalSize, VideoMemory.Linear);
-
-            // And the card is told where that is, because a driver asks the
-            // hardware rather than being configured with the answer.
-            VideoRegisters.ApertureBase = LinearFrameBufferBase;
-
-            Video = new VgaRenderer(VideoMemory, VideoRegisters);
-            Display = Video;
-
-            // The 2D engine, which is what makes the SVGA resolutions usable: at
-            // 1024x768 a window scroll done by the processor means three quarters
-            // of a megabyte across the bus, and done by the card means a dozen
-            // register writes.
-            _trioAccelerator = new S3Accelerator(VideoMemory, VideoRegisters);
-            _trioAccelerator.Register(Io);
-            VideoMemory.Engine = _trioAccelerator.Mmio;
-
-            // The engine's registers again, mapped as memory directly above the
-            // frame buffer. A protected-mode driver writes there rather than to
-            // the I/O ports: an OUT from protected-mode code is a fault the
-            // monitor has to catch and emulate, and a memory write is not -- on a
-            // 486 that is a few hundred cycles per register against a few.
-            _trioMmioBase = LinearFrameBufferBase + VgaMemory.TotalSize;
-            Memory.MapDevice(MmioBase, 0x10000, _trioAccelerator.Mmio);
-            VideoRegisters.MmioBase = MmioBase;
-
-            // And where the Trio64V+ actually puts them: 16 MB above the
-            // linear frame buffer, whatever the card's memory size. The S3
-            // Windows driver for that chip writes there without asking, and
-            // without being told to by any register; the emulator learnt this
-            // from a trace of a driver that filled nothing.
-            Memory.MapDevice(LinearFrameBufferBase + TrioMmioOffset, 0x10000, _trioAccelerator.Mmio);
-
-            _pciVideoFunction = videoIdentity.CreatePciFunction(0x0020);
-            const uint apertureMask = ~(uint)(VgaMemory.TotalSize - 1);
-            _pciVideoFunction.Define(0x10, LinearFrameBufferBase | 0x08, 4, apertureMask);
-            Pci.Add(_pciVideoFunction);
+            var trio = new S3Trio64VPlusCard(Memory, Io, Pci, frameBufferBase);
+            VideoCard = trio;
+            _trioAccelerator = trio.Accelerator;
+            _trioMmioBase = trio.MmioBase;
+            _pciVideoFunction = trio.Function;
         }
         else
         {
             Virge = new S3VirgeCard(Memory, Io, Pci);
-            VideoRegisters = Virge.Registers;
-            VideoMemory = Virge.VideoMemory;
-            Video = Virge.Renderer;
-            Display = Virge.Display;
+            VideoCard = Virge;
             _pciVideoFunction = Virge.Function;
         }
+        VideoMemory = VideoCard.VideoMemory;
+        Video = VideoCard.Renderer;
+        Display = VideoCard.Display;
 
         // The 8237 DMA pair and the Sound Blaster 16 that streams through it.
         // Registering the card also claims the OPL3's own ports at 0x388.
@@ -580,7 +544,7 @@ public sealed partial class Machine : IDisposable
         foreach (DiskImage disk in _disks) disk.Dispose();
         CompactDisc?.Dispose();
         UsbStorage?.Dispose();
-        Virge?.Dispose();
+        VideoCard.Dispose();
         Memory.Dispose();
     }
 }

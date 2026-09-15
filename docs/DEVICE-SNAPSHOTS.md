@@ -21,7 +21,7 @@ reject new files instead of silently discarding device state.
 
 `T3D1` contains a DWORD magic, WORD version 1 and WORD field count 40, followed
 by 40 DWORD slots in the `Field` order declared in
-[S3Accelerator.Snapshot.cs](../src/Aurora386.Core/Devices/Video/S3Accelerator.Snapshot.cs).
+[S3Accelerator.Snapshot.cs](../src/Aurora386.Core/Devices/Video/S3/Trio/S3Accelerator.Snapshot.cs).
 These cover register latches, write-mask presence, selectors, partial processor
 unit/pixel bytes, transfer presence, geometry, directions, mask and row/column.
 A signed DWORD count follows, then sorted `(port:WORD, lowByte:BYTE)` entries.
@@ -249,8 +249,8 @@ bit-identical audio across runtime architectures.
 | Owner | Current coverage | Missing continuation state |
 | --- | --- | --- |
 | [MachineSnapshot](../src/Aurora386.Core/MachineSnapshot.cs) | CPU/RAM, VGA memory/registers, PIC/PIT, keyboard, PCI, USB, DMA, SB16/OPL, ISA PnP, serial mouse and selected firmware state | In-flight IDE and network packet state remain outside this change |
-| [S3Accelerator](../src/Aurora386.Core/Devices/Video/S3Accelerator.cs) | T3D1 plus separately saved VRAM | None identified for the current synchronous engine |
-| [ViRGE engines](../src/Aurora386.Core/Devices/Video/S3VirgeCard.Snapshot.cs) | VGE1 wraps triangle, BitBLT and primary Streams state | No new engine block needed for the implemented synchronous triangle subset |
+| [S3Accelerator](../src/Aurora386.Core/Devices/Video/S3/Trio/S3Accelerator.cs) | T3D1 plus separately saved VRAM | None identified for the current synchronous engine |
+| [ViRGE engines](../src/Aurora386.Core/Devices/Video/S3/Virge/S3VirgeCard.Snapshot.cs) | VGE1 wraps triangle, BitBLT and primary Streams state | No new engine block needed for the implemented synchronous triangle subset |
 | [Dma8237](../src/Aurora386.Core/Devices/System/Dma8237.cs) | Standalone DMA1 capture/restore for all eight channels and both byte pointers | None identified for the current synchronous DMA model |
 | [SbMixer / Opl3](../src/Aurora386.Core/Devices/Audio/SbMixer.Snapshot.cs) | Standalone MIX1/OPL1 with raw mixer, synthesis and timer state | No new synthesis fidelity claim |
 | [SoundBlaster16](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.Snapshot.cs) | Standalone DSP1 with nested MIX1/OPL1 | Existing audio-model limitations described below |

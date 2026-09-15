@@ -383,6 +383,31 @@ quadruplicare la memoria.
 Il generatore di caratteri è **RAM, non ROM**: `MODE CON CP PREPARE` carica un
 font diverso, ed è così che il DOS italiano ottiene le lettere accentate.
 
+### VGA comune e schede concrete
+
+`Devices/Video/Vga/` contiene registri standard, memoria, font, modi e
+rasterizzatore. La base `VgaCard` possiede un'unica istanza dei registri e
+della VRAM; la scheda concreta collega porte, decodificatori di memoria e
+identità PCI. `Machine.VideoCard` espone questa proprietà comune e
+`Machine.Display` offre ai frontend il contratto `IVideoOutput`.
+
+Le estensioni del produttore stanno in `Devices/Video/S3/`:
+`S3VgaRegisters` conserva identità, sblocchi, banking e cursore S3;
+`S3VgaRenderer` compone il cursore hardware sul raster VGA. Le cartelle
+`S3/Trio/` e `S3/Virge/` contengono rispettivamente `S3Trio64VPlusCard` con
+il motore 2D storico e `S3VirgeCard` con BitBLT, triangoli e Streams.
+`S3VirgeRenderer` presenta la superficie primaria scelta dai registri
+Streams. La VGA comune non identifica una S3 e non interpreta quei registri.
+
+Le due schede concrete attuali mantengono 2 MB di VRAM e il formato dei
+relativi snapshot. Una capacità diversa per future schede richiederà una
+proprietà d'istanza e una migrazione del formato, da affrontare separatamente.
+
+La separazione conserva gli indirizzi Trio già verificati, i controlli di
+decodifica ViRGE e il formato snapshot dei registri da 1136 byte. La sola
+organizzazione delle classi non dimostra che un driver Windows 95 sia
+installato o privo di avvisi: quello richiede una verifica del guest.
+
 ### Il motore S3: una scheda che disegna, e tre porte per entrarci
 
 Un driver SVGA non dipinge i pixel attraverso la finestra da 64 KB. Dice
@@ -472,7 +497,11 @@ Aurora386
 │   │   ├── Input/            8042, mouse PS/2 e seriale, stato del mouse
 │   │   ├── Storage/          immagini disco e ISO, controller IDE/ATAPI
 │   │   ├── System/           DMA 8237, porte di sistema (61h, 92h)
-│   │   ├── Video/            VGA: registri, memoria, font, disegno, puntatore
+│   │   ├── Video/            base VGA e schede concrete
+│   │   │   ├── Vga/          registri standard, VRAM, font, modi e scanout
+│   │   │   └── S3/           registri e cursore condivisi del produttore
+│   │   │       ├── Trio/     Trio64V+ e acceleratore 2D
+│   │   │       └── Virge/    86C325, BitBLT, triangoli e Streams
 │   │   ├── Audio/            Sound Blaster 16, OPL3, mixer
 │   │   └── Network/          NE2000 e backend
 │   ├── Dos/                  redirector e filesystem (host, ISO)
