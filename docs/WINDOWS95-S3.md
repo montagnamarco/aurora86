@@ -1,5 +1,9 @@
 # Windows 95 and the S3 Trio64V+
 
+For the later PCI driver and Device Manager audit, see
+[Windows 95 video validation](WINDOWS95-VIDEO-VALIDATION.md). Desktop rendering
+alone does not establish that the native PCI driver starts without warnings.
+
 This note records the Windows 95 display behavior verified in disposable
 cold-boot copies. It covers measured display regressions and their limits; it
 is not a claim of complete Windows 95 compatibility.

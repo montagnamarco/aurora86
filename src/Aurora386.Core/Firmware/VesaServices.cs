@@ -25,7 +25,8 @@ namespace Aurora386.Core.Firmware;
 public sealed class VesaServices
 {
     private readonly Machine _machine;
-    private const ushort VirgeMode = 0x0110; // 640x480, RGB1555.
+    private const ushort VirgeIndexedMode = 0x0101; // 640x480, 8-bit indexed colour.
+    private const ushort VirgeRgb1555Mode = 0x0110; // 640x480, RGB1555.
 
     private bool IsVirge => _machine.VideoModel == VmVideoModel.S3Virge325;
 
@@ -206,7 +207,7 @@ public sealed class VesaServices
     private void SetMode(CpuNs.Cpu cpu)
     {
         ushort requested = cpu.State.Bx;
-        if (IsVirge && (requested & 0x3FFF) is not (VirgeMode or 0x03))
+        if (IsVirge && (requested & 0x3FFF) is not (VirgeIndexedMode or VirgeRgb1555Mode or 0x03))
         {
             cpu.State.Ax = 0x014F;
             return;
@@ -320,7 +321,7 @@ public sealed class VesaServices
 
     private VesaModes.VesaModeInfo? SupportedMode(ushort requested)
     {
-        if (IsVirge && (requested & 0x3FFF) != VirgeMode)
+        if (IsVirge && (requested & 0x3FFF) is not (VirgeIndexedMode or VirgeRgb1555Mode))
         {
             return null;
         }

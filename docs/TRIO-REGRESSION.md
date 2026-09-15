@@ -1,5 +1,9 @@
 # Trio guest regression after ViRGE Streams
 
+For the later PCI driver and Device Manager audit, see
+[Windows 95 video validation](WINDOWS95-VIDEO-VALIDATION.md). Desktop rendering
+alone does not establish that the native PCI driver starts without warnings.
+
 On 2026-09-14, source revision `cee5f52ee6b178f8d10d91222e9eceee7d5808a6`
 passed the following guest smoke checks using `Win95SetupProbe` in Release.
 Each run used its own writable disk copy, an Intel 486, 16 MiB RAM and the

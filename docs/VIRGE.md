@@ -12,19 +12,32 @@ existing machines. Both frontends apply this setting when opening a VM folder;
 a graphical GPU selector is not exposed yet. Unknown models are rejected
 before the machine is built or its disks are opened.
 
-The generated firmware supplies standard VGA and experimental VBE mode `0110h`
-(640x480 RGB1555). Real CPU OUT instructions set VGA timing, the 15-bit pixel
-format, enhanced mapping and either a 64 KB banked window or a 2 MB linear
-aperture. Functions `4F00/01/02/03/05` report this mode, set/query it, return to
-text mode `03h`, and select/query window A. Other requests fail with `AX=014F`
+The generated firmware supplies standard VGA and experimental VBE modes `0101h`
+(640x480 indexed 8-bit) and `0110h` (640x480 RGB1555). Real CPU OUT instructions
+set VGA timing, the pixel format, enhanced mapping and either a 64 KB banked
+window or a 2 MB linear aperture. Functions `4F00/01/02/03/05` report these modes,
+set/query them, return to text mode `03h`, and select/query window A.
+Other requests fail with `AX=014F`
 before changing video state or caller buffers. Mode bit 14 selects linear
 access; bit 15 preserves VRAM. The default Trio BIOS remains byte-identical.
 
-The mode uses `CR13=40h`, `CR51[5:4]=01b` and `CR31.3=1`: the forced
-doubleword address unit yields a 1280-byte pitch independently of Chain-4.
+Mode `0101h` uses `CR13=A0h`, zero CR51/CR43 pitch extensions and `CR31.3=1`:
+the forced doubleword address unit yields a 640-byte pitch independently of
+Chain-4. `CR67=00h` selects one 8-bit palette pixel per clock with Streams
+disabled. `GR05.6=1` and `CR3A.4=1` select 256-colour graphics shifts and enhanced
+attribute shifts. Returning to VGA clears CR3A.4 and restores its graphics
+register table. Mode `0110h` retains `CR13=40h`, `CR51[5:4]=01b`, `CR31.3=1`
+and `CR67=30h`, yielding a 1280-byte RGB1555 pitch.
 Nonzero CR51 pitch extensions take precedence over CR43.2. CPU tests verify
 banked and relocated linear pixel writes against the rendered scanlines,
 snapshot restoration, and the return to B8000 text memory.
+
+These settings follow the August 1996 S3 databook, sections 8-2, 16-20,
+16-30, 18-3, 18-10, 18-16 and 18-25/26. The Windows 95 native ViRGE driver was
+observed requesting `INT 10h AX=4F02h BX=8101h`; the previous firmware rejected
+this standard mode before programming the adapter. Supporting that request
+does not establish complete Windows 95 driver compatibility.
+[S3 ViRGE Integrated 3D Accelerator databook](https://vgamuseum.info/images/doc/s3/virge.pdf).
 
 Machine snapshots include the selected video model and ViRGE drawing-engine
 state in a versioned `VID1` tail after serial mouse state. A `VGE1` envelope

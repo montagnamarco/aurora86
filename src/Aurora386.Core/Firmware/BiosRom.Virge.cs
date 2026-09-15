@@ -3,9 +3,9 @@ namespace Aurora386.Core.Firmware;
 public static partial class BiosRom
 {
     /// <summary>
-    /// Programs the original 1996 ViRGE 86C325 for VBE mode 110h using x86
+    /// Programs the original 1996 ViRGE 86C325 for VBE modes 101h and 110h using x86
     /// OUT instructions. The mode uses the VGA 640x480 timing and 25.175 MHz
-    /// clock, then enables the documented 15-bit packed-pixel format and
+    /// clock, then enables the documented indexed 8-bit or RGB1555 format and
     /// either its 64 KB banked window or the two-megabyte linear aperture.
     /// Unsupported requests return without touching an adapter port.
     /// </summary>
@@ -18,8 +18,10 @@ public static partial class BiosRom
         code.JmpNear("not_mode");
         code.Label("mode_request");
         code.B(0x50, 0x89, 0xD8, 0x25, 0xFF, 0x3F);       // PUSH AX / MOV AX,BX / AND AX,3FFFh
+        code.B(0x3D, 0x01, 0x01);                         // CMP AX,0101h
+        code.Jcc(0x74, "mode_extended");
         code.B(0x3D, 0x10, 0x01);                         // CMP AX,0110h
-        code.Jcc(0x74, "mode_110");
+        code.Jcc(0x74, "mode_extended");
         code.B(0x3D, 0x03, 0x00);                         // CMP AX,0003h
         code.Jcc(0x74, "mode_03");
         code.B(0x58, 0xC3);                               // POP AX / RET
@@ -39,7 +41,7 @@ public static partial class BiosRom
         code.CallNear(Entry.TextModeCompletion);
         code.B(0x5B, 0x58, 0xC3);                         // POP BX,AX / RET
 
-        code.Label("mode_110");
+        code.Label("mode_extended");
         code.B(0x58, 0x50, 0x53, 0x52);                   // POP AX / PUSH AX,BX,DX
         code.B(0xB0, 0x12);                               // VGA 640x480 timing, 25.175 MHz DCLK.
         code.CallNear(Entry.VgaProgram);
@@ -50,11 +52,22 @@ public static partial class BiosRom
         WriteCrtc(0x39, 0xA0);                            // Unlock CR40 and above.
 
         // Databook sections 16-20 and 18-16: CR31.3 forces a four-byte
-        // address unit. 640 pixels * 2 bytes / 4 gives offset 0140h.
-        WriteCrtc(0x13, 0x40);                            // Pitch bits 7-0.
+        // address unit. RGB1555 uses 640 * 2 / 4 = 0140h; indexed 8-bit
+        // uses 640 / 4 = 00A0h. Clear both old pitch and bank extensions.
+        code.B(0x89, 0xD8, 0x25, 0xFF, 0x3F);             // MOV AX,BX / AND AX,3FFFh
+        code.B(0x3D, 0x01, 0x01);                         // CMP AX,0101h
+        code.Jcc(0x75, "rgb1555_pitch");
+        WriteCrtc(0x13, 0xA0);
         WriteCrtc(0x35, 0x00);                            // Clear the old bank selector.
         WriteCrtc(0x43, 0x00);                            // CR43.2: old pitch extension disabled.
+        WriteCrtc(0x51, 0x00);
+        code.JmpNear("pitch_complete");
+        code.Label("rgb1555_pitch");
+        WriteCrtc(0x13, 0x40);                            // Pitch bits 7-0.
+        WriteCrtc(0x35, 0x00);                            // Keep mode 110h's original programming order.
+        WriteCrtc(0x43, 0x00);
         WriteCrtc(0x51, 0x10);                            // CR51[5:4]=01b: pitch bit 8.
+        code.Label("pitch_complete");
         WriteCrtc(0x5D, 0x00);                            // No horizontal timing extensions.
         WriteCrtc(0x5E, 0x00);                            // No vertical timing extensions.
         WriteCrtc(0x69, 0x00);                            // Display start address extension zero.
@@ -66,7 +79,22 @@ public static partial class BiosRom
         WriteCrtc(0x66, 0x01);                            // Enhanced/non-planar functions.
         WriteCrtc(0x31, 0x09);                            // Enhanced map and 64 KB bank.
         WriteCrtc(0x6A, 0x00);                            // Start on bank zero.
+        code.B(0x89, 0xD8, 0x25, 0xFF, 0x3F);             // MOV AX,BX / AND AX,3FFFh
+        code.B(0x3D, 0x01, 0x01);                         // CMP AX,0101h
+        code.Jcc(0x75, "rgb1555_format");
+
+        // Databook sections 16-30, 18-10 and 8-2: GR05.6 selects 256-colour
+        // shifts, CR3A.4 enables enhanced attribute shifts, and CR67=00h
+        // selects one indexed pixel per VCLK with the Streams Processor off.
+        WriteCrtc(0x3A, 0x10);
+        WriteCrtc(0x67, 0x00);
+        code.B(0xBA, 0xCE, 0x03);                         // MOV DX,3CEh
+        code.B(0xB8, 0x05, 0x40, 0xEE, 0x42, 0x88, 0xE0, 0xEE); // GR05=40h, GR06 remains VGA graphics A0000h.
+        code.B(0xBA, 0xD4, 0x03);                         // MOV DX,3D4h
+        code.JmpNear("format_complete");
+        code.Label("rgb1555_format");
         WriteCrtc(0x67, 0x30);                            // RGB555, Streams disabled.
+        code.Label("format_complete");
         code.B(0xB8, 0x58, 0x00);                         // CR58=00h: banked window.
         code.B(0xF6, 0xC7, 0x40);                         // TEST BH,40h: linear-frame-buffer flag.
         code.Jcc(0x74, "write_aperture");

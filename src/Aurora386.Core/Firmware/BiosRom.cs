@@ -458,7 +458,7 @@ public static partial class BiosRom
             IEnumerable<Devices.Video.VesaModes.VesaModeInfo> publishedModes =
                 videoModel == VmVideoModel.S3Virge325
                     ? Devices.Video.VesaModes.Available(Devices.Video.VgaMemory.TotalSize)
-                        .Where(mode => mode.Number == 0x110)
+                        .Where(mode => mode.Number is 0x101 or 0x110)
                     : Devices.Video.VesaModes.Available(Devices.Video.VgaMemory.TotalSize);
             foreach (Devices.Video.VesaModes.VesaModeInfo mode in publishedModes)
             {
@@ -859,6 +859,7 @@ public static partial class BiosRom
             WriteVirgeCrtc(0x39, 0xA0);                   // Unlock CR40 and above.
             WriteVirgeCrtc(0x31, 0x00);                   // VGA mapping and bank zero.
             WriteVirgeCrtc(0x35, 0x00);                   // Clear the old bank selector.
+            WriteVirgeCrtc(0x3A, 0x00);                   // Restore four-bit VGA attribute shifts (CR3A.4).
             WriteVirgeCrtc(0x43, 0x00);                   // Clear the old pitch extension.
             WriteVirgeCrtc(0x51, 0x00);                   // Clear pitch and old bank extensions.
             WriteVirgeCrtc(0x58, 0x00);                   // Linear window disabled.

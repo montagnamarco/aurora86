@@ -7,13 +7,13 @@ namespace Aurora386.Tests;
 
 /// <summary>
 /// Calls the Aurora386 BIOS as a 1996 ViRGE DOS client would: real INT 10h
-/// instructions program mode 0110h and its CR6A window before CPU pixel
+/// instructions program modes 0101h/0110h and their CR6A window before CPU pixel
 /// writes, scanout, and a return to the standard VGA text mode.
 /// </summary>
 public sealed class VirgeVesaTests
 {
     [Fact]
-    public void Function4F00ListsOnlyMode0110AndDoesNotAdvertiseDac8()
+    public void Function4F00ListsModes0101And0110AndDoesNotAdvertiseDac8()
     {
         using Machine machine = Started();
         Int10(machine, 0x4F00);
@@ -22,9 +22,177 @@ public sealed class VirgeVesaTests
         Assert.Equal(0u, machine.Memory.ReadDword(0x5000A));
         uint pointer = machine.Memory.ReadDword(0x5000E);
         uint modeList = (pointer >> 16) * 16 + (pointer & 0xFFFF);
-        Assert.Equal(0x0110, machine.Memory.ReadWord(modeList));
-        Assert.Equal(0xFFFF, machine.Memory.ReadWord(modeList + 2));
+        Assert.Equal(0x0101, machine.Memory.ReadWord(modeList));
+        Assert.Equal(0x0110, machine.Memory.ReadWord(modeList + 2));
+        Assert.Equal(0xFFFF, machine.Memory.ReadWord(modeList + 4));
         Assert.Equal(32, machine.Memory.ReadWord(0x50012));
+    }
+
+    [Fact]
+    public void Function4F01ReportsMode0101IndexedPixelsAnd640BytePitch()
+    {
+        using Machine machine = Started();
+        machine.Pci.WriteConfiguration(0x20, 0x10, 4, 0x74000000);
+        Int10(machine, 0x4F01, cx: 0x0101);
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.Equal(0x009B, machine.Memory.ReadWord(0x50000));
+        Assert.Equal(7, machine.Memory.ReadByte(0x50002));
+        Assert.Equal(64, machine.Memory.ReadWord(0x50004));
+        Assert.Equal(64, machine.Memory.ReadWord(0x50006));
+        Assert.Equal(0xA000, machine.Memory.ReadWord(0x50008));
+        Assert.Equal(640, machine.Memory.ReadWord(0x50010));
+        Assert.Equal(640, machine.Memory.ReadWord(0x50012));
+        Assert.Equal(480, machine.Memory.ReadWord(0x50014));
+        Assert.Equal(1, machine.Memory.ReadByte(0x50018));
+        Assert.Equal(8, machine.Memory.ReadByte(0x50019));
+        Assert.Equal(4, machine.Memory.ReadByte(0x5001B));
+        for (uint offset = 0x1F; offset <= 0x26; offset++)
+        {
+            Assert.Equal(0, machine.Memory.ReadByte(0x50000 + offset));
+        }
+        Assert.Equal(0x74000000u, machine.Memory.ReadDword(0x50028));
+    }
+
+    [Theory]
+    [InlineData(0x0101)]
+    [InlineData(0x4101)]
+    [InlineData(0x8101)]
+    [InlineData(0xC101)]
+    public void Function4F02ProgramsMode0101Cr13A0Cr6700Cr3A10AndGr0540(int requested)
+    {
+        using Machine machine = Started();
+        var crtcWrites = new List<(byte Index, byte Value)>();
+        var graphicsWrites = new List<(byte Index, byte Value)>();
+        byte crtcIndex = 0;
+        byte graphicsIndex = 0;
+        machine.Io.PortAccessed += (port, write, value) =>
+        {
+            if (!write)
+            {
+                return;
+            }
+            switch (port)
+            {
+                case 0x3D4:
+                    crtcIndex = (byte)value;
+                    break;
+                case 0x3D5:
+                    crtcWrites.Add((crtcIndex, (byte)value));
+                    break;
+                case 0x3CE:
+                    graphicsIndex = (byte)value;
+                    break;
+                case 0x3CF:
+                    graphicsWrites.Add((graphicsIndex, (byte)value));
+                    break;
+            }
+        };
+        machine.Cpu.State.OtherFlags |= Flags.Direction;
+
+        Int10(machine, 0x4F02, (ushort)requested);
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.True((machine.Cpu.State.OtherFlags & Flags.Direction) != 0);
+        Assert.Contains(((byte)0x13, (byte)0xA0), crtcWrites);
+        Assert.Contains(((byte)0x3A, (byte)0x10), crtcWrites);
+        Assert.Contains(((byte)0x67, (byte)0x00), crtcWrites);
+        Assert.Contains(((byte)0x05, (byte)0x40), graphicsWrites);
+        Assert.Equal(640, machine.VideoRegisters.ExtendedRowOffset);
+        Assert.Equal(0xA0, machine.VideoRegisters.Crtc(0x13));
+        Assert.Equal(0, machine.VideoRegisters.Crtc(0x51));
+        Assert.Equal(0, machine.VideoRegisters.Crtc(0x43));
+        Assert.Equal(0x10, machine.VideoRegisters.Crtc(0x3A));
+        Assert.Equal(0, machine.VideoRegisters.Crtc(0x67));
+        Assert.Equal(0x40, machine.VideoRegisters.Graphics(0x05));
+        Assert.Equal(0x05, machine.VideoRegisters.Graphics(0x06));
+        Assert.Equal(9, machine.VideoRegisters.Crtc(0x31));
+        Assert.Equal(1, machine.VideoRegisters.Crtc(0x66) & 1);
+        Assert.Equal((requested & 0x4000) != 0 ? 0x12 : 0, machine.VideoRegisters.Crtc(0x58));
+        Assert.Equal(0, machine.VideoRegisters.Crtc(0x6A));
+        Assert.Equal(0u, machine.VideoRegisters.ExtendedStartAddress);
+        Assert.Equal(0x4F, machine.VideoRegisters.Crtc(0x01));
+        Assert.Equal(0xDF, machine.VideoRegisters.Crtc(0x12));
+        Assert.Equal(0x02, machine.VideoRegisters.Crtc(0x07) & 0x42);
+        Int10(machine, 0x4F03);
+        Assert.Equal(requested & 0x7FFF, machine.Cpu.State.Bx); // Preserve is a set-time action, not mode state.
+    }
+
+    [Fact]
+    public void Mode0101Cr6ABankOneCpuBytesRenderPalettePixelsOnScanline104()
+    {
+        using Machine machine = Started();
+        Int10(machine, 0x4F02, 0x0101);
+        SetRedPaletteEntry(machine, 42);
+        Int10(machine, 0x4F05, dx: 1);
+
+        // Scanline 104 is byte 10400h: bank one plus 400h, one byte/pixel.
+        CpuWriteWord(machine, 0xA0400, 0x002A);
+
+        Assert.Equal(42, machine.VideoMemory.ReadLinear(0x10400));
+        Assert.Equal(0, machine.VideoMemory.ReadLinear(0x10401));
+        machine.Display.Render(true);
+        Assert.Equal(640, machine.Display.Width);
+        Assert.Equal(480, machine.Display.Height);
+        Assert.Equal(0xFF0000FFu, machine.Display.Framebuffer[104 * 640]);
+        Assert.Equal(0xFF000000u, machine.Display.Framebuffer[104 * 640 + 1]);
+        Int10(machine, 0x4F05, bx: 0x0100);
+        Assert.Equal(1, machine.Cpu.State.Dx);
+    }
+
+    [Fact]
+    public void Mode4101RelocatedLinearBytesRenderPalettePixelsAndKeepUnderlyingA0000Ram()
+    {
+        using Machine machine = Started();
+        machine.Memory.WriteByte(0xA0000, 0x52);
+        machine.Pci.WriteConfiguration(0x20, 0x10, 4, 0x74000000);
+        Int10(machine, 0x4F02, 0x4101);
+        SetRedPaletteEntry(machine, 42);
+        CpuWriteWord(machine, 0x74000000 + 640, 0x002A);
+        machine.Display.Render(true);
+        Assert.Equal(42, machine.VideoMemory.ReadLinear(640));
+        Assert.Equal(0xFF0000FFu, machine.Display.Framebuffer[640]);
+        Assert.Equal(0xFF000000u, machine.Display.Framebuffer[641]);
+        Assert.Equal(0x52, machine.Memory.ReadByte(0xA0000));
+        Assert.Equal(0xFFFFFFFFu, machine.Memory.ReadDword(0x70000000));
+    }
+
+    [Fact]
+    public void Mode8101PreservesTheLastIndexedPixelAndMode0101ClearsOnlyVisibleBytes()
+    {
+        using Machine machine = Started();
+        machine.VideoMemory.WriteLinear(0x1234, 0x6B);
+        machine.VideoMemory.WriteLinear(307199, 0x4A);
+        machine.VideoMemory.WriteLinear(307200, 0x7C);
+        Int10(machine, 0x4F02, 0x8101);
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.Equal(0x6B, machine.VideoMemory.ReadLinear(0x1234));
+        Assert.Equal(0x4A, machine.VideoMemory.ReadLinear(307199));
+        Int10(machine, 0x4F02, 0x0101);
+        Assert.Equal(0, machine.VideoMemory.ReadLinear(0x1234));
+        Assert.Equal(0, machine.VideoMemory.ReadLinear(307199));
+        Assert.Equal(0x7C, machine.VideoMemory.ReadLinear(307200));
+    }
+
+    [Fact]
+    public void Mode0101ClearsRgb1555PitchExtensionsAndCr67StreamsModeThenReturnsToText()
+    {
+        using Machine machine = Started();
+        Int10(machine, 0x4F02, 0x0110);
+        machine.Io.WriteWord(0x3D4, 0x3C67); // Prior RGB1555/full Streams state.
+        Int10(machine, 0x4F02, 0x0101);
+        Assert.Equal(0, machine.VideoRegisters.Crtc(0x51));
+        Assert.Equal(0, machine.VideoRegisters.Crtc(0x67));
+        Assert.Equal(640, machine.VideoRegisters.ExtendedRowOffset);
+        Int10(machine, 0x4F02, 0x0003);
+        Assert.Null(machine.VideoRegisters.VesaMode);
+        Assert.Equal(0, machine.VideoRegisters.Crtc(0x3A) & 0x10);
+        Assert.Equal(0, machine.VideoRegisters.Graphics(0x05) & 0x40);
+        Assert.Equal(0, machine.VideoRegisters.Crtc(0x31) & 8);
+        CpuWriteWord(machine, 0xB8000, 0x0742);
+        Assert.Equal(0x42, machine.VideoMemory.ReadLinear(0x8000));
+        machine.Display.Render(true);
+        Assert.Equal(720, machine.Display.Width);
+        Assert.Equal(400, machine.Display.Height);
     }
 
     [Fact]
@@ -192,7 +360,7 @@ public sealed class VirgeVesaTests
 
     [Theory]
     [InlineData(0x4F02, 0x0112, 0)]
-    [InlineData(0x4F02, 0x0101, 0)]
+    [InlineData(0x4F02, 0x0103, 0)]
     [InlineData(0x4F02, 0x0004, 0)]
     [InlineData(0x4F05, 0x0001, 0)]
     [InlineData(0x4F05, 0x0000, 32)]
@@ -268,6 +436,13 @@ public sealed class VirgeVesaTests
     {
         Run(machine, [0x67, 0xC7, 0x05, (byte)address, (byte)(address >> 8),
             (byte)(address >> 16), (byte)(address >> 24), (byte)value, (byte)(value >> 8)]);
+    }
+
+    private static void SetRedPaletteEntry(Machine machine, byte index)
+    {
+        // OUT DX,AL writes the DAC address and all three six-bit components.
+        Run(machine, [0xBA, 0xC8, 0x03, 0xB0, index, 0xEE, 0x42,
+            0xB0, 0x3F, 0xEE, 0xB0, 0x00, 0xEE, 0xEE]);
     }
 
     private static void Run(Machine machine, byte[] code)
