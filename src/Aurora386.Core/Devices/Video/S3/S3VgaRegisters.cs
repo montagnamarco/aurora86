@@ -314,7 +314,15 @@ public sealed class S3VgaRegisters : VgaRegisters
             // the field, and the S3 Windows driver, believing it had three
             // megabytes, kept its brushes and its cursor in the third:
             // every window background came out black.
-            case 0x36: return (byte)(0x80 | (CrtcRegisters[0x36] & 0x1F));
+            //
+            // Bits 1-0 are the read-only system bus strapping: 01 is VL-Bus
+            // and 10 is PCI (00 and 11 are reserved). This card sits on the
+            // PCI bus. The Windows 95 S3 driver derives its bus type from
+            // these bits, and with the reserved 00 it treated the card as
+            // ISA: no linear frame buffer, so it drew through the banked
+            // window and VFLATD while its MMIO registers sat in the same
+            // window, and its screen clears wiped the write mask.
+            case 0x36: return (byte)(0x80 | 0x02 | (CrtcRegisters[0x36] & 0x1C));
 
             // --- the linear aperture -------------------------------------
             //
