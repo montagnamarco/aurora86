@@ -165,28 +165,24 @@ public sealed partial class S3VirgeCard : VgaCard, IIoDevice, IMemoryDevice
         _disposed = true;
     }
 
+    /// <summary>
+    /// Whether the card answers on its VGA ports at all: only PCI I/O space
+    /// enable decides.
+    ///
+    /// SR9 bit 7, "MMIO-only", used to be honoured here too by answering FFh
+    /// to programmed I/O reads of the extended CRTC and sequencer registers,
+    /// following databook section 17-1 to the letter. Measured against the
+    /// Windows 95 ViRGE driver (S3V.DRV 4.03.00.2030), that reading is wrong:
+    /// right after a VBE mode set the driver writes SR9=80h and then reads
+    /// CR40, CR59, CR5A and CR51 through ports 3D4h/3D5h to locate the
+    /// linear aperture. Given FFh it concluded the adapter type was incorrect
+    /// and fell back to VGA. A real ViRGE keeps answering those reads, and the
+    /// 86Box ViRGE model never consults SR9 for port access either. The bit
+    /// is kept as plain register storage; it gates nothing.
+    /// </summary>
     private bool CanAccessPort(ushort port)
     {
-        if (_disposed || (Function.Command & PciIoEnable) == 0)
-        {
-            return false;
-        }
-
-        bool mmioOnly = (Registers.Sequencer(9) & 0x80) != 0
-            && (Registers.Crtc(0x53) & 0x18) != 0;
-        if (!mmioOnly)
-        {
-            return true;
-        }
-
-        // Databook 17-1 and 18-1 include SR08 and CR2D in the extended
-        // register groups. Standard VGA and index selection stay accessible.
-        if (port is 0x3D5 or 0x3B5)
-        {
-            return Registers.ReadByte((ushort)(port - 1)) < 0x2D;
-        }
-
-        return port != 0x3C5 || Registers.ReadByte(0x3C4) < 0x08;
+        return !_disposed && (Function.Command & PciIoEnable) != 0;
     }
 
     private void OnPciChanged()

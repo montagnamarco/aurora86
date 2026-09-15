@@ -131,25 +131,44 @@ public class S3VirgeCardTests
     }
 
     [Fact]
-    public void PioDisableLeavesMmioAndStandardVgaRulesDistinct()
+    public void PciIoDisableSilencesThePortsButMmioOnlyDoesNot()
     {
         using var fixture = new CardFixture();
+
+        // PCI I/O space off: the MMIO alias answers, the port does not.
         fixture.WritePci(4, 2);
         fixture.WriteCrtc(0x2E, 0);
         Assert.Equal(0x31, fixture.Memory.ReadByte(ResetMmio + 0x83D5));
         Assert.Equal(0xFF, fixture.Io.ReadByte(0x3D5));
         fixture.WritePci(4, 3);
         Assert.Equal(0x31, fixture.Io.ReadByte(0x3D5));
+
+        // SR9 bit 7 ("MMIO-only") does not silence the ports. The Windows 95
+        // ViRGE driver sets it and then reads CR40/CR59/CR5A/CR51 through
+        // 3D5h to find the aperture; a card answering FFh there was taken
+        // for the wrong adapter. Reads and writes keep working through both
+        // doors, as they do on the 86Box ViRGE model.
         fixture.Memory.WriteWord(ResetMmio + 0x83C4, 0x0608);
         fixture.Memory.WriteWord(ResetMmio + 0x83C4, 0x8009);
-        Assert.Equal(0xFF, fixture.Io.ReadByte(0x3D5));
+        Assert.Equal(0x31, fixture.Io.ReadByte(0x3D5));
         Assert.Equal(0x31, fixture.Memory.ReadByte(ResetMmio + 0x83D5));
+        fixture.Io.WriteByte(0x3C4, 0x09);
+        Assert.Equal(0x80, fixture.Io.ReadByte(0x3C5));
+
+        // A port write to an extended sequencer register takes effect: relocking
+        // SR8 through the port is visible through the MMIO alias.
         fixture.Io.WriteByte(0x3C4, 0x08);
         fixture.Io.WriteByte(0x3C5, 0);
+        Assert.Equal(0, fixture.Memory.ReadByte(ResetMmio + 0x83C5));
+        fixture.Io.WriteByte(0x3C5, 6);
         Assert.Equal(6, fixture.Memory.ReadByte(ResetMmio + 0x83C5));
+
+        // Standard VGA registers were never in question.
         fixture.Io.WriteByte(0x3C4, 0);
         fixture.Io.WriteByte(0x3C5, 3);
         Assert.Equal(3, fixture.Io.ReadByte(0x3C5));
+
+        // Clearing the bit changes nothing either.
         fixture.Memory.WriteWord(ResetMmio + 0x83C4, 0x0009);
         Assert.Equal(0x31, fixture.Io.ReadByte(0x3D5));
     }
