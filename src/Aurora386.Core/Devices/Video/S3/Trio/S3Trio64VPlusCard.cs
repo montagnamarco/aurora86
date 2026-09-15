@@ -13,6 +13,9 @@ public sealed class S3Trio64VPlusCard : VgaCard
 {
     public const uint EngineApertureOffset = 0x01000000;
 
+    /// <summary>PCI command bits the Trio64V+ implements: I/O space, memory space and VGA palette snoop.</summary>
+    private const ushort PciCommandWritableBits = 0x0023;
+
     /// <summary>
     /// Installs the existing Trio decoders on buses owned by the machine.
     /// These static mappings intentionally retain their established addresses;
@@ -39,7 +42,14 @@ public sealed class S3Trio64VPlusCard : VgaCard
         Registers.MmioBase = MmioBase;
         memory.MapDevice(frameBufferBase + EngineApertureOffset, 0x10000, Accelerator.Mmio);
 
-        Function = S3VideoIdentity.Trio64VPlus.CreatePciFunction(address);
+        // Command bits 0, 1 and 5 (I/O space, memory space, VGA palette
+        // snoop) are writable as on the chip, and POST enables both decoders
+        // as a system BIOS does for the VGA device. Windows 95's PCI
+        // enumerator reads this register: a VGA-class function whose decoders
+        // read as disabled is not treated as the display in use, gets no
+        // legacy VGA resources and the VDD cannot verify it (Code 23). The
+        // Trio's port and memory decoders themselves stay statically mapped.
+        Function = S3VideoIdentity.Trio64VPlus.CreatePciFunction(address, commandMask: PciCommandWritableBits);
         const uint apertureMask = ~(uint)(VgaMemory.TotalSize - 1);
         Function.Define(0x10, frameBufferBase | 0x08, 4, apertureMask);
         pci.Add(Function);

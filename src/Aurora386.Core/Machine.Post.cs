@@ -50,12 +50,13 @@ public sealed partial class Machine
     private void RunPost()
     {
         Pci.Reset();
-        if (VideoModel == Configuration.VmVideoModel.S3Virge325)
-        {
-            // The ViRGE gates standard VGA behind its PCI command register.
-            // Firmware enables both decoders before its first text-mode store.
-            Pci.WriteConfiguration(_pciVideoFunction.Address, 4, 2, 0x0003);
-        }
+
+        // A system BIOS enables the VGA device's I/O and memory decoders during
+        // POST. The ViRGE gates standard VGA behind these bits, so they must be
+        // set before the first text-mode store; the Trio decodes regardless,
+        // but Windows 95's PCI enumerator still reads the register to decide
+        // whether the VGA-class function is the display in use.
+        Pci.WriteConfiguration(_pciVideoFunction.Address, 4, 2, 0x0003);
         Interrupts.ResetTriggerModes();
         Usb?.Reset();
         UsbStorageController?.Reset();

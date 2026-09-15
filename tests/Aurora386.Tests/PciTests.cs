@@ -391,6 +391,31 @@ public class PciTests
     }
 
     /// <summary>
+    /// Windows 95's PCI enumerator reads the command register of a VGA-class
+    /// function to decide whether it is the display in use. A Trio whose
+    /// decoders read as disabled was left without legacy VGA resources and
+    /// reported Code 23 by the VDD. POST enables both decoders, as a system
+    /// BIOS does, and the chip's three command bits stay writable.
+    /// </summary>
+    [Fact]
+    public void TheDisplayAdapterReportsEnabledDecodersAfterPost()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(100);
+
+        Assert.Equal(0x0003u, machine.Pci.ReadConfiguration(0x20, 4, 2));
+
+        // I/O space, memory space and VGA palette snoop accept writes;
+        // bus mastering and the rest read back as zero.
+        machine.Pci.WriteConfiguration(0x20, 4, 2, 0xFFFF);
+        Assert.Equal(0x0023u, machine.Pci.ReadConfiguration(0x20, 4, 2));
+        machine.Pci.WriteConfiguration(0x20, 4, 2, 0x0000);
+        Assert.Equal(0x0000u, machine.Pci.ReadConfiguration(0x20, 4, 2));
+        machine.Pci.WriteConfiguration(0x20, 4, 2, 0x0003);
+        Assert.Equal(0x0003u, machine.Pci.ReadConfiguration(0x20, 4, 2));
+    }
+
+    /// <summary>
     /// Sizing the framebuffer aperture: software writes all ones to the base
     /// address register and reads back, and the bits that stay clear say how
     /// much the card decodes. The answer has to be the memory that is really

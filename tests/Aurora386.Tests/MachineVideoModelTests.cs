@@ -42,12 +42,14 @@ public sealed class MachineVideoModelTests
         Assert.Equal(0u, machine.Io.ReadWord(0x9AE8));
         Assert.Equal(0u, machine.Pci.ReadConfiguration(0x0020, 4, 2));
 
+        // Only I/O space, memory space and VGA palette snoop are implemented.
         machine.Pci.WriteConfiguration(0x0020, 4, 2, 0xFFFF);
-        Assert.Equal(0u, machine.Pci.ReadConfiguration(0x0020, 4, 2));
+        Assert.Equal(0x0023u, machine.Pci.ReadConfiguration(0x0020, 4, 2));
 
+        // POST enables the two decoders like a system BIOS does.
         machine.RunInstructions(50);
 
-        Assert.Equal(0u, machine.Pci.ReadConfiguration(0x0020, 4, 2));
+        Assert.Equal(0x0003u, machine.Pci.ReadConfiguration(0x0020, 4, 2));
     }
 
     [Fact]
