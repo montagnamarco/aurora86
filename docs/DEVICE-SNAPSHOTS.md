@@ -6,8 +6,8 @@ The scope is deterministic continuation of the existing Trio/ViRGE and SB16
 models at a stopped machine execution boundary. It does not add hardware
 features, change instruction semantics, or make disk snapshots transactional.
 
-SNAP-01/02 and standalone SNAP-03 DMA and SNAP-04 mixer/OPL serializers
-are implemented.
+SNAP-01/02 and standalone SNAP-03 DMA, SNAP-04 mixer/OPL and SNAP-05
+DSP/PCM serializers are implemented.
 A new Trio capture adds a DVS1 version 1 trailer containing one
 kind 1/model 0/version 1 accelerator record; ViRGE keeps
 its existing engine format. Empty trailers and historical absence survive
@@ -117,8 +117,56 @@ operators, stereo panning and mode-dependent cached values are exercised.
 Timers are checked across partial periods, masked/stopped operation, preload
 rewrites and latched status. Index/data continuation, mixer aliases/resource
 readbacks, malformed atomic rejection and rate mismatch are covered. The
-standalone payloads are not yet nested in DSP or emitted by `MachineSnapshot`;
-SNAP-05/06 own those steps. No complete SB16 playback continuation is claimed.
+standalone payloads are nested in DSP1 by SNAP-05 but are not yet emitted by
+`MachineSnapshot`; SNAP-06 owns machine integration.
+
+### Implemented standalone DSP/PCM payload
+
+[SoundBlaster16.Snapshot.cs](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.Snapshot.cs)
+provides detached capture, complete validation, target-rate validation, raw
+restore and reset to constructed defaults. `DSP1` version 1 has a 108-byte
+header, FIFO bytes in read order, queued PCM as little-endian signed shorts,
+then complete `MIX1` and `OPL1` payloads. The header stores:
+
+| Offset | Encoding and contents |
+| --- | --- |
+| 0–7 | DWORD magic, WORD version, WORD header length |
+| 8–15 | Signed DWORD output rate and ring capacity in shorts |
+| 16–31 | WORD base port, enabled/speaker bytes, signed DWORD IRQ/DMA8/DMA16 |
+| 32–37 | Command, reset, last output, identification, test and time-constant bytes |
+| 38–43 | Auto-init, 16-bit, stereo, signed, paused and playing boolean bytes |
+| 44–55 | Signed DWORD pending/received argument counts and four raw argument bytes |
+| 56–67 | Signed DWORD playback rate, block length and remaining transfers |
+| 68–91 | Three lossless doubles: sample, resample and FM fractions |
+| 92–107 | Signed DWORD FIFO count, PCM short count, MIX1 length and OPL1 length |
+
+Validation checks exact total length using wide arithmetic before count-based
+allocation, boolean bytes, parser relationships, rates, nonnegative counters,
+finite fractions in `[0,1)`, nested payloads and matching output rates. Block
+length and remaining count are independent: command `48` can rewrite the next
+block length while a longer current block is still playing. Legacy `1C` can
+increase the stored block length above 65536; the serializer preserves it.
+Resource integers remain independent of mixer readbacks until machine preflight.
+
+PCM is canonicalized into logical dequeue order. Odd queue counts and odd
+capacities are valid because the current host API accepts odd short reads.
+Physical ring cursors and unused slots are not guest state. Restore retains
+chip objects, DMA/PIC references, bus registrations and the target's diagnostic
+`InterruptCount`; it performs no IRQ callback, transfer or render. Callers must
+stop both device execution and audio consumption. Restoring resources does not
+remap ports: enclosing machine integration must rebuild mappings in SNAP-06.
+Reset restores the constructor base/rate, default resources and empty DSP/PCM
+and nested state without emitting the guest reset handshake.
+
+Port tests cover partial `41` arguments at `22C`, unread `22A` FIFO/last latch,
+reset `226` bit 0, paused and active 8/16-bit auto-init playback around block
+completion, signed/unsigned and stereo formats, and IRQ `82` acknowledgement
+through `22E`/`22F`. Replay compares queued/future PCM, DMA state, PIC state and
+IRQ-count deltas on a used target. Wrapped queues, odd host reads, nonzero
+bank-1 FM release, timer fractions, nested selectors, reset and malformed
+atomic rejection are also covered. This proves standalone continuation of the
+existing audio model; machine snapshots and new audio semantics remain outside
+SNAP-05.
 
 ## Current coverage and gaps
 
@@ -128,8 +176,8 @@ SNAP-05/06 own those steps. No complete SB16 playback continuation is claimed.
 | [S3Accelerator](../src/Aurora386.Core/Devices/Video/S3Accelerator.cs) | T3D1 plus separately saved VRAM | None identified for the current synchronous engine |
 | [ViRGE engines](../src/Aurora386.Core/Devices/Video/S3VirgeCard.Snapshot.cs) | VGE1 wraps triangle, BitBLT and primary Streams state | No new engine block needed for the implemented synchronous triangle subset |
 | [Dma8237](../src/Aurora386.Core/Devices/System/Dma8237.cs) | Standalone DMA1 capture/restore for all eight channels and both byte pointers | MachineSnapshot integration (SNAP-06) |
-| [SbMixer / Opl3](../src/Aurora386.Core/Devices/Audio/SbMixer.Snapshot.cs) | Standalone MIX1/OPL1 with raw mixer, synthesis and timer state | DSP nesting and machine integration |
-| [SoundBlaster16](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.cs) | Not captured | DSP parser/FIFO, playback, timing fractions, resources, PCM queue and nested mixer/OPL integration |
+| [SbMixer / Opl3](../src/Aurora386.Core/Devices/Audio/SbMixer.Snapshot.cs) | Standalone MIX1/OPL1 with raw mixer, synthesis and timer state | Machine integration (SNAP-06) |
+| [SoundBlaster16](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.Snapshot.cs) | Standalone DSP1 with nested MIX1/OPL1 | Machine integration and bus mapping/preflight (SNAP-06) |
 | [IsaPnpBus](../src/Aurora386.Core/Devices/IsaPnp/IsaPnpBus.cs) | Not captured | Bus selection/isolation and card/logical-device configuration |
 
 ViRGE colour, depth and future texture bytes stored in VRAM must not be copied
@@ -240,7 +288,7 @@ new concurrency guarantee or destructive transition; do not add these implicitly
    control `04`, index/data sequencing and nonzero PCM after mid-envelope
    capture. Compare the complete PCM suffix and timer status to uninterrupted
    execution. Derived fields may be recomputed only without side effects.
-5. **SNAP-05 — DSP playback and PCM.** Files: `SoundBlaster16.cs`, audio tests.
+5. **SNAP-05 — DSP playback and PCM (implemented standalone).** Files: `SoundBlaster16.cs`, audio tests.
    Save output FIFO order/last byte, pending command/arguments/counts, reset
    latch, identification/test registers, speaker, playback format/block state,
    sample/resample/FM fractions and core ring. Include resources/enabled state

@@ -34,7 +34,7 @@ namespace Aurora386.Core.Devices.Audio;
 /// bits -- is the traditional one for proving a data bus is really being
 /// driven rather than floating.
 /// </summary>
-public sealed class SoundBlaster16 : IIoDevice, IAudioOutput
+public sealed partial class SoundBlaster16 : IIoDevice, IAudioOutput
 {
     /// <summary>The DSP version reported by command 0xE1. 4.05 identifies an SB16.</summary>
     public const byte VersionMajor = 4;
@@ -42,6 +42,7 @@ public sealed class SoundBlaster16 : IIoDevice, IAudioOutput
 
     private readonly InterruptController? _interrupts;
     private readonly Dma8237? _dma;
+    private readonly ushort _constructedBasePort;
 
     public SbMixer Mixer { get; }
     public Opl3 Fm { get; }
@@ -166,6 +167,7 @@ public sealed class SoundBlaster16 : IIoDevice, IAudioOutput
     {
         _interrupts = interrupts;
         _dma = dma;
+        _constructedBasePort = basePort;
         BasePort = basePort;
         SampleRate = outputSampleRate;
 
