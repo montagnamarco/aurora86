@@ -108,14 +108,24 @@ public sealed class VgaMemory : IMemoryDevice
     public VgaMemory(VgaRegisters registers) => Registers = registers;
 
     /// <summary>
-    /// The graphics engine's memory-mapped registers, which take over the
-    /// upper half of the window at A0000h while CR53 bit 4 is set. Null
-    /// on a plain VGA.
+    /// The graphics engine's memory-mapped registers, which share the window
+    /// at A0000h with video memory while CR53 bit 4 is set. Null on a plain
+    /// VGA. The engine says which offsets it answers: its register addresses
+    /// in the upper half, and the lower half only while a command is waiting
+    /// for pixel data from the processor. Everything else stays the banked
+    /// video-memory window, which is how the Windows 95 S3 driver uploads
+    /// its hardware-cursor pattern and icon bitmaps with MMIO enabled.
     /// </summary>
-    public IMemoryDevice? Engine { get; set; }
+    public IMappedEngine? Engine { get; set; }
 
     /// <summary>Whether this offset in the window belongs to the engine right now.</summary>
-    private bool EngineOwns(uint offset) => offset < 0x10000 && Engine is not null && Registers.MemoryMappedEngine;
+    private bool EngineOwns(uint offset)
+    {
+        return offset < 0x10000
+            && Engine is not null
+            && Registers.MemoryMappedEngine
+            && Engine.ClaimsWindowOffset(offset);
+    }
 
     /// <summary>The latch contents, for tests and for the debugger.</summary>
     public ReadOnlySpan<byte> Latches => _latches;
@@ -343,8 +353,9 @@ public sealed class VgaMemory : IMemoryDevice
     {
         if (offset >= Size) return;
 
-        // With the engine mapped in, the upper 32 KB are its registers and
-        // the lower 32 KB the image transfer area, not the screen.
+        // With the engine mapped in, its registers in the upper 32 KB and,
+        // while it waits for processor data, the image transfer area in the
+        // lower 32 KB are not the screen.
         if (EngineOwns(offset))
         {
             Engine!.WriteByte(offset, value);
@@ -684,4 +695,15 @@ public sealed class VgaMemory : IMemoryDevice
             MarkDirty(offset);
         }
     }
+}
+
+/// <summary>
+/// A drawing engine that can share the VGA window at A0000h with video
+/// memory: the card maps its registers there while the rest of the window
+/// keeps addressing video memory.
+/// </summary>
+public interface IMappedEngine : IMemoryDevice
+{
+    /// <summary>Whether the engine, rather than video memory, answers this window offset now.</summary>
+    bool ClaimsWindowOffset(uint offset);
 }

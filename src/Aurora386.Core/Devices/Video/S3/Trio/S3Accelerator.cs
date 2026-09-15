@@ -85,6 +85,9 @@ public sealed partial class S3Accelerator : IIoDwordDevice
     /// <summary>Operations performed, which the tests read.</summary>
     public long OperationsPerformed { get; private set; }
 
+    /// <summary>Whether a command with PCDATA set still waits for pixels from the processor.</summary>
+    public bool IsAwaitingProcessorData => _transfer is { Done: false };
+
     /// <summary>
     /// Diagnostics: every command as it executes, with the operation bits
     /// and the rectangle it names. What a driver asks the engine to do is
@@ -106,8 +109,29 @@ public sealed partial class S3Accelerator : IIoDwordDevice
     /// 0x82E8 becomes offset 0x82E8 in the window, and so on, which makes the
     /// two interfaces the same register file seen twice.
     /// </summary>
-    public sealed class MemoryMappedRegisters(S3Accelerator engine) : IMemoryDevice
+    public sealed class MemoryMappedRegisters(S3Accelerator engine) : IMappedEngine
     {
+        /// <summary>
+        /// The Windows 95 S3 driver keeps the engine mapped (CR53.4) while it
+        /// writes its hardware-cursor pattern at AB000h and icon bitmaps at
+        /// A0000h-A7FFFh through the bank window, and it streams glyph bits
+        /// to A0000h only after a command with PCDATA set. So the engine
+        /// answers its register addresses -- the packed pairs at 8100h-81FFh
+        /// and the 8514 ports, which all sit at xxE8h/xxEAh -- and the image
+        /// transfer area only while a command is waiting for data.
+        /// </summary>
+        public bool ClaimsWindowOffset(uint offset)
+        {
+            if (offset < 0x8000)
+            {
+                return engine.IsAwaitingProcessorData;
+            }
+
+            bool packedRegister = offset is >= 0x8100 and < 0x8200;
+            bool portStyleRegister = (offset & 0x3FC) == 0x2E8;
+            return packedRegister || portStyleRegister;
+        }
+
         public byte ReadByte(uint offset)
         {
             return engine.ReadMmioByte((ushort)offset);

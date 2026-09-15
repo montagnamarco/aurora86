@@ -788,13 +788,61 @@ public class S3MemoryMappedEngineTests
     }
 
     [Fact]
-    public void TheLowerHalfIsNotTheScreenWhileTheEngineIsMapped()
+    public void TheLowerHalfIsTheImageTransferAreaOnlyWhileACommandWaitsForData()
     {
         using Machine machine = InSvgaMode();
         EnableMmio(machine, true);
 
-        machine.Memory.WriteByte(0xA0000, 0x77);          // image transfer area, not pixel 0
-        Assert.Equal(0x00, machine.VideoMemory.ReadLinear(0));
+        // No command is waiting: the window is video memory, bank zero.
+        machine.Memory.WriteByte(0xA0000, 0x77);
+        Assert.Equal(0x77, machine.VideoMemory.ReadLinear(0));
+        Assert.Equal(0x77, machine.Memory.ReadByte(0xA0000));
+
+        // A rectangle fill with PCDATA set takes its pixels from the area.
+        machine.Memory.WriteWord(0xABAE8, 0x0047);          // CPU source, replace
+        machine.Memory.WriteDword(0xA8100, (20u << 16) | 30);
+        machine.Memory.WriteDword(0xA8148, (1u << 16) | 0);
+        machine.Memory.WriteWord(0xA8118, 0x55B1);
+        machine.Memory.WriteDword(0xA0000, 0x00002211);
+
+        Assert.Equal(0x11, Pixel(machine, 20, 30));
+        Assert.Equal(0x22, Pixel(machine, 21, 30));
+        Assert.Equal(0x77, machine.VideoMemory.ReadLinear(0));
+
+        // The command is complete, so the window is video memory again.
+        machine.Memory.WriteByte(0xA0002, 0x66);
+        Assert.Equal(0x66, machine.VideoMemory.ReadLinear(2));
+    }
+
+    [Fact]
+    public void TheUpperHalfIsVideoMemoryBetweenTheRegistersWhileTheEngineIsMapped()
+    {
+        using Machine machine = InSvgaMode();
+        EnableMmio(machine, true);
+
+        // The Windows 95 S3 driver writes the hardware-cursor pattern at
+        // AB000h with CR35 selecting bank four: video memory 4B000h. CR31.0
+        // enables the CR35 bank, SR04.3 (chain-4, as the ROM leaves mode
+        // 101h) makes a bank 64 KB, and CR38=48h unlocks both registers.
+        machine.Io.WriteWord(0x3C4, 0x0E04);
+        machine.Io.WriteByte(0x3D4, 0x38);
+        machine.Io.WriteByte(0x3D5, 0x48);
+        machine.Io.WriteByte(0x3D4, 0x31);
+        machine.Io.WriteByte(0x3D5, (byte)(machine.Io.ReadByte(0x3D5) | 0x01));
+        machine.Io.WriteByte(0x3D4, 0x35);
+        machine.Io.WriteByte(0x3D5, 0x04);
+        machine.Memory.WriteDword(0xAB000, 0x0000FFFF);
+        Assert.Equal(0xFF, machine.VideoMemory.ReadLinear(0x4B000));
+        Assert.Equal(0xFF, machine.VideoMemory.ReadLinear(0x4B001));
+        Assert.Equal(0x00, machine.VideoMemory.ReadLinear(0x4B002));
+        Assert.Equal(0xFFFF, machine.Memory.ReadWord(0xAB000));
+
+        // The registers in between still belong to the engine.
+        machine.Memory.WriteDword(0xA8100, (321u << 16) | 123);
+        Assert.Equal(123, machine.Memory.ReadWord(0xA8100));
+        Assert.Equal(0x00, machine.VideoMemory.ReadLinear(0x48100));
+        machine.Memory.WriteWord(0xAA6E8, 0x0C);
+        Assert.Equal(0x00, machine.VideoMemory.ReadLinear(0x4A6E8));
     }
 
     [Fact]
