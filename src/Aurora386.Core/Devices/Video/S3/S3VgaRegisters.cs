@@ -465,16 +465,20 @@ public sealed class S3VgaRegisters : VgaRegisters
         {
             if (VirgeAperture is not null && (CrtcRegisters[0x31] & 8) != 0)
             {
-                // ViRGE CR13 (16-20): CR31.3 forces doubleword addressing,
-                // hence four bytes per offset unit, independently of Chain-4.
-                // CR51[5:4] overrides CR43.2 when nonzero (18-16).
+                // ViRGE CR31.3 (18-2) forces doubleword memory addressing
+                // independently of CR14.6 and Chain-4. In doubleword mode the
+                // VGA offset unit is eight bytes, as mode 13h shows with
+                // CR13=28h for a 320-byte pitch. The Windows 95 ViRGE driver
+                // relies on it: after a VBE mode set it reads CR51, CR43 and
+                // CR13 and programs the 2D engine stride as eight times that
+                // logical width. CR51[5:4] overrides CR43.2 when nonzero (18-16).
                 int extension = (CrtcRegisters[0x51] & 0x30) << 4;
                 if (extension == 0)
                 {
                     extension = (CrtcRegisters[0x43] & 4) << 6;
                 }
 
-                return (CrtcRegisters[0x13] | extension) * 4;
+                return (CrtcRegisters[0x13] | extension) * 8;
             }
 
             return (CrtcRegisters[0x13]

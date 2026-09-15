@@ -51,23 +51,24 @@ public static partial class BiosRom
         WriteCrtc(0x38, 0x48);                            // Unlock CR30-3F.
         WriteCrtc(0x39, 0xA0);                            // Unlock CR40 and above.
 
-        // Databook sections 16-20 and 18-16: CR31.3 forces a four-byte
-        // address unit. RGB1555 uses 640 * 2 / 4 = 0140h; indexed 8-bit
-        // uses 640 / 4 = 00A0h. Clear both old pitch and bank extensions.
+        // Databook sections 16-20 and 18-2: CR31.3 forces doubleword
+        // addressing, whose offset unit is eight bytes. Indexed 8-bit uses
+        // 640 / 8 = 50h and RGB1555 640 * 2 / 8 = A0h, so neither pitch
+        // needs the CR43.2 or CR51[5:4] extension bits. The Windows 95 ViRGE
+        // driver reads these three registers back after the mode set and
+        // derives its 2D engine stride from them. Clear both old pitch and
+        // bank extensions.
         code.B(0x89, 0xD8, 0x25, 0xFF, 0x3F);             // MOV AX,BX / AND AX,3FFFh
         code.B(0x3D, 0x01, 0x01);                         // CMP AX,0101h
         code.Jcc(0x75, "rgb1555_pitch");
+        WriteCrtc(0x13, 0x50);
+        code.JmpNear("pitch_extensions");
+        code.Label("rgb1555_pitch");
         WriteCrtc(0x13, 0xA0);
+        code.Label("pitch_extensions");
         WriteCrtc(0x35, 0x00);                            // Clear the old bank selector.
         WriteCrtc(0x43, 0x00);                            // CR43.2: old pitch extension disabled.
-        WriteCrtc(0x51, 0x00);
-        code.JmpNear("pitch_complete");
-        code.Label("rgb1555_pitch");
-        WriteCrtc(0x13, 0x40);                            // Pitch bits 7-0.
-        WriteCrtc(0x35, 0x00);                            // Keep mode 110h's original programming order.
-        WriteCrtc(0x43, 0x00);
-        WriteCrtc(0x51, 0x10);                            // CR51[5:4]=01b: pitch bit 8.
-        code.Label("pitch_complete");
+        WriteCrtc(0x51, 0x00);                            // CR51[5:4]=00b: no pitch bits 9-8.
         WriteCrtc(0x5D, 0x00);                            // No horizontal timing extensions.
         WriteCrtc(0x5E, 0x00);                            // No vertical timing extensions.
         WriteCrtc(0x69, 0x00);                            // Display start address extension zero.

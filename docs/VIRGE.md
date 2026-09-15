@@ -21,13 +21,18 @@ Other requests fail with `AX=014F`
 before changing video state or caller buffers. Mode bit 14 selects linear
 access; bit 15 preserves VRAM. The default Trio BIOS remains byte-identical.
 
-Mode `0101h` uses `CR13=A0h`, zero CR51/CR43 pitch extensions and `CR31.3=1`:
-the forced doubleword address unit yields a 640-byte pitch independently of
-Chain-4. `CR67=00h` selects one 8-bit palette pixel per clock with Streams
-disabled. `GR05.6=1` and `CR3A.4=1` select 256-colour graphics shifts and enhanced
-attribute shifts. Returning to VGA clears CR3A.4 and restores its graphics
-register table. Mode `0110h` retains `CR13=40h`, `CR51[5:4]=01b`, `CR31.3=1`
-and `CR67=30h`, yielding a 1280-byte RGB1555 pitch.
+Mode `0101h` uses `CR13=50h`, zero CR51/CR43 pitch extensions and `CR31.3=1`:
+the forced doubleword address unit is eight bytes, as in VGA mode 13h, so the
+pitch is 640 bytes independently of Chain-4. `CR67=00h` selects one 8-bit
+palette pixel per clock with Streams disabled. `GR05.6=1` and `CR3A.4=1` select
+256-colour graphics shifts and enhanced attribute shifts. Returning to VGA
+clears CR3A.4 and restores its graphics register table. Mode `0110h` uses
+`CR13=A0h`, zero pitch extensions, `CR31.3=1` and `CR67=30h`, yielding a
+1280-byte RGB1555 pitch. The Windows 95 driver S3V.DRV reads CR51, CR43 and
+CR13 after the mode set and programs the BitBLT stride as eight times the
+logical width, which is how the earlier `CR13=A0h` for mode 0101h produced a
+1280-byte driver stride over a 640-byte display and a desktop drawn on every
+other scanline.
 Nonzero CR51 pitch extensions take precedence over CR43.2. CPU tests verify
 banked and relocated linear pixel writes against the rendered scanlines,
 snapshot restoration, and the return to B8000 text memory.

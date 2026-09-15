@@ -93,12 +93,12 @@ public sealed class VirgeVesaTests
 
         Assert.Equal(0x004F, machine.Cpu.State.Ax);
         Assert.True((machine.Cpu.State.OtherFlags & Flags.Direction) != 0);
-        Assert.Contains(((byte)0x13, (byte)0xA0), crtcWrites);
+        Assert.Contains(((byte)0x13, (byte)0x50), crtcWrites);
         Assert.Contains(((byte)0x3A, (byte)0x10), crtcWrites);
         Assert.Contains(((byte)0x67, (byte)0x00), crtcWrites);
         Assert.Contains(((byte)0x05, (byte)0x40), graphicsWrites);
         Assert.Equal(640, machine.VideoRegisters.ExtendedRowOffset);
-        Assert.Equal(0xA0, machine.VideoRegisters.Crtc(0x13));
+        Assert.Equal(0x50, machine.VideoRegisters.Crtc(0x13));
         Assert.Equal(0, machine.VideoRegisters.Crtc(0x51));
         Assert.Equal(0, machine.VideoRegisters.Crtc(0x43));
         Assert.Equal(0x10, machine.VideoRegisters.Crtc(0x3A));
@@ -242,8 +242,8 @@ public sealed class VirgeVesaTests
         Assert.Equal(1, machine.VideoRegisters.Crtc(0x66) & 1);
         Assert.Equal(requested == 0x4110 ? 0x12 : 0, machine.VideoRegisters.Crtc(0x58) & 0x13);
         Assert.Equal(1280, machine.VideoRegisters.ExtendedRowOffset);
-        Assert.Equal(0x40, machine.VideoRegisters.Crtc(0x13));
-        Assert.Equal(0x10, machine.VideoRegisters.Crtc(0x51) & 0x30);
+        Assert.Equal(0xA0, machine.VideoRegisters.Crtc(0x13));
+        Assert.Equal(0, machine.VideoRegisters.Crtc(0x51) & 0x30);
         Assert.Equal(0x30, machine.VideoRegisters.Crtc(0x67) & 0xFC);
         Assert.Equal(0x4F, machine.VideoRegisters.Crtc(0x01));
         Assert.Equal(0xDF, machine.VideoRegisters.Crtc(0x12));
@@ -271,13 +271,18 @@ public sealed class VirgeVesaTests
     {
         using Machine machine = Started();
         Int10(machine, 0x4F02, 0x0110);
+        Assert.Equal(1280, machine.VideoRegisters.ExtendedRowOffset);
+
+        // CR13=A0h with CR43.2 adds bit 8: 1A0h logical width, eight bytes each.
         machine.Io.WriteWord(0x3D4, 0x0051);
         machine.Io.WriteWord(0x3D4, 0x0443);
-        Assert.Equal(1280, machine.VideoRegisters.ExtendedRowOffset);
+        Assert.Equal(3328, machine.VideoRegisters.ExtendedRowOffset);
+
+        // A nonzero CR51[5:4] replaces CR43.2 instead of combining with it.
         machine.Io.WriteWord(0x3D4, 0x2051);
-        Assert.Equal(2304, machine.VideoRegisters.ExtendedRowOffset);
+        Assert.Equal(5376, machine.VideoRegisters.ExtendedRowOffset);
         machine.Io.WriteWord(0x3C4, 0x0804);
-        Assert.Equal(2304, machine.VideoRegisters.ExtendedRowOffset);
+        Assert.Equal(5376, machine.VideoRegisters.ExtendedRowOffset);
     }
 
     [Fact]
@@ -326,7 +331,9 @@ public sealed class VirgeVesaTests
         Int10(machine, 0x4F05, dx: 0);
         CpuWriteWord(machine, 0xA0000, 0x7C00);
         Assert.Equal(0x7C, machine.VideoMemory.ReadLinear(1));
-        Assert.Equal(1280, machine.VideoRegisters.ExtendedRowOffset);
+
+        // CR51[5:4]=01b survives the bank reset: 1A0h logical width, 3328 bytes.
+        Assert.Equal(3328, machine.VideoRegisters.ExtendedRowOffset);
         Int10(machine, 0x4F05, bx: 0x0100);
         Assert.Equal(0, machine.Cpu.State.Dx);
     }
