@@ -48,6 +48,34 @@ This is an emulator firmware limitation independent of successful PCI
 detection and driver file installation. The mode extension and its guest
 replay are tracked separately from the structural refactor.
 
+## ViRGE desktop at 640x480x8
+
+Four measured defects separated the driver from a working desktop, each fixed
+in its own commit with a test naming the register or command:
+
+1. `0ad85c5`: the ROM and VBE service accept mode `0101h` (indexed 8-bit).
+2. `b1a3dd2`: after the mode set the driver writes SR9=80h ("MMIO only") and
+   reads CR40, CR59, CR5A and CR51 through the ports. Answering FFh made the
+   driver conclude the adapter was wrong and fall back to VGA. Only PCI I/O
+   space being disabled silences the ports.
+3. `592aad7`: the desktop repaint issued 266 BitBLT commands the 2D engine
+   rejected: transparent and opaque mono text uploads (`079802E2h`,
+   `079800E2h`), mono-pattern PATCOPY and PATINVERT (`07E00920h`, `06B40920h`)
+   and an 8-bit rectangle fill (`17E00322h`). The engine now evaluates the
+   three-operand ROP table for 8- and 16-bit destinations, anchors mono
+   patterns to screen coordinates and consumes CPU uploads byte by byte.
+4. `edc0d0a`: the desktop drew on every other scanline with doubled icons.
+   The driver reads CR51, CR43 and CR13 after the mode set and programs its
+   BitBLT stride as eight times the logical width; the ROM had programmed
+   CR13=A0h for a 640-byte pitch under a four-byte unit. The doubleword unit
+   is eight bytes (VGA mode 13h uses CR13=28h for 320 bytes), so the ROM now
+   programs CR13=50h for `0101h` and A0h for `0110h`.
+
+Cold boot of the driver-installed image at `edc0d0a` reaches the login dialog
+and a complete desktop (background, icons, labels, taskbar, tray) at
+640x480x8 through S3V.DRV. Device Manager has not been re-read after these
+fixes; that check remains open.
+
 ## Other warning entries
 
 The same guest configurations also show warning overlays for Standard PS/2
