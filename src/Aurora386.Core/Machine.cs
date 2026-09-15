@@ -40,6 +40,14 @@ public sealed partial class Machine : IDisposable
     public Cmos Cmos { get; }
 
     /// <summary>
+    /// The guest's diagnostic channel to the host, on port 0xE9. Always
+    /// fitted: it costs one slot in the port table, and a guest that wants to
+    /// know whether anybody is listening asks the port itself rather than
+    /// being told at configuration time.
+    /// </summary>
+    public DebugConsolePort DebugConsole { get; }
+
+    /// <summary>
     /// The mouse itself: one physical device, read by three different
     /// interfaces. Which of them the guest listens to depends entirely on
     /// what driver it loaded, so both ports are fitted and INT 33h is
@@ -247,6 +255,11 @@ public sealed partial class Machine : IDisposable
 
         Cmos = new Cmos(ramSize);
         Cmos.Register(Io);
+
+        // Port 0xE9 is unassigned on a real PC, so fitting it here takes
+        // nothing away from any guest that does not know about it.
+        DebugConsole = new DebugConsolePort();
+        DebugConsole.Register(Io);
 
         Mouse = new MouseState();
         Ps2Mouse = new Ps2Mouse(Mouse);
