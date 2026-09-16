@@ -151,6 +151,147 @@ public static class DiskImageBuilder
         file.Write(footer);
     }
 
+    /// <summary>
+    /// Writes an image with one partition filling the disk, formatted FAT32
+    /// and empty.
+    ///
+    /// FAT32 rather than FAT16 because it is what a modern guest expects: it
+    /// is the file system of the UEFI system partition, the one every machine
+    /// made since 1996 reads, and the one Aurora OS mounts. A test that
+    /// formatted FAT16 would exercise a driver nobody has.
+    ///
+    /// MIND that FAT32 is not FAT16 with wider entries. Three things move:
+    /// the root directory becomes an ordinary cluster chain rather than a
+    /// fixed region, the table size moves to a 32-bit field because the
+    /// 16-bit one cannot express it, and two zeroes in the old fields are
+    /// what identifies the format. Getting the last of those wrong produces a
+    /// volume every reader takes for FAT16.
+    /// </summary>
+    public static void CreateFat32(string path, long bytes, string label = "AURORA")
+    {
+        long cylinders = bytes / (SectorsPerTrack * Heads * SectorSize);
+
+        // FAT32 needs at least 65525 clusters by definition -- fewer makes it
+        // FAT16 whatever the fields say, because that is how every reader
+        // decides. With one sector per cluster that is about 32 MB.
+        if (cylinders < 70)
+            throw new ArgumentException(
+                "A FAT32 volume needs about 35 MB to hold enough clusters.",
+                nameof(bytes));
+
+        long totalSectors = cylinders * SectorsPerTrack * Heads;
+        var image = new byte[totalSectors * SectorSize];
+
+        var geometry = HardDiskImage.Geometry.ForSize(totalSectors * SectorSize);
+
+        const uint firstSector = 63;
+        uint partitionSectors = (uint)(totalSectors - firstSector);
+
+        WriteMasterBootRecord(image, geometry, firstSector, partitionSectors);
+
+        // 0x0C is FAT32 with LBA addressing, which is what anything written
+        // since about 1998 uses. 0x0B is the same file system addressed
+        // through cylinder, head and sector, and choosing it would ask every
+        // reader to go through a geometry that stopped meaning anything.
+        image[0x1BE + 4] = 0x0C;
+
+        WriteFat32Volume(image, firstSector * SectorSize, partitionSectors, label);
+
+        File.WriteAllBytes(path, image);
+    }
+
+    private static void WriteFat32Volume(byte[] image, long at, uint sectors, string label)
+    {
+        const uint reserved = 32;          // the conventional FAT32 figure
+        const uint tables = 2;
+        const uint sectorsPerCluster = 1;
+
+        // How big the table must be to describe the clusters, which depends
+        // on how many clusters there are, which depends on how big the table
+        // is. The circularity is resolved by solving it rather than by
+        // iterating: each cluster needs four bytes of table, so
+        //
+        //     clusters = (sectors - reserved - tables * tableSectors) / spc
+        //     tableSectors = ceil(clusters * 4 / sectorSize)
+        //
+        // which rearranges into the expression below.
+        uint dataSectors = sectors - reserved;
+        uint tableSectors = (dataSectors / sectorsPerCluster * 4 + SectorSize - 1)
+                            / (SectorSize + tables * 4 / sectorsPerCluster);
+        tableSectors += 1;                  // round up rather than short
+
+        uint firstDataSector = reserved + tables * tableSectors;
+        uint clusters = (sectors - firstDataSector) / sectorsPerCluster;
+
+        const uint rootCluster = 2;
+
+        // The boot sector. It begins with a jump because the BIOS loads and
+        // executes it, so the fields start at offset 11.
+        image[at + 0] = 0xEB;
+        image[at + 1] = 0x58;
+        image[at + 2] = 0x90;
+        WriteAscii(image, at + 3, "MSWIN4.1", 8);
+
+        WriteWord(image, at + 11, SectorSize);
+        image[at + 13] = (byte)sectorsPerCluster;
+        WriteWord(image, at + 14, (int)reserved);
+        image[at + 16] = (byte)tables;
+
+        // THE TWO ZEROES THAT IDENTIFY FAT32. The root entry count and the
+        // 16-bit table size are zero only on FAT32, and the specification
+        // says explicitly that this -- not the "FAT32" string below -- is how
+        // a reader decides.
+        WriteWord(image, at + 17, 0);
+        WriteWord(image, at + 22, 0);
+
+        WriteWord(image, at + 19, 0);       // the 16-bit total, unused here
+        image[at + 21] = 0xF8;              // fixed disk
+        WriteWord(image, at + 24, SectorsPerTrack);
+        WriteWord(image, at + 26, Heads);
+        WriteDword(image, at + 28, 63);     // sectors before this partition
+        WriteDword(image, at + 32, sectors);
+
+        WriteDword(image, at + 36, tableSectors);
+        WriteWord(image, at + 40, 0);       // flags: both tables live
+        WriteWord(image, at + 42, 0);       // version
+        WriteDword(image, at + 44, rootCluster);
+        WriteWord(image, at + 48, 1);       // the information sector
+        WriteWord(image, at + 50, 6);       // where the backup boot sector is
+
+        image[at + 64] = 0x80;              // drive number
+        image[at + 66] = 0x29;              // an extended signature follows
+        WriteDword(image, at + 67, 0x41555241);
+        WriteAscii(image, at + 71, label, 11);
+        WriteAscii(image, at + 82, "FAT32   ", 8);
+
+        image[at + 510] = 0x55;
+        image[at + 511] = 0xAA;
+
+        // The backup boot sector, which FAT32 keeps because losing the boot
+        // sector loses the volume. Every reader that repairs a disk looks
+        // here first.
+        for (int i = 0; i < SectorSize; i++)
+            image[at + 6 * SectorSize + i] = image[at + i];
+
+        // The allocation tables. The first two entries are reserved and hold
+        // the media byte and an end marker; the root's cluster holds an end
+        // marker because it is one cluster long and empty.
+        for (uint table = 0; table < tables; table++)
+        {
+            long tableAt = at + (reserved + table * tableSectors) * SectorSize;
+
+            WriteDword(image, tableAt + 0, 0x0FFFFFF8);
+            WriteDword(image, tableAt + 4, 0x0FFFFFFF);
+            WriteDword(image, tableAt + 8, 0x0FFFFFFF);   // the root, ending
+        }
+
+        // The root directory: one cluster, zeroed, which is an empty
+        // directory. The volume label would go here as an entry; leaving it
+        // out keeps the root genuinely empty, which is what a test wants.
+        _ = clusters;
+        _ = firstDataSector;
+    }
+
     private static void WriteBigEndian16(byte[] buffer, int at, int value)
     {
         buffer[at] = (byte)(value >> 8);
