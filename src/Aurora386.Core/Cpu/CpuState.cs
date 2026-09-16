@@ -40,6 +40,20 @@ public enum CpuModel
 {
     Intel386,
     Intel486,
+
+    /// <summary>
+    /// The Pentium of 1993. What it adds that software actually looks for is
+    /// the time stamp counter and the machine specific registers; CPUID gains
+    /// the feature bits that announce them.
+    ///
+    /// It is here because every bootloader written after the middle nineties
+    /// assumes RDTSC exists and uses it to measure time without programming
+    /// the interval timer. On a 486 those bootloaders fault, and a fault with
+    /// no handler in place is a triple fault, which resets the machine: the
+    /// symptom is a loader that appears to restart forever, a long way from
+    /// its cause.
+    /// </summary>
+    Pentium,
 }
 
 public sealed class CpuState
@@ -406,7 +420,12 @@ public sealed class CpuState
         // 8-11, model in 4-7, stepping in 0-3. It is the only identification
         // available to firmware before any instruction has run, and it is
         // where a BIOS looks to decide which chip it has woken up on.
-        Gpr[(int)Reg.Edx] = Model >= CpuModel.Intel486 ? 0x0480u : 0x0308u;
+        Gpr[(int)Reg.Edx] = Model switch
+        {
+            >= CpuModel.Pentium => 0x0520u,   // family 5, model 2: Pentium
+            >= CpuModel.Intel486 => 0x0480u,  // family 4, model 8: 486 DX4
+            _ => 0x0308u,                     // 386 DX, stepping 8
+        };
 
         // A 486DX carries its coprocessor on the die, so the bit that says
         // one is present is not something software gets to choose: it is set

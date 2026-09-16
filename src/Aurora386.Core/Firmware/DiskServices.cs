@@ -110,6 +110,11 @@ public sealed partial class DiskServices
         byte function = cpu.State.GetReg8(4);   // AH
         byte drive = cpu.State.GetReg8(2);      // DL
 
+        // A CD booted in no-emulation mode answers on its own drive number,
+        // in 2048-byte blocks, and is handled before anything else so the
+        // block size cannot be confused with a disk's 512.
+        if (HandleBootCompactDisc(cpu, function, drive)) return;
+
         switch (function)
         {
             case 0x00: Reset(cpu); return;

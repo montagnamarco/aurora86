@@ -18,6 +18,45 @@ public sealed partial class Cpu
     {
         switch (opcode)
         {
+            // --- CMOVcc (0x40-0x4F): move when the condition holds ----------
+            //
+            // The Pentium Pro of 1995 added these to avoid a branch where the
+            // choice is only between two values: a mispredicted branch costs
+            // far more than an instruction that always executes and sometimes
+            // does nothing. Compilers took to them immediately, which is why
+            // any recently built 32-bit program contains them even when it
+            // targets older hardware.
+            //
+            // The condition is encoded in the low four bits exactly as it is
+            // for Jcc and SETcc, so the same evaluator serves all three.
+            //
+            // MIND the subtlety that makes this instruction easy to get
+            // wrong: when the condition is FALSE the destination must be left
+            // untouched at its full width, but when the operand size is 32
+            // bits and the condition is TRUE the write must clear nothing
+            // extra. Writing through the size-aware helper in both cases
+            // would zero the upper half of a 32-bit register on a 16-bit
+            // move; not writing at all on a false condition is therefore the
+            // only correct handling, and it is what the manual specifies.
+            //
+            // The source is read regardless, because a memory operand's
+            // address is still computed and any fault it raises still
+            // happens whether or not the move is performed.
+            case >= 0x40 and <= 0x4F:
+            {
+                if (State.Model < CpuModel.Pentium) throw new CpuException(6);
+
+                var conditional = DecodeModRm();
+                uint source = ReadRm(conditional);
+
+                if (TestCondition((byte)(opcode & 0x0F)))
+                {
+                    if (OperandSize32) State.SetReg32(conditional.Reg, source);
+                    else State.SetReg16(conditional.Reg, (ushort)source);
+                }
+                return;
+            }
+
             // --- conditional jumps with a long displacement (0x80-0x8F) -----
             case >= 0x80 and <= 0x8F:
             {
@@ -261,6 +300,46 @@ public sealed partial class Cpu
             // --- CLTS: clears the "task switched" bit of CR0 ----------------
             case 0x06: RequireSupervisor(); State.Cr0 &= ~CpuState.Cr0TaskSwitched; return;
 
+            // --- the multi-byte NOP (0F 1F /0) -------------------------------
+            //
+            // An instruction whose entire purpose is to occupy space. A
+            // processor fetches code in aligned blocks, so a hot loop that
+            // begins part-way through one costs an extra fetch on every
+            // iteration; assemblers therefore pad the preceding bytes until
+            // the loop starts on a boundary. The old way to pad was a run of
+            // one-byte 0x90 NOPs, but the processor still has to decode each
+            // of them. This form does the same nothing in a single
+            // instruction of any length from two to nine bytes, the length
+            // chosen by how the ModR/M is encoded and how many 0x66 prefixes
+            // precede it -- which is why the encountered instruction here
+            // begins with a run of 0x66 and is read as ONE instruction.
+            //
+            // It appeared on the Pentium Pro and is documented from the
+            // Pentium 4 onwards, and every current assembler emits it when
+            // told to align, whatever processor is targeted. That is the trap
+            // for an emulator of older hardware: the byte sequence turns up
+            // in freshly built code that is otherwise plain 386 or 486, and
+            // an unrecognised opcode this early in a boot becomes an
+            // invalid-opcode fault with no handler installed, which is a
+            // triple fault and a machine reset. The visible symptom is a
+            // bootloader that appears to restart for ever, a long way from
+            // its cause.
+            //
+            // Decoding the ModR/M matters and doing nothing else is the whole
+            // instruction: the bytes of the address must be consumed so the
+            // next instruction begins in the right place, but a memory
+            // operand is never actually read. The reg field must be 0 -- the
+            // other values are reserved, and the ones in use belong to the
+            // prefetch hints, which we do not implement.
+            case 0x1F:
+            {
+                if (State.Model < CpuModel.Pentium) throw new CpuException(6);
+
+                ModRm padding = DecodeModRm();
+                if (padding.Reg != 0) throw new CpuException(6);
+                return;
+            }
+
             // --- bit instructions -------------------------------------------
             // In the /r form the bit index is a signed register value, and on a
             // memory operand it may point well outside the addressed word: the
@@ -409,6 +488,89 @@ public sealed partial class Cpu
             // supported and the vendor string, in a register order that looks
             // arbitrary and is not: EBX, EDX, ECX spells "GenuineIntel" when
             // the twelve bytes are laid out in that sequence.
+            // RDTSC: read the time stamp counter, a 64-bit count of clock
+            // cycles since reset, into EDX:EAX.
+            //
+            // It arrived with the Pentium in 1993 and was immediately used for
+            // what no earlier processor could do cheaply: measure a short
+            // interval without programming the interval timer and waiting for
+            // it. Every bootloader written since assumes it exists -- which is
+            // why a 486 that faults here sends such a loader into a reset loop
+            // rather than an error message.
+            //
+            // We have no cycle-accurate timing, so the counter advances once
+            // per executed instruction. See Cpu.Cycles for why that is the
+            // right approximation for what the value is used for, and what it
+            // cannot be used for.
+            //
+            // MIND the privilege rule: RDTSC is readable at any privilege
+            // level unless CR4.TSD is set, and we do not model CR4.TSD, so it
+            // is readable here. That matches a Pentium with the bit clear,
+            // which is how it comes out of reset.
+            case 0x31:
+            {
+                if (State.Model < CpuModel.Pentium) throw new CpuException(6);
+
+                // Cycles is incremented after the instruction completes, so
+                // the count of this RDTSC itself is added here. Without it two
+                // back-to-back reads could report the same value, and software
+                // timing a very short interval would see zero elapsed and
+                // divide by it.
+                ulong counter = (ulong)Cycles + 1;
+                State.Eax = (uint)counter;
+                State.Edx = (uint)(counter >> 32);
+                return;
+            }
+
+            // RDMSR and WRMSR (0F 32 / 0F 30): the machine specific registers.
+            //
+            // The Pentium introduced a numbered space of control registers
+            // addressed by ECX, read into EDX:EAX and written from them. What
+            // lives at each number is, as the name says, specific to the
+            // model -- there is no architectural list, which is why software
+            // must know the processor before it asks.
+            //
+            // We implement the mechanism and almost none of the registers,
+            // deliberately. A bootloader reads IA32_APIC_BASE (0x1B) to find
+            // out whether there is a local interrupt controller; answering
+            // zero says there is not, which is the truth here, and the loader
+            // takes the branch that skips the APIC entirely. Faulting instead
+            // -- which is what a processor without these instructions does --
+            // leaves that loader with an invalid-opcode exception and no way
+            // to ask the question at all.
+            //
+            // MIND: CPUID does NOT claim the MSR feature bit, because we
+            // implement so little of the space. That is a deliberate
+            // inconsistency, and it is the safe direction: software that
+            // checks the bit stays away, while software that asks anyway --
+            // as loaders do -- gets a usable answer instead of a fault.
+            // Reading an unknown register yields zero rather than the
+            // general-protection fault a real processor raises, because the
+            // purpose here is to let a prober conclude "absent" and move on.
+            case 0x32:
+            {
+                if (State.Model < CpuModel.Pentium) throw new CpuException(6);
+                RequireSupervisor();
+
+                // Nothing we model is enabled, so every register reads zero.
+                // IA32_APIC_BASE included: bit 10 clear means no APIC.
+                State.Eax = 0;
+                State.Edx = 0;
+                return;
+            }
+
+            case 0x30:
+            {
+                if (State.Model < CpuModel.Pentium) throw new CpuException(6);
+                RequireSupervisor();
+
+                // Writes are accepted and discarded. Refusing them would stop
+                // a guest that sets a register it never reads back, which is
+                // the common case; remembering them would imply the register
+                // does something, which would be the greater lie.
+                return;
+            }
+
             case 0xA2:
             {
                 RequireCpuAtLeast486(opcode);
@@ -424,14 +586,31 @@ public sealed partial class Cpu
                         return;
 
                     default:
-                        // Family 4, model 8, stepping 0: an Intel486 DX4. The
-                        // feature bits say what the processor can do; ours has
-                        // an on-chip floating point unit and nothing else that
-                        // needs announcing.
-                        State.Eax = 0x0480;
-                        State.Ebx = 0;
-                        State.Ecx = 0;
-                        State.Edx = 0x00000001;        // bit 0: floating point on chip
+                        // The identification and the feature bits, which must
+                        // agree with the model actually being emulated: a
+                        // guest that is told it has a feature and then faults
+                        // on it is worse off than one told the truth.
+                        if (State.Model >= CpuModel.Pentium)
+                        {
+                            // Family 5, model 2, stepping 0: a Pentium.
+                            State.Eax = 0x0520;
+                            State.Ebx = 0;
+                            State.Ecx = 0;
+                            // Bit 0: floating point on chip.
+                            // Bit 4: the time stamp counter, and with it RDTSC.
+                            // Nothing else is claimed, because nothing else is
+                            // implemented -- notably not the machine specific
+                            // registers (bit 5), so a guest does not try RDMSR.
+                            State.Edx = 0x00000011;
+                        }
+                        else
+                        {
+                            // Family 4, model 8, stepping 0: an Intel486 DX4.
+                            State.Eax = 0x0480;
+                            State.Ebx = 0;
+                            State.Ecx = 0;
+                            State.Edx = 0x00000001;    // bit 0: floating point on chip
+                        }
                         return;
                 }
             }

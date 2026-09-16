@@ -341,6 +341,16 @@ public sealed partial class Machine
     {
         if (CompactDisc is null) return false;
 
+        // A no-emulation disc is not a drive at all and takes the other path.
+        // This is how every modern bootloader ships -- GRUB, Limine, isolinux
+        // and the install media of every current Linux distribution -- so it
+        // is the common case rather than an exotic one.
+        ElToritoBootEntry? entry = CompactDisc.ReadBootCatalogue();
+        if (entry is not null && entry.Media == ElToritoMedia.NoEmulation)
+        {
+            return TryBootNoEmulationImage(cpu, entry);
+        }
+
         DiskImage? bootDrive = ElTorito.CreateBootDrive(CompactDisc);
         if (bootDrive is null) return false;
 
@@ -366,6 +376,66 @@ public sealed partial class Machine
         cpu.SetSegment(CpuNs.SegReg.Es, 0);
         cpu.SetSegment(CpuNs.SegReg.Ss, 0);
         cpu.State.Esp = 0x7C00;
+
+        Booted = true;
+        return true;
+    }
+
+    /// <summary>
+    /// Boots a no-emulation El Torito image: load it where the catalogue says
+    /// and jump to it, with no drive emulated at all.
+    ///
+    /// The differences from a floppy or hard-disk image are worth stating,
+    /// because they are the reason this needs its own path. There is no
+    /// emulated drive, so INT 13h is not redirected and the loaded program
+    /// must bring its own CD driver -- which is exactly why loaders choose
+    /// this mode. The image is not one sector but as many as the entry asks
+    /// for, so a loader too large for 512 bytes needs no second stage of its
+    /// own. And there is no 0x55AA signature requirement: that belongs to a
+    /// floppy or hard-disk boot sector, and a no-emulation image is not one.
+    /// Limine's CD image, for instance, begins with a jump and a BPB and has
+    /// no signature at byte 510.
+    ///
+    /// DL carries the CD's drive number rather than 0x00 or 0x80, which is
+    /// how the loaded program knows which drive to ask its driver about.
+    /// </summary>
+    private bool TryBootNoEmulationImage(CpuNs.Cpu cpu, ElToritoBootEntry entry)
+    {
+        if (CompactDisc is null) return false;
+
+        // A zero load segment means the traditional 0x07C0, the same address a
+        // floppy's boot sector is loaded at. The specification states this
+        // explicitly rather than leaving it to convention.
+        ushort segment = entry.LoadSegment == 0 ? (ushort)0x07C0 : entry.LoadSegment;
+        uint address = (uint)segment * 16;
+
+        // The count is in 512-byte virtual sectors even though the disc reads
+        // in 2048-byte blocks: four virtual sectors per block. An entry asking
+        // for zero sectors is malformed; treat it as one rather than loading
+        // nothing and jumping into whatever was already there.
+        int virtualSectors = entry.SectorCount == 0 ? 1 : entry.SectorCount;
+        int bytesToLoad = virtualSectors * DiskImage.SectorSize;
+        int blocksToRead = (bytesToLoad + IsoImage.SectorSize - 1) / IsoImage.SectorSize;
+
+        // Reading past the end of the disc leaves zeroes, which is the right
+        // answer for an entry that asks for more than the image holds.
+        var image = new byte[blocksToRead * IsoImage.SectorSize];
+        CompactDisc.ReadSectors(entry.ImageSector, blocksToRead, image);
+
+        image.AsSpan(0, bytesToLoad).CopyTo(Memory.GetRamSpan(address, bytesToLoad));
+
+        cpu.SetSegment(CpuNs.SegReg.Cs, 0);
+        cpu.State.Eip = address;
+        cpu.SetSegment(CpuNs.SegReg.Ds, 0);
+        cpu.SetSegment(CpuNs.SegReg.Es, 0);
+        cpu.SetSegment(CpuNs.SegReg.Ss, 0);
+        cpu.State.Esp = 0x7C00;
+
+        // The drive number the loader must use for its own CD reads, and the
+        // disc made to answer INT 13h on it. Without the second half the
+        // loader reads nothing and reports a corrupt image.
+        cpu.State.SetReg8(2, CompactDiscBootDrive);
+        DiskServices.AttachBootCompactDisc(CompactDisc, CompactDiscBootDrive);
 
         Booted = true;
         return true;
