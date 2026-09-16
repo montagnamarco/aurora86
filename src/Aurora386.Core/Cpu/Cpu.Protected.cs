@@ -288,9 +288,13 @@ public sealed partial class Cpu
         if (index + 7 > tableLimit)
             throw new CpuException(13, selector);
 
+        // The descriptor table is read as SUPERVISOR, whatever ring is
+        // running. See TranslateSupervisor: an operating system maps its
+        // tables kernel-only, and a processor applying the current privilege
+        // to its own table walks could not reach them from user mode.
         uint address = tableBase + index;
-        return _memory.ReadDword(TranslateLinear(address, false))
-             | ((ulong)_memory.ReadDword(TranslateLinear(address + 4, false)) << 32);
+        return _memory.ReadDword(TranslateSupervisor(address, false))
+             | ((ulong)_memory.ReadDword(TranslateSupervisor(address + 4, false)) << 32);
     }
 
     /// <summary>
@@ -340,9 +344,14 @@ public sealed partial class Cpu
         if (offsetInTable + 7 > State.IdtLimit)
             throw new CpuException(13, (uint)(vector * 8 + 2));
 
+        // The gate is read as SUPERVISOR. This is the delivery path for a
+        // software interrupt from ring 3 -- a system call -- and the IDT lives
+        // in kernel-only memory precisely so user code cannot read it. See
+        // TranslateSupervisor: the processor consulting its own tables is
+        // always a supervisor access, whatever ring asked for the interrupt.
         uint gateAddress = State.IdtBase + offsetInTable;
-        uint low = _memory.ReadDword(TranslateLinear(gateAddress, false));
-        uint high = _memory.ReadDword(TranslateLinear(gateAddress + 4, false));
+        uint low = _memory.ReadDword(TranslateSupervisor(gateAddress, false));
+        uint high = _memory.ReadDword(TranslateSupervisor(gateAddress + 4, false));
 
         byte access = (byte)(high >> 8);
         byte gateType = (byte)(access & 0x1F);
@@ -809,8 +818,8 @@ public sealed partial class Cpu
             uint offset16 = 2u + privilege * 4u;
             if (offset16 + 4 > tssLimit)
                 throw new CpuException(10, State.TaskRegister);
-            ushort sp = _memory.ReadWord(TranslateLinear(tssBase + offset16, false));
-            ushort ss = _memory.ReadWord(TranslateLinear(tssBase + offset16 + 2, false));
+            ushort sp = _memory.ReadWord(TranslateSupervisor(tssBase + offset16, false));
+            ushort ss = _memory.ReadWord(TranslateSupervisor(tssBase + offset16 + 2, false));
             return (ss, sp);
         }
 
@@ -825,8 +834,11 @@ public sealed partial class Cpu
         if (offset + 6 > tssLimit)
             throw new CpuException(10, State.TaskRegister);
 
-        uint stackPointer = _memory.ReadDword(TranslateLinear(tssBase + offset, false));
-        ushort selector = (ushort)_memory.ReadDword(TranslateLinear(tssBase + offset + 4, false));
+        // Supervisor reads: this happens precisely while ring 3 is running,
+        // and the task state segment lives in kernel-only memory so that user
+        // code cannot discover or alter the kernel's stack pointer.
+        uint stackPointer = _memory.ReadDword(TranslateSupervisor(tssBase + offset, false));
+        ushort selector = (ushort)_memory.ReadDword(TranslateSupervisor(tssBase + offset + 4, false));
 
         return (selector, stackPointer);
     }

@@ -406,7 +406,7 @@ public sealed partial class Cpu
         if ((selector & 0xFFFC) == 0) return;
 
         uint address = State.GdtBase + (uint)(selector & 0xFFF8) + 5;
-        uint physical = TranslateLinear(address, true);
+        uint physical = TranslateSupervisor(address, true);
         byte access = _memory.ReadByte(physical);
 
         // Bit 1 of the type is the busy bit: 1 -> 3 and 9 -> B, and back.
@@ -466,14 +466,14 @@ public sealed partial class Cpu
     // through any loaded segment.
 
     private ushort ReadTssWord(uint tssBase, uint offset)
-        => _memory.ReadWord(TranslateLinear(tssBase + offset, false));
+        => _memory.ReadWord(TranslateSupervisor(tssBase + offset, false));
 
     private uint ReadTssDword(uint tssBase, uint offset)
-        => _memory.ReadDword(TranslateLinear(tssBase + offset, false));
+        => _memory.ReadDword(TranslateSupervisor(tssBase + offset, false));
 
     private void WriteTssWord(uint tssBase, uint offset, ushort value)
-        => _memory.WriteWord(TranslateLinear(tssBase + offset, true), value);
+        => _memory.WriteWord(TranslateSupervisor(tssBase + offset, true), value);
 
     private void WriteTssDword(uint tssBase, uint offset, uint value)
-        => _memory.WriteDword(TranslateLinear(tssBase + offset, true), value);
+        => _memory.WriteDword(TranslateSupervisor(tssBase + offset, true), value);
 }

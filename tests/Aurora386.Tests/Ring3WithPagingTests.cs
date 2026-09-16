@@ -98,6 +98,153 @@ public class Ring3WithPagingTests
         return machine;
     }
 
+    /// <summary>
+    /// The guest's exact conditions, which differ from the simple case above
+    /// in one way that turned out to matter: the pages the user program needs
+    /// are marked user-accessible, and the ones it does NOT need are not.
+    ///
+    /// A kernel identity-maps its own memory without the user bit, precisely
+    /// so ring 3 cannot reach it, and marks only the program's code and stack
+    /// reachable. That is the realistic arrangement and it is what Aurora OS
+    /// builds; the test above marks everything reachable, which hides any
+    /// defect in how the user bit is consulted during the transition.
+    /// </summary>
+    [Fact]
+    public void IretEntersRingThreeWhenOnlyTheProgramsPagesAreUserAccessible()
+    {
+        using Machine machine = BuildPagedRing3Machine();
+
+        // Kernel-only everywhere, as a real kernel maps its own memory.
+        for (uint i = 0; i < 1024; i++)
+        {
+            machine.Memory.WriteDword(TableBase + i * 4, (i * 0x1000u) | 0x03u);
+        }
+
+        // ...except the program's code page and its stack page.
+        machine.Memory.WriteDword(TableBase + 2 * 4, 0x00002000u | 0x07u);
+        machine.Memory.WriteDword(TableBase + 3 * 4, 0x00003000u | 0x07u);
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x08);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x10);
+        machine.Cpu.State.Cpl = 0;
+        machine.Cpu.State.Esp = 0x7000;
+        machine.Cpu.Flags.SetValue(0x0002);
+
+        machine.Memory.WriteDword(0x7000, 0x00002000);
+        machine.Memory.WriteDword(0x7004, 0x1B);
+        machine.Memory.WriteDword(0x7008, 0x0202);
+        machine.Memory.WriteDword(0x700C, 0x00003FF0);
+        machine.Memory.WriteDword(0x7010, 0x23);
+
+        machine.Memory.WriteByte(0x1000, 0xCF);
+        machine.Cpu.State.Eip = 0x1000;
+
+        machine.Cpu.Step();
+
+        Assert.Equal(3, (int)machine.Cpu.State.Cpl);
+        Assert.Equal((ushort)0x1B, machine.Cpu.State.Cs.Selector);
+        Assert.Equal(0x00002000u, machine.Cpu.State.Eip);
+    }
+
+    /// <summary>
+    /// And then the program actually executes, which the tests above stop
+    /// short of. A transition that sets the registers correctly and then
+    /// faults on the first instruction fetch is still a broken transition,
+    /// and only running an instruction shows the difference.
+    /// </summary>
+    [Fact]
+    public void TheProgramExecutesAfterTheTransition()
+    {
+        using Machine machine = BuildPagedRing3Machine();
+
+        for (uint i = 0; i < 1024; i++)
+        {
+            machine.Memory.WriteDword(TableBase + i * 4, (i * 0x1000u) | 0x03u);
+        }
+
+        machine.Memory.WriteDword(TableBase + 2 * 4, 0x00002000u | 0x07u);
+        machine.Memory.WriteDword(TableBase + 3 * 4, 0x00003000u | 0x07u);
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x08);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x10);
+        machine.Cpu.State.Cpl = 0;
+        machine.Cpu.State.Esp = 0x7000;
+        machine.Cpu.Flags.SetValue(0x0002);
+
+        machine.Memory.WriteDword(0x7000, 0x00002000);
+        machine.Memory.WriteDword(0x7004, 0x1B);
+        machine.Memory.WriteDword(0x7008, 0x0202);
+        machine.Memory.WriteDword(0x700C, 0x00003FF0);
+        machine.Memory.WriteDword(0x7010, 0x23);
+
+        machine.Memory.WriteByte(0x1000, 0xCF);
+
+        // The program: increment EAX twice, so running it is observable.
+        machine.Memory.WriteByte(0x2000, 0x40);   // inc eax
+        machine.Memory.WriteByte(0x2001, 0x40);   // inc eax
+
+        machine.Cpu.State.Eip = 0x1000;
+        machine.Cpu.State.Eax = 0;
+
+        machine.Cpu.Step();     // the IRET
+        machine.Cpu.Step();     // the first user instruction
+        machine.Cpu.Step();     // the second
+
+        Assert.Equal(3, (int)machine.Cpu.State.Cpl);
+        Assert.Equal(2u, machine.Cpu.State.Eax);
+        Assert.Equal(0x00002002u, machine.Cpu.State.Eip);
+    }
+
+    /// <summary>
+    /// A software interrupt from ring 3, with realistic page permissions.
+    ///
+    /// This is how a program makes a system call, and it exercises the other
+    /// half of the same mechanism: the processor reads the gate out of the
+    /// IDT and the kernel stack out of the task state segment, both of which
+    /// live in kernel-only pages while ring 3 is running.
+    /// </summary>
+    [Fact]
+    public void ASystemCallFromRingThreeReachesItsGate()
+    {
+        using Machine machine = BuildPagedRing3Machine();
+
+        // Kernel-only everywhere but the program's two pages, as a real
+        // kernel maps memory. The IDT at 0x21000 and the TSS at 0x22000 are
+        // therefore unreachable from ring 3, which is the point.
+        for (uint i = 0; i < 1024; i++)
+        {
+            machine.Memory.WriteDword(TableBase + i * 4, (i * 0x1000u) | 0x03u);
+        }
+
+        machine.Memory.WriteDword(TableBase + 2 * 4, 0x00002000u | 0x07u);
+        machine.Memory.WriteDword(TableBase + 3 * 4, 0x00003000u | 0x07u);
+
+        // A gate ring 3 may invoke, which is what a system call gate is.
+        WriteGate(machine, IdtBase, 0x80, 0x08, 0x4000, type: 0x0E, dpl: 3);
+
+        machine.Cpu.SetSegment(SegReg.Cs, 0x1B);
+        machine.Cpu.SetSegment(SegReg.Ss, 0x23);
+        machine.Cpu.State.Cpl = 3;
+        machine.Cpu.State.Esp = 0x3FF0;
+        machine.Cpu.Flags.SetValue(0x0202);
+
+        machine.Memory.WriteByte(0x2000, 0xCD);   // int 0x80
+        machine.Memory.WriteByte(0x2001, 0x80);
+        machine.Cpu.State.Eip = 0x2000;
+
+        machine.Cpu.Step();
+
+        // The handler is running in ring 0, on the kernel stack from the TSS.
+        Assert.Equal(0x4000u, machine.Cpu.State.Eip);
+        Assert.Equal(0, (int)machine.Cpu.State.Cpl);
+        Assert.Equal((ushort)0x10, machine.Cpu.State.Ss.Selector);
+        Assert.True(machine.Cpu.State.Esp <= KernelStackTop);
+
+        // And the frame records where it came from: ring 3.
+        uint savedCs = machine.Memory.ReadDword(machine.Cpu.State.Esp + 4);
+        Assert.Equal(0x1Bu, savedCs);
+    }
+
     [Fact]
     public void IretEntersRingThreeWithPagingEnabled()
     {

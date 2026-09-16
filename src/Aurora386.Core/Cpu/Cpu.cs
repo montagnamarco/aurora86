@@ -108,6 +108,46 @@ public sealed partial class Cpu
     }
 
     /// <summary>
+    /// Translate a linear address for an access the PROCESSOR makes on its own
+    /// behalf, rather than one the running program asked for.
+    ///
+    /// Reading a descriptor out of the GDT or LDT, reading a gate out of the
+    /// IDT, reading the kernel stack pointer out of the task state segment:
+    /// all of these are the processor consulting its own tables, and they are
+    /// supervisor accesses however privileged the code that triggered them
+    /// happens to be. The architecture is explicit about it, and the reason is
+    /// plain once stated -- an operating system maps those tables
+    /// kernel-only, exactly so that ring 3 cannot read them, and a processor
+    /// that applied the running privilege to its own table walks could never
+    /// reach them while user code was running.
+    ///
+    /// Getting this wrong produces a defect that only appears with a REALISTIC
+    /// page layout, which is why it survived: a test that maps everything
+    /// user-accessible, as our first ring 3 tests did, never triggers it. The
+    /// guest that found it was an operating system mapping its own memory the
+    /// way operating systems do.
+    /// </summary>
+    private uint TranslateSupervisor(uint linear, bool write)
+    {
+        if (!State.PagingEnabled) return linear;
+
+        // Borrow ring 0 for the duration of the walk. The privilege the page
+        // check consults is the current one, and for these accesses the
+        // architecture says it is always supervisor.
+        byte saved = State.Cpl;
+        State.Cpl = 0;
+
+        try
+        {
+            return TranslatePaged(linear, write);
+        }
+        finally
+        {
+            State.Cpl = saved;
+        }
+    }
+
+    /// <summary>
     /// Reads one byte the way the processor would, from a linear address --
     /// through the page tables when paging is on, and without raising a fault
     /// when the page is absent.

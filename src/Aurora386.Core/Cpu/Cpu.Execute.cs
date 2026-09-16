@@ -130,7 +130,7 @@ public sealed partial class Cpu
     {
         uint offset = (uint)vector * 8;
         if (offset + 7 > State.IdtLimit) return false;
-        uint high = _memory.ReadDword(TranslateLinear(State.IdtBase + offset + 4, false));
+        uint high = _memory.ReadDword(TranslateSupervisor(State.IdtBase + offset + 4, false));
         if ((high & 0x8000) == 0) return false;            // not present: #NP, not ours
         int gateDpl = (int)((high >> 13) & 3);
         return gateDpl < State.Cpl;

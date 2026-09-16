@@ -1154,7 +1154,12 @@ public sealed partial class Cpu
         // The map's offset lives at 0x66 in the segment. A segment too short
         // to hold even that word has no map, and nothing is permitted.
         if (tssLimit < 0x67) return false;
-        ushort mapBase = _memory.ReadWord(TranslateLinear(tssBase + 0x66, false));
+        // The I/O permission bitmap lives in the task state segment, which the
+        // processor reads on its own behalf. These reads happen precisely when
+        // ring 3 executes IN or OUT, so applying the current privilege to them
+        // would make every port access from user mode fault on the segment
+        // rather than on the permission it was meant to check.
+        ushort mapBase = _memory.ReadWord(TranslateSupervisor(tssBase + 0x66, false));
 
         // Every byte of the access has its own bit; the last of them has to
         // lie inside the segment.
@@ -1162,9 +1167,9 @@ public sealed partial class Cpu
         uint lastByte = mapBase + (uint)((port + bytes - 1) >> 3);
         if (lastByte > tssLimit) return false;
 
-        int bits = _memory.ReadByte(TranslateLinear(tssBase + firstByte, false));
+        int bits = _memory.ReadByte(TranslateSupervisor(tssBase + firstByte, false));
         if (lastByte != firstByte)
-            bits |= _memory.ReadByte(TranslateLinear(tssBase + lastByte, false)) << 8;
+            bits |= _memory.ReadByte(TranslateSupervisor(tssBase + lastByte, false)) << 8;
 
         int mask = ((1 << bytes) - 1) << (port & 7);
         return (bits & mask) == 0;
