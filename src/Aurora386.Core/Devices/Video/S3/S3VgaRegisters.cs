@@ -369,7 +369,11 @@ public sealed class S3VgaRegisters : VgaRegisters
     protected override void WriteCrtc(byte index, byte value)
     {
         RegistersChanged();
-        if (index < 0x30) { CrtcRegisters[index] = value; return; }
+        // The standard range goes through the base class's helper rather than
+        // straight into the array: those registers have side effects -- the
+        // character cell height above all -- and writing the array directly
+        // would apply them on a plain VGA and not on this card.
+        if (index < 0x30) { StoreStandardCrtc(index, value); return; }
 
         // The two lock registers themselves are always writable, or there
         // would be no way in.

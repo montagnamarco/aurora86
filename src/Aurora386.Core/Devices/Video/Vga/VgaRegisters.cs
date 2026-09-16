@@ -26,6 +26,12 @@ public class VgaRegisters : IIoDevice
     private const int SnapshotTailLength = 32;
     private const byte LastStandardCrtcRegister = 0x18; // VGA Line Compare register.
 
+    /// <summary>
+    /// CRTC 0x09, Maximum Scan Line. Its low five bits are the character cell
+    /// height minus one, which is where a text mode's row count comes from.
+    /// </summary>
+    private const byte CrtcMaximumScanLine = 0x09;
+
 
     // --- CRTC ----------------------------------------------------------------
     /// <summary>
@@ -619,8 +625,69 @@ public class VgaRegisters : IIoDevice
         RegistersChanged();
         if (index <= LastStandardCrtcRegister)
         {
-            _crtc[index] = value;
+            StoreStandardCrtc(index, value);
         }
+    }
+
+    /// <summary>
+    /// Store one of the standard CRTC registers and act on the side effects
+    /// that follow from it.
+    ///
+    /// Separated out because a derived card -- the S3 -- handles the standard
+    /// range itself and returns without calling the base, so a side effect
+    /// written only in the base would apply to a plain VGA and not to the
+    /// card the machine actually has. That is exactly how this went wrong the
+    /// first time: the fix was correct and in a method nothing called.
+    /// </summary>
+    protected void StoreStandardCrtc(byte index, byte value)
+    {
+        _crtc[index] = value;
+
+        // The Maximum Scan Line register IS the character cell height: its
+        // low five bits hold the height minus one, and a real VGA has
+        // nowhere else to learn it from. Keeping the derived values in step
+        // with it is what lets an operating system change the text font by
+        // programming the hardware, which is the only way a protected-mode
+        // kernel can: calling the BIOS would mean dropping back to real mode,
+        // so no kernel does it after boot.
+        //
+        // Without this the register stored a value nothing read. A kernel
+        // asking for the 8x8 font got fifty rows of text rendered into a
+        // screen still showing twenty-five, so half its output was invisible
+        // -- and the register read back correctly, which is the worst kind of
+        // wrong.
+        if (index == CrtcMaximumScanLine && !IsGraphicsMode)
+        {
+            UpdateCharacterCellFromCrtc();
+        }
+    }
+
+    /// <summary>
+    /// Recompute the character height and the row count from CRTC 0x09.
+    ///
+    /// The display is 400 scan lines in every one of the standard text modes,
+    /// so the rows follow from the cell height: 16 gives 25 rows, 14 gives 28,
+    /// 8 gives 50. That is how the 43- and 50-row modes have always worked --
+    /// they are not different modes at all, just a different font in the same
+    /// one.
+    ///
+    /// MIND that only the LOW FIVE BITS are the height. Bit 5 belongs to the
+    /// start of the vertical blank and bit 7 doubles the scan line count;
+    /// masking the whole byte would read a height of 135 from an ordinary
+    /// register write.
+    /// </summary>
+    private void UpdateCharacterCellFromCrtc()
+    {
+        int height = (_crtc[CrtcMaximumScanLine] & 0x1F) + 1;
+
+        if (height <= 0) return;
+
+        const int rasterLines = 400;
+
+        _characterHeight = height;
+        _textRows = rasterLines / height;
+
+        NotifyModeChanged();
     }
 
     public byte Attribute(int index) => _attribute[index & 0x1F];
