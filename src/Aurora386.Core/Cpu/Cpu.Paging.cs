@@ -17,7 +17,16 @@ public sealed partial class Cpu
     /// stricter of the two -- a writable page inside a read-only directory
     /// entry is not writable.
     /// </summary>
-    private uint TranslatePaged(uint linear, bool write)
+    /// <param name="asSupervisor">
+    /// True when the PROCESSOR is making this access on its own behalf -- a
+    /// descriptor, an interrupt gate, a task state segment field, the I/O
+    /// permission bitmap. Those are supervisor accesses whatever ring the
+    /// running code is in, and saying so as an ARGUMENT is deliberate: the
+    /// alternative, temporarily writing ring 0 into the processor's state,
+    /// cannot express it in virtual 8086 mode, where the privilege is not a
+    /// stored field but a consequence of the mode. See TranslateSupervisor.
+    /// </param>
+    private uint TranslatePaged(uint linear, bool write, bool asSupervisor = false)
     {
         uint page = linear & 0xFFFFF000;
         uint offset = linear & 0xFFF;
@@ -29,7 +38,7 @@ public sealed partial class Cpu
         ref TlbEntry entry = ref _tlb[(page >> 12) & (TlbSize - 1)];
         if (entry.Valid && entry.Page == page)
         {
-            CheckPagePermissions(linear, write, entry.Writable, entry.User);
+            CheckPagePermissions(linear, write, entry.Writable, entry.User, asSupervisor);
 
             // The dirty bit is not cached: a page that has only been read may
             // be written next, and the operating system has to be told.
@@ -48,18 +57,20 @@ public sealed partial class Cpu
         uint directoryAddress = (State.Cr3 & 0xFFFFF000) + directoryIndex * 4;
         uint directoryEntry = _memory.ReadDword(directoryAddress);
         if ((directoryEntry & PagePresent) == 0)
-            throw new PageFaultException(linear, write, present: false, user: State.Cpl == 3);
+            throw new PageFaultException(linear, write, present: false,
+                                         user: !asSupervisor && State.Cpl == 3);
 
         uint tableEntryAddress = (directoryEntry & 0xFFFFF000) + tableIndex * 4;
         uint tableEntry = _memory.ReadDword(tableEntryAddress);
         if ((tableEntry & PagePresent) == 0)
-            throw new PageFaultException(linear, write, present: false, user: State.Cpl == 3);
+            throw new PageFaultException(linear, write, present: false,
+                                         user: !asSupervisor && State.Cpl == 3);
 
         // Permissions are the AND of the two levels, not just the page's own.
         bool writable = (directoryEntry & PageWritable) != 0 && (tableEntry & PageWritable) != 0;
         bool user = (directoryEntry & PageUser) != 0 && (tableEntry & PageUser) != 0;
 
-        CheckPagePermissions(linear, write, writable, user);
+        CheckPagePermissions(linear, write, writable, user, asSupervisor);
 
         // The accessed bit is set on both levels, because the processor
         // walked both. Operating systems read it to work out which pages are
@@ -86,10 +97,16 @@ public sealed partial class Cpu
     /// <summary>
     /// Raises a page fault when the access is not allowed by the page's own
     /// permission bits, as opposed to the page simply not being there.
+    ///
+    /// WHO IS ASKING is the argument rather than a reading of the processor's
+    /// state, because the two differ for the accesses the processor makes on
+    /// its own behalf. See TranslateSupervisor for why that distinction
+    /// cannot be expressed by writing ring 0 into the state in V86 mode.
     /// </summary>
-    private void CheckPagePermissions(uint linear, bool write, bool writable, bool user)
+    private void CheckPagePermissions(uint linear, bool write, bool writable, bool user,
+                                      bool asSupervisor = false)
     {
-        bool userMode = State.Cpl == 3;
+        bool userMode = !asSupervisor && State.Cpl == 3;
 
         // Supervisor-only pages are invisible to ring 3. This is the whole
         // basis of keeping the kernel safe from applications.

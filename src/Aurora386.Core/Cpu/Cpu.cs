@@ -126,25 +126,34 @@ public sealed partial class Cpu
     /// user-accessible, as our first ring 3 tests did, never triggers it. The
     /// guest that found it was an operating system mapping its own memory the
     /// way operating systems do.
+    ///
+    /// THE AUTHORITY IS PASSED DOWN, NOT BORROWED, and the distinction is the
+    /// whole of a second defect found the same way.
+    ///
+    /// This method used to write ring 0 into State.Cpl for the duration of the
+    /// walk and put the old value back afterwards. That reads as though it
+    /// works, and in ordinary protected mode it does. It is a NO-OP in virtual
+    /// 8086 mode: Cpl is a computed property whose getter returns 3 whenever
+    /// the mode is on, without consulting the field the setter writes --
+    /// because in that mode ring 3 is a consequence of the mode rather than a
+    /// stored number, which is exactly why the property is computed.
+    ///
+    /// So the borrow silently failed in the one mode where every interrupt
+    /// delivery needs it. A V86 task takes hardware interrupts like anything
+    /// else, and every delivery reads a gate out of the IDT; on a guest that
+    /// maps the IDT supervisor-only, that read faulted, the page fault's own
+    /// delivery faulted the same way, and the machine reset before the task
+    /// executed a single instruction.
+    ///
+    /// Passing the authority as an argument cannot fail that way: there is no
+    /// state to write, nothing to restore, and no property in between that can
+    /// disagree with what was asked for.
     /// </summary>
     private uint TranslateSupervisor(uint linear, bool write)
     {
         if (!State.PagingEnabled) return linear;
 
-        // Borrow ring 0 for the duration of the walk. The privilege the page
-        // check consults is the current one, and for these accesses the
-        // architecture says it is always supervisor.
-        byte saved = State.Cpl;
-        State.Cpl = 0;
-
-        try
-        {
-            return TranslatePaged(linear, write);
-        }
-        finally
-        {
-            State.Cpl = saved;
-        }
+        return TranslatePaged(linear, write, asSupervisor: true);
     }
 
     /// <summary>
