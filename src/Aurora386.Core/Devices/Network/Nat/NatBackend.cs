@@ -7,7 +7,7 @@ namespace Aurora386.Core.Devices.Network.Nat;
 /// A user-mode NAT: the guest's whole network, made of nothing but sockets.
 ///
 /// To the card this is a wire with a router on it. The router answers ARP
-/// for every address, hands out 10.0.2.15 by DHCP, answers pings to itself,
+/// for the gateway and name server, hands out 10.0.2.15 by DHCP, answers pings to itself,
 /// resolves names by forwarding to the host's own name server, and turns
 /// every TCP connection and UDP exchange the guest starts into a socket the
 /// host opens on its behalf. The guest sees a private network with one
@@ -40,6 +40,56 @@ public sealed class NatBackend : INetworkBackend, IDisposable
     private static readonly byte[] BroadcastMac = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
 
     private const int UdpIdleMilliseconds = 60_000;
+    private const int MaintenanceIntervalMilliseconds = 100;
+
+    // Ethernet II fields carried by every frame the card supplies.
+    private const int EthernetDestinationMacOffset = 0;
+    private const int EthernetSourceMacOffset = 6;
+    private const int EthernetTypeOffset = 12;
+
+    // ARP requests for Ethernet and IPv4 have a fixed 28-byte payload.
+    private const int ArpPacketLength = 28;
+    private const int ArpHardwareTypeOffset = 0;
+    private const int ArpProtocolTypeOffset = 2;
+    private const int ArpOperationOffset = 6;
+    private const int ArpSenderMacOffset = 8;
+    private const int ArpSenderIpOffset = 14;
+    private const int ArpTargetIpOffset = 24;
+    private const ushort ArpEthernetHardwareType = 1;
+    private const ushort ArpRequestOperation = 1;
+    private const ushort ArpReplyOperation = 2;
+
+    private const byte IcmpEchoRequest = 8;
+    private const byte IcmpEchoReply = 0;
+    private const byte IcmpCodeZero = 0;
+
+    private const ushort DhcpServerPort = 67;
+    private const ushort DhcpClientPort = 68;
+    private const ushort DnsPort = 53;
+
+    // BOOTP fixed header and DHCP options (RFC 2131).
+    private const uint DhcpMagic = 0x63825363;
+    private const int DhcpMinimumPacketLength = 240;
+    private const int BootpOperationOffset = 0;
+    private const int DhcpMagicOffset = 236;
+    private const int DhcpOptionsOffset = 240;
+    private const byte DhcpBootRequest = 1;
+    private const byte DhcpBootReply = 2;
+    private const byte DhcpOptionPad = 0;
+    private const byte DhcpOptionSubnetMask = 1;
+    private const byte DhcpOptionRouter = 3;
+    private const byte DhcpOptionDomainNameServer = 6;
+    private const byte DhcpOptionLeaseTime = 51;
+    private const byte DhcpOptionMessageType = 53;
+    private const byte DhcpOptionServerIdentifier = 54;
+    private const byte DhcpOptionBroadcastAddress = 28;
+    private const byte DhcpOptionEnd = 255;
+    private const byte DhcpDiscover = 1;
+    private const byte DhcpOffer = 2;
+    private const byte DhcpRequest = 3;
+    private const byte DhcpAcknowledge = 5;
+    private const byte DhcpInform = 8;
+    private const uint DhcpLeaseSeconds = 86_400;
 
     private readonly IHostNetwork _host;
     private readonly Func<long> _clock;
@@ -87,6 +137,7 @@ public sealed class NatBackend : INetworkBackend, IDisposable
                     stream.Close();
                     return;
                 }
+
                 var connection = new NatTcpConnection(this, _guestIp, (ushort)guestPort, remoteIp, (ushort)remote.Port);
                 _tcp[key] = connection;
                 connection.OpenFromHost(stream);
@@ -107,7 +158,11 @@ public sealed class NatBackend : INetworkBackend, IDisposable
     /// </summary>
     private static uint VirtualAddressFor(IPAddress address)
     {
-        if (address.AddressFamily != global::System.Net.Sockets.AddressFamily.InterNetwork) return Gateway;
+        if (address.AddressFamily != global::System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            return Gateway;
+        }
+
         uint value = Packet.ToUInt32(address);
         return IPAddress.IsLoopback(address) ? Gateway : value;
     }
@@ -143,22 +198,38 @@ public sealed class NatBackend : INetworkBackend, IDisposable
     }
 
     /// <summary>Queues work from a socket thread to run on the emulation thread.</summary>
-    internal void Post(Action action) => _events.Enqueue(action);
-
-    private void Drain()
+    internal void Post(Action action)
     {
-        while (_events.TryDequeue(out Action? action)) action();
+        _events.Enqueue(action);
     }
 
+    /// <summary>Runs socket completions while the emulation thread owns the NAT state.</summary>
+    private void Drain()
+    {
+        while (_events.TryDequeue(out Action? action))
+        {
+            action();
+        }
+    }
+
+    /// <summary>Advances connection retransmission and UDP idle timers.</summary>
     private void Tick()
     {
         long now = _clock();
-        if (now - _lastTick < 100) return;
+        if (now - _lastTick < MaintenanceIntervalMilliseconds)
+        {
+            return;
+        }
+
         _lastTick = now;
 
         if (_tcp.Count > 0)
         {
-            foreach (NatTcpConnection connection in _tcp.Values) connection.Tick(now);
+            foreach (NatTcpConnection connection in _tcp.Values)
+            {
+                connection.Tick(now);
+            }
+
             RemoveClosedConnections();
         }
 
@@ -166,7 +237,13 @@ public sealed class NatBackend : INetworkBackend, IDisposable
         {
             var expired = new List<ushort>();
             foreach ((ushort port, UdpMapping mapping) in _udp)
-                if (!mapping.FixedPort && now - mapping.LastUsed > UdpIdleMilliseconds) expired.Add(port);
+            {
+                if (!mapping.FixedPort && now - mapping.LastUsed > UdpIdleMilliseconds)
+                {
+                    expired.Add(port);
+                }
+            }
+
             foreach (ushort port in expired)
             {
                 _udp[port].Close();
@@ -175,12 +252,22 @@ public sealed class NatBackend : INetworkBackend, IDisposable
         }
     }
 
+    /// <summary>Removes connections after their final TCP state has been observed.</summary>
     private void RemoveClosedConnections()
     {
         var closed = new List<(ushort, uint, ushort)>();
         foreach ((var key, NatTcpConnection connection) in _tcp)
-            if (connection.Closed) closed.Add(key);
-        foreach (var key in closed) _tcp.Remove(key);
+        {
+            if (connection.Closed)
+            {
+                closed.Add(key);
+            }
+        }
+
+        foreach (var key in closed)
+        {
+            _tcp.Remove(key);
+        }
     }
 
     /// <summary>Hands the guest a frame carrying an IP packet from the given address.</summary>
@@ -192,39 +279,67 @@ public sealed class NatBackend : INetworkBackend, IDisposable
 
     // --- Ethernet ------------------------------------------------------------
 
+    /// <summary>Accepts the Ethernet frames that the guest transmits through the card.</summary>
     private void HandleFrame(ReadOnlySpan<byte> frame)
     {
-        if (frame.Length < Packet.EthernetHeader) return;
+        if (frame.Length < Packet.EthernetHeader)
+        {
+            return;
+        }
 
         // A frame the guest addresses to itself is a driver testing the
         // wire: it goes straight back, as it would through a real hub.
-        if (frame[..6].SequenceEqual(frame[6..12]))
+        if (frame[EthernetDestinationMacOffset..EthernetSourceMacOffset].SequenceEqual(
+                frame[EthernetSourceMacOffset..EthernetTypeOffset]))
         {
             _toGuest.Enqueue(frame.ToArray());
             return;
         }
 
         // Whoever sends is the guest, and its address is where replies go.
-        if (!frame[6..12].SequenceEqual(_guestMac)) _guestMac = frame[6..12].ToArray();
-
-        switch (Packet.ReadU16(frame, 12))
+        if (!frame[EthernetSourceMacOffset..EthernetTypeOffset].SequenceEqual(_guestMac))
         {
-            case Packet.TypeArp: HandleArp(frame[Packet.EthernetHeader..]); break;
-            case Packet.TypeIp: HandleIp(frame[Packet.EthernetHeader..]); break;
+            _guestMac = frame[EthernetSourceMacOffset..EthernetTypeOffset].ToArray();
+        }
+
+        switch (Packet.ReadU16(frame, EthernetTypeOffset))
+        {
+            case Packet.TypeArp:
+                HandleArp(frame[Packet.EthernetHeader..]);
+                break;
+            case Packet.TypeIp:
+                HandleIp(frame[Packet.EthernetHeader..]);
+                break;
         }
     }
 
+    /// <summary>Answers the ARP requests for the router and its virtual name server.</summary>
     private void HandleArp(ReadOnlySpan<byte> arp)
     {
-        if (arp.Length < 28) return;
-        if (Packet.ReadU16(arp, 0) != 1 || Packet.ReadU16(arp, 2) != Packet.TypeIp) return;
-        if (Packet.ReadU16(arp, 6) != 1) return; // only requests
+        if (arp.Length < ArpPacketLength)
+        {
+            return;
+        }
 
-        ReadOnlySpan<byte> senderMac = arp[8..14];
-        uint senderIp = Packet.ReadU32(arp, 14);
-        uint targetIp = Packet.ReadU32(arp, 24);
+        if (Packet.ReadU16(arp, ArpHardwareTypeOffset) != ArpEthernetHardwareType ||
+            Packet.ReadU16(arp, ArpProtocolTypeOffset) != Packet.TypeIp)
+        {
+            return;
+        }
 
-        if (senderIp != 0 && InSubnet(senderIp)) _guestIp = senderIp;
+        if (Packet.ReadU16(arp, ArpOperationOffset) != ArpRequestOperation)
+        {
+            return;
+        }
+
+        ReadOnlySpan<byte> senderMac = arp[ArpSenderMacOffset..ArpSenderIpOffset];
+        uint senderIp = Packet.ReadU32(arp, ArpSenderIpOffset);
+        uint targetIp = Packet.ReadU32(arp, ArpTargetIpOffset);
+
+        if (senderIp != 0 && InSubnet(senderIp))
+        {
+            _guestIp = senderIp;
+        }
 
         // The router answers for itself and for the name server, and for
         // nothing else: the guest reaches the outside through the router,
@@ -232,52 +347,89 @@ public sealed class NatBackend : INetworkBackend, IDisposable
         // must not answer for whatever the guest is probing before taking
         // an address -- an answer means "taken", and the guest would go
         // looking for another.
-        if (targetIp is not (Gateway or NameServer) || targetIp == senderIp) return;
+        if (targetIp is not (Gateway or NameServer) || targetIp == senderIp)
+        {
+            return;
+        }
 
-        _toGuest.Enqueue(Packet.BuildArp(senderMac, GatewayMac, 2, GatewayMac, targetIp, senderMac, senderIp));
+        _toGuest.Enqueue(Packet.BuildArp(senderMac, GatewayMac, ArpReplyOperation, GatewayMac, targetIp, senderMac, senderIp));
     }
 
-    private static bool InSubnet(uint address) => (address & SubnetMask) == Subnet;
+    private static bool InSubnet(uint address)
+    {
+        return (address & SubnetMask) == Subnet;
+    }
 
     // --- IP ------------------------------------------------------------------
 
+    /// <summary>Validates an IPv4 datagram before passing its transport payload onward.</summary>
     private void HandleIp(ReadOnlySpan<byte> ip)
     {
-        if (ip.Length < Packet.IpHeader || (ip[0] >> 4) != 4) return;
+        if (ip.Length < Packet.IpHeader || (ip[0] >> 4) != 4)
+        {
+            return;
+        }
+
         int headerLength = (ip[0] & 0x0F) * 4;
         int totalLength = Math.Min(Packet.ReadU16(ip, 2), ip.Length);
-        if (headerLength < Packet.IpHeader || totalLength < headerLength) return;
-        if (Packet.Checksum(ip[..headerLength]) != 0) return;
+        if (headerLength < Packet.IpHeader || totalLength < headerLength)
+        {
+            return;
+        }
+
+        if (Packet.Checksum(ip[..headerLength]) != 0)
+        {
+            return;
+        }
 
         // Fragments are not reassembled: nothing the guest can usefully do
         // needs them, and half a packet is best dropped whole.
-        if ((Packet.ReadU16(ip, 6) & 0x3FFF) != 0) return;
+        if ((Packet.ReadU16(ip, 6) & 0x3FFF) != 0)
+        {
+            return;
+        }
 
         uint source = Packet.ReadU32(ip, 12);
         uint destination = Packet.ReadU32(ip, 16);
-        if (source != 0 && InSubnet(source)) _guestIp = source;
+        if (source != 0 && InSubnet(source))
+        {
+            _guestIp = source;
+        }
 
         ReadOnlySpan<byte> payload = ip[headerLength..totalLength];
         switch (ip[9])
         {
-            case Packet.ProtocolIcmp: HandleIcmp(source, destination, payload); break;
-            case Packet.ProtocolUdp: HandleUdp(source, destination, payload); break;
-            case Packet.ProtocolTcp: HandleTcp(source, destination, payload); break;
+            case Packet.ProtocolIcmp:
+                HandleIcmp(source, destination, payload);
+                break;
+            case Packet.ProtocolUdp:
+                HandleUdp(source, destination, payload);
+                break;
+            case Packet.ProtocolTcp:
+                HandleTcp(source, destination, payload);
+                break;
         }
     }
 
     // --- ICMP ----------------------------------------------------------------
 
+    /// <summary>Replies locally to router pings and forwards external echo requests to the host.</summary>
     private void HandleIcmp(uint source, uint destination, ReadOnlySpan<byte> icmp)
     {
-        if (icmp.Length < 8 || icmp[0] != 8 || icmp[1] != 0) return; // echo request only
+        if (icmp.Length < 8 || icmp[0] != IcmpEchoRequest || icmp[1] != IcmpCodeZero)
+        {
+            return;
+        }
 
         if (destination is Gateway or NameServer)
         {
             InjectIp(destination, source, Packet.ProtocolIcmp, EchoReply(icmp));
             return;
         }
-        if (InSubnet(destination)) return; // nobody else lives here
+        if (InSubnet(destination))
+        {
+            return; // nobody else lives here
+        }
 
         // The host pings on the guest's behalf and the answer, if any, is
         // rebuilt with the guest's own identifier and payload: the host's
@@ -285,14 +437,17 @@ public sealed class NatBackend : INetworkBackend, IDisposable
         byte[] request = icmp.ToArray();
         _host.Ping(Packet.ToAddress(destination), icmp[8..], ok => Post(() =>
         {
-            if (ok) InjectIp(destination, source, Packet.ProtocolIcmp, EchoReply(request));
+            if (ok)
+            {
+                InjectIp(destination, source, Packet.ProtocolIcmp, EchoReply(request));
+            }
         }));
     }
 
     private static byte[] EchoReply(ReadOnlySpan<byte> request)
     {
         byte[] reply = request.ToArray();
-        reply[0] = 0;
+        reply[0] = IcmpEchoReply;
         reply[2] = 0;
         reply[3] = 0;
         Packet.WriteU16(reply, 2, Packet.Checksum(reply));
@@ -301,33 +456,53 @@ public sealed class NatBackend : INetworkBackend, IDisposable
 
     // --- UDP -----------------------------------------------------------------
 
+    /// <summary>Maps a guest UDP datagram to the host endpoint that carries it.</summary>
     private void HandleUdp(uint source, uint destination, ReadOnlySpan<byte> udp)
     {
-        if (udp.Length < Packet.UdpHeader) return;
+        if (udp.Length < Packet.UdpHeader)
+        {
+            return;
+        }
+
         ushort sourcePort = Packet.ReadU16(udp, 0);
         ushort destinationPort = Packet.ReadU16(udp, 2);
         int length = Math.Min(Packet.ReadU16(udp, 4), udp.Length);
-        if (length < Packet.UdpHeader) return;
+        if (length < Packet.UdpHeader)
+        {
+            return;
+        }
+
         ReadOnlySpan<byte> payload = udp[Packet.UdpHeader..length];
 
-        if (destinationPort == 67 && sourcePort == 68)
+        if (destinationPort == DhcpServerPort && sourcePort == DhcpClientPort)
         {
             HandleDhcp(payload);
             return;
         }
 
         IPEndPoint target;
-        if (destination == NameServer && destinationPort == 53)
+        if (destination == NameServer && destinationPort == DnsPort)
         {
-            if (_host.DnsServers.Count == 0) return;
-            target = new IPEndPoint(_host.DnsServers[0], 53);
+            if (_host.DnsServers.Count == 0)
+            {
+                return;
+            }
+
+            target = new IPEndPoint(_host.DnsServers[0], DnsPort);
         }
         else if (InSubnet(destination) || destination == Broadcast)
         {
             // Something on the private network: only an endpoint that has
             // already talked to the guest through a mapping is reachable.
-            if (!_udp.TryGetValue(sourcePort, out UdpMapping? existing)) return;
-            if (!existing.TryResolveReal(destination, destinationPort, out target)) return;
+            if (!_udp.TryGetValue(sourcePort, out UdpMapping? existing))
+            {
+                return;
+            }
+
+            if (!existing.TryResolveReal(destination, destinationPort, out target))
+            {
+                return;
+            }
         }
         else
         {
@@ -371,41 +546,62 @@ public sealed class NatBackend : INetworkBackend, IDisposable
             LastUsed = nat.Now;
         }
 
-        public void Start() => Socket.Start(this);
-        public void Close() => Socket.Close();
+        public void Start()
+        {
+            Socket.Start(this);
+        }
+
+        public void Close()
+        {
+            Socket.Close();
+        }
 
         public void RememberAlias(IPEndPoint real, uint virtualAddress, ushort port)
         {
-            if (Packet.ToUInt32(real.Address) == virtualAddress) return;
+            if (Packet.ToUInt32(real.Address) == virtualAddress)
+            {
+                return;
+            }
+
             _toVirtual[real] = virtualAddress;
             _toReal[(virtualAddress, port)] = real;
         }
 
-        public bool TryResolveReal(uint virtualAddress, ushort port, out IPEndPoint real) =>
-            _toReal.TryGetValue((virtualAddress, port), out real!);
-
-        void IHostUdpSink.Received(byte[] data, IPEndPoint from) => _nat.Post(() =>
+        public bool TryResolveReal(uint virtualAddress, ushort port, out IPEndPoint real)
         {
-            // Bigger than a frame would need fragmenting, which this stack
-            // does not do; a datagram that size is dropped as the network
-            // would drop it with the don't-fragment bit set.
-            if (data.Length > Packet.Mtu - Packet.IpHeader - Packet.UdpHeader) return;
+            return _toReal.TryGetValue((virtualAddress, port), out real!);
+        }
 
-            uint source;
-            if (!_toVirtual.TryGetValue(from, out source))
+        void IHostUdpSink.Received(byte[] data, IPEndPoint from)
+        {
+            _nat.Post(() =>
             {
-                source = VirtualAddressFor(from.Address);
-                if (source == Gateway) RememberAlias(from, Gateway, (ushort)from.Port);
-            }
-            LastUsed = _nat.Now;
-            byte[] datagram = Packet.BuildUdp(source, _nat._guestIp, (ushort)from.Port, _guestPort, data);
-            _nat.InjectIp(source, _nat._guestIp, Packet.ProtocolUdp, datagram);
-        });
+                // Bigger than a frame would need fragmenting, which this stack
+                // does not do; a datagram that size is dropped as the network
+                // would drop it with the don't-fragment bit set.
+                if (data.Length > Packet.Mtu - Packet.IpHeader - Packet.UdpHeader)
+                {
+                    return;
+                }
+
+                uint source;
+                if (!_toVirtual.TryGetValue(from, out source))
+                {
+                    source = VirtualAddressFor(from.Address);
+                    if (source == Gateway)
+                    {
+                        RememberAlias(from, Gateway, (ushort)from.Port);
+                    }
+                }
+
+                LastUsed = _nat.Now;
+                byte[] datagram = Packet.BuildUdp(source, _nat._guestIp, (ushort)from.Port, _guestPort, data);
+                _nat.InjectIp(source, _nat._guestIp, Packet.ProtocolUdp, datagram);
+            });
+        }
     }
 
     // --- DHCP ----------------------------------------------------------------
-
-    private const uint DhcpMagic = 0x63825363;
 
     /// <summary>
     /// The smallest DHCP server there is: one address, offered to whoever
@@ -414,34 +610,63 @@ public sealed class NatBackend : INetworkBackend, IDisposable
     /// </summary>
     private void HandleDhcp(ReadOnlySpan<byte> bootp)
     {
-        if (bootp.Length < 240 || bootp[0] != 1 || Packet.ReadU32(bootp, 236) != DhcpMagic) return;
+        if (bootp.Length < DhcpMinimumPacketLength ||
+            bootp[BootpOperationOffset] != DhcpBootRequest ||
+            Packet.ReadU32(bootp, DhcpMagicOffset) != DhcpMagic)
+        {
+            return;
+        }
 
         byte messageType = 0;
-        ReadOnlySpan<byte> options = bootp[240..];
+        ReadOnlySpan<byte> options = bootp[DhcpOptionsOffset..];
         for (int i = 0; i < options.Length;)
         {
             byte kind = options[i];
-            if (kind == 255) break;
-            if (kind == 0) { i++; continue; }
-            if (i + 1 >= options.Length) break;
+            if (kind == DhcpOptionEnd)
+            {
+                break;
+            }
+
+            if (kind == DhcpOptionPad)
+            {
+                i++;
+                continue;
+            }
+
+            if (i + 1 >= options.Length)
+            {
+                break;
+            }
+
             int length = options[i + 1];
-            if (i + 2 + length > options.Length) break;
-            if (kind == 53 && length == 1) messageType = options[i + 2];
+            if (i + 2 + length > options.Length)
+            {
+                break;
+            }
+
+            if (kind == DhcpOptionMessageType && length == 1)
+            {
+                messageType = options[i + 2];
+            }
+
             i += 2 + length;
         }
 
         byte replyType = messageType switch
         {
-            1 => 2, // DISCOVER -> OFFER
-            3 => 5, // REQUEST  -> ACK
-            8 => 5, // INFORM   -> ACK
+            DhcpDiscover => DhcpOffer,
+            DhcpRequest => DhcpAcknowledge,
+            DhcpInform => DhcpAcknowledge,
             _ => 0,
         };
-        if (replyType == 0) return;
+        if (replyType == 0)
+        {
+            return;
+        }
 
         byte[] reply = new byte[300];
         Span<byte> span = reply;
-        span[0] = 2; // reply
+        span[BootpOperationOffset] = DhcpBootReply;
         span[1] = 1; // Ethernet
         span[2] = 6;
         bootp[4..8].CopyTo(span[4..]);   // transaction id
@@ -449,30 +674,55 @@ public sealed class NatBackend : INetworkBackend, IDisposable
         Packet.WriteU32(span, 16, Guest);   // your address
         Packet.WriteU32(span, 20, Gateway); // server address
         bootp[28..44].CopyTo(span[28..]);   // client hardware address
-        Packet.WriteU32(span, 236, DhcpMagic);
+        Packet.WriteU32(span, DhcpMagicOffset, DhcpMagic);
 
-        int o = 240;
-        span[o++] = 53; span[o++] = 1; span[o++] = replyType;
-        span[o++] = 54; span[o++] = 4; Packet.WriteU32(span, o, Gateway); o += 4;
-        span[o++] = 51; span[o++] = 4; Packet.WriteU32(span, o, 86400); o += 4;
-        span[o++] = 1;  span[o++] = 4; Packet.WriteU32(span, o, SubnetMask); o += 4;
-        span[o++] = 3;  span[o++] = 4; Packet.WriteU32(span, o, Gateway); o += 4;
-        span[o++] = 6;  span[o++] = 4; Packet.WriteU32(span, o, NameServer); o += 4;
-        span[o++] = 28; span[o++] = 4; Packet.WriteU32(span, o, Subnet | 0xFF); o += 4;
-        span[o++] = 255;
+        int optionOffset = DhcpOptionsOffset;
+        span[optionOffset++] = DhcpOptionMessageType;
+        span[optionOffset++] = 1;
+        span[optionOffset++] = replyType;
+        span[optionOffset++] = DhcpOptionServerIdentifier;
+        span[optionOffset++] = 4;
+        Packet.WriteU32(span, optionOffset, Gateway);
+        optionOffset += 4;
+        span[optionOffset++] = DhcpOptionLeaseTime;
+        span[optionOffset++] = 4;
+        Packet.WriteU32(span, optionOffset, DhcpLeaseSeconds);
+        optionOffset += 4;
+        span[optionOffset++] = DhcpOptionSubnetMask;
+        span[optionOffset++] = 4;
+        Packet.WriteU32(span, optionOffset, SubnetMask);
+        optionOffset += 4;
+        span[optionOffset++] = DhcpOptionRouter;
+        span[optionOffset++] = 4;
+        Packet.WriteU32(span, optionOffset, Gateway);
+        optionOffset += 4;
+        span[optionOffset++] = DhcpOptionDomainNameServer;
+        span[optionOffset++] = 4;
+        Packet.WriteU32(span, optionOffset, NameServer);
+        optionOffset += 4;
+        span[optionOffset++] = DhcpOptionBroadcastAddress;
+        span[optionOffset++] = 4;
+        Packet.WriteU32(span, optionOffset, Subnet | 0xFF);
+        optionOffset += 4;
+        span[optionOffset++] = DhcpOptionEnd;
 
         // Broadcast at every layer: the client does not have an address yet,
         // and may not accept a packet addressed to the one it is about to
         // get. That is how slirp does it, and every client copes.
-        byte[] datagram = Packet.BuildUdp(Gateway, Broadcast, 67, 68, reply);
+        byte[] datagram = Packet.BuildUdp(Gateway, Broadcast, DhcpServerPort, DhcpClientPort, reply);
         InjectIp(Gateway, Broadcast, Packet.ProtocolUdp, datagram);
     }
 
     // --- TCP -----------------------------------------------------------------
 
+    /// <summary>Maps a guest TCP segment to its corresponding host connection.</summary>
     private void HandleTcp(uint source, uint destination, ReadOnlySpan<byte> tcp)
     {
-        if (tcp.Length < Packet.TcpHeader) return;
+        if (tcp.Length < Packet.TcpHeader)
+        {
+            return;
+        }
+
         ushort sourcePort = Packet.ReadU16(tcp, 0);
         ushort destinationPort = Packet.ReadU16(tcp, 2);
         uint sequence = Packet.ReadU32(tcp, 4);
@@ -480,14 +730,22 @@ public sealed class NatBackend : INetworkBackend, IDisposable
         int headerLength = (tcp[12] >> 4) * 4;
         byte flags = tcp[13];
         ushort window = Packet.ReadU16(tcp, 14);
-        if (headerLength < Packet.TcpHeader || headerLength > tcp.Length) return;
+        if (headerLength < Packet.TcpHeader || headerLength > tcp.Length)
+        {
+            return;
+        }
+
         ReadOnlySpan<byte> payload = tcp[headerLength..];
 
         var key = (sourcePort, destination, destinationPort);
         if (_tcp.TryGetValue(key, out NatTcpConnection? connection))
         {
             connection.HandleSegment(sequence, acknowledgement, flags, window, payload);
-            if (connection.Closed) _tcp.Remove(key);
+            if (connection.Closed)
+            {
+                _tcp.Remove(key);
+            }
+
             return;
         }
 
@@ -512,9 +770,12 @@ public sealed class NatBackend : INetworkBackend, IDisposable
         // A segment for a connection this side knows nothing about: left
         // over from before a reset, most likely. The reply that ends it.
         if ((flags & TcpFlags.Rst) == 0)
+        {
             RejectSegment(source, destination, sourcePort, destinationPort, sequence, acknowledgement, flags, payload.Length);
+        }
     }
 
+    /// <summary>Sends the reset that terminates a segment without a known local connection.</summary>
     private void RejectSegment(uint source, uint destination, ushort sourcePort, ushort destinationPort,
                                uint sequence, uint acknowledgement, byte flags, int payloadLength)
     {
@@ -526,30 +787,65 @@ public sealed class NatBackend : INetworkBackend, IDisposable
         InjectIp(destination, source, Packet.ProtocolTcp, reset);
     }
 
+    /// <summary>Reads the peer's TCP maximum-segment option from an otherwise opaque option area.</summary>
     private static int? ReadMaximumSegment(ReadOnlySpan<byte> options)
     {
         for (int i = 0; i < options.Length;)
         {
             byte kind = options[i];
-            if (kind == 0) break;
-            if (kind == 1) { i++; continue; }
-            if (i + 1 >= options.Length) break;
+            if (kind == 0)
+            {
+                break;
+            }
+
+            if (kind == 1)
+            {
+                i++;
+                continue;
+            }
+
+            if (i + 1 >= options.Length)
+            {
+                break;
+            }
+
             int length = options[i + 1];
-            if (length < 2 || i + length > options.Length) break;
-            if (kind == 2 && length == 4) return Packet.ReadU16(options, i + 2);
+            if (length < 2 || i + length > options.Length)
+            {
+                break;
+            }
+
+            if (kind == 2 && length == 4)
+            {
+                return Packet.ReadU16(options, i + 2);
+            }
+
             i += length;
         }
+
         return null;
     }
 
     public void Dispose()
     {
         Drain();
-        foreach (NatTcpConnection connection in _tcp.Values) connection.Close();
+        foreach (NatTcpConnection connection in _tcp.Values)
+        {
+            connection.Close();
+        }
+
         _tcp.Clear();
-        foreach (UdpMapping mapping in _udp.Values) mapping.Close();
+        foreach (UdpMapping mapping in _udp.Values)
+        {
+            mapping.Close();
+        }
+
         _udp.Clear();
-        foreach (IDisposable listener in _listeners) listener.Dispose();
+        foreach (IDisposable listener in _listeners)
+        {
+            listener.Dispose();
+        }
+
         _listeners.Clear();
     }
 }
