@@ -15,6 +15,72 @@ namespace Aurora386.Core.Firmware;
 /// </summary>
 public sealed partial class DiskServices
 {
+    // INT 13h function numbers, passed in AH.
+    private const byte FunctionReset = 0x00;
+    private const byte FunctionGetStatus = 0x01;
+    private const byte FunctionReadSectors = 0x02;
+    private const byte FunctionWriteSectors = 0x03;
+    private const byte FunctionVerifySectors = 0x04;
+    private const byte FunctionGetDriveParameters = 0x08;
+    private const byte FunctionGetDiskType = 0x15;
+    private const byte FunctionDetectDiskChange = 0x16;
+    private const byte FunctionCheckExtensions = 0x41;
+    private const byte FunctionExtendedRead = 0x42;
+    private const byte FunctionExtendedWrite = 0x43;
+    private const byte FunctionExtendedVerify = 0x44;
+    private const byte FunctionExtendedSeek = 0x47;
+    private const byte FunctionExtendedGetParameters = 0x48;
+
+    // Status codes returned in AH and kept for function 01h.
+    private const byte StatusSuccess = 0x00;
+    private const byte StatusInvalidFunction = 0x01;
+    private const byte StatusWriteProtected = 0x03;
+    private const byte StatusSectorNotFound = 0x04;
+    private const byte StatusMediaChanged = 0x06;
+    private const byte StatusDriveParameterActivityFailed = 0x07;
+    private const byte StatusDriveNotReady = 0x80;
+
+    // Drive types function 15h returns in AH.
+    private const byte DiskTypeNotInstalled = 0x00;
+    private const byte DiskTypeFloppyWithChangeLine = 0x02;
+    private const byte DiskTypeFixedDisk = 0x03;
+
+    // CMOS floppy drive types, as function 08h returns them in BL.
+    private const byte FloppyType360K = 1;
+    private const byte FloppyType1200K = 2;
+    private const byte FloppyType720K = 3;
+    private const byte FloppyType1440K = 4;
+    private const byte FloppyType2880K = 6;
+
+    /// <summary>BIOS drive numbers from 80h up are hard disks; below are floppies.</summary>
+    private const byte FirstHardDisk = 0x80;
+
+    /// <summary>CL carries the sector number in bits 0-5 and cylinder bits 8-9 in bits 6-7.</summary>
+    private const int ClSectorMask = 0x3F;
+    private const int ClCylinderHighMask = 0xC0;
+
+    // The Enhanced Disk Drive extensions.
+    private const ushort ExtensionsProbe = 0x55AA;
+    private const ushort ExtensionsPresent = 0xAA55;
+    private const byte ExtensionsVersion1 = 0x01;
+    private const ushort ExtensionsFixedDiskAccess = 0x0001;   // functions 42h-44h, 47h and 48h
+    private const byte MinimumAddressPacketSize = 0x10;
+    private const int MaximumPacketSectors = 127;
+
+    // Offsets in the disk address packet at DS:SI.
+    private const uint PacketSizeOffset = 0;
+    private const uint PacketCountOffset = 2;
+    private const uint PacketBufferOffsetOffset = 4;
+    private const uint PacketBufferSegmentOffset = 6;
+    private const uint PacketSectorLowOffset = 8;
+    private const uint PacketSectorHighOffset = 12;
+
+    // The extended drive parameter buffer of function 48h.
+    private const ushort ParametersVersion1Size = 0x1A;
+    private const ushort ParametersVersion11Size = 0x1E;
+    private const ushort ParametersGeometryValid = 0x0002;
+    private const uint NoConfigurationTable = 0xFFFFFFFF;
+
     private readonly Dictionary<byte, DiskImage> _drives = new();
     private readonly BiosDataArea _bda;
 
@@ -23,7 +89,7 @@ public sealed partial class DiskServices
     // INT 13h contradict the CMOS equipment description.
     private readonly Dictionary<byte, FloppyGeometry> _floppyDrives = new()
     {
-        [0] = new FloppyGeometry(80, 2, 18, 4),
+        [0] = new FloppyGeometry(80, 2, 18, FloppyType1440K),
     };
 
     private readonly record struct FloppyGeometry(
@@ -50,12 +116,12 @@ public sealed partial class DiskServices
         {
             byte driveType = image.SectorsPerTrack switch
             {
-                9 when image.Cylinders == 40 => 1,
-                15 => 2,
-                9 => 3,
-                18 => 4,
-                36 => 6,
-                _ => 4,
+                9 when image.Cylinders == 40 => FloppyType360K,
+                15 => FloppyType1200K,
+                9 => FloppyType720K,
+                18 => FloppyType1440K,
+                36 => FloppyType2880K,
+                _ => FloppyType1440K,
             };
             _floppyDrives[image.DriveNumber] = new FloppyGeometry(
                 image.Cylinders, image.Heads, image.SectorsPerTrack, driveType);
@@ -103,17 +169,23 @@ public sealed partial class DiskServices
     public DiskImage? GetDrive(byte driveNumber)
         => _drives.TryGetValue(driveNumber, out DiskImage? image) ? image : null;
 
-    public int HardDiskCount => _drives.Keys.Count(d => d >= 0x80);
+    public int HardDiskCount => _drives.Keys.Count(d => d >= FirstHardDisk);
 
     public void Handle(CpuNs.Cpu cpu)
     {
-        byte function = cpu.State.GetReg8(4);   // AH
-        byte drive = cpu.State.GetReg8(2);      // DL
+        byte function = cpu.State.GetReg8((int)Reg8.Ah);
+        byte drive = cpu.State.GetReg8((int)Reg8.Dl);
+        bool hardDisk = drive >= FirstHardDisk;
 
         switch (function)
         {
-            case 0x00: Reset(cpu); return;
-            case 0x01: GetStatus(cpu); return;
+            case FunctionReset:
+                Reset(cpu);
+                return;
+            case FunctionGetStatus:
+                GetStatus(cpu);
+                return;
+
             // Anything that touches the medium has to be turned away while
             // the change line is up, not just reading. DOS verifies sectors
             // as well as reading them, and SMARTDRV uses verify to decide
@@ -122,29 +194,55 @@ public sealed partial class DiskServices
             // it goes on serving them from memory. That is what let a file
             // "copy" successfully after a few tries: the reads never reached
             // the new disk at all.
-            case 0x02 or 0x03 or 0x04 when MediaChangedFor(cpu, drive): return;
+            case FunctionReadSectors or FunctionWriteSectors or FunctionVerifySectors
+                when MediaChangedFor(cpu, drive):
+                return;
 
-            case 0x02: ReadSectors(cpu, drive); return;
-            case 0x03: WriteSectors(cpu, drive); return;
-            case 0x04: VerifySectors(cpu, drive); return;
-            case 0x08: GetDriveParameters(cpu, drive); return;
-            case 0x15: GetDiskType(cpu, drive); return;
-            case 0x16: DetectDiskChange(cpu, drive); return;
+            case FunctionReadSectors:
+                ReadSectors(cpu, drive);
+                return;
+            case FunctionWriteSectors:
+                WriteSectors(cpu, drive);
+                return;
+            case FunctionVerifySectors:
+                VerifySectors(cpu, drive);
+                return;
+            case FunctionGetDriveParameters:
+                GetDriveParameters(cpu, drive);
+                return;
+            case FunctionGetDiskType:
+                GetDiskType(cpu, drive);
+                return;
+            case FunctionDetectDiskChange:
+                DetectDiskChange(cpu, drive);
+                return;
 
             // The extended functions of the Enhanced Disk Drive
             // specification, which address sectors by number rather than by
             // cylinder, head and sector. Everything from Windows 95 on uses
             // them when they exist; DOS 6.22 never asks. Hard disks only:
             // nothing ever addressed a floppy this way.
-            case 0x41 when drive >= 0x80: CheckExtensions(cpu, drive); return;
-            case 0x42 when drive >= 0x80: ExtendedRead(cpu, drive); return;
-            case 0x43 when drive >= 0x80: ExtendedWrite(cpu, drive); return;
-            case 0x44 when drive >= 0x80: ExtendedVerify(cpu, drive); return;
-            case 0x47 when drive >= 0x80: ExtendedSeek(cpu, drive); return;
-            case 0x48 when drive >= 0x80: ExtendedGetParameters(cpu, drive); return;
+            case FunctionCheckExtensions when hardDisk:
+                CheckExtensions(cpu, drive);
+                return;
+            case FunctionExtendedRead when hardDisk:
+                ExtendedRead(cpu, drive);
+                return;
+            case FunctionExtendedWrite when hardDisk:
+                ExtendedWrite(cpu, drive);
+                return;
+            case FunctionExtendedVerify when hardDisk:
+                ExtendedVerify(cpu, drive);
+                return;
+            case FunctionExtendedSeek when hardDisk:
+                ExtendedSeek(cpu, drive);
+                return;
+            case FunctionExtendedGetParameters when hardDisk:
+                ExtendedGetParameters(cpu, drive);
+                return;
 
             default:
-                Fail(cpu, 0x01);   // invalid function
+                Fail(cpu, StatusInvalidFunction);
                 return;
         }
     }
@@ -166,17 +264,17 @@ public sealed partial class DiskServices
         // disk while the other went on serving the old one -- a directory
         // from one floppy and sectors from another, which is how the
         // installer ended up asking for disk after disk and getting nowhere.
-        byte drive = cpu.State.GetReg8(2);   // DL
+        byte drive = cpu.State.GetReg8((int)Reg8.Dl);
         _mediaChanged.Remove(drive);
 
-        _lastStatus = 0;
+        _lastStatus = StatusSuccess;
         Succeed(cpu);
     }
 
     private void GetStatus(CpuNs.Cpu cpu)
     {
         cpu.SetCarryInStackedFlags(false);
-        cpu.State.SetReg8(4, _lastStatus);   // AH = the stored status, not an error code
+        cpu.State.SetReg8((int)Reg8.Ah, _lastStatus);   // the stored status, not an error code
     }
 
     /// <summary>
@@ -190,7 +288,11 @@ public sealed partial class DiskServices
     /// </summary>
     public static (int Cylinders, int Heads, int SectorsPerTrack) PresentedGeometry(DiskImage image)
     {
-        if (image.DriveNumber < 0x80) return (image.Cylinders, image.Heads, image.SectorsPerTrack);
+        if (image.DriveNumber < FirstHardDisk)
+        {
+            return (image.Cylinders, image.Heads, image.SectorsPerTrack);
+        }
+
         HardDiskImage.Geometry presented =
             new HardDiskImage.Geometry(image.Cylinders, image.Heads, image.SectorsPerTrack).Presented();
         return (presented.Cylinders, presented.Heads, presented.SectorsPerTrack);
@@ -200,15 +302,25 @@ public sealed partial class DiskServices
     private static long LinearOf(DiskImage image, int cylinder, int head, int sector)
     {
         (int cylinders, int heads, int sectorsPerTrack) = PresentedGeometry(image);
-        if (cylinder < 0 || cylinder >= cylinders || head < 0 || head >= heads
-            || sector < 1 || sector > sectorsPerTrack) return -1;
+        bool onDisk = cylinder >= 0 && cylinder < cylinders
+            && head >= 0 && head < heads
+            && sector >= 1 && sector <= sectorsPerTrack;
+        if (!onDisk)
+        {
+            return -1;
+        }
+
         return ((long)cylinder * heads + head) * sectorsPerTrack + (sector - 1);
     }
 
     private void ReadSectors(CpuNs.Cpu cpu, byte drive)
     {
         DiskImage? image = GetDrive(drive);
-        if (image is null) { Fail(cpu, 0x80); return; }   // drive not ready
+        if (image is null)
+        {
+            Fail(cpu, StatusDriveNotReady);
+            return;
+        }
 
         (int cylinder, int head, int sector, int count) = DecodeChs(cpu);
         NoteTransfer(drive, write: false, cylinder, head, sector, count);
@@ -218,24 +330,35 @@ public sealed partial class DiskServices
         long linear = LinearOf(image, cylinder, head, sector);
         if (linear < 0 || !image.ReadLinear(linear, count, buffer))
         {
-            Fail(cpu, 0x04);   // sector not found
+            Fail(cpu, StatusSectorNotFound);
             return;
         }
 
         ushort destination = cpu.State.Bx;
         for (int i = 0; i < buffer.Length; i++)
+        {
             cpu.WriteMemoryByte(SegReg.Es, (uint)(destination + i), buffer[i]);
+        }
 
-        cpu.State.SetReg8(0, (byte)count);   // AL: sectors actually transferred
-        _lastStatus = 0;
+        cpu.State.SetReg8((int)Reg8.Al, (byte)count);   // sectors actually transferred
+        _lastStatus = StatusSuccess;
         Succeed(cpu);
     }
 
     private void WriteSectors(CpuNs.Cpu cpu, byte drive)
     {
         DiskImage? image = GetDrive(drive);
-        if (image is null) { Fail(cpu, 0x80); return; }
-        if (image.ReadOnly) { Fail(cpu, 0x03); return; }   // write protected
+        if (image is null)
+        {
+            Fail(cpu, StatusDriveNotReady);
+            return;
+        }
+
+        if (image.ReadOnly)
+        {
+            Fail(cpu, StatusWriteProtected);
+            return;
+        }
 
         (int cylinder, int head, int sector, int count) = DecodeChs(cpu);
         NoteTransfer(drive, write: true, cylinder, head, sector, count);
@@ -243,17 +366,19 @@ public sealed partial class DiskServices
         var buffer = new byte[count * DiskImage.SectorSize];
         ushort source = cpu.State.Bx;
         for (int i = 0; i < buffer.Length; i++)
+        {
             buffer[i] = cpu.ReadMemoryByte(SegReg.Es, (uint)(source + i));
+        }
 
         long linear = LinearOf(image, cylinder, head, sector);
         if (linear < 0 || !image.WriteLinear(linear, count, buffer))
         {
-            Fail(cpu, 0x04);
+            Fail(cpu, StatusSectorNotFound);
             return;
         }
 
-        cpu.State.SetReg8(0, (byte)count);
-        _lastStatus = 0;
+        cpu.State.SetReg8((int)Reg8.Al, (byte)count);
+        _lastStatus = StatusSuccess;
         Succeed(cpu);
     }
 
@@ -263,12 +388,20 @@ public sealed partial class DiskServices
         // In a file-backed image there is nothing that can rot, so it is enough
         // to confirm that the requested sectors exist.
         DiskImage? image = GetDrive(drive);
-        if (image is null) { Fail(cpu, 0x80); return; }
+        if (image is null)
+        {
+            Fail(cpu, StatusDriveNotReady);
+            return;
+        }
 
         (int cylinder, int head, int sector, int count) = DecodeChs(cpu);
-        if (LinearOf(image, cylinder, head, sector) < 0) { Fail(cpu, 0x04); return; }
+        if (LinearOf(image, cylinder, head, sector) < 0)
+        {
+            Fail(cpu, StatusSectorNotFound);
+            return;
+        }
 
-        cpu.State.SetReg8(0, (byte)count);
+        cpu.State.SetReg8((int)Reg8.Al, (byte)count);
         Succeed(cpu);
     }
 
@@ -287,7 +420,7 @@ public sealed partial class DiskServices
             cpu.State.Bx = 0;
             cpu.SetSegment(CpuNs.SegReg.Es, 0);
             cpu.State.Di = 0;
-            Fail(cpu, 0x07);
+            Fail(cpu, StatusDriveParameterActivityFailed);
             return;
         }
 
@@ -297,22 +430,21 @@ public sealed partial class DiskServices
             ? PresentedGeometry(image)
             : (floppy.Cylinders, floppy.Heads, floppy.SectorsPerTrack);
         int lastCylinder = cylinders - 1;
-        byte cl = (byte)((sectorsPerTrack & 0x3F) | ((lastCylinder >> 2) & 0xC0));
-        cpu.State.SetReg8(1, cl);                              // CL
-        cpu.State.SetReg8(5, (byte)(lastCylinder & 0xFF));     // CH
-        // Watch the 8-bit register indices here. The order is
-        // 0=AL 1=CL 2=DL 3=BL 4=AH 5=CH 6=DH 7=BH, so DH is index 6 and DL is
-        // index 2 -- the last head number goes in the former, the drive count
-        // in the latter. Swapping the two makes software believe the disk has a
-        // single head, and the MS-DOS setup then writes its files to the wrong
-        // sectors, leaving a disk that will not boot.
-        cpu.State.SetReg8(6, (byte)(heads - 1));               // DH: last head number
+        byte cl = (byte)((sectorsPerTrack & ClSectorMask) | ((lastCylinder >> 2) & ClCylinderHighMask));
+        cpu.State.SetReg8((int)Reg8.Cl, cl);
+        cpu.State.SetReg8((int)Reg8.Ch, (byte)(lastCylinder & 0xFF));
+
+        // The last head number goes in DH and the drive count in DL. Swapping
+        // the two makes software believe the disk has a single head, and the
+        // MS-DOS setup then writes its files to the wrong sectors, leaving a
+        // disk that will not boot.
+        cpu.State.SetReg8((int)Reg8.Dh, (byte)(heads - 1));
 
         // DL reports how many drives of the same kind are installed: floppies
         // and hard disks are counted separately.
-        bool wantHardDisks = drive >= 0x80;
+        bool wantHardDisks = drive >= FirstHardDisk;
         int sameKind = wantHardDisks ? HardDiskCount : FloppyDriveCount;
-        cpu.State.SetReg8(2, (byte)sameKind);                  // DL
+        cpu.State.SetReg8((int)Reg8.Dl, (byte)sameKind);
 
         // BL names the kind of drive, and only floppies have one. Software
         // reads it to find out what the drive is capable of, as opposed to
@@ -326,8 +458,7 @@ public sealed partial class DiskServices
         if (!wantHardDisks)
         {
             byte driveType = GetFloppyDriveType(drive);
-
-            cpu.State.SetReg8(3, driveType);                   // BL
+            cpu.State.SetReg8((int)Reg8.Bl, driveType);
         }
 
         Succeed(cpu);
@@ -339,18 +470,18 @@ public sealed partial class DiskServices
         if (image is null && _floppyDrives.ContainsKey(drive))
         {
             cpu.SetCarryInStackedFlags(false);
-            cpu.State.SetReg8(4, 0x02);
+            cpu.State.SetReg8((int)Reg8.Ah, DiskTypeFloppyWithChangeLine);
             return;
         }
 
         if (image is null)
         {
-            // AH=0 means "drive not installed". Carry stays clear: the call
+            // Drive type 0 means "not installed". Carry stays clear: the call
             // itself answered correctly, it is the drive that is missing.
             cpu.State.Cx = 0;
             cpu.State.Dx = 0;
             cpu.SetCarryInStackedFlags(false);
-            cpu.State.SetReg8(4, 0x00);   // AH = drive type: not installed
+            cpu.State.SetReg8((int)Reg8.Ah, DiskTypeNotInstalled);
             return;
         }
 
@@ -363,7 +494,7 @@ public sealed partial class DiskServices
             long sectors = image.TotalSectors;
             cpu.State.Cx = (ushort)(sectors >> 16);
             cpu.State.Dx = (ushort)sectors;
-            cpu.State.SetReg8(4, 0x03);   // fixed disk
+            cpu.State.SetReg8((int)Reg8.Ah, DiskTypeFixedDisk);
         }
         else
         {
@@ -374,7 +505,7 @@ public sealed partial class DiskServices
             // swapping the floppy image under a running guest stops working.
             // Reporting the change line is the clean path -- DOS then queries
             // function 0x16 whenever it wants to know if the disk changed.
-            cpu.State.SetReg8(4, 0x02);
+            cpu.State.SetReg8((int)Reg8.Ah, DiskTypeFloppyWithChangeLine);
         }
     }
 
@@ -384,18 +515,21 @@ public sealed partial class DiskServices
     /// line, otherwise DOS waits for an answer that never comes.
     ///
     /// File-backed images do not physically leave the drive, so the answer is
-    /// always "no change" -- except the first time after the image has been
-    /// swapped while the machine was running.
+    /// always "no change" -- except after the image has been swapped while
+    /// the machine was running, until the drive is next reset.
     /// </summary>
     private void DetectDiskChange(CpuNs.Cpu cpu, byte drive)
     {
         DiskImage? image = GetDrive(drive);
-        if (image is null) { Fail(cpu, 0x80); return; }
+        if (image is null)
+        {
+            Fail(cpu, StatusDriveNotReady);
+            return;
+        }
 
-        // The change line stays raised until the drive actually reads
-        // something, which is what clears it on real hardware -- it is a
-        // physical latch tripped by the door, not a message that is consumed
-        // by being read.
+        // The change line stays raised until the drive is reset, as it is on
+        // real hardware -- it is a physical latch tripped by the door, not a
+        // message that is consumed by being read.
         //
         // Reporting the change only once looks reasonable and is wrong in a
         // way that matters: software asks more than once. Windows 3.1's
@@ -405,61 +539,45 @@ public sealed partial class DiskServices
         // already there.
         if (_mediaChanged.Contains(drive))
         {
-            Fail(cpu, 0x06);   // media changed
+            Fail(cpu, StatusMediaChanged);
             return;
         }
 
-        cpu.State.SetReg8(4, 0x00);
+        cpu.State.SetReg8((int)Reg8.Ah, StatusSuccess);
         cpu.SetCarryInStackedFlags(false);
     }
 
-    /// <summary>Drives whose media has been swapped and not yet reported.</summary>
+    /// <summary>Drives whose media has been swapped and not yet reset (see <see cref="Reset"/>).</summary>
     private readonly HashSet<byte> _mediaChanged = new();
 
     /// <summary>Signals that the image behind a drive has been replaced.</summary>
     public void NotifyMediaChanged(byte driveNumber) => _mediaChanged.Add(driveNumber);
 
     /// <summary>
-    /// Refuses an access to a drive whose disk has been swapped and not yet
-    /// looked at, reporting the change to the caller.
-    ///
-    /// The refusal happens once: having been told, DOS re-reads the disk's
-    /// layout and everything after that goes through. It is the telling that
-    /// matters -- the error is what makes DOS discard the file allocation
-    /// table and directory it cached from the previous disk, and what makes
-    /// SMARTDRV drop the sectors it is holding.
+    /// Refuses an access to a drive whose disk has been swapped, reporting the
+    /// change to the caller, for as long as the change line is up: until the
+    /// caller resets the drive (function 00h), every read, write or verify is
+    /// turned away the same way. The error is what makes DOS discard the file
+    /// allocation table and directory it cached from the previous disk, and
+    /// what makes SMARTDRV drop the sectors it is holding -- and both of them
+    /// have to hear it, which is why the refusal does not lower the line.
     /// </summary>
     private bool MediaChangedFor(CpuNs.Cpu cpu, byte drive)
     {
-        if (GetDrive(drive) is null) return false;
-        if (!_mediaChanged.Contains(drive)) return false;
+        if (GetDrive(drive) is null)
+        {
+            return false;
+        }
 
-        Fail(cpu, 0x06);   // media changed
+        if (!_mediaChanged.Contains(drive))
+        {
+            return false;
+        }
+
+        Fail(cpu, StatusMediaChanged);
         return true;
     }
 
-    /// <summary>
-    /// Lowers the change line, which only a completed read does.
-    ///
-    /// It is deliberately not lowered by the refusal itself. More than one
-    /// piece of software has to hear about the swap: DOS keeps a cached file
-    /// allocation table and directory, SMARTDRV keeps the sectors themselves,
-    /// and they ask independently. Clearing the line on the first refusal
-    /// tells whichever of them happened to ask first and leaves the other
-    /// still holding the previous disk -- so the installer would read a
-    /// directory belonging to one floppy while the sectors came from another,
-    /// and go round asking for disk after disk without ever getting past.
-    ///
-    /// A completed read means the drive really has looked at the new disk,
-    /// and that is the point at which there is nothing left to report.
-    /// </summary>
-    private void ClearMediaChanged(byte drive) => _mediaChanged.Remove(drive);
-
-    /// <summary>
-    /// Extracts cylinder, head, sector and count from the registers, unpacking
-    /// the compact encoding: the two high bits of the cylinder live in bits 6-7
-    /// of CL.
-    /// </summary>
     /// <summary>
     /// Publishes the outcome in the BIOS Data Area. Function 0x01 hands it
     /// back, but some programs read those bytes directly instead of calling it,
@@ -475,10 +593,15 @@ public sealed partial class DiskServices
 
     private static void CheckExtensions(CpuNs.Cpu cpu, byte drive)
     {
-        if (cpu.State.Bx != 0x55AA) { FailPlain(cpu, 0x01); return; }
-        cpu.State.Bx = 0xAA55;
-        cpu.State.SetReg8(4, 0x01);        // AH: version 1.x of the specification
-        cpu.State.Cx = 0x0001;             // bit 0: the fixed disk access functions 42h-44h, 47h, 48h
+        if (cpu.State.Bx != ExtensionsProbe)
+        {
+            FailPlain(cpu, StatusInvalidFunction);
+            return;
+        }
+
+        cpu.State.Bx = ExtensionsPresent;
+        cpu.State.SetReg8((int)Reg8.Ah, ExtensionsVersion1);
+        cpu.State.Cx = ExtensionsFixedDiskAccess;
         cpu.SetCarryInStackedFlags(false);
     }
 
@@ -493,79 +616,123 @@ public sealed partial class DiskServices
     private static bool ReadPacket(CpuNs.Cpu cpu, out AddressPacket packet)
     {
         uint at = cpu.State.Si;
-        byte size = cpu.ReadMemoryByte(SegReg.Ds, at);
+        byte size = cpu.ReadMemoryByte(SegReg.Ds, at + PacketSizeOffset);
         packet = default;
-        if (size < 0x10) return false;
+        if (size < MinimumAddressPacketSize)
+        {
+            return false;
+        }
 
-        int count = cpu.ReadMemoryWord(SegReg.Ds, at + 2);
-        ushort offset = cpu.ReadMemoryWord(SegReg.Ds, at + 4);
-        ushort segment = cpu.ReadMemoryWord(SegReg.Ds, at + 6);
-        long sector = cpu.ReadMemoryDword(SegReg.Ds, at + 8) | ((long)cpu.ReadMemoryDword(SegReg.Ds, at + 12) << 32);
-        packet = new AddressPacket(count, offset, segment, sector);
+        int count = cpu.ReadMemoryWord(SegReg.Ds, at + PacketCountOffset);
+        ushort offset = cpu.ReadMemoryWord(SegReg.Ds, at + PacketBufferOffsetOffset);
+        ushort segment = cpu.ReadMemoryWord(SegReg.Ds, at + PacketBufferSegmentOffset);
+        long sectorLow = cpu.ReadMemoryDword(SegReg.Ds, at + PacketSectorLowOffset);
+        long sectorHigh = cpu.ReadMemoryDword(SegReg.Ds, at + PacketSectorHighOffset);
+        packet = new AddressPacket(count, offset, segment, sectorLow | (sectorHigh << 32));
         return true;
     }
 
     private static void WritePacketCount(CpuNs.Cpu cpu, int transferred) =>
-        cpu.WriteMemoryWord(SegReg.Ds, cpu.State.Si + 2u, (ushort)transferred);
+        cpu.WriteMemoryWord(SegReg.Ds, cpu.State.Si + PacketCountOffset, (ushort)transferred);
 
     private void ExtendedRead(CpuNs.Cpu cpu, byte drive)
     {
         DiskImage? image = GetDrive(drive);
-        if (image is null) { Fail(cpu, 0x80); return; }
-        if (!ReadPacket(cpu, out AddressPacket packet) || packet.Count > 127) { Fail(cpu, 0x01); return; }
+        if (image is null)
+        {
+            Fail(cpu, StatusDriveNotReady);
+            return;
+        }
+
+        if (!ReadPacket(cpu, out AddressPacket packet) || packet.Count > MaximumPacketSectors)
+        {
+            Fail(cpu, StatusInvalidFunction);
+            return;
+        }
 
         var buffer = new byte[packet.Count * DiskImage.SectorSize];
         if (!image.ReadLinear(packet.Sector, packet.Count, buffer))
         {
             WritePacketCount(cpu, 0);
-            Fail(cpu, 0x04);
+            Fail(cpu, StatusSectorNotFound);
             return;
         }
 
         uint destination = cpu.FarPointerToLinear(packet.BufferSegment, packet.BufferOffset);
-        for (int i = 0; i < buffer.Length; i++) cpu.WriteLinearByte(destination + (uint)i, buffer[i]);
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            cpu.WriteLinearByte(destination + (uint)i, buffer[i]);
+        }
 
         DriveAccessed?.Invoke(drive, false);
         WritePacketCount(cpu, packet.Count);
-        _lastStatus = 0;
+        _lastStatus = StatusSuccess;
         Succeed(cpu);
     }
 
     private void ExtendedWrite(CpuNs.Cpu cpu, byte drive)
     {
         DiskImage? image = GetDrive(drive);
-        if (image is null) { Fail(cpu, 0x80); return; }
-        if (image.ReadOnly) { Fail(cpu, 0x03); return; }
-        if (!ReadPacket(cpu, out AddressPacket packet) || packet.Count > 127) { Fail(cpu, 0x01); return; }
+        if (image is null)
+        {
+            Fail(cpu, StatusDriveNotReady);
+            return;
+        }
+
+        if (image.ReadOnly)
+        {
+            Fail(cpu, StatusWriteProtected);
+            return;
+        }
+
+        if (!ReadPacket(cpu, out AddressPacket packet) || packet.Count > MaximumPacketSectors)
+        {
+            Fail(cpu, StatusInvalidFunction);
+            return;
+        }
 
         var buffer = new byte[packet.Count * DiskImage.SectorSize];
         uint source = cpu.FarPointerToLinear(packet.BufferSegment, packet.BufferOffset);
-        for (int i = 0; i < buffer.Length; i++) buffer[i] = cpu.ReadLinearByte(source + (uint)i);
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            buffer[i] = cpu.ReadLinearByte(source + (uint)i);
+        }
 
         if (!image.WriteLinear(packet.Sector, packet.Count, buffer))
         {
             WritePacketCount(cpu, 0);
-            Fail(cpu, 0x04);
+            Fail(cpu, StatusSectorNotFound);
             return;
         }
 
         DriveAccessed?.Invoke(drive, true);
         WritePacketCount(cpu, packet.Count);
-        _lastStatus = 0;
+        _lastStatus = StatusSuccess;
         Succeed(cpu);
     }
 
     private void ExtendedVerify(CpuNs.Cpu cpu, byte drive)
     {
         DiskImage? image = GetDrive(drive);
-        if (image is null) { Fail(cpu, 0x80); return; }
-        if (!ReadPacket(cpu, out AddressPacket packet)) { Fail(cpu, 0x01); return; }
+        if (image is null)
+        {
+            Fail(cpu, StatusDriveNotReady);
+            return;
+        }
+
+        if (!ReadPacket(cpu, out AddressPacket packet))
+        {
+            Fail(cpu, StatusInvalidFunction);
+            return;
+        }
+
         if (packet.Sector < 0 || packet.Sector + packet.Count > image.TotalSectors)
         {
             WritePacketCount(cpu, 0);
-            Fail(cpu, 0x04);
+            Fail(cpu, StatusSectorNotFound);
             return;
         }
+
         Succeed(cpu);
     }
 
@@ -573,9 +740,24 @@ public sealed partial class DiskServices
     {
         // There is no head to move; the sector is either on the disk or not.
         DiskImage? image = GetDrive(drive);
-        if (image is null) { Fail(cpu, 0x80); return; }
-        if (!ReadPacket(cpu, out AddressPacket packet)) { Fail(cpu, 0x01); return; }
-        if (packet.Sector < 0 || packet.Sector >= image.TotalSectors) { Fail(cpu, 0x04); return; }
+        if (image is null)
+        {
+            Fail(cpu, StatusDriveNotReady);
+            return;
+        }
+
+        if (!ReadPacket(cpu, out AddressPacket packet))
+        {
+            Fail(cpu, StatusInvalidFunction);
+            return;
+        }
+
+        if (packet.Sector < 0 || packet.Sector >= image.TotalSectors)
+        {
+            Fail(cpu, StatusSectorNotFound);
+            return;
+        }
+
         Succeed(cpu);
     }
 
@@ -589,53 +771,71 @@ public sealed partial class DiskServices
     private void ExtendedGetParameters(CpuNs.Cpu cpu, byte drive)
     {
         DiskImage? image = GetDrive(drive);
-        if (image is null) { Fail(cpu, 0x80); return; }
+        if (image is null)
+        {
+            Fail(cpu, StatusDriveNotReady);
+            return;
+        }
 
         uint at = cpu.State.Si;
         ushort size = cpu.ReadMemoryWord(SegReg.Ds, at);
-        if (size < 0x1A) { Fail(cpu, 0x01); return; }
+        if (size < ParametersVersion1Size)
+        {
+            Fail(cpu, StatusInvalidFunction);
+            return;
+        }
 
-        bool extended = size >= 0x1E;
-        cpu.WriteMemoryWord(SegReg.Ds, at + 0, (ushort)(extended ? 0x1E : 0x1A));
-        cpu.WriteMemoryWord(SegReg.Ds, at + 2, 0x0002);              // the geometry below is valid
+        bool extended = size >= ParametersVersion11Size;
+        cpu.WriteMemoryWord(SegReg.Ds, at + 0, extended ? ParametersVersion11Size : ParametersVersion1Size);
+        cpu.WriteMemoryWord(SegReg.Ds, at + 2, ParametersGeometryValid);
         cpu.WriteMemoryDword(SegReg.Ds, at + 4, (uint)image.Cylinders);
         cpu.WriteMemoryDword(SegReg.Ds, at + 8, (uint)image.Heads);
         cpu.WriteMemoryDword(SegReg.Ds, at + 12, (uint)image.SectorsPerTrack);
         cpu.WriteMemoryDword(SegReg.Ds, at + 16, (uint)image.TotalSectors);
         cpu.WriteMemoryDword(SegReg.Ds, at + 20, 0);
         cpu.WriteMemoryWord(SegReg.Ds, at + 24, DiskImage.SectorSize);
-        if (extended) cpu.WriteMemoryDword(SegReg.Ds, at + 26, 0xFFFFFFFF);   // no configuration table
+        if (extended)
+        {
+            cpu.WriteMemoryDword(SegReg.Ds, at + 26, NoConfigurationTable);
+        }
+
         Succeed(cpu);
     }
 
     /// <summary>A refusal that does not disturb the stored status, for calls that were never about a transfer.</summary>
     private static void FailPlain(CpuNs.Cpu cpu, byte errorCode)
     {
-        cpu.State.SetReg8(4, errorCode);
+        cpu.State.SetReg8((int)Reg8.Ah, errorCode);
         cpu.SetCarryInStackedFlags(true);
     }
 
+    /// <summary>
+    /// Extracts cylinder, head, sector and count from the registers, unpacking
+    /// the compact encoding: the two high bits of the cylinder live in bits 6-7
+    /// of CL.
+    /// </summary>
     private static (int Cylinder, int Head, int Sector, int Count) DecodeChs(CpuNs.Cpu cpu)
     {
-        byte cl = cpu.State.GetReg8(1);
-        byte ch = cpu.State.GetReg8(5);
+        byte cl = cpu.State.GetReg8((int)Reg8.Cl);
+        byte ch = cpu.State.GetReg8((int)Reg8.Ch);
 
-        int sector = cl & 0x3F;
-        int cylinder = ch | ((cl & 0xC0) << 2);
-        int head = cpu.State.GetReg8(6);      // DH
-        int count = cpu.State.GetReg8(0);     // AL
+        int sector = cl & ClSectorMask;
+        int cylinder = ch | ((cl & ClCylinderHighMask) << 2);
+        int head = cpu.State.GetReg8((int)Reg8.Dh);
+        int count = cpu.State.GetReg8((int)Reg8.Al);
 
         return (cylinder, head, sector, count);
     }
 
     private void Succeed(CpuNs.Cpu cpu)
     {
-        PublishStatus(0);
+        PublishStatus(StatusSuccess);
+
         // AH = 0 means "no error". It has to be written explicitly: on entry AH
         // held the function number, and leaving it there would be read back as
         // an error code -- 0x02 is "address mark not found", which makes DOS
         // treat a file it just read correctly as corrupt.
-        cpu.State.SetReg8(4, 0);
+        cpu.State.SetReg8((int)Reg8.Ah, StatusSuccess);
         cpu.SetCarryInStackedFlags(false);
     }
 
@@ -643,7 +843,7 @@ public sealed partial class DiskServices
     {
         _lastStatus = errorCode;
         PublishStatus(errorCode);
-        cpu.State.SetReg8(4, errorCode);   // AH
+        cpu.State.SetReg8((int)Reg8.Ah, errorCode);
         cpu.SetCarryInStackedFlags(true);
     }
 }
