@@ -59,7 +59,7 @@ public class UhciTests
         m.Pci.WriteConfiguration(0x10, 4, 2, 0);
         Assert.Equal(0xFFFF, m.Io.ReadWord(Base + 2));
         m.Pci.WriteConfiguration(0x10, 0x20, 4, uint.MaxValue);
-        Assert.Equal(0xFFFFFFE1u, m.Pci.ReadConfiguration(0x10, 0x20, 4));
+        Assert.Equal(0x0000FFE1u, m.Pci.ReadConfiguration(0x10, 0x20, 4));   // USBBA bits 31:16 read zero
         m.Pci.WriteConfiguration(0x10, 0x20, 4, 0xC200);
         m.Pci.WriteConfiguration(0x10, 4, 2, 1);
         Assert.Equal(0xFFFF, m.Io.ReadWord(Base + 2));

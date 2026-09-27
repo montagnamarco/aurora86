@@ -267,9 +267,9 @@ public class PciBarTests
         using var m = new Machine();
         m.RunInstructions(100);
 
-        Assert.Equal(2u, m.Pci.ReadConfiguration(0x20, 4, 2) & 2);
+        Assert.Equal(3u, m.Pci.ReadConfiguration(0x20, 4, 2) & 3);
         m.Pci.WriteConfiguration(0x20, 4, 2, 0);
-        Assert.Equal(2u, m.Pci.ReadConfiguration(0x20, 4, 2) & 2);
+        Assert.Equal(3u, m.Pci.ReadConfiguration(0x20, 4, 2) & 3);
 
         uint original = m.Pci.ReadConfiguration(0x20, 0x10, 4);
 
@@ -342,5 +342,100 @@ public class PciBarTests
 
         dma.WriteByte(pastRam, 0x11);
         Assert.False(written);
+    }
+
+    // ------------------------------------------------------ review findings
+
+    [Fact]
+    public void AnIoBarMovedOntoTheConfigurationPortsNeverTakesThemAndTheyStillWorkAfterward()
+    {
+        var hardware = new HardwareConfiguration { Usb = new CardSettings { Card = "uhci-piix" } };
+        using var m = new Machine(4 * 1024 * 1024, hardware);
+        m.RunInstructions(3000);
+
+        // CE0h-CFFh covers configuration mechanism 1 at CF8h-CFFh.
+        m.Pci.WriteConfiguration(0x10, 0x20, 4, 0xCE0);
+        Assert.Equal(0x70208086u, ReadThroughMechanismOne(m, 0x10, 0));
+
+        // Moving it away again leaves the ports with their owner.
+        m.Pci.WriteConfiguration(0x10, 0x20, 4, 0xC400);
+        Assert.Equal(0x70208086u, ReadThroughMechanismOne(m, 0x10, 0));
+        Assert.Equal(0x20, m.Io.ReadWord(0xC402));
+    }
+
+    [Fact]
+    public void AnIoBarAtZeroDecodesNothingAndTheDmaControllerKeepsItsPorts()
+    {
+        var io = new IoBus();
+        var motherboard = new FakeIoDevice();
+        io.Register(0, 0x20, motherboard);
+        var function = new PciFunction(0x10, 0x8086, 0x7020, 0x0C0300, commandMask: 1);
+        function.DefineBar(4, 32, true, 0xC100);
+        var card = new FakeIoDevice { Value = 0x42 };
+        var window = new PciIoBarWindow(function, 4, 32, io, card);
+        function.Write(4, 2, 1);
+        Assert.Equal((ushort)0xC100, window.MappedBase);
+
+        function.Write(0x20, 4, 0);   // an unassigned BAR, on top of the DMA controller's ports
+        Assert.Null(window.MappedBase);
+        Assert.Equal(motherboard.Value, io.ReadByte(0));
+
+        function.Write(0x20, 4, 0xC100);
+        Assert.Equal(card.Value, io.ReadByte(0xC100));
+        Assert.Equal(motherboard.Value, io.ReadByte(0));   // still the motherboard's after the move back
+    }
+
+    [Fact]
+    public void AMemoryBarOverRamIsRefusedAndRamIsNotLost()
+    {
+        var function = new PciFunction(0, 0x1234, 0x5678, 0x030000, commandMask: 2);
+        function.DefineBar(0, 0x10000, false, 0x180000);
+        using var memory = new PhysicalMemoryBus(0x100000, 0x200000);
+        memory.A20Enabled = true;
+        var window = new PciMemoryBarWindow(function, 0, 0x10000, memory, new FakeMemoryDevice());
+        memory.WriteByte(0x50000, 0x5A);
+
+        function.Write(4, 2, 2);
+        function.Write(0x10, 4, 0x50000);
+        Assert.Null(window.MappedBase);
+        Assert.Equal(0x5A, memory.ReadByte(0x50000));
+
+        function.Write(0x10, 4, 0x180000);
+        Assert.Equal(0x180000u, window.MappedBase);
+        Assert.Equal(0x5A, memory.ReadByte(0x50000));
+    }
+
+    [Fact]
+    public void BusMasterDmaIgnoresA20()
+    {
+        using var m = new Machine(ramSize: 4 * 1024 * 1024);
+        m.Memory.A20Enabled = false;
+        IDmaMemory dma = m.Pci.DmaMemory!;
+
+        m.Memory.WriteByte(0x050000, 0x00);
+        dma.WriteByte(0x150000, 0xA5);
+
+        Assert.Equal(0x00, m.Memory.ReadByte(0x050000));   // conventional memory untouched
+        Assert.Equal(0xA5, dma.ReadByte(0x150000));
+        m.Memory.A20Enabled = true;
+        Assert.Equal(0xA5, m.Memory.ReadByte(0x150000));
+    }
+
+    [Fact]
+    public void PostMakesTheRoutedIrqsLevelTriggered()
+    {
+        var hardware = new HardwareConfiguration { Usb = new CardSettings { Card = "uhci-piix" } };
+        using var m = new Machine(4 * 1024 * 1024, hardware);
+        m.RunInstructions(3000);
+
+        byte elcr2 = m.Io.ReadByte(0x4D1);
+        Assert.NotEqual(0, elcr2 & (1 << (11 - 8)));   // link A, the keyboard and mouse UHCI
+        Assert.NotEqual(0, elcr2 & (1 << (10 - 8)));   // link B, the storage UHCI
+    }
+
+    private static uint ReadThroughMechanismOne(Machine m, int deviceFunction, int offset)
+    {
+        m.Io.WriteDword(0xCF8, 0x80000000u | ((uint)deviceFunction << 8) | (uint)offset);
+        return m.Io.ReadDword(0xCFC);
     }
 }

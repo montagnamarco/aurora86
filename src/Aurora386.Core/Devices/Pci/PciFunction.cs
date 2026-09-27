@@ -54,11 +54,19 @@ public sealed class PciFunction
     }
 
     /// <summary>A 32-bit memory BAR or an I/O BAR; the size must be a power of two.</summary>
+    /// <summary>
+    /// The writable address bits of an I/O base address register. PCI 2.1
+    /// lets a function hardwire bits 31:16 to zero when it is only ever
+    /// placed in the 64 KB x86 port space, and the PIIX functions do (USBBA
+    /// and BMIBA read those bits as zero); every I/O BAR here does the same.
+    /// </summary>
+    private const uint IoBarAddressBits = 0x0000FFFCu;
+
     public void DefineBar(int index, uint size, bool io, uint address = 0)
     {
         if ((uint)index >= 6 || size < (io ? 4u : 16u) || (size & (size - 1)) != 0)
             throw new ArgumentOutOfRangeException(nameof(size));
-        uint mask = ~(size - 1) & (io ? 0xFFFFFFFCu : 0xFFFFFFF0u);
+        uint mask = ~(size - 1) & (io ? IoBarAddressBits : 0xFFFFFFF0u);
         Define(0x10 + index * 4, (address & mask) | (io ? 1u : 0u), 4, mask);
     }
 

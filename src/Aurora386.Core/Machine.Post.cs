@@ -49,8 +49,10 @@ public sealed partial class Machine
 
     private void RunPost()
     {
-        Pci.Reset();
+        // Trigger modes first: the PCI reset routes the PIRQ links and marks
+        // their IRQs level-triggered, which a later reset would undo.
         Interrupts.ResetTriggerModes();
+        Pci.Reset();
         _usbCard?.Reset();
         // A reboot starts with no CD-ROM driver loaded; the guest reveals one
         // again by sending its first packet.

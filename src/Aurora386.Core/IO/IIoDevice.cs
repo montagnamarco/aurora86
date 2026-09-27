@@ -62,6 +62,23 @@ public sealed class IoBus
     }
 
     /// <summary>
+    /// True when no device other than <paramref name="device"/> answers
+    /// anywhere in the range. A relocatable window checks this before
+    /// taking ports, because <see cref="Register(ushort, int, IIoDevice)"/>
+    /// overwrites the previous owner and <see cref="Unregister"/> cannot
+    /// bring it back.
+    /// </summary>
+    public bool IsFree(ushort firstPort, int count, IIoDevice device)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            IIoDevice? owner = _devices[firstPort + i];
+            if (owner is not null && !ReferenceEquals(owner, device)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
     /// Raised on every port access, for diagnostics.
     ///
     /// It exists because a driver looking for its card does it by reading and

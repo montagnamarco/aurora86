@@ -84,7 +84,7 @@ public class PciTests
         Assert.Equal(0x56781234u, io.ReadDword(0xCFC));
         io.WriteDword(0xCF8, 0x80000010);
         io.WriteDword(0xCFC, uint.MaxValue);
-        Assert.Equal(0xFFFFFF01u, io.ReadDword(0xCFC));
+        Assert.Equal(0x0000FF01u, io.ReadDword(0xCFC));   // I/O BAR bits 31:16 hardwired to zero
         io.WriteDword(0xCFC, 0xC123);
         Assert.Equal(0xC101u, io.ReadDword(0xCFC));
         io.WriteDword(0xCF8, 0x80000014);

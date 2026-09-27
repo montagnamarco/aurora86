@@ -46,6 +46,7 @@ public sealed class PciIoBarWindow
         _function = function;
         _offset = 0x10 + barIndex * 4;
         _mask = function.BarAddressMask(barIndex);
+        if (_mask == 0) throw new ArgumentException("The base address register was never defined.", nameof(barIndex));
         _length = length;
         _io = io;
         _device = device;
@@ -60,11 +61,18 @@ public sealed class PciIoBarWindow
 
         uint raw = _function.Read(_offset, 4);
         bool decodeEnabled = (_function.Command & 1) != 0;
-        bool isSizingProbe = _mask != 0 && (raw & _mask) == _mask;
+        bool isSizingProbe = (raw & _mask) == _mask;
         if (!decodeEnabled || isSizingProbe) return;
 
         uint address = raw & _mask;
+        if (address == 0) return;                         // an unassigned BAR, not a request for port 0
         if (address > 0x10000u - (uint)_length) return;   // the 64 KB port space cannot reach it
+
+        // A base on top of a motherboard device (the DMA controller at 00h,
+        // configuration mechanism 1 at CF8h) would be bus contention on
+        // real hardware; here the window stays closed until the guest moves
+        // it somewhere free, so the motherboard device is never lost.
+        if (!_io.IsFree((ushort)address, _length, _device)) return;
 
         _mapped = (ushort)address;
         _io.Register(_mapped.Value, _length, _device);
@@ -99,6 +107,7 @@ public sealed class PciMemoryBarWindow
         _function = function;
         _offset = 0x10 + barIndex * 4;
         _mask = function.BarAddressMask(barIndex);
+        if (_mask == 0) throw new ArgumentException("The base address register was never defined.", nameof(barIndex));
         _length = length;
         _memory = memory;
         _device = device;
@@ -113,7 +122,7 @@ public sealed class PciMemoryBarWindow
 
         uint raw = _function.Read(_offset, 4);
         bool decodeEnabled = (_function.Command & 2) != 0;
-        bool isSizingProbe = _mask != 0 && (raw & _mask) == _mask;
+        bool isSizingProbe = (raw & _mask) == _mask;
         if (!decodeEnabled || isSizingProbe) return;
 
         uint address = raw & _mask;

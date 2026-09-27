@@ -54,10 +54,15 @@ public sealed class PciInterruptRouter
     {
         int link = Link(address, pin);
         if (link < 0 || irq >= 16 || (AllowedIrqs & (1 << irq)) == 0) return false;
-        ushort elcr = irq < 8 ? (ushort)0x4D0 : (ushort)0x4D1;
-        _pic.WriteByte(elcr, (byte)(_pic.ReadByte(elcr) | (1 << (irq & 7))));
+        SetLevelTriggered(irq);
         _bridge.Write(0x60 + link, 1, irq);
         return true;
+    }
+
+    private void SetLevelTriggered(byte irq)
+    {
+        ushort elcr = irq < 8 ? (ushort)0x4D0 : (ushort)0x4D1;
+        _pic.WriteByte(elcr, (byte)(_pic.ReadByte(elcr) | (1 << (irq & 7))));
     }
 
     /// <summary>
@@ -71,15 +76,12 @@ public sealed class PciInterruptRouter
     /// reads zero -- no interrupt pin wired, as the S3 and the ISA and IDE
     /// bridge functions all report -- is left alone.
     ///
-    /// This writes the link register directly rather than going through
-    /// <see cref="Route"/>, and so leaves the ELCR untouched: <see
-    /// cref="PciBus.Reset"/> runs before <c>Machine.RunPost</c> unconditionally
-    /// puts every ELCR bit back to edge-triggered, and a write made here
-    /// first would only be undone a moment later. A guest that actually
-    /// depends on level-triggered sharing -- Windows, Linux, anything that
-    /// walks $PIR -- programs the ELCR itself as part of taking over PCI
-    /// routing, the same way it does on real hardware; nothing here needs
-    /// to guess that decision for a DOS session that never asks.
+    /// Each routed IRQ is also made level-triggered in the ELCR, as
+    /// <see cref="Route"/> does and as a real BIOS does for the IRQs it hands
+    /// to PCI: the links share IRQs 10 and 11, and on an edge-triggered line
+    /// a second source asserting while the first still holds it would be
+    /// lost. <c>Machine.RunPost</c> therefore resets the trigger modes
+    /// before <see cref="PciBus.Reset"/>, not after.
     /// </summary>
     public void RouteDefaults(IEnumerable<PciFunction> functions)
     {
@@ -92,6 +94,7 @@ public sealed class PciInterruptRouter
             if (link < 0) continue;
 
             byte irq = DefaultLinkIrqs[link];
+            SetLevelTriggered(irq);
             _bridge.Write(0x60 + link, 1, irq);
             function.Write(0x3C, 1, irq);
         }

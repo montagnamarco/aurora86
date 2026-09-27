@@ -220,6 +220,9 @@ public sealed partial class Machine : IDisposable
     /// <summary>The Trio64V+ memory-mapped registers sit this far above the linear frame buffer.</summary>
     public const uint TrioMmioOffset = 0x1000000;
 
+    /// <summary>The S3's command register: I/O space (bit 0) and memory space (bit 1) always decode.</summary>
+    private const uint S3CommandFixedDecode = 0x3;
+
     public Machine(uint ramSize = 16 * 1024 * 1024, HardwareConfiguration? hardware = null)
     {
         hardware ??= HardwareConfiguration.Default;
@@ -387,15 +390,16 @@ public sealed partial class Machine : IDisposable
         // framebuffer, the engine registers just above it, and the
         // Trio64V+'s real MMIO location 16 MB further up -- are wired
         // directly below, in Devices/Video/**, which this plan does not
-        // touch (F1.5 is chipset and PCI, not video). Command bit 1 is
-        // fixed at 1 (read-only) so a driver that actually checks it before
-        // touching the aperture sees the truth rather than a decode bit
-        // that says off while the memory answers anyway; the base address
+        // touch (F1.5 is chipset and PCI, not video). Command bits 0 and 1
+        // are fixed at 1 (read-only) so a driver that actually checks them
+        // before touching the VGA ports or the aperture sees the truth
+        // rather than a decode bit that says off while the hardware answers
+        // anyway; the base address
         // register itself stays writable so sizing continues to work, but a
         // base other than the one fitted below is accepted into
         // configuration space and simply not honoured -- fixed-and-honest,
         // not movable.
-        pciVideo.Define(4, 2, 2, 0);
+        pciVideo.Define(4, S3CommandFixedDecode, 2, 0);
 
         // The base address register advertises the linear framebuffer:
         // prefetchable memory, at the address the aperture really answers.

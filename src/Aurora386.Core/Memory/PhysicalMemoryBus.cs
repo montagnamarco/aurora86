@@ -147,10 +147,18 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// the address came from software, not from a programmer who mistyped a
     /// constant, so a bad one must decode nothing rather than raise an
     /// exception the guest never sees and the emulator cannot recover from.
+    ///
+    /// It also refuses a range that overlaps anything already there: RAM,
+    /// ROM, or another device. On a real board the host bridge claims DRAM
+    /// below the top of memory before any PCI target sees the cycle, so a
+    /// BAR programmed over RAM is never reached; and since only holes are
+    /// ever taken, <see cref="Unmap"/> handing the range back as a hole
+    /// restores exactly what was there before.
     /// </summary>
     public bool TryMapDevice(uint physicalBase, uint length, IMemoryDevice device)
     {
         if (!FitsAddressableSpace(physicalBase, length)) return false;
+        if (!IsUnclaimed(physicalBase, length)) return false;
         MapDeviceUnchecked(physicalBase, length, device);
         return true;
     }
@@ -158,6 +166,20 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     private bool FitsAddressableSpace(uint physicalBase, uint length)
         => (physicalBase & PageMask) == 0 && length != 0 && (length & PageMask) == 0
         && length <= _addressableBytes && physicalBase <= _addressableBytes - length;
+
+    private bool IsUnclaimed(uint physicalBase, uint length)
+    {
+        if (physicalBase < _ramSize) return false;   // RAM, even where a hole or ROM sits in the legacy window
+
+        int first = (int)(physicalBase >> PageShift);
+        int count = (int)(length >> PageShift);
+        for (int page = first; page < first + count; page++)
+        {
+            bool claimed = _pageRam[page] is not null || _pageWatchedRam[page] is not null || _pageDevice[page] is not null;
+            if (claimed) return false;
+        }
+        return true;
+    }
 
     private void MapDeviceUnchecked(uint physicalBase, uint length, IMemoryDevice device)
     {
@@ -422,6 +444,18 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
         return ReadByteSlow(address);
     }
+
+    /// <summary>
+    /// A byte read by a PCI bus master. A20M# masks only the addresses the
+    /// CPU itself generates, and the reset-vector alias belongs to the CPU's
+    /// fetch path too, so a bus master's physical address goes to the page
+    /// tables untranslated: with A20 off, a DMA write to 150000h still lands
+    /// at 150000h, not on conventional memory at 050000h.
+    /// </summary>
+    public byte ReadByteFromBusMaster(uint address) => ReadByteTranslated(address);
+
+    /// <summary>The write counterpart of <see cref="ReadByteFromBusMaster"/>.</summary>
+    public void WriteByteFromBusMaster(uint address, byte value) => WriteByteTranslated(address, value);
 
     private void WriteByteTranslated(uint address, byte value)
     {
