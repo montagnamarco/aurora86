@@ -43,6 +43,15 @@ public sealed partial class Cpu
         // not validate or access the data segment or its pages.
         ModRm operand = DecodeModRm();
 
+        bool truncatingIntegerStore = !operand.IsRegister && operand.Reg == 1
+            && opcode is 0xDB or 0xDD or 0xDF;
+        if (truncatingIntegerStore)
+        {
+            // FISTTP was added by SSE3, but remains an x87 instruction:
+            // no OSFXSR requirement and no XMM mandatory-prefix rules.
+            RequireFeature(CpuFeature.Sse3);
+        }
+
         // CR0 decides whether there is a unit here to execute on at all.
         //
         // EM set says there is no coprocessor and the instruction should fault
@@ -59,6 +68,12 @@ public sealed partial class Cpu
 
         if (!IsNonwaitingEscape(opcode, operand) && DeliverPendingX87Exception())
         {
+            return;
+        }
+
+        if (truncatingIntegerStore)
+        {
+            ExecuteFisttp(opcode, operand);
             return;
         }
 
@@ -121,6 +136,82 @@ public sealed partial class Cpu
 
         FaultNow(16, 0);
         return true;
+    }
+
+    /// <summary>
+    /// FISTTP truncates the raw 80-bit value, independent of FCW rounding.
+    /// Invalid unmasked conversions neither store nor pop; precision still
+    /// stores and pops even when unmasked, leaving #MF for the next wait.
+    /// Destination faults take precedence over newly detected conversion
+    /// flags here, and leave the stack and status untouched.
+    /// </summary>
+    private void ExecuteFisttp(byte opcode, in ModRm operand)
+    {
+        int width;
+        switch (opcode)
+        {
+            case 0xDF:
+                width = 16;
+                break;
+            case 0xDB:
+                width = 32;
+                break;
+            default:
+                width = 64;
+                break;
+        }
+
+        // Check the complete destination even when a newly detected invalid
+        // operation will suppress its store. Preflight both pages so a qword
+        // at the page boundary cannot partially overwrite the guest's data.
+        uint size = (uint)(width / 8);
+        CheckLimit(operand.Segment, operand.Offset, size);
+        if (State.AlignmentChecked)
+        {
+            CheckAlignment(operand.Offset, size);
+        }
+
+        uint linear = LinearAddress(operand.Segment, operand.Offset);
+        TranslateLinear(linear, true);
+        const uint pageMask = 0xFFFFF000; // The smallest page is 4 KiB, including under PAE.
+        uint lastPage = (linear + size - 1) & pageMask;
+        if (lastPage != (linear & pageMask))
+        {
+            // CR2 identifies the first inaccessible byte, not the last byte
+            // of a destination that happens to straddle the missing page.
+            TranslateLinear(lastPage, true);
+        }
+
+        bool empty = !Fpu.IsUsed(0);
+        IntegerConversionResult converted;
+        if (empty)
+        {
+            converted = new IntegerConversionResult(1UL << (width - 1), IntegerConversion.InvalidOperation);
+        }
+        else
+        {
+            converted = IntegerConversion.Truncate(Fpu.GetRaw(0), width);
+        }
+
+        bool invalidUnmasked = (converted.Exceptions & IntegerConversion.InvalidOperation) != 0
+            && (Fpu.ControlWord & IntegerConversion.InvalidOperation) == 0;
+        if (!invalidUnmasked)
+        {
+            switch (width)
+            {
+                case 16:
+                    WriteMem16(operand.Segment, operand.Offset, (ushort)converted.Bits);
+                    break;
+                case 32:
+                    WriteMem32(operand.Segment, operand.Offset, (uint)converted.Bits);
+                    break;
+                default:
+                    WriteMemQword(operand.Segment, operand.Offset, converted.Bits);
+                    break;
+            }
+        }
+
+        Fpu.CompleteIntegerConversion(converted.Exceptions, empty, pop: !invalidUnmasked);
     }
 
     /// <summary>

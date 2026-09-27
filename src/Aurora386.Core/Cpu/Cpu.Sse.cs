@@ -225,6 +225,15 @@ public sealed partial class Cpu
             throw new CpuException(6);
         }
 
+        // SSE3's duplication loads share MOVLPS/MOVHPS opcode bytes. Route
+        // only their mandatory prefixes; the older meanings stay below.
+        if ((opcode == 0x12 && (_prefixes.RepNe || _prefixes.Rep))
+            || (opcode == 0x16 && _prefixes.Rep))
+        {
+            ExecuteSse3(opcode);
+            return;
+        }
+
         // 66 and F2 name SSE2's packed/scalar-double space (work package
         // P4.2, plans/specs/sse2.md §1): on a model that actually carries
         // SSE2, the same opcode byte instead means the double-precision

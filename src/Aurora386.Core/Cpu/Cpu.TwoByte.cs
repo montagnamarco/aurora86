@@ -427,6 +427,12 @@ public sealed partial class Cpu
                 ExecuteSse2Conversions(opcode);
                 return;
 
+            // SSE3's horizontal arithmetic, alternating add/subtract and
+            // unaligned load occupy previously unused two-byte opcodes.
+            case 0x7C: case 0x7D: case 0xD0: case 0xF0:
+                ExecuteSse3(opcode);
+                return;
+
             // --- bit instructions -------------------------------------------
             // In the /r form the bit index is a signed register value, and on a
             // memory operand it may point well outside the addressed word: the

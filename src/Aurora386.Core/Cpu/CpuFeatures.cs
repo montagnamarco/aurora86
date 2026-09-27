@@ -180,6 +180,9 @@ public readonly struct CpuFeatures : IEquatable<CpuFeatures>
     /// Cpu.Identification.cs) -- and MXCSR_MASK's own DAZ bit is now real,
     /// on those same models, for single precision too
     /// (<see cref="Sse.SseUnit.MxcsrMaskFor"/>).
+    /// Work package P4.3 adds SSE3's horizontal arithmetic, duplicate loads,
+    /// LDDQU and x87 FISTTP. Core2 is the first catalog model with SSE3;
+    /// the catalog's Northwood Pentium 4 does not advertise Prescott's bit.
     /// </remarks>
     public static readonly CpuFeatures Implemented =
         None.With(CpuFeature.Fpu, CpuFeature.Isa486, CpuFeature.Identification,
@@ -187,7 +190,8 @@ public readonly struct CpuFeatures : IEquatable<CpuFeatures>
             CpuFeature.ControlRegister4, CpuFeature.Pse, CpuFeature.Vme, CpuFeature.TestRegisters,
             CpuFeature.Mmx, CpuFeature.Cmov, CpuFeature.Sep, CpuFeature.Fxsr, CpuFeature.Mtrr,
             CpuFeature.Pat, CpuFeature.Mca, CpuFeature.Pmc, CpuFeature.HintNops,
-            CpuFeature.Pae, CpuFeature.Pge, CpuFeature.Sse, CpuFeature.Sse2, CpuFeature.Clfsh);
+            CpuFeature.Pae, CpuFeature.Pge, CpuFeature.Sse, CpuFeature.Sse2, CpuFeature.Clfsh,
+            CpuFeature.Sse3);
 
     /// <summary>
     /// What Aurora implements for one model. Before work package P3.1 this

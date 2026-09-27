@@ -686,6 +686,29 @@ public sealed class X87Unit
     }
 
     /// <summary>
+    /// Commits FISTTP after the destination checks and any store succeeded.
+    /// Precision can become pending after a completed store/pop; invalid
+    /// unmasked conversion instead records its flags without popping.
+    /// </summary>
+    public void CompleteIntegerConversion(ushort exceptions, bool emptyStack, bool pop)
+    {
+        _status |= (ushort)(exceptions & ExceptionFlags);
+        if (emptyStack)
+        {
+            _status |= StackFault;
+        }
+
+        _status &= unchecked((ushort)~C1);
+        UpdateExceptionSummary();
+        if (pop)
+        {
+            DropTop();
+        }
+
+        Executed++;
+    }
+
+    /// <summary>
     /// ES and B reflect unmasked sticky flags, including when FLDCW unmasks
     /// an old flag. Native FLDENV/FRSTOR/FXRSTOR probes also reconcile these
     /// bits when a saved image contains contradictory summary bits.

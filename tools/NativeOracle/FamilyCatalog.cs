@@ -23,5 +23,6 @@ public static class FamilyCatalog
         .. SseFamilies.All(),
         .. SseMmxRegisterFamilies.All(),
         .. Sse2Families.All(),
+        .. Sse3Families.All(),
     ];
 }
