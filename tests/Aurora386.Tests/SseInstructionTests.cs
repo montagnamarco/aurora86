@@ -475,7 +475,7 @@ public class SseInstructionTests
             cpu.Step();
 
             Assert.Equal(0x1FA8u, bus.ReadDword(area + 24));
-            Assert.Equal(SseUnit.MxcsrMask, bus.ReadDword(area + 28));
+            Assert.Equal(SseUnit.MxcsrMaskFor(CpuModel.PentiumIII), bus.ReadDword(area + 28));
             Assert.Equal(0xAAAA_AAAAu, bus.ReadDword(area + 160 + 3 * 16));
             Assert.Equal(0xBBBB_BBBBu, bus.ReadDword(area + 160 + 3 * 16 + 4));
             Assert.Equal(0xCCCC_CCCCu, bus.ReadDword(area + 160 + 3 * 16 + 8));

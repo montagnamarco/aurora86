@@ -5,7 +5,7 @@ namespace Aurora386.Core.Cpu.Sse;
 /// exception flags at bits 0-5 (mirrored one for one by <see cref="FpFlags"/>,
 /// so a computed <see cref="FpFlags"/> value can be OR'd into MXCSR directly),
 /// DAZ at bit 6 (never settable on this model -- see
-/// <see cref="SseUnit.MxcsrMask"/>), the matching six exception masks at bits
+/// <see cref="SseUnit.MxcsrMaskFor(CpuModel)"/>), the matching six exception masks at bits
 /// 7-12, the two-bit rounding control at 13-14, and flush-to-zero at 15.
 /// Bits 16-31 are reserved and always read/write as zero.
 /// </summary>

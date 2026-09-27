@@ -12,10 +12,19 @@
 // memory operand is checked and translated as one 8-byte unit -- exactly the
 // way CMPXCHG8B is in Cpu.Pentium.cs, and for the same reason: a segment-limit
 // violation must never leave a half-written result behind, so the whole
-// access is validated before either half is touched. The 66/F2/F3 prefixes
-// turn these same opcodes into SSE2's packed-integer instructions on later
-// silicon; SSE2 is not implemented here, so a prefixed encoding is simply
-// undefined, exactly as it is on every processor before the Pentium 4.
+// access is validated before either half is touched.
+//
+// The 66/F2/F3 prefixes turn these same opcodes into SSE2's own 128-bit
+// packed-integer instructions on a Pentium 4 or later (Cpu.Sse2.Integer.cs's
+// ExecuteSse2Integer, routed to from ExecuteMmx below once a prefix and the
+// feature are both confirmed). On a processor without CPUID.SSE2 -- every
+// model before the Pentium 4 -- a prefixed encoding of one of these opcodes
+// stays <c>#UD</c>: the period SDM calls the operand-size (and other)
+// prefixes on an MMX instruction "reserved", with unpredictable behaviour,
+// not "ignored" or "defined to keep the unprefixed meaning", and Bochs's own
+// interpreter agrees, rejecting them outright on a CPU without SSE2. This is
+// the coordinator's own decision (plans/specs/sse2.md, work package P4.2),
+// not a fact measured from silicon Aurora can run this specific case on.
 
 namespace Aurora386.Core.Cpu;
 
@@ -68,6 +77,27 @@ public sealed partial class Cpu
     };
 
     /// <summary>
+    /// The 66-prefixed dispatch's own version of <see cref="IsInvalidRmShapeForOpcode"/>:
+    /// the same rule for every opcode that already has one (C5/D7/F7/E7,
+    /// unaffected by which single prefix reached them, since only 66 ever
+    /// widens those particular opcodes -- <see cref="IsValidSse2IntegerPrefixedForm"/>
+    /// already rejects F2/F3 there), plus one the unprefixed table has no
+    /// opcode for at all: 0F D6 is register-register only under F2
+    /// (MOVDQ2Q) or F3 (MOVQ2DQ) -- neither has a memory form -- but still
+    /// accepts memory under 66 (MOVQ store). A review finding: without this,
+    /// F2/F3 0F D6 with a memory operand reached <see cref="SseTaskSwitched"/>
+    /// before Cpu.Sse2.Integer.cs's own handlers ever got a chance to reject
+    /// it, so CR0.TS = 1 wrongly won the race and turned what should be
+    /// <c>#UD</c> into <c>#NM</c> -- the same class of bug the P4.1 review
+    /// already fixed for the unprefixed MMX opcodes.
+    /// </summary>
+    private static bool IsInvalidRmShapeForSse2Integer(byte opcode, in ModRm m, Prefixes prefixes)
+    {
+        if (opcode == 0xD6 && (prefixes.RepNe || prefixes.Rep)) return !m.IsRegister;
+        return IsInvalidRmShapeForOpcode(opcode, m);
+    }
+
+    /// <summary>
     /// Whether <paramref name="opcode"/> is one of the eight MMX-register
     /// instructions SSE itself introduced (plans/specs/sse.md §2: PSHUFW,
     /// PINSRW, PEXTRW, PMOVMSKB, PAVGB/W, PMULHUW, PMINSW/PMAXSW, PMINUB/
@@ -84,8 +114,78 @@ public sealed partial class Cpu
         _ => false,
     };
 
+    /// <summary>
+    /// Opcodes that were never assigned any meaning at all without a
+    /// mandatory prefix -- 0F 6C/6D (PUNPCKLQDQ/HQDQ) and 0F D6 (MOVQ/
+    /// MOVDQ2Q/MOVQ2DQ) exist only as SSE2's own 66/F2/F3-prefixed
+    /// encodings, unlike every other opcode this dispatch reaches, which
+    /// widens an MMX instruction that already existed unprefixed. Checked
+    /// first, unconditionally: on any silicon, at any CR0.TS, the bare byte
+    /// is simply not an instruction.
+    /// </summary>
+    private static bool HasNoUnprefixedForm(byte opcode) => opcode is 0x6C or 0x6D or 0xD6;
+
+    /// <summary>0F D4/F4/FB (PADDQ/PMULUDQ/PSUBQ), unprefixed: SSE2's own three MMX-register additions (plans/specs/sse2.md §1), gated by CPUID.SSE2 rather than CPUID.MMX even though they still follow the ordinary MMX EM/TS rules -- exactly the same shape as <see cref="IsSseGatedMmxOpcode"/>'s own eight, but a newer feature bit.</summary>
+    private static bool RequiresSse2FeatureUnprefixed(byte opcode) => opcode is 0xD4 or 0xF4 or 0xFB;
+
+    /// <summary>
+    /// Whether <paramref name="opcode"/> has a genuine SSE2 meaning under
+    /// exactly the one mandatory prefix <see cref="_prefixes"/> carries
+    /// (the caller has already rejected more than one at once): 66 widens
+    /// every MMX-integer opcode this dispatch reaches except EMMS (no
+    /// operand to widen) to its 128-bit XMM form (plans/specs/sse2.md §4);
+    /// F2/F3 exist only for the handful of opcodes that carry a genuinely
+    /// different instruction under those prefixes (PSHUFHW/PSHUFLW/MOVDQU/
+    /// MOVQ-load/MOVDQ2Q/MOVQ2DQ).
+    /// </summary>
+    private static bool IsValidSse2IntegerPrefixedForm(byte opcode, Prefixes prefixes)
+    {
+        if (prefixes.OperandSize) return opcode != 0x77;
+        if (prefixes.Rep) return opcode is 0x6F or 0x7F or 0x70 or 0x7E or 0xD6;
+        if (prefixes.RepNe) return opcode is 0x70 or 0xD6;
+        return false;
+    }
+
     private void ExecuteMmx(byte opcode)
     {
+        if (_prefixes.OperandSize || _prefixes.Rep || _prefixes.RepNe)
+        {
+            int prefixCount = (_prefixes.OperandSize ? 1 : 0) + (_prefixes.Rep ? 1 : 0) + (_prefixes.RepNe ? 1 : 0);
+            if (prefixCount > 1 || !State.Features.Has(CpuFeature.Sse2) || !IsValidSse2IntegerPrefixedForm(opcode, _prefixes))
+            {
+                throw new CpuException(6);
+            }
+
+            // XMM-touching, exactly like every SSE opcode (plans/specs/sse2.md
+            // §5): #UD for CR0.EM or CR4.OSFXSR=0, ahead of #NM for CR0.TS --
+            // and, like the unprefixed path just below, an invalid shift-group
+            // or fixed-rm-shape encoding is #UD ahead of TS too (the same
+            // ordering the P4.1 review finding fixed there), which is why the
+            // ModRM byte is decoded and validated here, before
+            // <see cref="SseTaskSwitched"/> ever runs, and handed already
+            // decoded to Cpu.Sse2.Integer.cs's own ExecuteSse2Integer.
+            RequireSseInstruction(CpuFeature.Sse2);
+
+            ModRm sse2IntegerModRm = DecodeModRm();
+            if (opcode is 0x71 or 0x72 or 0x73 && !IsValidXmmShiftImmediateEncoding(opcode, sse2IntegerModRm))
+            {
+                throw new CpuException(6);
+            }
+            if (IsInvalidRmShapeForSse2Integer(opcode, sse2IntegerModRm, _prefixes))
+            {
+                throw new CpuException(6);
+            }
+
+            if (SseTaskSwitched()) return;
+            ExecuteSse2Integer(opcode, sse2IntegerModRm);
+            return;
+        }
+
+        // Unprefixed: the ordinary MMX opcode, or (D4/F4/FB) SSE2's own
+        // three MMX-register additions -- see HasNoUnprefixedForm's own
+        // remark for the three opcodes that reach neither branch here.
+        if (HasNoUnprefixedForm(opcode)) throw new CpuException(6);
+
         // Absent silicon, or a CR0.EM ("no coprocessor at all") processor:
         // both are #UD, not #NM. Unlike an x87 escape -- always a defined
         // opcode whether or not a coprocessor exists -- these bytes simply
@@ -93,17 +193,9 @@ public sealed partial class Cpu
         // there is no register file behind them to alias. (Every MMX
         // instruction's SDM Vol.2B reference page lists CPUID.MMX and
         // CR0.EM together under #UD, and CR0.TS alone under #NM.)
-        RequireFeature(IsSseGatedMmxOpcode(opcode) ? CpuFeature.Sse : CpuFeature.Mmx);
+        RequireFeature(RequiresSse2FeatureUnprefixed(opcode) ? CpuFeature.Sse2
+            : IsSseGatedMmxOpcode(opcode) ? CpuFeature.Sse : CpuFeature.Mmx);
         if ((State.Cr0 & CpuState.Cr0Emulation) != 0) throw new CpuException(6);
-
-        // With a 66/F2/F3 prefix these same bytes are SSE2's packed-integer
-        // forms on a Pentium 4 or later. Aurora does not implement SSE2 yet,
-        // so the prefixed encoding is undefined here, as it is on every
-        // processor that predates it.
-        if (_prefixes.OperandSize || _prefixes.Rep || _prefixes.RepNe)
-        {
-            throw new CpuException(6);
-        }
 
         if (opcode == 0x77)   // EMMS: no ModRM byte, no operand.
         {
@@ -363,7 +455,32 @@ public sealed partial class Cpu
         ulong destination = Fpu.ReadMmx(m.Reg);
         ulong source = ReadMmxSource(m);
 
-        ulong result = opcode switch
+        ulong result = MmxAluLane(opcode, destination, source);
+
+        Fpu.WriteMmx(m.Reg, result);
+        Fpu.EnterMmxState();
+    }
+
+    /// <summary>
+    /// The one-64-bit-lane result every two-operand MMX ALU opcode (every
+    /// case <see cref="ExecuteMmxAlu"/> itself does not special-case) computes
+    /// from a destination and a source, factored out of that method (a P4.2
+    /// change) so Cpu.Sse2.Integer.cs's own widened 128-bit forms
+    /// (plans/specs/sse2.md §4: "every MMX integer instruction widened to
+    /// XMM with the same per-lane rules") can call this exact same per-lane
+    /// logic twice -- once for each 64-bit half of the wider XMM operands --
+    /// rather than duplicating sixty-odd lambdas a second time. Every one of
+    /// these opcodes' 128-bit SSE2 form genuinely does decompose into two
+    /// independent 64-bit halves this way (PSADBW's own two-16-bit-sums
+    /// shape, in particular, is exactly what applying this same 64-bit
+    /// function to each half independently already produces); only PACK*/
+    /// PUNPCK* (which combine both halves of both operands into one result)
+    /// and the immediate/register shifts (whose count is shared, not
+    /// per-half) need their own widened code, in Cpu.Sse2.Integer.cs.
+    /// </summary>
+    private static ulong MmxAluLane(byte opcode, ulong destination, ulong source)
+    {
+        return opcode switch
         {
             0x63 => PackWords(destination, source, value => SignedSaturateToByte(value)),      // PACKSSWB
             0x6B => PackSignedDwordsToWords(destination, source),                              // PACKSSDW
@@ -419,11 +536,17 @@ public sealed partial class Cpu
             0xDE => PerByte(destination, source, Math.Max),                                                  // PMAXUB
             0xF6 => SumOfAbsoluteDifferences(destination, source),                                           // PSADBW
 
+            // --- SSE2's own three MMX-register additions (work package
+            // P4.2, plans/specs/sse2.md §1: "Without prefix, SSE2 also adds
+            // to MMX: 0F D4 PADDQ, 0F FB PSUBQ, 0F F4 PMULUDQ", gated by
+            // CPUID.SSE2 -- ExecuteMmx's own opcode check requires that
+            // feature for these three specifically, ahead of reaching here).
+            0xD4 => destination + source,                                                                     // PADDQ: one 64-bit lane, wraps.
+            0xFB => destination - source,                                                                     // PSUBQ: one 64-bit lane, wraps.
+            0xF4 => (ulong)(uint)destination * (uint)source,                                                   // PMULUDQ: the low 32 bits of each operand, unsigned 32x32->64.
+
             _ => throw new CpuException(6),
         };
-
-        Fpu.WriteMmx(m.Reg, result);
-        Fpu.EnterMmxState();
     }
 
     // --- shifts ------------------------------------------------------------------

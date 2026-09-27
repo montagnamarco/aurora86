@@ -35,9 +35,18 @@ public sealed partial class Cpu
     /// the FXSAVE-based context-switch convention SSE was designed
     /// alongside).
     /// </summary>
-    private void RequireSseInstruction()
+    /// <summary>
+    /// <paramref name="feature"/> defaults to <see cref="CpuFeature.Sse"/>
+    /// for every original SSE opcode; Cpu.Mmx.cs's own 66-prefixed dispatch
+    /// (a P4.2 addition) calls this with <see cref="CpuFeature.Sse2"/>
+    /// instead for the 128-bit widened integer forms, since those are
+    /// XMM-touching too (plans/specs/sse2.md §5) but gated on the newer
+    /// feature bit, not the older one every model with SSE2 also happens to
+    /// carry.
+    /// </summary>
+    private void RequireSseInstruction(CpuFeature feature = CpuFeature.Sse)
     {
-        if (!State.Features.Has(CpuFeature.Sse)) throw new CpuException(6);
+        if (!State.Features.Has(feature)) throw new CpuException(6);
         if ((State.Cr0 & CpuState.Cr0Emulation) != 0) throw new CpuException(6);
         if ((State.Cr4 & CpuState.Cr4OsFxsr) == 0) throw new CpuException(6);
     }
@@ -105,6 +114,27 @@ public sealed partial class Cpu
 
     private RoundingMode CurrentRoundingMode() => (RoundingMode)((Sse.Mxcsr >> MxcsrBits.RoundingControlShift) & 3);
     private bool CurrentFlushToZero() => (Sse.Mxcsr & MxcsrBits.FlushToZero) != 0;
+
+    /// <summary>
+    /// MXCSR's own DAZ bit (work package P4.2, plans/specs/sse2.md's
+    /// coordinator decision): only ever settable at all on a model whose
+    /// <see cref="Sse.SseUnit.MxcsrMaskFor"/> has bit 6 (Pentium 4 and
+    /// later) -- LDMXCSR/FXRSTOR's own #GP(0) already keeps that bit clear
+    /// there for every guest-issued load. This reads the bit through that
+    /// same per-model mask directly, rather than trusting the raw stored
+    /// bit alone (a review finding): <c>Sse.Mxcsr</c> can carry a bit
+    /// outside the current model's own mask through a path no guest
+    /// instruction ever takes -- a snapshot restored across a model change,
+    /// whose own <c>SseUnit.ReadSnapshot</c> has no model to mask against at
+    /// all -- and without this, DAZ would then be live on a model whose
+    /// silicon never had it, until the next explicit LDMXCSR/FXRSTOR
+    /// happened to overwrite MXCSR. Threaded into every
+    /// <c>SingleFloat</c>/<c>DoubleFloat</c> call this file and
+    /// Cpu.Sse2.Arithmetic.cs make, single precision included: DAZ is a
+    /// property of the whole floating-point unit, not of one instruction's
+    /// operand width.
+    /// </summary>
+    private bool CurrentDaz() => (Sse.Mxcsr & MxcsrBits.Daz & SseUnit.MxcsrMaskFor(State.Model)) != 0;
 
     /// <summary>MXCSR's own UM bit: whether the Underflow exception is masked. SingleFloat needs to see this directly (a P4.1 review finding) since an unmasked UM changes both when Underflow is signalled and whether flush-to-zero even applies -- see <c>PackNormalized</c>'s and <c>RoundDoubleToSingle</c>'s own remarks in SingleFloat.cs.</summary>
     private bool CurrentUnderflowMasked() => (Sse.Mxcsr & MxcsrBits.UnderflowMask) != 0;
@@ -180,13 +210,36 @@ public sealed partial class Cpu
     {
         RequireSseInstruction();
 
-        // 66 and F2 name SSE2's packed/scalar-double space, not implemented
-        // here (plans/specs/sse.md §1): both are #UD. Two mandatory
-        // prefixes together (e.g. 66 and F3) are likewise #UD -- uncertain
-        // what silicon actually does, but no period software depends on it
-        // (the same note the spec makes about MMX's own prefixed forms).
+        // Two (or three) mandatory prefixes together -- 66+F2, 66+F3 or
+        // F2+F3 -- name no instruction on any silicon this emulator
+        // carries: the coordinator's own decision from P4.1
+        // (plans/specs/sse.md), kept for every pairing, not just 66+F2 (a
+        // review finding: the earlier version only ever rejected 66+F2
+        // together, so 66+F3 fell through and ran as if F3 had never been
+        // there, and F2+F3 likewise ran as plain F2 -- both silently
+        // ignoring a prefix instead of raising the #UD this decision
+        // requires).
+        int prefixCount = (_prefixes.OperandSize ? 1 : 0) + (_prefixes.RepNe ? 1 : 0) + (_prefixes.Rep ? 1 : 0);
+        if (prefixCount > 1)
+        {
+            throw new CpuException(6);
+        }
+
+        // 66 and F2 name SSE2's packed/scalar-double space (work package
+        // P4.2, plans/specs/sse2.md §1): on a model that actually carries
+        // SSE2, the same opcode byte instead means the double-precision
+        // sibling this method's own switch dispatches for the single-
+        // precision case below -- Cpu.Sse2.Arithmetic.cs's ExecuteSse2Float
+        // decodes its own ModRM afresh, exactly as this method is about to.
+        // Without SSE2, this stays #UD.
         if (_prefixes.OperandSize || _prefixes.RepNe)
         {
+            if (State.Features.Has(CpuFeature.Sse2))
+            {
+                ExecuteSse2Float(opcode);
+                return;
+            }
+
             throw new CpuException(6);
         }
 
@@ -438,19 +491,30 @@ public sealed partial class Cpu
         if (SseTaskSwitched()) return;
 
         uint value = ReadMem32(m.Segment, m.Offset);
-        if ((value & ~SseUnit.MxcsrMask) != 0) throw new CpuException(13, 0);
+        if ((value & ~SseUnit.MxcsrMaskFor(State.Model)) != 0) throw new CpuException(13, 0);
 
         Sse.Mxcsr = value;
     }
 
-    /// <summary>0F AE /3: STMXCSR, memory only.</summary>
+    /// <summary>
+    /// 0F AE /3: STMXCSR, memory only. Masked by the current model's own
+    /// <see cref="SseUnit.MxcsrMaskFor"/> before it is stored (a review
+    /// finding, the same one <see cref="CurrentDaz"/> now guards against):
+    /// on ordinary, guest-only-reachable state <c>Sse.Mxcsr</c> already sits
+    /// inside this mask (LDMXCSR and FXRSTOR both enforce it on the way
+    /// in), so this is a no-op there -- it only matters for the one state a
+    /// guest instruction never produces, a snapshot restored across a model
+    /// change, where it stops a stray out-of-mask bit from round-tripping
+    /// back out through STMXCSR into a value a guest's own subsequent
+    /// LDMXCSR of that same value would then wrongly reject.
+    /// </summary>
     private void ExecuteStmxcsr(in ModRm m)
     {
         RequireSseInstruction();
         if (m.IsRegister) throw new CpuException(6);
         if (SseTaskSwitched()) return;
 
-        WriteMem32(m.Segment, m.Offset, Sse.Mxcsr);
+        WriteMem32(m.Segment, m.Offset, Sse.Mxcsr & SseUnit.MxcsrMaskFor(State.Model));
     }
 
     /// <summary>

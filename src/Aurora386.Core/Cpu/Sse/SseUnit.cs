@@ -26,15 +26,28 @@ public sealed class SseUnit
     public const uint MxcsrPowerOnDefault = 0x0000_1F80;
 
     /// <summary>
-    /// MXCSR_MASK for the Pentium III model Aurora carries: every bit except
-    /// DAZ (bit 6) and the reserved bits 16-31 (coordinator decision,
-    /// plans/specs/sse.md -- "early Pentium III: MXCSR_MASK FFBFh (no DAZ);
-    /// later steppings FFFFh (uncertain cutoff)", settled in favour of the
-    /// earlier, narrower mask). LDMXCSR and FXRSTOR both reject any MXCSR
-    /// value with a bit set outside this mask with <c>#GP(0)</c>, before
-    /// loading anything.
+    /// The reserved bits (16-31) alone: the permissive mask
+    /// <see cref="ReadSnapshot"/> cleans a loaded MXCSR value with. A
+    /// snapshot has no guest-visible fault to raise on a bit a live
+    /// LDMXCSR/FXRSTOR would have rejected outright (that check is
+    /// <see cref="MxcsrMaskFor"/>, below), and a snapshot's own reader
+    /// delegate signature (MachineSnapshot.cs) carries no model to consult,
+    /// so this stays a fixed, structural mask rather than a per-model one.
     /// </summary>
-    public const uint MxcsrMask = 0x0000FFBF;
+    private const uint ReservedBitsMask = 0x0000_FFFF;
+
+    /// <summary>
+    /// MXCSR_MASK for <paramref name="model"/> (work package P4.2,
+    /// plans/specs/sse2.md's coordinator decision): FFBFh -- every bit
+    /// except DAZ (bit 6) and the reserved bits -- for the Pentium III, and
+    /// FFFFh (DAZ settable too) for the Pentium 4 and every later model this
+    /// emulator carries, all of which advertise DAZ support in silicon
+    /// (plans/specs/sse2.md §6: "Northwood ...: MXCSR_MASK FFFFh, DAZ
+    /// supported"). LDMXCSR and FXRSTOR both reject any MXCSR value with a
+    /// bit set outside this mask with <c>#GP(0)</c>, before loading
+    /// anything; FXSAVE reports it at MXCSR_MASK's own field.
+    /// </summary>
+    public static uint MxcsrMaskFor(CpuModel model) => model >= CpuModel.Pentium4 ? 0x0000_FFFFu : 0x0000_FFBFu;
 
     /// <summary>MXCSR itself: the six sticky exception flags, DAZ (never set here), the six exception masks, the rounding control and flush-to-zero.</summary>
     public uint Mxcsr = MxcsrPowerOnDefault;
@@ -89,11 +102,9 @@ public sealed class SseUnit
             };
         }
 
-        // Masked against MxcsrMask on the way in (a P4.1 review finding):
-        // a snapshot has no guest-visible fault to raise on a reserved bit
-        // the way LDMXCSR/FXRSTOR's own #GP(0) does, so it is cleaned up
-        // silently instead, the same bits a live LDMXCSR would have
-        // rejected outright.
-        Mxcsr = reader.ReadUInt32() & MxcsrMask;
+        // Masked against the reserved bits alone on the way in (a P4.1
+        // review finding, widened at P4.2 to the model-independent
+        // structural mask -- see ReservedBitsMask's own remark).
+        Mxcsr = reader.ReadUInt32() & ReservedBitsMask;
     }
 }

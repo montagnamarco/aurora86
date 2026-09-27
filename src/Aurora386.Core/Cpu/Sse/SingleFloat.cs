@@ -101,7 +101,8 @@ public static class SingleFloat
     /// point <see cref="PackNormalized"/> and <see cref="RoundSignificandTo24Bits"/>
     /// both measure every shift and every extracted bit against.
     /// </summary>
-    private const int WideFrameTopBitIndex = 119;
+    /// <summary>internal (not private): DoubleFloat.cs's CVTSD2SS/CVTPD2PS share this exact reference point when handing an already-decomposed double bit pattern to <see cref="RoundWideSignificandToSingle"/> -- see that method's own remark.</summary>
+    internal const int WideFrameTopBitIndex = 119;
 
     public static bool SignBit(uint bits) => (bits & SignMask) != 0;
     public static bool IsNaN(uint bits) => (bits & ExponentMask) == ExponentMask && (bits & MantissaMask) != 0;
@@ -117,6 +118,23 @@ public static class SingleFloat
 
     private static FpFlags DenormalFlagOf(uint a) => IsDenormal(a) ? FpFlags.Denormal : FpFlags.None;
     private static FpFlags DenormalFlagOf(uint a, uint b) => (IsDenormal(a) || IsDenormal(b)) ? FpFlags.Denormal : FpFlags.None;
+
+    /// <summary>
+    /// MXCSR's DAZ bit (work package P4.2, plans/specs/sse2.md's coordinator
+    /// decision: "DAZ implemented -- denormal inputs treated as signed zero,
+    /// sets no DE"). Only settable at all on a model whose MXCSR_MASK has bit
+    /// 6 (<see cref="SseUnit.MxcsrMaskFor(CpuModel)"/> is per-model from this work package
+    /// on); every call site below applies this to each floating-point
+    /// <em>input</em> before any other classification runs, so a denormal
+    /// operand DAZ replaced with a zero of its own sign is indistinguishable,
+    /// from here on, from an operand that really was zero -- it raises no
+    /// Denormal flag and takes whichever zero-operand shortcut the real
+    /// instruction would. RCPPS/RSQRTPS already zero a denormal source
+    /// unconditionally, independently of DAZ (their own remark on
+    /// <see cref="ZeroOutADenormalSource"/>), so they take no <c>daz</c>
+    /// parameter at all.
+    /// </summary>
+    private static uint ApplyDaz(uint bits, bool daz) => daz && IsDenormal(bits) ? (SignBit(bits) ? NegativeZero : PositiveZero) : bits;
 
     /// <summary>
     /// The NaN a binary operation returns when at least one operand is a
@@ -146,11 +164,14 @@ public static class SingleFloat
         return (DefaultQNaN, flags);
     }
 
-    public static (uint Result, FpFlags Flags) Add(uint a, uint b, RoundingMode rc, bool flushToZero, bool underflowMasked) => AddOrSubtract(a, b, subtract: false, rc, flushToZero, underflowMasked);
-    public static (uint Result, FpFlags Flags) Subtract(uint a, uint b, RoundingMode rc, bool flushToZero, bool underflowMasked) => AddOrSubtract(a, b, subtract: true, rc, flushToZero, underflowMasked);
+    public static (uint Result, FpFlags Flags) Add(uint a, uint b, RoundingMode rc, bool flushToZero, bool underflowMasked, bool daz = false) => AddOrSubtract(a, b, subtract: false, rc, flushToZero, underflowMasked, daz);
+    public static (uint Result, FpFlags Flags) Subtract(uint a, uint b, RoundingMode rc, bool flushToZero, bool underflowMasked, bool daz = false) => AddOrSubtract(a, b, subtract: true, rc, flushToZero, underflowMasked, daz);
 
-    private static (uint, FpFlags) AddOrSubtract(uint a, uint b, bool subtract, RoundingMode rc, bool flushToZero, bool underflowMasked)
+    private static (uint, FpFlags) AddOrSubtract(uint a, uint b, bool subtract, RoundingMode rc, bool flushToZero, bool underflowMasked, bool daz)
     {
+        a = ApplyDaz(a, daz);
+        b = ApplyDaz(b, daz);
+
         // NaN propagation looks at the operands exactly as given: measuring
         // SUBPS against the host oracle shows its effective "b <- -b"
         // negation is an arithmetic step that never reaches a NaN's own
@@ -394,7 +415,8 @@ public static class SingleFloat
             : ((int)biasedExponent - 127, mantissa | 0x0080_0000u);
     }
 
-    private static UInt128 ShiftRightSticky(UInt128 value, int shift)
+    /// <summary>internal (not private): DoubleFloat.cs's own wide-significand arithmetic shares this exact shift-and-fold-to-sticky routine rather than duplicating it (a P4.2 shared helper).</summary>
+    internal static UInt128 ShiftRightSticky(UInt128 value, int shift)
     {
         if (shift <= 0) return value;
         if (shift >= 128) return value == UInt128.Zero ? UInt128.Zero : UInt128.One;
@@ -405,7 +427,8 @@ public static class SingleFloat
         return shiftedOut != UInt128.Zero ? result | 1 : result;
     }
 
-    private static int TopBitIndex(UInt128 value)
+    /// <summary>internal (not private): shared with DoubleFloat.cs, see <see cref="ShiftRightSticky"/>'s own remark.</summary>
+    internal static int TopBitIndex(UInt128 value)
     {
         ulong hi = (ulong)(value >> 64);
         if (hi != 0) return 64 + 63 - System.Numerics.BitOperations.LeadingZeroCount(hi);
@@ -413,8 +436,10 @@ public static class SingleFloat
         return 63 - System.Numerics.BitOperations.LeadingZeroCount(lo);
     }
 
-    public static (uint Result, FpFlags Flags) Multiply(uint a, uint b, RoundingMode rc, bool flushToZero, bool underflowMasked)
+    public static (uint Result, FpFlags Flags) Multiply(uint a, uint b, RoundingMode rc, bool flushToZero, bool underflowMasked, bool daz = false)
     {
+        a = ApplyDaz(a, daz);
+        b = ApplyDaz(b, daz);
         if (IsNaN(a) || IsNaN(b)) return PropagateNaN(a, b);
 
         bool resultNegative = SignBit(a) ^ SignBit(b);
@@ -446,8 +471,10 @@ public static class SingleFloat
         return RoundDoubleToSingle(exact, rc, flushToZero, underflowMasked, denormalFlag);
     }
 
-    public static (uint Result, FpFlags Flags) Divide(uint a, uint b, RoundingMode rc, bool flushToZero, bool underflowMasked)
+    public static (uint Result, FpFlags Flags) Divide(uint a, uint b, RoundingMode rc, bool flushToZero, bool underflowMasked, bool daz = false)
     {
+        a = ApplyDaz(a, daz);
+        b = ApplyDaz(b, daz);
         if (IsNaN(a) || IsNaN(b)) return PropagateNaN(a, b);
 
         bool resultNegative = SignBit(a) ^ SignBit(b);
@@ -488,8 +515,9 @@ public static class SingleFloat
         return RoundDoubleToSingle(exact, rc, flushToZero, underflowMasked, denormalFlag);
     }
 
-    public static (uint Result, FpFlags Flags) Sqrt(uint a, RoundingMode rc, bool flushToZero, bool underflowMasked)
+    public static (uint Result, FpFlags Flags) Sqrt(uint a, RoundingMode rc, bool flushToZero, bool underflowMasked, bool daz = false)
     {
+        a = ApplyDaz(a, daz);
         if (IsNaN(a)) return PropagateNaN(a, a);
 
         // Denormal is reported only on the path that actually computes a
@@ -559,7 +587,27 @@ public static class SingleFloat
 
         bool negative = double.IsNegative(exact);
         (int exponent, UInt128 significand) = DecomposeDouble(exact);
+        return RoundWideSignificandToSingle(negative, exponent, significand, rc, flushToZero, underflowMasked, accumulated);
+    }
 
+    /// <summary>
+    /// The reusable tail of <see cref="RoundDoubleToSingle"/>: given a
+    /// nonzero finite value already expressed as (<paramref name="exponent"/>,
+    /// <paramref name="significand"/>) on the same <see cref="WideFrameTopBitIndex"/>
+    /// scale <see cref="DecomposeDouble"/> and <see cref="AddFinite"/> both
+    /// use (value = significand * 2^(exponent - <see cref="WideFrameTopBitIndex"/>),
+    /// significand's own top bit at or below that index), rounds it to
+    /// single precision with the overflow/tininess rule the type summary
+    /// above documents, deciding both from the <em>natural</em>, unbounded-
+    /// exponent rounding before ever consulting the format's actual limits.
+    /// A shared helper (P4.2, plans/specs/sse2.md): <c>Cpu.Sse2.Arithmetic.cs</c>'s
+    /// own CVTPD2PS/CVTSD2SS call this directly with a double bit pattern's
+    /// own (possibly denormal, unlike every caller <see cref="DecomposeDouble"/>
+    /// itself ever sees) significand already decomposed and placed on this
+    /// same scale, rather than duplicating this rounding tail a second time.
+    /// </summary>
+    internal static (uint Result, FpFlags Flags) RoundWideSignificandToSingle(bool negative, int exponent, UInt128 significand, RoundingMode rc, bool flushToZero, bool underflowMasked, FpFlags accumulated)
+    {
         // Stage 1: round the double's own 53-bit significand to 24 bits at
         // its natural exponent, with no regard for whether that exponent
         // even fits the single format -- IEEE 754's own "as if the exponent
@@ -710,8 +758,10 @@ public static class SingleFloat
     /// is true for UCOMISS (only a signaling NaN raises Invalid), false for
     /// COMISS (any NaN does).
     /// </summary>
-    public static (bool Zf, bool Pf, bool Cf, FpFlags Flags) CompareForFlags(uint a, uint b, bool unorderedOnlySignaling)
+    public static (bool Zf, bool Pf, bool Cf, FpFlags Flags) CompareForFlags(uint a, uint b, bool unorderedOnlySignaling, bool daz = false)
     {
+        a = ApplyDaz(a, daz);
+        b = ApplyDaz(b, daz);
         bool eitherNaN = IsNaN(a) || IsNaN(b);
         bool eitherSignaling = IsSignalingNaN(a) || IsSignalingNaN(b);
         FpFlags invalidFlag = (eitherSignaling || (eitherNaN && !unorderedOnlySignaling)) ? FpFlags.Invalid : FpFlags.None;
@@ -735,8 +785,10 @@ public static class SingleFloat
     /// signaling NaN. An unordered comparison answers false for EQ/LT/LE/
     /// ORD and true for UNORD/NEQ/NLT/NLE.
     /// </summary>
-    public static (uint Result, FpFlags Flags) ComparePredicate(uint a, uint b, int predicate)
+    public static (uint Result, FpFlags Flags) ComparePredicate(uint a, uint b, int predicate, bool daz = false)
     {
+        a = ApplyDaz(a, daz);
+        b = ApplyDaz(b, daz);
         bool eitherNaN = IsNaN(a) || IsNaN(b);
         bool eitherSignaling = IsSignalingNaN(a) || IsSignalingNaN(b);
         bool quietAlsoSignals = predicate is 1 or 2 or 5 or 6;
@@ -774,13 +826,15 @@ public static class SingleFloat
     // --- MAX/MIN -----------------------------------------------------------
 
     /// <summary>MAXPS/MAXSS: DEST &gt; SRC ? DEST : SRC, and the source wins on a NaN in either operand or on equal operands, +0/-0 included (plans/specs/sse.md §4).</summary>
-    public static (uint Result, FpFlags Flags) Max(uint destination, uint source) => MaxOrMin(destination, source, wantGreater: true);
+    public static (uint Result, FpFlags Flags) Max(uint destination, uint source, bool daz = false) => MaxOrMin(destination, source, wantGreater: true, daz);
 
     /// <summary>MINPS/MINSS: the same rule with DEST &lt; SRC.</summary>
-    public static (uint Result, FpFlags Flags) Min(uint destination, uint source) => MaxOrMin(destination, source, wantGreater: false);
+    public static (uint Result, FpFlags Flags) Min(uint destination, uint source, bool daz = false) => MaxOrMin(destination, source, wantGreater: false, daz);
 
-    private static (uint, FpFlags) MaxOrMin(uint destination, uint source, bool wantGreater)
+    private static (uint, FpFlags) MaxOrMin(uint destination, uint source, bool wantGreater, bool daz)
     {
+        destination = ApplyDaz(destination, daz);
+        source = ApplyDaz(source, daz);
         // Measuring MAXPS/MINPS against the host oracle (dest a quiet NaN,
         // source an ordinary float, RC varied) shows two things the SDM's
         // usual "only SNaN signals" text does not: Invalid is set for any
@@ -820,10 +874,11 @@ public static class SingleFloat
     /// rounds outside [-2^31, 2^31-1] all produce the integer indefinite
     /// 80000000h and Invalid, masked or not (plans/specs/sse.md §4).
     /// </summary>
-    public static (int Result, FpFlags Flags) ConvertToInt32(uint bits, RoundingMode rc, bool truncate)
+    public static (int Result, FpFlags Flags) ConvertToInt32(uint bits, RoundingMode rc, bool truncate, bool daz = false)
     {
         const int IntegerIndefinite = unchecked((int)0x8000_0000);
 
+        bits = ApplyDaz(bits, daz);
         if (IsNaN(bits) || IsInfinity(bits))
         {
             return (IntegerIndefinite, FpFlags.Invalid);

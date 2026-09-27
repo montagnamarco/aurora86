@@ -450,10 +450,20 @@ public class SseReviewFindingsTests
         }
     }
 
-    // === 10: SseUnit.ReadSnapshot masks MXCSR with MXCSR_MASK ===================
+    // === 10: SseUnit.ReadSnapshot masks MXCSR's reserved bits alone =============
+    //
+    // Updated for work package P4.2 (plans/specs/sse2.md): MXCSR_MASK is now
+    // per-model (SseUnit.MxcsrMaskFor), and ReadSnapshot's own delegate
+    // signature (MachineSnapshot.cs) carries no model to consult -- so it
+    // stays a fixed, structural cleanup of the reserved bits 16-31 alone,
+    // no longer the Pentium III's own (narrower) MXCSR_MASK. DAZ (bit 6) is
+    // therefore preserved by a snapshot round-trip even for a model that
+    // could never have set it live through LDMXCSR/FXRSTOR's own #GP(0) --
+    // documented as a known, narrow edge case in SseUnit.cs's own remark on
+    // ReservedBitsMask.
 
     [Fact]
-    public void SseUnitReadSnapshotMasksMxcsrWithMxcsrMask()
+    public void SseUnitReadSnapshotMasksMxcsrsReservedBitsAlone()
     {
         var unit = new SseUnit();
         using var stream = new MemoryStream();
@@ -473,6 +483,6 @@ public class SseReviewFindingsTests
 
         unit.ReadSnapshot(reader, SseUnit.SnapshotVersion);
 
-        Assert.Equal(SseUnit.MxcsrMask, unit.Mxcsr);
+        Assert.Equal(0x0000_FFFFu, unit.Mxcsr);
     }
 }

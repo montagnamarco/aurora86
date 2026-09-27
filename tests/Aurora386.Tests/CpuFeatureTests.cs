@@ -242,6 +242,35 @@ public class CpuFeatureTests
         Assert.Equal(0u, edx & (1u << 26));         // SSE2: still not implemented.
     }
 
+    /// <summary>
+    /// Work package P4.2: SSE2 and CLFSH are real on the Pentium 4's silicon
+    /// and, since Cpu.Sse2.cs/Cpu.Sse2.Arithmetic.cs/Cpu.Sse2.Integer.cs now
+    /// execute the whole instruction set CLFSH/SSE2 gate, in
+    /// CpuFeatures.Implemented too -- so leaf 1 EDX bits 19 (CLFSH) and 26
+    /// (SSE2) both appear for this model, on top of the set PentiumIII
+    /// already shows.
+    ///
+    /// PentiumIII's own edx (0x0381F9FF, see
+    /// <see cref="PentiumIiiLeafOneAddsSseOnTopOfThePentiumIiSet"/>) plus
+    /// 524288 (1&lt;&lt;19, CLFSH) plus 67108864 (1&lt;&lt;26, SSE2) = 0x0789F9FF.
+    /// Leaf 1 EBX's CLFLUSH line-size field (8, meaning 64 bytes) already
+    /// follows CLFSH alone (Cpu.Identification.cs's own LeafOneEbx), so it
+    /// is real here too, confirmed rather than assumed.
+    /// </summary>
+    [Fact]
+    public void Pentium4LeafOneAddsClfshAndSse2OnTopOfThePentiumIiiSet()
+    {
+        var (eax, ebx, ecx, edx) = Cpuid(CpuModel.Pentium4, 1);
+
+        Assert.Equal(0x0F27u, eax);
+        Assert.Equal(0x0789F9FFu, edx);
+        Assert.Equal(0u, ecx);
+        Assert.Equal(0x00000800u, ebx);   // CLFLUSH line size, 8 * 8 = 64 bytes.
+
+        Assert.Equal(1u << 19, edx & (1u << 19));   // CLFSH: Cpu.Sse2.cs's ExecuteClflush now executes it.
+        Assert.Equal(1u << 26, edx & (1u << 26));   // SSE2: Cpu.Sse2*.cs now executes the whole set.
+    }
+
     [Fact]
     public void ACustomFeatureSetAdvertisingCx8ShowsEdxBitEight()
     {

@@ -269,10 +269,19 @@ public sealed partial class Cpu
         // the fixed values a part without SSE shows (see the type summary
         // on MxcsrPowerOnDefault). MXCSR_MASK 0 is the documented "assume
         // nothing beyond the default" signal a part without SSE gives;
-        // Sse.SseUnit.MxcsrMask is the real one once SSE exists.
+        // Sse.SseUnit.MxcsrMaskFor(model) is the real one once SSE exists.
+        // Sse.Mxcsr is masked by that same per-model mask before it is
+        // stored (a review finding, the same one Cpu.Sse.cs's own
+        // ExecuteStmxcsr and CurrentDaz now guard against): a snapshot
+        // restored across a model change is the one path that can leave a
+        // bit outside the current model's mask sitting in Sse.Mxcsr, and
+        // without this an FXSAVE'd image would report that bit alongside a
+        // MXCSR_MASK field that says it should not be there -- a resaved
+        // image a guest's own subsequent FXRSTOR would then wrongly reject.
         bool hasSse = State.Features.Has(CpuFeature.Sse);
-        WriteMem32(segment, address + FxsaveMxcsrOffset, hasSse ? Sse.Mxcsr : MxcsrPowerOnDefault);
-        WriteMem32(segment, address + FxsaveMxcsrMaskOffset, hasSse ? SseUnit.MxcsrMask : 0);
+        uint mxcsrMask = SseUnit.MxcsrMaskFor(State.Model);
+        WriteMem32(segment, address + FxsaveMxcsrOffset, hasSse ? Sse.Mxcsr & mxcsrMask : MxcsrPowerOnDefault);
+        WriteMem32(segment, address + FxsaveMxcsrMaskOffset, hasSse ? mxcsrMask : 0);
 
         // ST/MM0-7, in stack order (ST(0) first) exactly like FSAVE's own
         // register area -- ten bytes used out of each sixteen-byte slot.
@@ -332,7 +341,7 @@ public sealed partial class Cpu
     /// anything asks, exactly as it already does for ordinary FRSTOR
     /// (plans/specs/p6.md item 9: "FXRSTOR rebuilds the 2-bit tags from the
     /// register contents"). Once SSE exists (P4.1), the image's MXCSR is
-    /// read and checked against <see cref="SseUnit.MxcsrMask"/> before
+    /// read and checked against <see cref="SseUnit.MxcsrMaskFor(CpuModel)"/> before
     /// anything else in the image is loaded -- a reserved bit set there is
     /// <c>#GP(0)</c> with every piece of state (FPU/MMX included) left
     /// exactly as it was (plans/specs/sse.md §6). Without SSE, MXCSR/
@@ -372,7 +381,7 @@ public sealed partial class Cpu
         // has changed yet if this faults (plans/specs/sse.md §6).
         bool hasSse = State.Features.Has(CpuFeature.Sse);
         uint mxcsrValue = ReadMem32(segment, address + FxsaveMxcsrOffset);
-        if (hasSse && (mxcsrValue & ~SseUnit.MxcsrMask) != 0)
+        if (hasSse && (mxcsrValue & ~SseUnit.MxcsrMaskFor(State.Model)) != 0)
         {
             throw new CpuException(13, 0);
         }

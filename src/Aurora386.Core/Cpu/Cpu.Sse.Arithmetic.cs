@@ -29,12 +29,13 @@ public sealed partial class Cpu
         RoundingMode rc = CurrentRoundingMode();
         bool flushToZero = CurrentFlushToZero();
         bool underflowMasked = CurrentUnderflowMasked();
+        bool daz = CurrentDaz();
         XmmValue destination = Sse.Xmm(m.Reg);
 
         if (scalar)
         {
             uint source = ReadXmmSourceScalarDword(m);
-            (uint result, FpFlags flags) = ApplyBinary(op, destination.D0, source, rc, flushToZero, underflowMasked);
+            (uint result, FpFlags flags) = ApplyBinary(op, destination.D0, source, rc, flushToZero, underflowMasked, daz);
             if (RaiseIfUnmasked(flags)) return;
             Sse.Xmm(m.Reg).D0 = result;
             return;
@@ -45,7 +46,7 @@ public sealed partial class Cpu
         FpFlags allFlags = FpFlags.None;
         for (int lane = 0; lane < 4; lane++)
         {
-            (uint result, FpFlags flags) = ApplyBinary(op, destination.Lane(lane), source4.Lane(lane), rc, flushToZero, underflowMasked);
+            (uint result, FpFlags flags) = ApplyBinary(op, destination.Lane(lane), source4.Lane(lane), rc, flushToZero, underflowMasked, daz);
             results[lane] = result;
             allFlags |= flags;
         }
@@ -54,14 +55,14 @@ public sealed partial class Cpu
         Sse.Xmm(m.Reg) = new XmmValue { D0 = results[0], D1 = results[1], D2 = results[2], D3 = results[3] };
     }
 
-    private static (uint, FpFlags) ApplyBinary(SseBinaryOp op, uint a, uint b, RoundingMode rc, bool flushToZero, bool underflowMasked) => op switch
+    private static (uint, FpFlags) ApplyBinary(SseBinaryOp op, uint a, uint b, RoundingMode rc, bool flushToZero, bool underflowMasked, bool daz) => op switch
     {
-        SseBinaryOp.Add => SingleFloat.Add(a, b, rc, flushToZero, underflowMasked),
-        SseBinaryOp.Mul => SingleFloat.Multiply(a, b, rc, flushToZero, underflowMasked),
-        SseBinaryOp.Sub => SingleFloat.Subtract(a, b, rc, flushToZero, underflowMasked),
-        SseBinaryOp.Div => SingleFloat.Divide(a, b, rc, flushToZero, underflowMasked),
-        SseBinaryOp.Min => SingleFloat.Min(a, b),
-        SseBinaryOp.Max => SingleFloat.Max(a, b),
+        SseBinaryOp.Add => SingleFloat.Add(a, b, rc, flushToZero, underflowMasked, daz),
+        SseBinaryOp.Mul => SingleFloat.Multiply(a, b, rc, flushToZero, underflowMasked, daz),
+        SseBinaryOp.Sub => SingleFloat.Subtract(a, b, rc, flushToZero, underflowMasked, daz),
+        SseBinaryOp.Div => SingleFloat.Divide(a, b, rc, flushToZero, underflowMasked, daz),
+        SseBinaryOp.Min => SingleFloat.Min(a, b, daz),
+        SseBinaryOp.Max => SingleFloat.Max(a, b, daz),
         _ => throw new InvalidOperationException(),
     };
 
@@ -75,11 +76,12 @@ public sealed partial class Cpu
         RoundingMode rc = CurrentRoundingMode();
         bool flushToZero = CurrentFlushToZero();
         bool underflowMasked = CurrentUnderflowMasked();
+        bool daz = CurrentDaz();
 
         if (scalar)
         {
             uint source = ReadXmmSourceScalarDword(m);
-            (uint result, FpFlags flags) = ApplyUnary(op, source, rc, flushToZero, underflowMasked);
+            (uint result, FpFlags flags) = ApplyUnary(op, source, rc, flushToZero, underflowMasked, daz);
             if (RaiseIfUnmasked(flags)) return;
             Sse.Xmm(m.Reg).D0 = result;
             return;
@@ -90,7 +92,7 @@ public sealed partial class Cpu
         FpFlags allFlags = FpFlags.None;
         for (int lane = 0; lane < 4; lane++)
         {
-            (uint result, FpFlags flags) = ApplyUnary(op, source4.Lane(lane), rc, flushToZero, underflowMasked);
+            (uint result, FpFlags flags) = ApplyUnary(op, source4.Lane(lane), rc, flushToZero, underflowMasked, daz);
             results[lane] = result;
             allFlags |= flags;
         }
@@ -99,9 +101,9 @@ public sealed partial class Cpu
         Sse.Xmm(m.Reg) = new XmmValue { D0 = results[0], D1 = results[1], D2 = results[2], D3 = results[3] };
     }
 
-    private static (uint, FpFlags) ApplyUnary(SseUnaryOp op, uint value, RoundingMode rc, bool flushToZero, bool underflowMasked) => op switch
+    private static (uint, FpFlags) ApplyUnary(SseUnaryOp op, uint value, RoundingMode rc, bool flushToZero, bool underflowMasked, bool daz) => op switch
     {
-        SseUnaryOp.Sqrt => SingleFloat.Sqrt(value, rc, flushToZero, underflowMasked),
+        SseUnaryOp.Sqrt => SingleFloat.Sqrt(value, rc, flushToZero, underflowMasked, daz),
         SseUnaryOp.Rsqrt => SingleFloat.ReciprocalSqrtApprox(value),
         SseUnaryOp.Rcp => SingleFloat.ReciprocalApprox(value),
         _ => throw new InvalidOperationException(),
@@ -138,12 +140,13 @@ public sealed partial class Cpu
         if (SseTaskSwitched()) return;
 
         XmmValue destination = Sse.Xmm(m.Reg);
+        bool daz = CurrentDaz();
 
         if (scalar)
         {
             uint source = ReadXmmSourceScalarDword(m);
             byte predicate = FetchByte();
-            (uint result, FpFlags flags) = SingleFloat.ComparePredicate(destination.D0, source, predicate & 7);
+            (uint result, FpFlags flags) = SingleFloat.ComparePredicate(destination.D0, source, predicate & 7, daz);
             if (RaiseIfUnmasked(flags)) return;
             Sse.Xmm(m.Reg).D0 = result;
             return;
@@ -155,7 +158,7 @@ public sealed partial class Cpu
         FpFlags allFlags = FpFlags.None;
         for (int lane = 0; lane < 4; lane++)
         {
-            (uint result, FpFlags flags) = SingleFloat.ComparePredicate(destination.Lane(lane), source4.Lane(lane), predicate4 & 7);
+            (uint result, FpFlags flags) = SingleFloat.ComparePredicate(destination.Lane(lane), source4.Lane(lane), predicate4 & 7, daz);
             results[lane] = result;
             allFlags |= flags;
         }
@@ -176,7 +179,7 @@ public sealed partial class Cpu
         uint destination = Sse.Xmm(m.Reg).D0;
         uint source = ReadXmmSourceScalarDword(m);
 
-        (bool zf, bool pf, bool cf, FpFlags flags) = SingleFloat.CompareForFlags(destination, source, unorderedOnlySignaling: !signalOnQuietNaN);
+        (bool zf, bool pf, bool cf, FpFlags flags) = SingleFloat.CompareForFlags(destination, source, unorderedOnlySignaling: !signalOnQuietNaN, CurrentDaz());
         if (RaiseIfUnmasked(flags)) return;
 
         Flags.Zero = zf;
@@ -232,11 +235,12 @@ public sealed partial class Cpu
         if (SseTaskSwitched()) return;
 
         RoundingMode rc = CurrentRoundingMode();
+        bool daz = CurrentDaz();
 
         if (scalar)
         {
             uint source = ReadXmmSourceScalarDword(m);
-            (int result, FpFlags flags) = SingleFloat.ConvertToInt32(source, rc, truncate);
+            (int result, FpFlags flags) = SingleFloat.ConvertToInt32(source, rc, truncate, daz);
             if (RaiseIfUnmasked(flags)) return;
             State.SetReg32(m.Reg, unchecked((uint)result));
             return;
@@ -256,8 +260,8 @@ public sealed partial class Cpu
             lane1 = (uint)(low >> 32);
         }
 
-        (int r0, FpFlags f0) = SingleFloat.ConvertToInt32(lane0, rc, truncate);
-        (int r1, FpFlags f1) = SingleFloat.ConvertToInt32(lane1, rc, truncate);
+        (int r0, FpFlags f0) = SingleFloat.ConvertToInt32(lane0, rc, truncate, daz);
+        (int r1, FpFlags f1) = SingleFloat.ConvertToInt32(lane1, rc, truncate, daz);
         if (RaiseIfUnmasked(f0 | f1)) return;
 
         Fpu.WriteMmx(m.Reg, unchecked((uint)r0) | ((ulong)unchecked((uint)r1) << 32));

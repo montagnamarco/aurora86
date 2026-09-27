@@ -170,6 +170,16 @@ public readonly struct CpuFeatures : IEquatable<CpuFeatures>
     /// without SSE still shows, and CR4.OSXMMEXCPT is writable
     /// (<see cref="CpuState.Cr4Osxmmexcpt"/>) -- so PentiumIII and later now show SSE
     /// to a guest exactly as their silicon does.
+    /// Work package P4.2 (SSE2) added <see cref="CpuFeature.Sse2"/> and
+    /// <see cref="CpuFeature.Clfsh"/>: the packed/scalar double-precision
+    /// arithmetic (Cpu/Sse/DoubleFloat.cs, Cpu.Sse2*.cs), every MMX integer
+    /// instruction widened to the 128-bit XMM registers, and CLFLUSH/LFENCE/
+    /// MFENCE/MOVNTI all now execute instead of faulting, on the Pentium 4
+    /// and every later model this emulator carries (the models whose
+    /// silicon carries the two bits, per the catalog in
+    /// Cpu.Identification.cs) -- and MXCSR_MASK's own DAZ bit is now real,
+    /// on those same models, for single precision too
+    /// (<see cref="Sse.SseUnit.MxcsrMaskFor"/>).
     /// </remarks>
     public static readonly CpuFeatures Implemented =
         None.With(CpuFeature.Fpu, CpuFeature.Isa486, CpuFeature.Identification,
@@ -177,7 +187,7 @@ public readonly struct CpuFeatures : IEquatable<CpuFeatures>
             CpuFeature.ControlRegister4, CpuFeature.Pse, CpuFeature.Vme, CpuFeature.TestRegisters,
             CpuFeature.Mmx, CpuFeature.Cmov, CpuFeature.Sep, CpuFeature.Fxsr, CpuFeature.Mtrr,
             CpuFeature.Pat, CpuFeature.Mca, CpuFeature.Pmc, CpuFeature.HintNops,
-            CpuFeature.Pae, CpuFeature.Pge, CpuFeature.Sse);
+            CpuFeature.Pae, CpuFeature.Pge, CpuFeature.Sse, CpuFeature.Sse2, CpuFeature.Clfsh);
 
     /// <summary>
     /// What Aurora implements for one model. Before work package P3.1 this

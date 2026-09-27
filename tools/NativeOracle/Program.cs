@@ -96,6 +96,14 @@ for (int familyIndex = 0; familyIndex < FamilyCatalog.All.Count; familyIndex++)
         Console.WriteLine($"    {failure.Case.Description}");
         Console.WriteLine($"        bytes: {Convert.ToHexString(failure.Case.Instruction)}");
         Console.WriteLine($"        {string.Join("; ", failure.Differences)}");
+        if (failure.Case.InitialXmm is { } xmm)
+        {
+            for (int i = 0; i < xmm.Length; i++)
+            {
+                Console.WriteLine($"        XMM{i} initial = {xmm[i].D3:X8}{xmm[i].D2:X8}{xmm[i].D1:X8}{xmm[i].D0:X8}");
+            }
+            Console.WriteLine($"        MXCSR initial = {failure.Case.InitialMxcsr:X8}");
+        }
     }
 
     if (written is not null)
@@ -131,20 +139,36 @@ static int RunDirectedProbe(string[] args)
     xmm[0] = ParseXmm(args[1]);
     xmm[1] = ParseXmm(args[2]);
     uint mxcsr = Convert.ToUInt32(args[3], 16);
+    // Optional 5th argument: EAX before the probed instruction runs, for
+    // directed questions about a GPR source/destination (e.g. CVT(T)SD2SI's
+    // own DE-on-denormal-source question, which a pure XMM0/XMM1 probe
+    // cannot answer since the result lands in a GPR, not XMM0).
+    uint initialEax = args.Length > 4 ? Convert.ToUInt32(args[4], 16) : 0;
 
     using var host = new HostRunner();
     host.PrepareFxsaveDefaults();
     host.WriteXmmRegisters(xmm);
     host.WriteMxcsr(mxcsr);
 
+    // EBX always carries the shared buffer's own address, and the buffer's
+    // own first dword a known sentinel beforehand: harmless for every XMM-
+    // only probe (nothing else here ever names EBX), and what a directed
+    // question about a memory-destination, non-XMM instruction -- MOVNTI's
+    // own 66-prefix question -- needs to read back afterwards.
     var gpr = new uint[8];
-    host.Run(instruction, gpr, initialEflags: 0, useExtendedState: true);
+    gpr[(int)Aurora386.Core.Cpu.Reg.Eax] = initialEax;
+    gpr[(int)Aurora386.Core.Cpu.Reg.Ebx] = host.BufferAddress;
+    host.WriteBuffer(BitConverter.GetBytes(0xDEADBEEFu));
+    (uint[] resultGpr, _) = host.Run(instruction, gpr, initialEflags: 0, useExtendedState: true);
 
     Aurora386.Core.Cpu.Sse.XmmValue[] result = host.ReadXmmRegisters();
     uint resultMxcsr = host.ReadMxcsr();
+    uint bufferDword = BitConverter.ToUInt32(host.ReadBuffer()[..4]);
 
     Console.WriteLine($"XMM0 = {result[0].D3:X8}{result[0].D2:X8}{result[0].D1:X8}{result[0].D0:X8}");
     Console.WriteLine($"MXCSR = {resultMxcsr:X8}");
+    Console.WriteLine($"EAX = {resultGpr[(int)Aurora386.Core.Cpu.Reg.Eax]:X8}");
+    Console.WriteLine($"[EBX] = {bufferDword:X8}");
     return 0;
 
     static Aurora386.Core.Cpu.Sse.XmmValue ParseXmm(string hex32) => new()
