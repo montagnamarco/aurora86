@@ -188,6 +188,14 @@ public sealed partial class Cpu
         Flags.Set(FlagOp.Logic, 0, 0, result, size);
         Flags.Carry = carry;
 
+        // OF says whether the sign changed. The SDM defines it only for a
+        // one-bit shift and leaves it undefined above that; the 386EX vectors
+        // show it set on a sign change at a count of one (SHLD CX,BP,1 with
+        // CX = BB7A gives 76F4 and OF = 1), which the Logic operation above
+        // would otherwise have cleared.
+        uint signBit = 1u << (size - 1);
+        Flags.Overflow = ((result ^ destination) & signBit) != 0;
+
         WriteRm(m, result);
     }
 }

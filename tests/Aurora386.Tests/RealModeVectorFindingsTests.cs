@@ -47,4 +47,35 @@ public class RealModeVectorFindingsTests
 
         Assert.Equal(0xD6u, cpu.Flags.Value & 0xFF);
     }
+
+    /// <summary>
+    /// SHLD by one sets OF when the sign bit changes. SHLD CX,BP,1 with
+    /// CX = BB7A and BP = 4000 shifts in a zero and gives 76F4: the sign went
+    /// from 1 to 0, so OF = 1, and the bit shifted out sets CF.
+    /// </summary>
+    [Fact]
+    public void ShldByOneSetsOverflowOnASignChange()
+    {
+        // MOV CX,BB7A ; MOV BP,4000 ; SHLD CX,BP,1
+        Cpu cpu = Run(3, 0xB9, 0x7A, 0xBB, 0xBD, 0x00, 0x40, 0x0F, 0xA4, 0xE9, 0x01);
+
+        Assert.Equal(0x76F4, cpu.State.Cx);
+        Assert.True(cpu.Flags.Overflow);
+        Assert.True(cpu.Flags.Carry);
+    }
+
+    /// <summary>
+    /// SHRD by one likewise: CX = BB7A shifted right with a zero from BP gives
+    /// 5DBD, the sign changed, so OF = 1; the bit shifted out was 0.
+    /// </summary>
+    [Fact]
+    public void ShrdByOneSetsOverflowOnASignChange()
+    {
+        // MOV CX,BB7A ; MOV BP,4000 ; SHRD CX,BP,1
+        Cpu cpu = Run(3, 0xB9, 0x7A, 0xBB, 0xBD, 0x00, 0x40, 0x0F, 0xAC, 0xE9, 0x01);
+
+        Assert.Equal(0x5DBD, cpu.State.Cx);
+        Assert.True(cpu.Flags.Overflow);
+        Assert.False(cpu.Flags.Carry);
+    }
 }
