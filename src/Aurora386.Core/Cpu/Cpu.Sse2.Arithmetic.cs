@@ -177,6 +177,12 @@ public sealed partial class Cpu
     {
         var m = DecodeModRm();
         if (SseTaskSwitched()) return;
+        // Intel's SIMD exception table exempts CVTPI2PD's memory source:
+        // only the MMX-register form synchronizes pending x87 exceptions.
+        if (!scalar && m.IsRegister && DeliverPendingX87Exception())
+        {
+            return;
+        }
 
         if (scalar)
         {
@@ -206,6 +212,10 @@ public sealed partial class Cpu
     {
         var m = DecodeModRm();
         if (SseTaskSwitched()) return;
+        if (!scalar && DeliverPendingX87Exception())
+        {
+            return;
+        }
 
         RoundingMode rc = CurrentRoundingMode();
         bool daz = CurrentDaz();

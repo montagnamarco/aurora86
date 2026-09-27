@@ -39,6 +39,10 @@ public sealed partial class Cpu
     /// </summary>
     private void ExecuteEscape(byte opcode)
     {
+        // Decode instruction bytes first; this computes an offset but does
+        // not validate or access the data segment or its pages.
+        ModRm operand = DecodeModRm();
+
         // CR0 decides whether there is a unit here to execute on at all.
         //
         // EM set says there is no coprocessor and the instruction should fault
@@ -49,15 +53,14 @@ public sealed partial class Cpu
         // handler tells them apart by reading CR0.
         if ((State.Cr0 & (CpuState.Cr0Emulation | CpuState.Cr0TaskSwitched)) != 0)
         {
-            // The operand is still decoded first, so that the effective
-            // address is computed and any segment or page fault is raised in
-            // the order the processor would raise it.
-            DecodeModRm();
             FaultNow(7, 0);
             return;
         }
 
-        ModRm operand = DecodeModRm();
+        if (!IsNonwaitingEscape(opcode, operand) && DeliverPendingX87Exception())
+        {
+            return;
+        }
 
         if (operand.IsRegister)
         {
@@ -72,6 +75,52 @@ public sealed partial class Cpu
         }
 
         ExecuteEscapeWithMemory(opcode, operand);
+    }
+
+    /// <summary>
+    /// The modern no-wait encodings remain usable by the exception handler.
+    /// FNOP is a waiting instruction despite its name.
+    /// </summary>
+    private static bool IsNonwaitingEscape(byte opcode, in ModRm operand)
+    {
+        if (operand.IsRegister)
+        {
+            return (opcode == 0xDB && operand.Reg == 4 && operand.Register is 2 or 3)
+                || (opcode == 0xDF && operand.Reg == 4 && operand.Register == 0);
+        }
+
+        return opcode is 0xD9 or 0xDD && operand.Reg is 6 or 7;
+    }
+
+    /// <summary>FWAIT uses MP and TS for #NM; EM alone does not disable it.</summary>
+    private void ExecuteFwait()
+    {
+        const uint waitUnavailable = CpuState.Cr0MonitorCoprocessor | CpuState.Cr0TaskSwitched;
+        if ((State.Cr0 & waitUnavailable) == waitUnavailable)
+        {
+            FaultNow(7, 0);
+            return;
+        }
+
+        DeliverPendingX87Exception();
+    }
+
+    /// <summary>
+    /// Native x87 errors are deferred until a waiting x87 or MMX instruction.
+    /// This emulator checks them before data-operand faults, after #NM;
+    /// ordering within Intel's same-priority fault class is model-dependent.
+    /// NE=0 still lacks the external FERR/IGNNE/IRQ13 path and is not turned
+    /// into #MF. Pending state stays intact in either case.
+    /// </summary>
+    private bool DeliverPendingX87Exception()
+    {
+        if (!Fpu.HasPendingException || (State.Cr0 & CpuState.Cr0NumericError) == 0)
+        {
+            return false;
+        }
+
+        FaultNow(16, 0);
+        return true;
     }
 
     /// <summary>
@@ -196,7 +245,10 @@ public sealed partial class Cpu
             // saved instruction and operand pointers, but not the registers.
             // A signal handler saves the environment to find out *which*
             // instruction faulted; saving the registers too would be FSAVE.
-            case 6: StoreEnvironment(segment, address); return;
+            case 6:
+                StoreEnvironment(segment, address);
+                Fpu.MaskExceptions();
+                return;
             case 4: LoadEnvironment(segment, address); return;
         }
     }
@@ -329,10 +381,9 @@ public sealed partial class Cpu
     // and tag words are always the first three.
     //
     // The pointers are stored as zero here. They exist so that an exception
-    // handler can report which instruction faulted and on what; since
-    // exceptions are masked in every configuration this emulator has been run
-    // with, nothing has ever read them back. Writing zeros is honest about
-    // that in a way that writing plausible-looking rubbish would not be.
+    // handler can report which instruction faulted and on what. Tracking
+    // these pointers remains unimplemented even though pending exceptions
+    // can now be delivered; a handler cannot yet diagnose their origin here.
 
     private bool EnvironmentIs32Bit => OperandSize32;
 

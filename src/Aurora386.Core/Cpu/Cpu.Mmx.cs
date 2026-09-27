@@ -205,6 +205,11 @@ public sealed partial class Cpu
                 return;
             }
 
+            if (DeliverPendingX87Exception())
+            {
+                return;
+            }
+
             Fpu.EmptyMmxState();
             return;
         }
@@ -231,14 +236,25 @@ public sealed partial class Cpu
             throw new CpuException(6);
         }
 
-        // TS says the registers belong to another task and must be saved and
-        // reloaded first. The ModRM byte is decoded before this fault,
-        // exactly as Cpu.Fpu.cs does for the x87 escapes, so the effective
-        // address is computed -- and any segment or page fault raised -- in
-        // the order a real processor would raise it.
+        // Fetch the complete instruction before reporting an execution fault.
+        // Data operands are still untouched; an instruction-fetch fault must
+        // not be hidden by an old pending x87 exception.
+        byte immediate = 0;
+        if (opcode is 0x70 or 0x71 or 0x72 or 0x73 or 0xC4 or 0xC5)
+        {
+            immediate = FetchByte();
+        }
+
+        // TS says the register file belongs to another task. Check it before
+        // pending x87 state and before touching the data operand or MMX tags.
         if ((State.Cr0 & CpuState.Cr0TaskSwitched) != 0)
         {
             FaultNow(7, 0);
+            return;
+        }
+
+        if (DeliverPendingX87Exception())
+        {
             return;
         }
 
@@ -249,9 +265,9 @@ public sealed partial class Cpu
             case 0x6F: ExecuteMovqLoad(m); return;
             case 0x7F: ExecuteMovqStore(m); return;
 
-            case 0x71: ExecuteShiftImmediate(m, ShiftWidth.Word); return;
-            case 0x72: ExecuteShiftImmediate(m, ShiftWidth.Dword); return;
-            case 0x73: ExecuteShiftImmediate(m, ShiftWidth.Qword); return;
+            case 0x71: ExecuteShiftImmediate(m, ShiftWidth.Word, immediate); return;
+            case 0x72: ExecuteShiftImmediate(m, ShiftWidth.Dword, immediate); return;
+            case 0x73: ExecuteShiftImmediate(m, ShiftWidth.Qword, immediate); return;
 
             case 0xF1: ExecuteShiftRegister(m, ShiftWidth.Word, left: true, arithmetic: false); return;
             case 0xF2: ExecuteShiftRegister(m, ShiftWidth.Dword, left: true, arithmetic: false); return;
@@ -267,9 +283,9 @@ public sealed partial class Cpu
             // are two-operand forms exactly like the ordinary MMX ALU above
             // and simply fall to the default case's ExecuteMmxAlu; the other
             // five need their own operand shapes.
-            case 0x70: ExecutePshufw(m); return;
-            case 0xC4: ExecutePinsrw(m); return;
-            case 0xC5: ExecutePextrw(m); return;
+            case 0x70: ExecutePshufw(m, immediate); return;
+            case 0xC4: ExecutePinsrw(m, immediate); return;
+            case 0xC5: ExecutePextrw(m, immediate); return;
             case 0xD7: ExecutePmovmskb(m); return;
             case 0xE7: ExecuteMovntq(m); return;
             case 0xF7: ExecuteMaskmovq(m); return;
@@ -281,10 +297,9 @@ public sealed partial class Cpu
     // --- the SSE-gated MMX-register instructions --------------------------------
 
     /// <summary>0F 70: PSHUFW mm1, mm2/m64, imm8 -- each of the four destination words is one of the source's four words, selected by a 2-bit field of the immediate.</summary>
-    private void ExecutePshufw(in ModRm m)
+    private void ExecutePshufw(in ModRm m, byte imm8)
     {
         ulong source = ReadMmxSource(m);
-        byte imm8 = FetchByte();
 
         ulong result = 0;
         for (int lane = 0; lane < 4; lane++)
@@ -298,10 +313,9 @@ public sealed partial class Cpu
     }
 
     /// <summary>0F C4: PINSRW mm, r32/m16, imm8 -- the low word of the source (a GPR, not another MM register, or a 16-bit memory operand) replaces one of the four words of the destination, named by the low two bits of the immediate.</summary>
-    private void ExecutePinsrw(in ModRm m)
+    private void ExecutePinsrw(in ModRm m, byte imm8)
     {
         ushort value = m.IsRegister ? (ushort)State.GetReg32(m.Register) : ReadMem16(m.Segment, m.Offset);
-        byte imm8 = FetchByte();
         int lane = imm8 & 3;
 
         ulong destination = Fpu.ReadMmx(m.Reg);
@@ -311,9 +325,8 @@ public sealed partial class Cpu
     }
 
     /// <summary>0F C5: PEXTRW r32, mm, imm8 -- register-register only (no memory form exists, already rejected with #UD by <see cref="IsInvalidRmShapeForOpcode"/> in <see cref="ExecuteMmx"/>): one of the source MM register's four words, zero-extended into a GPR.</summary>
-    private void ExecutePextrw(in ModRm m)
+    private void ExecutePextrw(in ModRm m, byte imm8)
     {
-        byte imm8 = FetchByte();
         int lane = imm8 & 3;
         ushort value = GetWordLane(Fpu.ReadMmx(m.Register), lane);
         State.SetReg32(m.Reg, value);
@@ -574,7 +587,7 @@ public sealed partial class Cpu
     /// /4 right arithmetic (not defined for the quadword form, since there is
     /// no PSRAQ). Every other reg field is undefined.
     /// </summary>
-    private void ExecuteShiftImmediate(in ModRm m, ShiftWidth width)
+    private void ExecuteShiftImmediate(in ModRm m, ShiftWidth width, byte count)
     {
         if (!m.IsRegister) throw new CpuException(6);
 
@@ -591,7 +604,6 @@ public sealed partial class Cpu
                 throw new CpuException(6);
         }
 
-        byte count = FetchByte();
         ulong destination = Fpu.ReadMmx(m.Register);
         Fpu.WriteMmx(m.Register, ApplyShift(destination, count, width, left, arithmetic));
         Fpu.EnterMmxState();

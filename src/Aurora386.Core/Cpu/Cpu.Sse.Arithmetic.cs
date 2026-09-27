@@ -197,6 +197,10 @@ public sealed partial class Cpu
     {
         var m = DecodeModRm();
         if (SseTaskSwitched()) return;
+        if (!scalar && DeliverPendingX87Exception())
+        {
+            return;
+        }
 
         RoundingMode rc = CurrentRoundingMode();
         bool flushToZero = CurrentFlushToZero();
@@ -233,6 +237,10 @@ public sealed partial class Cpu
     {
         var m = DecodeModRm();
         if (SseTaskSwitched()) return;
+        if (!scalar && DeliverPendingX87Exception())
+        {
+            return;
+        }
 
         RoundingMode rc = CurrentRoundingMode();
         bool daz = CurrentDaz();

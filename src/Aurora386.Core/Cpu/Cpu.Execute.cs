@@ -558,7 +558,7 @@ public sealed partial class Cpu
             // WAIT: synchronises with the coprocessor. With no 387 installed
             // there is nothing to wait for, but the instruction is still valid
             // and must not fault.
-            case 0x9B: return;
+            case 0x9B: ExecuteFwait(); return;
 
             case 0xC8: Enter(); return;
 

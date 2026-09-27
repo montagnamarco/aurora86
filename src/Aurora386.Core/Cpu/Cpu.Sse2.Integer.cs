@@ -213,6 +213,11 @@ public sealed partial class Cpu
     private void ExecuteMovdq2q(in ModRm m)
     {
         if (!m.IsRegister) throw new CpuException(6);
+        if (DeliverPendingX87Exception())
+        {
+            return;
+        }
+
         Fpu.WriteMmx(m.Reg, Sse.Xmm(m.Register).Low);
         Fpu.EnterMmxState();
     }
@@ -221,6 +226,11 @@ public sealed partial class Cpu
     private void ExecuteMovq2dq(in ModRm m)
     {
         if (!m.IsRegister) throw new CpuException(6);
+        if (DeliverPendingX87Exception())
+        {
+            return;
+        }
+
         ulong value = Fpu.ReadMmx(m.Register);
         Sse.Xmm(m.Reg) = new XmmValue { D0 = (uint)value, D1 = (uint)(value >> 32) };
         Fpu.EnterMmxState();

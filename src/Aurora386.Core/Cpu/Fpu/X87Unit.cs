@@ -25,6 +25,13 @@ namespace Aurora386.Core.Cpu.Fpu;
 /// </summary>
 public sealed class X87Unit
 {
+    private const ushort ExceptionFlags = 0x003F;
+    private const ushort StackFault = 0x0040;
+    private const ushort ExceptionSummary = 0x0080;
+    private const ushort TopMask = 0x3800;
+    private const ushort Busy = 0x8000;
+    private const ushort SummaryBits = ExceptionSummary | Busy;
+
     /// <summary>
     /// The eight physical registers, raw: see <see cref="Raw80"/> for why
     /// they are not held as numbers.
@@ -62,6 +69,9 @@ public sealed class X87Unit
     public ushort StatusWord => (ushort)(_status | ((_top & 7) << 11));
 
     public ushort ControlWord => _control;
+
+    /// <summary>An unmasked sticky exception, delivered by the next waiting instruction.</summary>
+    public bool HasPendingException => (_status & ExceptionSummary) != 0;
 
     /// <summary>
     /// The tag word, built from the used flags. Two bits per physical
@@ -269,7 +279,11 @@ public sealed class X87Unit
                     case 4:
                         // FNCLEX clears the exception flags; FNINIT resets the
                         // whole unit. Both arrive here, told apart by rm.
-                        if (rm == 2) _status &= 0xFF00;          // FNCLEX
+                        if (rm == 2)
+                        {
+                            // FNCLEX clears the exception flags and both summary bits.
+                            _status &= unchecked((ushort)~(ExceptionFlags | StackFault | SummaryBits));
+                        }
                         else if (rm == 3) Initialize();          // FNINIT
                         return;
                 }
@@ -660,7 +674,30 @@ public sealed class X87Unit
     public void LoadControlWord(ushort value)
     {
         _control = value;
+        UpdateExceptionSummary();
         Executed++;
+    }
+
+    /// <summary>FNSTENV masks live exceptions after the original environment is saved.</summary>
+    public void MaskExceptions()
+    {
+        _control |= ExceptionFlags;
+        UpdateExceptionSummary();
+    }
+
+    /// <summary>
+    /// ES and B reflect unmasked sticky flags, including when FLDCW unmasks
+    /// an old flag. Native FLDENV/FRSTOR/FXRSTOR probes also reconcile these
+    /// bits when a saved image contains contradictory summary bits.
+    /// </summary>
+    private void UpdateExceptionSummary()
+    {
+        bool pending = (_status & ~_control & ExceptionFlags) != 0;
+        _status &= unchecked((ushort)~SummaryBits);
+        if (pending)
+        {
+            _status |= SummaryBits;
+        }
     }
 
     /// <summary>
@@ -670,8 +707,9 @@ public sealed class X87Unit
     public void RestoreState(ushort control, ushort status, ushort tags, Raw80[] registers)
     {
         _control = control;
-        _status = (ushort)(status & 0x47FF);
+        _status = (ushort)(status & ~TopMask);
         _top = (status >> 11) & 7;
+        UpdateExceptionSummary();
 
         for (int i = 0; i < 8; i++)
         {
@@ -780,7 +818,9 @@ public sealed class X87Unit
 
         _control = reader.ReadUInt16();
         _status = reader.ReadUInt16();
+        _status &= unchecked((ushort)~TopMask);
         _top = reader.ReadByte() & 7;
+        UpdateExceptionSummary();
 
         for (int i = 0; i < 8; i++)
         {
