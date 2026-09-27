@@ -108,9 +108,42 @@ public sealed class ModelSpecificRegisters
     /// <summary>PLATFORM_ID (17h): read-only. Real silicon reports voltage/bus-ratio identification a BIOS uses to pick a microcode file; Aurora has no such SKU data to report, so RDMSR always answers 0 and WRMSR is #GP(0) like every other read-only MSR here.</summary>
     public const uint PlatformIdIndex = 0x17;
 
-    /// <summary>APIC_BASE (1Bh): inert storage. Reset value FEE00900h -- BSP flag (bit 8) and the APIC global-enable bit (bit 11) both set, the default power-on state of the first processor in the system -- even though Aurora has no LAPIC behind it yet (CpuFeature.Apic is not implemented).</summary>
+    /// <summary>
+    /// APIC_BASE (1Bh): work package P4.4's LocalApic reads this through
+    /// <see cref="ApicBaseChanged"/> to know where its MMIO page belongs and
+    /// whether it is hardware-enabled. Reset value FEE00900h -- BSP flag
+    /// (bit 8) and the APIC global-enable bit (bit 11) both set, the default
+    /// power-on state of the first processor in the system.
+    ///
+    /// Coordinator ruling (independent review, item 13): this MSR exists
+    /// from the P6 family on, never on the P5 set -- a Pentium MMX's on-die
+    /// APIC is real (the catalog's silicon still carries <see
+    /// cref="CpuFeature.Apic"/>) but fixed at FEE00000h and always
+    /// hardware-enabled, with no MSR to move or disable it; the only way to
+    /// quiet it is SVR's own software-enable bit. RDMSR/WRMSR here therefore
+    /// still dispatch on <see cref="IsFamilySix"/> alone, exactly as every
+    /// other family-six-only register in this file does -- P5's own switch
+    /// (<see cref="TryReadP5"/>/<see cref="TryWriteP5"/>) never answers
+    /// index 1Bh, and a P5-model guest takes <c>#GP(0)</c> reading or
+    /// writing it, matching real silicon.
+    /// </summary>
     public const uint ApicBaseIndex = 0x1B;
     private const ulong ApicBaseResetValue = 0xFEE00900UL;
+
+    /// <summary>Bit 8: BSP, the first processor in the system. Software-settable, but Aurora models one CPU so nothing reads it back except the guest itself.</summary>
+    private const ulong ApicBaseBspBit = 1UL << 8;
+
+    /// <summary>Bit 10: EXTD, x2APIC mode. Not modelled on any silicon this emulator carries -- writing it is <c>#GP(0)</c> (plans/specs/apic.md §1.1).</summary>
+    private const ulong ApicBaseExtdBit = 1UL << 10;
+
+    /// <summary>Bit 11: the hardware-enable bit. Clearing it disables the unit entirely, MMIO page included; setting it again re-enables it at its reset register values (coordinator decision A7).</summary>
+    private const ulong ApicBaseEnableBit = 1UL << 11;
+
+    /// <summary>Bits 35:12: the page the LAPIC's MMIO registers are mapped at, the same 36-bit physical width the MTRR fields above use.</summary>
+    private const ulong ApicBaseAddressMask = 0xFFFFFF000UL;
+
+    /// <summary>Bits a write actually changes: BSP (bit 8) is tolerated but read-only, so it is deliberately not in this mask -- see <see cref="TryWriteApicBase"/>.</summary>
+    private const ulong ApicBaseWritableMask = ApicBaseAddressMask | ApicBaseEnableBit;
 
     /// <summary>EBL_CR_POWERON (2Ah): inert storage, no cited reset value -- BIOS-defined on real hardware, zero here.</summary>
     public const uint EblCrPoweronIndex = 0x2A;
@@ -273,6 +306,23 @@ public sealed class ModelSpecificRegisters
         => _biosSignId = (_biosSignId & 0xFFFFFFFFUL) | ((ulong)BiosSignIdRevision << 32);
 
     /// <summary>
+    /// Raised after a validated write to APIC_BASE, with the new raw value:
+    /// <c>Devices.Apic.LocalApic</c> subscribes to move or unmap its MMIO
+    /// page and to notice the hardware-enable bit changing. Also raised from
+    /// <see cref="Reset"/>, so a CPU reset re-synchronises the device the
+    /// same way a fresh machine's construction does.
+    /// </summary>
+    public event Action<ulong>? ApicBaseChanged;
+
+    /// <summary>
+    /// The raw APIC_BASE value, for a device that needs to read where the
+    /// LAPIC belongs without going through the CPUID-gated <see
+    /// cref="TryRead"/> -- <c>Devices.Apic.LocalApic</c> reads this once at
+    /// construction, before it has subscribed to <see cref="ApicBaseChanged"/>.
+    /// </summary>
+    public ulong ApicBaseRaw => _apicBase;
+
+    /// <summary>
     /// RDMSR. Returns false for any index this processor's own set does not
     /// carry, which is the caller's cue to raise <c>#GP(0)</c> rather than
     /// answer with an arbitrary value.
@@ -296,6 +346,44 @@ public sealed class ModelSpecificRegisters
         }
 
         return TryWriteP5(index, value);
+    }
+
+    /// <summary>
+    /// APIC_BASE, family six only (see the constant's own summary): a 386,
+    /// 486 or any P5 (Pentium, Pentium MMX) has never heard of this MSR and
+    /// takes <c>#GP(0)</c> exactly like an unknown index.
+    /// </summary>
+    private bool TryReadApicBase(out ulong value)
+    {
+        if (!_cpu.State.Features.Has(CpuFeature.Apic))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = _apicBase;
+        return true;
+    }
+
+    /// <summary>
+    /// See <see cref="TryReadApicBase"/> for the feature gate. EXTD (x2APIC)
+    /// is not modelled on any silicon here, so setting it is <c>#GP(0)</c>
+    /// like any other reserved bit (SDM's own rule for a bit the processor
+    /// does not implement); the address and enable bits round-trip. BSP
+    /// (bit 8) is read-only (independent review, "Low" item): the bit is
+    /// tolerated in the write -- real hardware does not fault over it -- but
+    /// the stored value keeps whatever it already was, since Aurora models
+    /// one CPU and nothing here ever needs a guest's write to move it.
+    /// </summary>
+    private bool TryWriteApicBase(ulong value)
+    {
+        if (!_cpu.State.Features.Has(CpuFeature.Apic)) return false;
+        if ((value & ApicBaseExtdBit) != 0) return false;
+        if ((value & ~(ApicBaseWritableMask | ApicBaseBspBit)) != 0) return false;
+
+        _apicBase = (value & ApicBaseWritableMask) | (_apicBase & ApicBaseBspBit);
+        ApicBaseChanged?.Invoke(_apicBase);
+        return true;
     }
 
     // ---- the P5 set, exactly as it has always been ------------------------
@@ -418,8 +506,7 @@ public sealed class ModelSpecificRegisters
                 return true;
 
             case ApicBaseIndex:
-                value = _apicBase;
-                return true;
+                return TryReadApicBase(out value);
 
             case EblCrPoweronIndex:
                 value = _eblCrPoweron;
@@ -554,8 +641,7 @@ public sealed class ModelSpecificRegisters
                 return false;   // read-only
 
             case ApicBaseIndex:
-                _apicBase = value;
-                return true;
+                return TryWriteApicBase(value);
 
             case EblCrPoweronIndex:
                 _eblCrPoweron = value;
@@ -768,6 +854,7 @@ public sealed class ModelSpecificRegisters
         Counter1 = 0;
 
         _apicBase = ApicBaseResetValue;
+        ApicBaseChanged?.Invoke(_apicBase);
         _eblCrPoweron = 0;
         _biosSignId = 0;
         PerfCounter0 = 0;

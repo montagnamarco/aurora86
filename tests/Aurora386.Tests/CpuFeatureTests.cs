@@ -192,29 +192,29 @@ public class CpuFeatureTests
     /// CX8) once CpuFeatures.ImplementedFor stops holding Msr back and
     /// Implemented adds the rest. The P3.1 paging review then added PAE and
     /// PGE too (Cpu.Paging.cs's three-level walk, FlushTlbForCr3Load's
-    /// global-entry rule), so those now move as well. APIC and PSE-36 stay
-    /// off -- neither is in Implemented (no LAPIC device modelled, and
-    /// nothing here treats a 4 MB PDE's bits 20:13 as an address extension)
-    /// -- even though Deschutes' own silicon carries them.
+    /// global-entry rule), so those now move as well. Work package P4.4 adds
+    /// APIC (Devices.Apic.LocalApic is now a real device behind the bit);
+    /// PSE-36 stays off -- nothing here treats a 4 MB PDE's bits 20:13 as an
+    /// address extension -- even though Deschutes' own silicon carries it.
     ///
     /// 1(FPU)+2(VME)+4(DE)+8(PSE)+16(TSC)+32(MSR)+128(MCE)+256(CX8) = 0x1BF,
-    /// as the plain Pentium already shows, plus 64(PAE)+2048(SEP)+4096(MTRR)+
-    /// 8192(PGE)+16384(MCA)+32768(CMOV)+65536(PAT)+8388608(MMX)+
-    /// 16777216(FXSR) = 0x0181F9FF.
+    /// as the plain Pentium already shows, plus 64(PAE)+512(APIC)+
+    /// 2048(SEP)+4096(MTRR)+8192(PGE)+16384(MCA)+32768(CMOV)+65536(PAT)+
+    /// 8388608(MMX)+16777216(FXSR) = 0x0181FBFF.
     /// </summary>
     [Fact]
-    public void PentiumIiLeafOneAddsPaeAndPgeAlongsideTheP3_1FeaturesButNotApicOrPse36()
+    public void PentiumIiLeafOneAddsPaeAndPgeAndApicAlongsideTheP3_1FeaturesButNotPse36()
     {
         var (eax, _, ecx, edx) = Cpuid(CpuModel.PentiumII, 1);
 
         Assert.Equal(0x0651u, eax);
-        Assert.Equal(0x0181F9FFu, edx);
+        Assert.Equal(0x0181FBFFu, edx);
         Assert.Equal(0u, ecx);
 
         // Named individually too, so a future regression names the bit that
         // moved rather than just the combined hex value.
         Assert.Equal(1u << 6, edx & (1u << 6));    // PAE: Cpu.Paging.cs's PAE walk
-        Assert.Equal(0u, edx & (1u << 9));         // APIC: no LAPIC device modelled
+        Assert.Equal(1u << 9, edx & (1u << 9));     // APIC: Devices.Apic.LocalApic (work package P4.4)
         Assert.Equal(1u << 13, edx & (1u << 13));  // PGE: FlushTlbForCr3Load's global-entry rule
         Assert.Equal(0u, edx & (1u << 17));        // PSE-36: still out of scope
     }
@@ -223,11 +223,11 @@ public class CpuFeatureTests
     /// Work package P4.1: SSE is real on the Pentium III's silicon and, since
     /// Cpu.Sse.cs now executes its instructions, in CpuFeatures.Implemented
     /// too -- so leaf 1 EDX bit 25 appears for that model, on top of the
-    /// PAE/PGE/PAT/MTRR/... set PentiumII already shows.
+    /// PAE/PGE/PAT/MTRR/APIC/... set PentiumII already shows.
     ///
-    /// PentiumII's own edx (0x0181F9FF, see
-    /// <see cref="PentiumIiLeafOneAddsPaeAndPgeAlongsideTheP3_1FeaturesButNotApicOrPse36"/>)
-    /// plus 33554432 (1&lt;&lt;25, SSE) = 0x0381F9FF.
+    /// PentiumII's own edx (0x0181FBFF, see
+    /// <see cref="PentiumIiLeafOneAddsPaeAndPgeAndApicAlongsideTheP3_1FeaturesButNotPse36"/>)
+    /// plus 33554432 (1&lt;&lt;25, SSE) = 0x0381FBFF.
     /// </summary>
     [Fact]
     public void PentiumIiiLeafOneAddsSseOnTopOfThePentiumIiSet()
@@ -235,7 +235,7 @@ public class CpuFeatureTests
         var (eax, _, ecx, edx) = Cpuid(CpuModel.PentiumIII, 1);
 
         Assert.Equal(0x0683u, eax);
-        Assert.Equal(0x0381F9FFu, edx);
+        Assert.Equal(0x0381FBFFu, edx);
         Assert.Equal(0u, ecx);
 
         Assert.Equal(1u << 25, edx & (1u << 25));   // SSE: Cpu.Sse.cs now executes it.
@@ -250,9 +250,9 @@ public class CpuFeatureTests
     /// (SSE2) both appear for this model, on top of the set PentiumIII
     /// already shows.
     ///
-    /// PentiumIII's own edx (0x0381F9FF, see
+    /// PentiumIII's own edx (0x0381FBFF, see
     /// <see cref="PentiumIiiLeafOneAddsSseOnTopOfThePentiumIiSet"/>) plus
-    /// 524288 (1&lt;&lt;19, CLFSH) plus 67108864 (1&lt;&lt;26, SSE2) = 0x0789F9FF.
+    /// 524288 (1&lt;&lt;19, CLFSH) plus 67108864 (1&lt;&lt;26, SSE2) = 0x0789FBFF.
     /// Leaf 1 EBX's CLFLUSH line-size field (8, meaning 64 bytes) already
     /// follows CLFSH alone (Cpu.Identification.cs's own LeafOneEbx), so it
     /// is real here too, confirmed rather than assumed.
@@ -263,12 +263,64 @@ public class CpuFeatureTests
         var (eax, ebx, ecx, edx) = Cpuid(CpuModel.Pentium4, 1);
 
         Assert.Equal(0x0F27u, eax);
-        Assert.Equal(0x0789F9FFu, edx);
+        Assert.Equal(0x0789FBFFu, edx);
         Assert.Equal(0u, ecx);
         Assert.Equal(0x00000800u, ebx);   // CLFLUSH line size, 8 * 8 = 64 bytes.
 
         Assert.Equal(1u << 19, edx & (1u << 19));   // CLFSH: Cpu.Sse2.cs's ExecuteClflush now executes it.
         Assert.Equal(1u << 26, edx & (1u << 26));   // SSE2: Cpu.Sse2*.cs now executes the whole set.
+    }
+
+    /// <summary>
+    /// Work package P4.4: RDMSR/WRMSR on APIC_BASE (1Bh) now answers on any
+    /// model whose silicon has an on-die APIC, on either MSR set -- the P5
+    /// one (PentiumMmx) as much as the family-six one (PentiumII onward).
+    /// The plain Pentium (P54C) has no APIC in its silicon at all and still
+    /// takes <c>#GP(0)</c>, exactly as it did before this package existed.
+    /// </summary>
+    [Fact]
+    public void ApicBaseMsrAnswersOnlyFromTheP6FamilyOnEvenOnAPentiumMmxWithAnOnDieApic()
+    {
+        // Coordinator ruling (independent review, item 13): IA32_APIC_BASE
+        // exists as an architectural MSR from the P6 family on, never on
+        // the P5 set -- a Pentium MMX's own on-die APIC is real (its
+        // silicon still carries CpuFeature.Apic) but there is no MSR here
+        // to read it through; RDMSR/WRMSR 1Bh #GP exactly as they do on a
+        // plain Pentium, which has no APIC in its silicon at all.
+        // 0F 32 = RDMSR, index in ECX, value returned in EDX:EAX.
+        const uint ApicBaseIndex = 0x1B;
+        const uint ApicBaseResetValue = 0xFEE00900;
+
+        var (mmxCpu, mmxBus) = Setup(0x0F, 0x32);
+        using (mmxBus)
+        {
+            mmxCpu.State.SelectModel(CpuModel.PentiumMmx);
+            mmxCpu.State.Ecx = ApicBaseIndex;
+            byte faultVector = 0xFF;
+            mmxCpu.ProcessorException += (vector, _, _, _) => faultVector = vector;
+            mmxCpu.Step();
+            Assert.Equal(13, faultVector);   // #GP(0): no APIC_BASE MSR on the P5 set.
+        }
+
+        var (p2Cpu, p2Bus) = Setup(0x0F, 0x32);
+        using (p2Bus)
+        {
+            p2Cpu.State.SelectModel(CpuModel.PentiumII);
+            p2Cpu.State.Ecx = ApicBaseIndex;
+            p2Cpu.Step();
+            Assert.Equal(ApicBaseResetValue, p2Cpu.State.Eax);
+        }
+
+        var (plainCpu, plainBus) = Setup(0x0F, 0x32);
+        using (plainBus)
+        {
+            plainCpu.State.SelectModel(CpuModel.Pentium);
+            plainCpu.State.Ecx = ApicBaseIndex;
+            byte faultVector = 0xFF;
+            plainCpu.ProcessorException += (vector, _, _, _) => faultVector = vector;
+            plainCpu.Step();
+            Assert.Equal(13, faultVector);   // #GP(0): the plain Pentium has no APIC in its silicon.
+        }
     }
 
     [Fact]

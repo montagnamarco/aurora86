@@ -134,6 +134,22 @@ public sealed class MachineSnapshot
     private const string BusMasterIdeSection = "BMID";
     private const string Piix4PowerSection = "PIXP";
 
+    /// <summary>
+    /// The local APIC (work package P4.4): always present, on either
+    /// chipset, since it wraps <c>Interrupts</c> the same way on every
+    /// machine (see <see cref="Machine.Apic"/>). Absent from a file older
+    /// than this package restores every register at its reset value, which
+    /// is exactly the state a machine that never engages its APIC already
+    /// has -- no guest before this package could tell the difference.
+    /// </summary>
+    private const string LocalApicSection = "LAPC";
+
+    /// <summary>The i430TX/PIIX4 board's I/O APIC; present only when <see cref="Machine.IoApic"/> is fitted.</summary>
+    private const string IoApicSection = "IOAP";
+
+    /// <summary>The i430TX/PIIX4 board's IMCR; present only when <see cref="Machine.Imcr"/> is fitted.</summary>
+    private const string ImcrSection = "IMCR";
+
     // Expansion cards each keep their own section, named by their
     // IExpansionCard.SnapshotId rather than a name fixed here: the container
     // does not know what cards exist, only that a section it does not
@@ -179,6 +195,17 @@ public sealed class MachineSnapshot
         Add(PciSection, PciVersionWithIdeTiming, machine.Pci.Capture());
         Add(CompactDiscSection, 0, [machine.GuestHasItsOwnCompactDiscExtensions ? (byte)1 : (byte)0]);
         Add(ChipsetSection, 0, [(byte)machine.Chipset]);
+        Add(LocalApicSection, 1, machine.Apic.Capture());
+        if (machine.IoApic is { } ioApic)
+        {
+            Add(IoApicSection, 1, ioApic.Capture());
+        }
+
+        if (machine.Imcr is { } imcr)
+        {
+            Add(ImcrSection, 0, imcr.Capture());
+        }
+
         if (machine.BusMasterIde is { } busMasterIde)
         {
             Add(BusMasterIdeSection, Devices.Storage.BusMasterIdeController.SnapshotVersion,
@@ -257,6 +284,58 @@ public sealed class MachineSnapshot
         if (_sections.TryGetValue(FpuSection, out Section coprocessor))
         {
             Deserialise(coprocessor, machine.Cpu.Fpu.ReadSnapshot);
+        }
+
+        // After the MSR section: LocalApic.Restore re-derives its MMIO
+        // mapping from Cpu.Msrs.ApicBaseRaw, which must already hold the
+        // file's own value by this point. Absent from a file older than
+        // this package, the wrapper is put back at its reset state
+        // explicitly (independent review, item 11) rather than left
+        // however the *receiving* machine happened to have it before this
+        // call -- restoring an old file into a machine that had already
+        // enabled its APIC must undo that, the same as every other
+        // register this method restores.
+        if (Payload(LocalApicSection) is { Length: > 0 } localApic)
+        {
+            machine.Apic.Restore(localApic);
+        }
+        else
+        {
+            machine.Apic.ResetOnCpuReset();
+        }
+
+        // Both of these sections are new in this package: a snapshot taken
+        // on a TX machine before either existed has neither, and restoring
+        // it must put both devices back at their reset state explicitly
+        // (item 11), for the same reason as the local APIC above.
+        if (machine.IoApic is { } ioApic)
+        {
+            if (Payload(IoApicSection) is { Length: > 0 } ioApicState)
+            {
+                ioApic.Restore(ioApicState);
+            }
+            else
+            {
+                ioApic.Reset();
+            }
+        }
+
+        if (machine.Imcr is { } imcr)
+        {
+            if (Payload(ImcrSection) is { Length: > 0 } imcrState)
+            {
+                imcr.Restore(imcrState);
+            }
+            else
+            {
+                imcr.Reset();
+            }
+
+            // Imcr.Restore/Reset only update Imcr's own ApicMode property;
+            // the event that would ordinarily push that value into the
+            // local APIC only fires on a *change*, which restoring the
+            // same mode the machine already has never is.
+            machine.Apic.ImcrApicMode = imcr.ApicMode;
         }
 
         if (Payload(VideoMemorySection) is { Length: > 0 } videoMemory)
@@ -408,6 +487,9 @@ public sealed class MachineSnapshot
         [ChipsetSection] = 0,
         [BusMasterIdeSection] = Devices.Storage.BusMasterIdeController.SnapshotVersion,
         [Piix4PowerSection] = 1,
+        [LocalApicSection] = 1,
+        [IoApicSection] = 1,
+        [ImcrSection] = 0,
     };
 
     /// <summary>
@@ -432,6 +514,9 @@ public sealed class MachineSnapshot
         (CompactDiscSection, _) => 1,
         (ChipsetSection, _) => 1,
         (DmaSection, 1) => Devices.System.Dma8237.SnapshotLength,
+        (LocalApicSection, 1) => Devices.Apic.LocalApic.SnapshotLength,
+        (IoApicSection, 1) => Devices.Apic.IoApic.SnapshotLength,
+        (ImcrSection, _) => Devices.Chipset.Imcr.SnapshotLength,
         _ => null,
     };
 

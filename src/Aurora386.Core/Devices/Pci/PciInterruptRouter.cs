@@ -125,17 +125,34 @@ public sealed class PciInterruptRouter
         if (changed) Update();
     }
 
+    /// <summary>
+    /// Recomputes both what the legacy 8259 pair sees and what the I/O APIC
+    /// sees, from the same set of asserted (device, pin) sources.
+    ///
+    /// The two are independent (coordinator ruling, item 4): the legacy
+    /// aggregate only ever reflects a link whose 60h-63h routing register is
+    /// enabled and names an allowed IRQ, exactly as before, but the four
+    /// PIRQ pins on the I/O APIC (INTIN16-19) are wired straight to their
+    /// links on real PIIX silicon, so a link with its routing disabled, or
+    /// steered to an IRQ number the legacy side would refuse, still reaches
+    /// the I/O APIC. <see cref="Devices.Interrupts.InterruptController.SetPirqLevels"/>
+    /// is what turns this per-link mask into the matching pin state.
+    /// </summary>
     private void Update()
     {
         ushort levels = 0;
+        byte pirqLevels = 0;
         foreach (uint source in _asserted)
         {
             int link = Link((ushort)(source >> 2), (byte)((source & 3) + 1));
+            pirqLevels |= (byte)(1 << link);
+
             byte route = (byte)_bridge.Read(0x60 + link, 1);
             if ((route & 0x80) == 0 && (AllowedIrqs & (1 << (route & 15))) != 0)
                 levels |= (ushort)(1 << (route & 15));
         }
         _pic.SetPciLevels(levels);
+        _pic.SetPirqLevels(pirqLevels);
     }
 
     public void ResetSources() { _asserted.Clear(); Update(); }

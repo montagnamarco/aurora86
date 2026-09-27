@@ -1,3 +1,4 @@
+using Aurora386.Core.Devices.Apic;
 using Aurora386.Core.IO;
 
 namespace Aurora386.Core.Devices.Interrupts;
@@ -276,11 +277,34 @@ public sealed class Pic8259 : IIoDevice
 /// <summary>
 /// The pair of cascaded 8259s exactly as a PC wires them, with the routing
 /// logic for all 16 IRQ lines.
+///
+/// Implements <see cref="IInterruptSource"/> (work package P4.4) so that a
+/// machine whose processor has an on-die local APIC can wrap this same
+/// instance in <c>Devices.Apic.LocalApic</c> without changing anything
+/// about how the many devices in this file's own namespace raise and lower
+/// their IRQ lines: they still hold this concrete type and still call
+/// <see cref="RaiseIrq"/>/<see cref="LowerIrq"/> directly, exactly as before.
 /// </summary>
-public sealed class InterruptController : IIoDevice
+public sealed class InterruptController : IIoDevice, IInterruptSource
 {
     public Pic8259 Master { get; }
     public Pic8259 Slave { get; }
+
+    /// <summary>
+    /// The i430TX/PIIX4 board's I/O APIC, wired in addition to this pair
+    /// (work package P4.4): every ISA IRQ keeps driving its 8259 input
+    /// exactly as before, and now also pulses the matching INTIN pin (<see
+    /// cref="RaiseIrq"/>), so whichever one the local APIC is currently
+    /// listening to (see <see cref="Devices.Apic.LocalApic.ImcrApicMode"/>)
+    /// sees the interrupt. PIRQ levels are driven directly by <see
+    /// cref="Devices.Pci.PciInterruptRouter"/> through <see
+    /// cref="SetPirqLevels"/>, independent of this pair's own 60h-63h
+    /// steering (coordinator ruling, item 4): the PIIX wires the four PIRQ
+    /// pins straight to the I/O APIC regardless of which legacy IRQ each is
+    /// currently routed to. Null on an i430FX board, where nothing here
+    /// changes.
+    /// </summary>
+    private IoApic? _ioApic;
 
     public InterruptController()
     {
@@ -295,6 +319,9 @@ public sealed class InterruptController : IIoDevice
         io.Register(0x4D0, 2, this);
     }
 
+    /// <summary>Wires the i430TX board's I/O APIC alongside this pair; see <see cref="_ioApic"/>.</summary>
+    public void AttachIoApic(IoApic ioApic) => _ioApic = ioApic;
+
     // PIIX ELCR: IRQ0/1/2/8/13 remain edge triggered.
     public byte ReadByte(ushort port) => port == 0x4D0 ? Master.LevelMask : Slave.LevelMask;
     public void WriteByte(ushort port, byte value)
@@ -303,11 +330,30 @@ public sealed class InterruptController : IIoDevice
         else Slave.LevelMask = (byte)(value & 0xDE);
     }
 
-    /// <summary>Combined PCI inputs, kept separate from legacy device pins.</summary>
+    /// <summary>Combined PCI inputs to the legacy 8259 pair, kept separate from the ISA device pins.</summary>
     public void SetPciLevels(ushort levels)
     {
         Master.SetExternalLevels((byte)levels);
         Slave.SetExternalLevels((byte)(levels >> 8));
+    }
+
+    /// <summary>
+    /// Drives INTIN16-19 directly, one bit per PIRQ link, independent of
+    /// which legacy IRQ (if any) 60h-63h currently steers that link to
+    /// (coordinator ruling, item 4): <see
+    /// cref="Devices.Pci.PciInterruptRouter"/> computes this mask from its
+    /// own per-link assertion set, the same one it folds into <see
+    /// cref="SetPciLevels"/>'s aggregate, so a disabled or non-allowed
+    /// routing still reaches the I/O APIC exactly as it does on real PIIX
+    /// silicon.
+    /// </summary>
+    public void SetPirqLevels(byte levels)
+    {
+        if (_ioApic is null) return;
+        for (int link = 0; link < 4; link++)
+        {
+            _ioApic.SetLevel(16 + link, (levels & (1 << link)) != 0);
+        }
     }
 
     public void ResetTriggerModes()
@@ -329,6 +375,12 @@ public sealed class InterruptController : IIoDevice
             Slave.RaiseIrq(irq - 8);
             Master.RaiseIrq(2);
         }
+
+        // Every call is a fresh edge on the matching INTIN pin (coordinator
+        // ruling, item 2): the ISA sources this codebase has -- the PIT
+        // above all -- call RaiseIrq repeatedly without ever lowering
+        // anything, and the I/O APIC must see each tick, not just the first.
+        _ioApic?.PulseLine(IsaPin(irq));
     }
 
     public void LowerIrq(int irq)
@@ -336,6 +388,15 @@ public sealed class InterruptController : IIoDevice
         if (irq < 8) Master.LowerIrq(irq);
         else Slave.LowerIrq(irq - 8);
     }
+
+    /// <summary>
+    /// The I/O APIC pin an ISA IRQ line lands on. IRQ 0 is the one override
+    /// in the PIIX3/4 wiring table (plans/specs/apic.md §2): the timer sits
+    /// on INTIN2, not INTIN0, which the PIIX instead gives the 8259's own
+    /// INTR output for the "virtual wire via the I/O APIC" case. Every other
+    /// line's pin number matches its IRQ number exactly.
+    /// </summary>
+    private static int IsaPin(int irq) => irq == 0 ? 2 : irq;
 
     /// <summary>The vector to service, or -1 if no interrupt is ready.</summary>
     public int GetPendingVector() => Master.GetPendingVector();

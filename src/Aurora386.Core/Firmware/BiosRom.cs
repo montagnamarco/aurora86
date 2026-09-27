@@ -248,6 +248,20 @@ public static partial class BiosRom
         public const ushort XmsEntry = 0x10E0;       // XMS entry point
         public const ushort Reset = 0xFFF0;          // power-on entry point
         public const ushort PostEntry = 0x1100;      // initialization
+
+        /// <summary>
+        /// The MP 1.4 floating pointer structure (work package P4.4), placed
+        /// well clear of $PIR's own largest layout (32 + 5*16 = 112 bytes,
+        /// ending at 0x1B10) but still inside the F0000h segment the MP
+        /// specification's own search order checks last -- coordinator
+        /// decision A5 asks for "next to $PIR", meaning this segment, not
+        /// the adjoining byte, since $PIR's neighbourhood has too little
+        /// free space for both tables (240 bytes there, ~272 needed here).
+        /// </summary>
+        public const ushort MpFloatingPointer = 0x1E00;
+
+        /// <summary>The PCMP configuration table the floating pointer's table-address field points at.</summary>
+        public const ushort MpConfigurationTable = 0x1E10;
     }
 
     /// <summary>
@@ -305,7 +319,7 @@ public static partial class BiosRom
         Post = 0xFF,
     }
 
-    public static byte[] Build(ushort pciRouterDeviceId = 0x122E)
+    public static byte[] Build(ushort pciRouterDeviceId = 0x122E, MpSystemInfo? mpTables = null)
     {
         var rom = new byte[Size];
 
@@ -406,6 +420,15 @@ public static partial class BiosRom
 
             Aurora386.Core.Devices.Pci.PciInterruptRouter.BuildRoutingTable(pciRouterDeviceId)
                 .CopyTo(rom, Entry.PciRoutingTable);
+
+            // MP 1.4 tables (work package P4.4): only on a board with an
+            // I/O APIC and IMCR to describe, and only when the CPU booted
+            // has an on-die local APIC for the table's own processor entry
+            // to name -- see Machine.InstallBios's call site.
+            if (mpTables is { } info)
+            {
+                WriteMpTables(rom, info);
+            }
             int b32 = Entry.Bios32Header;
             Array.Clear(rom, b32, 16);
             WriteDword(rom, b32, 0x5F32335F); // _32_

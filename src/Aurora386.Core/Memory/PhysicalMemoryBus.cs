@@ -40,6 +40,62 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     private bool _disposed;
 
     /// <summary>
+    /// A handful of devices mapped above <see cref="_addressableBytes"/>: the
+    /// local APIC's MMIO page (IA32_APIC_BASE can move it anywhere in the
+    /// 36-bit physical space) and the I/O APIC's fixed window (work package
+    /// P4.4). Kept as a short list checked only on the existing slow branch
+    /// -- the one already reached for every address the dense per-page
+    /// arrays do not cover -- rather than growing those arrays to span 4 GB:
+    /// a machine's addressable space stays sized to its RAM and its legacy
+    /// devices, and every access below it keeps the same fast path it always
+    /// had. There are at most two entries in practice, so a linear scan
+    /// costs nothing on a path already this rare.
+    /// </summary>
+    private readonly List<(uint Base, uint Length, IMemoryDevice Device)> _highWindows = new();
+
+    /// <summary>Maps a device at a physical address at or above the addressable space, such as the local APIC's MMIO page.</summary>
+    public void RegisterHighWindow(uint physicalBase, uint length, IMemoryDevice device)
+    {
+        _highWindows.Add((physicalBase, length, device));
+    }
+
+    /// <summary>
+    /// Removes every high window this device owns -- what IA32_APIC_BASE
+    /// moving or disabling the local APIC's page uses, unregistering the old
+    /// address before registering the new one.
+    /// </summary>
+    public void UnregisterHighWindow(IMemoryDevice device)
+    {
+        _highWindows.RemoveAll(window => ReferenceEquals(window.Device, device));
+    }
+
+    /// <summary>
+    /// Finds the high window (if any) that answers a whole access of
+    /// <paramref name="length"/> bytes starting at <paramref name="address"/>.
+    /// An access that would straddle two windows, or run past the end of
+    /// one, matches nothing here and falls through to the ordinary
+    /// unmapped-space behaviour -- exactly as an access straddling two
+    /// ordinary mapped devices already does.
+    /// </summary>
+    private bool TryHighWindow(uint address, uint length, out IMemoryDevice? device, out uint offset)
+    {
+        foreach ((uint windowBase, uint windowLength, IMemoryDevice windowDevice) in _highWindows)
+        {
+            if (length > windowLength) continue;
+            if (address >= windowBase && address - windowBase <= windowLength - length)
+            {
+                device = windowDevice;
+                offset = address - windowBase;
+                return true;
+            }
+        }
+
+        device = null;
+        offset = 0;
+        return false;
+    }
+
+    /// <summary>
     /// Aliasing of the top of the address space onto the BIOS ROM.
     ///
     /// After reset the 386 fetches from 0xFFFFFFF0, right up against the 4 GB
@@ -372,7 +428,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     public byte ReadByte(uint address)
     {
         address = Translate(address);
-        if (address >= _addressableBytes) return 0xFF;
+        if (address >= _addressableBytes) return ReadHighWindowByte(address);
 
         byte* page = _pageRam[address >> PageShift];
         if (page is not null)
@@ -380,6 +436,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
         return ReadByteSlow(address);
     }
+
+    /// <summary>Every byte access beyond the dense per-page arrays goes through here; see <see cref="_highWindows"/>.</summary>
+    private byte ReadHighWindowByte(uint address)
+        => TryHighWindow(address, 1, out IMemoryDevice? device, out uint offset) ? device!.ReadByte(offset) : (byte)0xFF;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ushort ReadWord(uint address)
@@ -437,7 +497,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     private byte ReadByteTranslated(uint address)
     {
-        if (address >= _addressableBytes) return 0xFF;
+        if (address >= _addressableBytes) return ReadHighWindowByte(address);
 
         byte* page = _pageRam[address >> PageShift];
         if (page is not null) return page[address & PageMask];
@@ -459,7 +519,11 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
     private void WriteByteTranslated(uint address, byte value)
     {
-        if (address >= _addressableBytes) return;
+        if (address >= _addressableBytes)
+        {
+            WriteHighWindowByte(address, value);
+            return;
+        }
 
         uint index = address >> PageShift;
         byte* page = _pageRam[index];
@@ -474,30 +538,42 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
     private ushort ReadWordSlow(uint address)
     {
-        int index = (int)(address >> PageShift);
         // An access that lies entirely within one MMIO page must be served by
         // a single call: some registers have side effects on read -- advancing
         // an index, clearing a latch -- and splitting the access into two byte
-        // reads would trigger them twice.
-        if (address < _addressableBytes && (address & PageMask) <= PageMask - 1)
+        // reads would trigger them twice. That applies equally to a high
+        // window (the local APIC's relocatable page, the I/O APIC's fixed
+        // one) as it does to the ordinary mapped devices just below.
+        if (address >= _addressableBytes)
         {
-            IMemoryDevice? device = _pageDevice[index];
-            if (device is not null)
-                return device.ReadWord(address - _pageDeviceBase[index]);
+            if (TryHighWindow(address, 2, out IMemoryDevice? highDevice, out uint highOffset))
+                return highDevice!.ReadWord(highOffset);
         }
+        else if ((address & PageMask) <= PageMask - 1)
+        {
+            IMemoryDevice? device = _pageDevice[(int)(address >> PageShift)];
+            if (device is not null)
+                return device.ReadWord(address - _pageDeviceBase[(int)(address >> PageShift)]);
+        }
+
         return (ushort)(ReadByteTranslated(address)
                       | (ReadByteTranslated(address + 1) << 8));
     }
 
     private uint ReadDwordSlow(uint address)
     {
-        int index = (int)(address >> PageShift);
-        if (address < _addressableBytes && (address & PageMask) <= PageMask - 3)
+        if (address >= _addressableBytes)
         {
-            IMemoryDevice? device = _pageDevice[index];
-            if (device is not null)
-                return device.ReadDword(address - _pageDeviceBase[index]);
+            if (TryHighWindow(address, 4, out IMemoryDevice? highDevice, out uint highOffset))
+                return highDevice!.ReadDword(highOffset);
         }
+        else if ((address & PageMask) <= PageMask - 3)
+        {
+            IMemoryDevice? device = _pageDevice[(int)(address >> PageShift)];
+            if (device is not null)
+                return device.ReadDword(address - _pageDeviceBase[(int)(address >> PageShift)]);
+        }
+
         return (uint)(ReadWordSlow(address) | (ReadWordSlow(address + 2) << 16));
     }
 
@@ -616,11 +692,22 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         return false;
     }
 
+    /// <summary>Every byte write beyond the dense per-page arrays goes through here; see <see cref="_highWindows"/>.</summary>
+    private void WriteHighWindowByte(uint address, byte value)
+    {
+        if (TryHighWindow(address, 1, out IMemoryDevice? device, out uint offset)) device!.WriteByte(offset, value);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteByte(uint address, byte value)
     {
         address = Translate(address);
-        if (address >= _addressableBytes) return;
+        if (address >= _addressableBytes)
+        {
+            WriteHighWindowByte(address, value);
+            return;
+        }
+
         if (IsWatched(address, 0)) Watched?.Invoke(address, value);
 
         uint index = address >> PageShift;
@@ -706,9 +793,17 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
     private void WriteWordSlow(uint address, ushort value)
     {
-        int index = (int)(address >> PageShift);
-        if (address < _addressableBytes && (address & PageMask) <= PageMask - 1)
+        if (address >= _addressableBytes)
         {
+            if (TryHighWindow(address, 2, out IMemoryDevice? highDevice, out uint highOffset))
+            {
+                highDevice!.WriteWord(highOffset, value);
+                return;
+            }
+        }
+        else if ((address & PageMask) <= PageMask - 1)
+        {
+            int index = (int)(address >> PageShift);
             IMemoryDevice? device = _pageDevice[index];
             if (device is not null)
             {
@@ -716,15 +811,24 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
                 return;
             }
         }
+
         WriteByteTranslated(address, (byte)value);
         WriteByteTranslated(address + 1, (byte)(value >> 8));
     }
 
     private void WriteDwordSlow(uint address, uint value)
     {
-        int index = (int)(address >> PageShift);
-        if (address < _addressableBytes && (address & PageMask) <= PageMask - 3)
+        if (address >= _addressableBytes)
         {
+            if (TryHighWindow(address, 4, out IMemoryDevice? highDevice, out uint highOffset))
+            {
+                highDevice!.WriteDword(highOffset, value);
+                return;
+            }
+        }
+        else if ((address & PageMask) <= PageMask - 3)
+        {
+            int index = (int)(address >> PageShift);
             IMemoryDevice? device = _pageDevice[index];
             if (device is not null)
             {
@@ -732,6 +836,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
                 return;
             }
         }
+
         WriteWordSlow(address, (ushort)value);
         WriteWordSlow(address + 2, (ushort)(value >> 16));
     }

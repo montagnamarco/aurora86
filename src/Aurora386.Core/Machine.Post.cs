@@ -3,6 +3,7 @@ using Aurora386.Core.Firmware.Fpu;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Diagnostics;
 using Aurora386.Core.Devices.Input;
+using Aurora386.Core.Devices.Apic;
 using Aurora386.Core.Devices.Interrupts;
 using Aurora386.Core.Devices.Timing;
 using Aurora386.Core.Devices.System;
@@ -31,14 +32,95 @@ public sealed partial class Machine
 
     private void InstallBios()
     {
-        ushort routerDeviceId = Pci.InterruptRouter!.CompatibleRouterDeviceId;
-        Memory.MapRom(BiosRom.Base, BiosRom.Build(routerDeviceId));
+        Memory.MapRom(BiosRom.Base, BuildBiosImage());
 
         // The 386 begins fetching at 0xFFFFFFF0, so the top 64 KB of the
         // 32-bit space must show the same ROM that is mapped at 0xF0000.
         Memory.MapHighAlias(0xFFFF0000, BiosRom.Base);
         Cpu.NativeHandler = HandleBiosCall;
         Cpu.Reset();
+    }
+
+    /// <summary>
+    /// Rebuilds and re-maps the whole BIOS ROM image from the CPU's current
+    /// identity, without touching anything else about the machine. Called
+    /// from <see cref="CpuModel"/>'s setter (independent review, item 6):
+    /// the MP tables describe a specific CPU's signature, feature flags and
+    /// local APIC version, and <see cref="VmConfiguration.BuildMachine"/>
+    /// selects the configured model only after the machine (and its BIOS
+    /// image) already exists, by which point <see cref="InstallBios"/>
+    /// itself is long past. Rebuilding the whole 64 KB image is simpler and
+    /// safe -- <see cref="BiosRom.Build"/> is a pure function of what it is
+    /// given, and nothing else about this ROM ever changes once the guest
+    /// is running -- rather than patching only the MP table bytes in place.
+    /// </summary>
+    internal void RefreshBiosMpTables() => Memory.MapRom(BiosRom.Base, BuildBiosImage());
+
+    /// <summary>
+    /// The whole BIOS ROM image for the machine's current identity: the PCI
+    /// routing table and, only for a board with both an I/O APIC/IMCR
+    /// (i430TX/PIIX4) and a CPU whose silicon has an on-die local APIC
+    /// (coordinator decision A2), the MP 1.4 tables that describe it. A
+    /// P54C-class CPU dropped onto a TX board gets the devices, inert, but
+    /// no MP tables -- nothing without an APIC would ever look for one, and
+    /// the table would otherwise describe hardware the guest cannot use.
+    /// </summary>
+    private byte[] BuildBiosImage()
+    {
+        ushort routerDeviceId = Pci.InterruptRouter!.CompatibleRouterDeviceId;
+
+        MpSystemInfo? mpTables = IoApic is not null && Imcr is not null && Cpu.State.Features.Has(CpuNs.CpuFeature.Apic)
+            ? new MpSystemInfo(
+                Cpu.State.Gpr[(int)CpuNs.Reg.Edx],
+                ComputeCpuidEdxForMpTable(Cpu.State.Features),
+                (byte)(LocalApic.VersionRegisterFor(Cpu.State.Model) & 0xFF))
+            : null;
+
+        return BiosRom.Build(routerDeviceId, mpTables);
+    }
+
+    /// <summary>
+    /// The MP table's own approximation of CPUID.1:EDX, built from the same
+    /// standard SDM bit positions <c>Cpu.Identification.cs</c>'s own CPUID
+    /// execution uses -- not read through CPUID itself, since nothing here
+    /// needs to execute an instruction to read the CPU's own advertised
+    /// feature set. Limited to the bits an MP-table-reading OS actually
+    /// looks at (family/APIC/paging/cache-management flags); a feature this
+    /// emulator has no bit for at all naturally reads 0, exactly as CPUID
+    /// itself would answer.
+    /// </summary>
+    private static uint ComputeCpuidEdxForMpTable(CpuNs.CpuFeatures features)
+    {
+        uint edx = 0;
+
+        void SetBit(CpuNs.CpuFeature feature, int bit)
+        {
+            if (features.Has(feature)) edx |= 1u << bit;
+        }
+
+        SetBit(CpuNs.CpuFeature.Fpu, 0);
+        SetBit(CpuNs.CpuFeature.Vme, 1);
+        SetBit(CpuNs.CpuFeature.De, 2);
+        SetBit(CpuNs.CpuFeature.Pse, 3);
+        SetBit(CpuNs.CpuFeature.Tsc, 4);
+        SetBit(CpuNs.CpuFeature.Msr, 5);
+        SetBit(CpuNs.CpuFeature.Pae, 6);
+        SetBit(CpuNs.CpuFeature.Mce, 7);
+        SetBit(CpuNs.CpuFeature.Cx8, 8);
+        SetBit(CpuNs.CpuFeature.Apic, 9);
+        SetBit(CpuNs.CpuFeature.Sep, 11);
+        SetBit(CpuNs.CpuFeature.Mtrr, 12);
+        SetBit(CpuNs.CpuFeature.Pge, 13);
+        SetBit(CpuNs.CpuFeature.Mca, 14);
+        SetBit(CpuNs.CpuFeature.Cmov, 15);
+        SetBit(CpuNs.CpuFeature.Pat, 16);
+        SetBit(CpuNs.CpuFeature.Pse36, 17);
+        SetBit(CpuNs.CpuFeature.Clfsh, 19);
+        SetBit(CpuNs.CpuFeature.Mmx, 23);
+        SetBit(CpuNs.CpuFeature.Fxsr, 24);
+        SetBit(CpuNs.CpuFeature.Sse, 25);
+        SetBit(CpuNs.CpuFeature.Sse2, 26);
+        return edx;
     }
 
     /// <summary>
@@ -57,6 +139,13 @@ public sealed partial class Machine
         BusMasterIde?.Reset();
         BusMasterIde?.InitializeDriveCapabilities();
         Piix4Power?.Reset();
+
+        // The IMCR must clear on INIT/RESET (plans/specs/apic.md §3), which
+        // in turn tells the local APIC to go back to forwarding the 8259
+        // pair unchanged; the I/O APIC's own redirection table also goes
+        // back to mask-only (decision A9).
+        Imcr?.Reset();
+        IoApic?.Reset();
         _usbCard?.Reset();
         // PCI reset restores routing and BARs; the NIC also needs its local
         // command, interrupt mask and synthetic EEPROM defaults restored.

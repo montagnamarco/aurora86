@@ -76,14 +76,21 @@ public sealed partial class Machine
 
             for (int i = 0; i < steps; i++)
             {
-                if (Cpu.State.Halted && !Interrupts.HasPendingInterrupt)
+                if (Cpu.State.Halted && !(Cpu.Interrupts?.HasPendingInterrupt ?? false))
                 {
-                    // Halted, waiting for an interrupt. There is no point
-                    // re-executing HLT, but this batch must still count as
-                    // elapsed time, because advancing the devices is the only
-                    // thing that can produce the interrupt that will wake the
-                    // CPU back up. Skipping the device advance here would wedge
-                    // the machine permanently.
+                    // Halted, waiting for an interrupt -- asked of Cpu.Interrupts
+                    // (the IInterruptSource the CPU itself consults), not the
+                    // plain 8259 pair directly: on a machine whose local APIC
+                    // is delivering its own timer, error or IOAPIC-sourced
+                    // vectors (work package P4.4), those must wake HLT exactly
+                    // as an ordinary 8259 line always did, and asking the 8259
+                    // alone would leave the CPU asleep through them.
+                    //
+                    // There is no point re-executing HLT, but this batch must
+                    // still count as elapsed time, because advancing the
+                    // devices is the only thing that can produce the interrupt
+                    // that will wake the CPU back up. Skipping the device
+                    // advance here would wedge the machine permanently.
                     //
                     // The steps this iteration never got to run still have to
                     // reach the cycle counter, or a machine that spends most

@@ -3,6 +3,7 @@ using Aurora386.Core.Firmware.Fpu;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Diagnostics;
 using Aurora386.Core.Devices.Input;
+using Aurora386.Core.Devices.Apic;
 using Aurora386.Core.Devices.Interrupts;
 using Aurora386.Core.Devices.Timing;
 using Aurora386.Core.Devices.System;
@@ -233,6 +234,9 @@ public sealed partial class Machine : IDisposable
     /// <summary>The Trio64V+ memory-mapped registers sit this far above the linear frame buffer.</summary>
     public const uint TrioMmioOffset = 0x1000000;
 
+    /// <summary>The I/O APIC's fixed physical address (coordinator decision A3: no relocation register is modelled).</summary>
+    public const uint IoApicPhysicalBase = 0xFEC00000;
+
     /// <summary>The S3's command register: I/O space (bit 0) and memory space (bit 1) always decode.</summary>
     private const uint S3CommandFixedDecode = 0x3;
 
@@ -245,10 +249,28 @@ public sealed partial class Machine : IDisposable
     /// <summary>The PIIX4 power-management timer and register block.</summary>
     public Piix4PowerManagement? Piix4Power { get; }
 
+    /// <summary>
+    /// The local APIC wrapper in front of <see cref="Interrupts"/> (work
+    /// package P4.4): always present, on either chipset, because the local
+    /// APIC is part of the CPU package rather than the motherboard. It
+    /// forwards the 8259 pair completely unchanged unless the current
+    /// model's silicon has an APIC, the unit is hardware-enabled, and
+    /// <see cref="Imcr"/> (when fitted) has switched the IMCR to 1 -- see
+    /// its own summary for coordinator decision A1.
+    /// </summary>
+    public LocalApic Apic { get; }
+
+    /// <summary>The i430TX/PIIX4 board's I/O APIC, fixed at FEC00000h; null on an i430FX board (decision A2).</summary>
+    public IoApic? IoApic { get; }
+
+    /// <summary>The i430TX/PIIX4 board's IMCR (ports 22h/23h); null on an i430FX board, which has none (decision A2).</summary>
+    public Imcr? Imcr { get; }
+
     public Machine(
         uint ramSize = 16 * 1024 * 1024,
         HardwareConfiguration? hardware = null,
-        Chipset chipset = Chipset.I430Fx)
+        Chipset chipset = Chipset.I430Fx,
+        CpuNs.CpuModel? initialCpuModel = null)
     {
         if (!Enum.IsDefined(chipset))
         {
@@ -271,6 +293,14 @@ public sealed partial class Machine : IDisposable
         // and that silence is what a display driver drawing through those
         // registers looked like: icons drawn by the processor, and nothing
         // where the engine should have filled.
+        //
+        // The local APIC's MMIO page (FEE00000h) and the I/O APIC's fixed
+        // window (FEC00000h, work package P4.4) sit far above this: rather
+        // than raising this ceiling to reach them, which would force the
+        // dense per-page arrays below to span most of the 4 GB address
+        // space for every machine whether or not it ever uses an APIC, they
+        // are registered as high windows (see PhysicalMemoryBus.RegisterHighWindow)
+        // once the local APIC and, on the i430TX board, the I/O APIC exist.
         Memory = new PhysicalMemoryBus(ramSize, frameBufferBase + TrioMmioOffset + 0x10000);
         // No option ROMs are fitted here. Reporting writable RAM makes
         // EMM386 reserve the entire range instead of mapping UMB pages into
@@ -359,6 +389,30 @@ public sealed partial class Machine : IDisposable
 
         Cpu = new CpuNs.Cpu(Memory, Io) { Interrupts = Interrupts };
 
+        if (initialCpuModel is { } startupModel)
+        {
+            // Applied before the BIOS ROM is built and before RunPost reads
+            // Cpu.State.Features: Machine.CpuModel (below) can only be set
+            // after construction, by which time InstallBios has already
+            // burned the CPUID-derived MP tables into the fixed ROM image,
+            // so a caller that wants the BSP's MP table processor entry (or
+            // its CPUID-visible APIC bit) to describe anything other than
+            // the default model has to say so here instead.
+            Cpu.State.SelectModel(startupModel);
+            Cpu.State.Reset();
+        }
+
+        // The local APIC wrapper: always built, on either chipset, since an
+        // on-die APIC belongs to the CPU package rather than the
+        // motherboard (coordinator decision A2). Reading APIC_BASE's raw
+        // value once up front, rather than waiting for the first WRMSR,
+        // matches the register's actual reset state (enable bit already
+        // set) the moment the wrapper starts answering Cpu.Interrupts.
+        Apic = new LocalApic(Interrupts, Cpu, Memory, Scheduler, () => Cpu.Cycles);
+        Cpu.Msrs.ApicBaseChanged += Apic.OnApicBaseChanged;
+        Apic.OnApicBaseChanged(Cpu.Msrs.ApicBaseRaw);
+        Cpu.Interrupts = Apic;
+
         Bda = new BiosDataArea(Memory);
         VideoServices = new VideoServices(VideoMemory, VideoRegisters, Bda);
         VideoServices.Vesa = new VesaServices(this);
@@ -389,6 +443,33 @@ public sealed partial class Machine : IDisposable
         var pciIsa = new PciFunction(0x0008, 0x8086, isaBridgeId, 0x060100, headerType: 0x80);
         Pci.Add(pciIsa);
         Pci.InterruptRouter = new PciInterruptRouter(Interrupts, pciIsa);
+
+        if (hasPiix4)
+        {
+            // The I/O APIC and the IMCR exist only on this board (decision
+            // A2); a P54C or earlier CPU dropped into a TX board still gets
+            // them, inert, since IMCR stays in PIC mode until a guest OS
+            // switches it -- which nothing without an APIC would ever do.
+            //
+            // Registered as a high window (Memory.RegisterHighWindow), not
+            // MapDevice: FEC00000h sits far above every other physical
+            // address this machine answers, and the fixed window mechanism
+            // exists precisely so that reaching it costs nothing on any
+            // address below it (see PhysicalMemoryBus's own summary).
+            IoApic = new IoApic(Apic, Interrupts);
+            Memory.RegisterHighWindow(IoApicPhysicalBase, Aurora386.Core.Devices.Apic.IoApic.PageSize, IoApic);
+            Interrupts.AttachIoApic(IoApic);
+
+            // EOI of a level-triggered vector tells every I/O APIC to clear
+            // the matching Remote IRR bit (plans/specs/apic.md §1.3): there
+            // is only one I/O APIC on this board, but the wiring is the same
+            // direct call a second one would need.
+            Apic.LevelTriggeredEoi += IoApic.ClearRemoteIrr;
+
+            Imcr = new Imcr();
+            Imcr.Register(Io);
+            Imcr.ApicModeChanged += mode => Apic.ImcrApicMode = mode;
+        }
         // Both chipsets use compatibility ports. Only PIIX4 exposes a DMA engine.
         ushort ideDeviceId = hasPiix4 ? (ushort)0x7111 : (ushort)0x1230;
         uint ideClass = hasPiix4 ? 0x010180u : 0x010100u;
@@ -672,6 +753,22 @@ public sealed partial class Machine : IDisposable
             if (Cpu.State.Model == value) return;
             Cpu.State.SelectModel(value);
             Cpu.State.Reset();
+
+            // Neither SelectModel nor CpuState.Reset touches APIC_BASE, so
+            // switching models never raises Cpu.Msrs.ApicBaseChanged on its
+            // own -- yet whether the local APIC is present at all just
+            // changed. Re-applying the MSR's own current (unchanged) value
+            // lets Apic notice a model that newly has, or just lost,
+            // CpuFeature.Apic.
+            Apic.OnApicBaseChanged(Cpu.Msrs.ApicBaseRaw);
+
+            // The MP tables describe this specific model's signature,
+            // feature flags and local APIC version (independent review,
+            // item 6): a switch away from an Apic-capable model must make
+            // them disappear from the ROM, and a switch onto one must make
+            // them appear, exactly as if the machine had been built with
+            // this model from the start.
+            RefreshBiosMpTables();
         }
     }
 

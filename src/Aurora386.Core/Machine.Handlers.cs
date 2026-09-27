@@ -572,6 +572,23 @@ public sealed partial class Machine
         map.Add((0xF0000, 0x10000, 2));
         if (Memory.RamSize > 0x100000) map.Add((0x100000, Memory.RamSize - 0x100000, 1));
         map.Add((LinearFrameBufferBase, (ulong)VgaMemory.TotalSize + 0x10000, 2));
+
+        // The I/O APIC's fixed window and the local APIC's default page
+        // (work package P4.4, independent review's own "Low" item): a real
+        // BIOS always reports these at their conventional addresses in its
+        // static E820 table, whatever a guest OS later does with APIC_BASE,
+        // and only on the machines that actually have the device.
+        if (IoApic is not null)
+        {
+            map.Add((IoApicPhysicalBase, Aurora386.Core.Devices.Apic.IoApic.PageSize, 2));
+        }
+
+        if (Cpu.State.Features.Has(Aurora386.Core.Cpu.CpuFeature.Apic))
+        {
+            const ulong LocalApicDefaultBase = 0xFEE00000;
+            map.Add((LocalApicDefaultBase, Devices.Apic.LocalApic.PageSize, 2));
+        }
+
         return map;
     }
 

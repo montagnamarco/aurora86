@@ -83,10 +83,14 @@ public sealed partial class Cpu
     public ModelSpecificRegisters Msrs { get; }
 
     /// <summary>
-    /// The interrupt controller. Without one the CPU never sees a hardware
+    /// The maskable interrupt source: the plain 8259 pair on a machine with
+    /// no on-die APIC engaged, or the local APIC wrapper (work package
+    /// P4.4) on one that has. Without one the CPU never sees a hardware
     /// interrupt, which is fine for unit tests but not for a whole machine.
+    /// See <see cref="Devices.Interrupts.IInterruptSource"/> for why this is
+    /// an interface rather than the concrete 8259 pair it always was before.
     /// </summary>
-    public Devices.Interrupts.InterruptController? Interrupts { get; set; }
+    public Devices.Interrupts.IInterruptSource? Interrupts { get; set; }
 
     /// <summary>
     /// STI does not enable interrupts on the spot: the window opens only after
@@ -129,6 +133,16 @@ public sealed partial class Cpu
         // CR4.PAE and CR0.PG are turned back on, before the new guest has
         // written a CR3 of its own at all.
         Array.Clear(Pdpte);
+
+        // A local APIC's own registers go back to their power-on values on
+        // RESET too (SDM 10.4.7), independently of whatever the APIC_BASE
+        // MSR's hardware-enable bit is doing (Msrs.Reset() above already
+        // fires that event, but only a 0-to-1 transition of the enable bit
+        // resets the registers -- a plain RESET must do it unconditionally).
+        if (Interrupts is Devices.Interrupts.IResettableInterruptSource resettableInterrupts)
+        {
+            resettableInterrupts.ResetOnCpuReset();
+        }
     }
 
     // --- effective operand and address sizes ---------------------------------

@@ -109,8 +109,12 @@ internal static class CpuModelCatalog
         // EAX=1 (this SKU has no leaf 2 either, though cpu-models.md notes
         // some later P55C steppings do), leaf 1 EAX=00000543h,
         // EDX=008003BFh: everything the P54C has, plus MMX(23) and, on this
-        // particular part, on-die APIC(9) -- both SKU-dependent, neither
-        // load-bearing since Aurora does not advertise APIC yet.
+        // particular part, on-die APIC(9) -- SKU-dependent on real silicon,
+        // but load-bearing here since work package P4.4: Aurora's local
+        // APIC (Devices.Apic.LocalApic) is now a real device behind this
+        // bit, fixed at FEE00000h and always hardware-enabled on this
+        // model (there is no APIC_BASE MSR on the P5 set to move or
+        // disable it -- coordinator ruling, plans/specs/apic.md item 13).
         [CpuModel.PentiumMmx] = new CpuModelIdentity
         {
             Signature = 0x0543,
@@ -400,6 +404,36 @@ public sealed partial class Cpu
         return value;
     }
 
+    /// <summary>Leaf 1 EDX bit 9: the local APIC. SDM 10.4.3's own rule.</summary>
+    private const int ApicEdxBit = 9;
+
+    /// <summary>Bit 11 of IA32_APIC_BASE: the hardware-enable bit this bit's own value follows.</summary>
+    private const ulong ApicBaseHardwareEnableBit = 1UL << 11;
+
+    /// <summary>
+    /// Leaf 1 EDX, with bit 9 additionally following IA32_APIC_BASE's own
+    /// hardware-enable bit (SDM 10.4.3: "the CPUID feature flag for the
+    /// APIC is also set to 0" while it is clear) -- work package P4.4's
+    /// independent review, item "Low". A model whose silicon has no local
+    /// APIC at all never sets the bit regardless of the MSR (<see
+    /// cref="FeatureRegister"/> already answers 0 for it); on the P5 set,
+    /// where APIC_BASE is not a real MSR at all, this MSR-backed storage
+    /// stays at its power-on value with the enable bit set forever -- the
+    /// unit is always hardware-enabled there (coordinator ruling, item 13)
+    /// -- so this check is a no-op for that family and only ever clears the
+    /// bit on a family-six model that has actually disabled its APIC.
+    /// </summary>
+    private uint Leaf1EdxWithApicBit(CpuFeatures features)
+    {
+        uint edx = FeatureRegister(features, 1, CpuidRegister.Edx);
+        if ((Msrs.ApicBaseRaw & ApicBaseHardwareEnableBit) == 0)
+        {
+            edx &= ~(1u << ApicEdxBit);
+        }
+
+        return edx;
+    }
+
     /// <summary>
     /// CPUID: the processor says what it is.
     ///
@@ -462,7 +496,7 @@ public sealed partial class Cpu
                 State.Eax = identity.Signature;
                 State.Ebx = LeafOneEbx(State.Features);
                 State.Ecx = FeatureRegister(State.Features, 1, CpuidRegister.Ecx);
-                State.Edx = FeatureRegister(State.Features, 1, CpuidRegister.Edx);
+                State.Edx = Leaf1EdxWithApicBit(State.Features);
                 return;
 
             case 2:

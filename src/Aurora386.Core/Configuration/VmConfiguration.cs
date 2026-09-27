@@ -522,10 +522,17 @@ public sealed class VmConfiguration
 
         Devices.Chipset.Chipset chipset = Devices.Chipset.ChipsetNames.Parse(Hardware.Chipset)
             ?? throw new InvalidDataException($"Unknown chipset '{Hardware.Chipset}'.");
-        Machine machine = new Machine(RamMegabytes * 1024 * 1024, hardware, chipset);
+
+        // The configured model is selected at construction, not afterwards
+        // (independent review, item 6): the BIOS's MP tables describe a
+        // specific CPU's signature, feature flags and local APIC version,
+        // and Machine builds its ROM image once during construction --
+        // setting CpuModel only after the fact would leave a TX board's MP
+        // tables describing whatever the default model was, never the one
+        // actually configured.
+        Machine machine = new Machine(RamMegabytes * 1024 * 1024, hardware, chipset, initialCpuModel: Cpu);
         try
         {
-            machine.CpuModel = Cpu;
             if (Hardware.Usb?.Storage is { } storage)
                 machine.AttachUsbStorage(Devices.Usb.UsbMassStorageDevice.Open(storage.Path, storage.ReadOnly));
 

@@ -183,6 +183,16 @@ public readonly struct CpuFeatures : IEquatable<CpuFeatures>
     /// Work package P4.3 adds SSE3's horizontal arithmetic, duplicate loads,
     /// LDDQU and x87 FISTTP. Core2 is the first catalog model with SSE3;
     /// the catalog's Northwood Pentium 4 does not advertise Prescott's bit.
+    /// Work package P4.4 adds <see cref="CpuFeature.Apic"/>: every model
+    /// whose silicon carries an on-die local APIC (PentiumMmx onward, per
+    /// the catalog in Cpu.Identification.cs) now shows leaf 1 EDX bit 9,
+    /// answers RDMSR/WRMSR on IA32_APIC_BASE (MSR 1Bh, both the P5 and the
+    /// family-six set -- <see cref="ModelSpecificRegisters"/>), and has a
+    /// working LAPIC device (<c>Devices.Apic.LocalApic</c>) behind that MSR.
+    /// A model without this bit in its silicon (386, 486, plain Pentium)
+    /// is unaffected: its <c>Devices.Apic.LocalApic</c> wrapper always finds
+    /// the APIC "absent" and forwards the 8259 unchanged (coordinator
+    /// decision A1, plans/specs/apic.md).
     /// </remarks>
     public static readonly CpuFeatures Implemented =
         None.With(CpuFeature.Fpu, CpuFeature.Isa486, CpuFeature.Identification,
@@ -191,7 +201,7 @@ public readonly struct CpuFeatures : IEquatable<CpuFeatures>
             CpuFeature.Mmx, CpuFeature.Cmov, CpuFeature.Sep, CpuFeature.Fxsr, CpuFeature.Mtrr,
             CpuFeature.Pat, CpuFeature.Mca, CpuFeature.Pmc, CpuFeature.HintNops,
             CpuFeature.Pae, CpuFeature.Pge, CpuFeature.Sse, CpuFeature.Sse2, CpuFeature.Clfsh,
-            CpuFeature.Sse3);
+            CpuFeature.Sse3, CpuFeature.Apic);
 
     /// <summary>
     /// What Aurora implements for one model. Before work package P3.1 this
