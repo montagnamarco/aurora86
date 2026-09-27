@@ -230,6 +230,10 @@ public sealed class MachineSnapshot
         if (_sections.TryGetValue(SseSection, out Section streamingSimd))
         {
             Deserialise(streamingSimd, machine.Cpu.Sse.ReadSnapshot);
+
+            // The receiving processor keeps its model: a Pentium III cannot
+            // inherit the Pentium 4's DAZ bit from the saved MXCSR.
+            machine.Cpu.Sse.Mxcsr &= Cpu.Sse.SseUnit.MxcsrMaskFor(machine.Cpu.State.Model);
         }
         else
         {

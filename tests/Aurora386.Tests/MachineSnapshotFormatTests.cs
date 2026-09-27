@@ -207,6 +207,32 @@ public class MachineSnapshotFormatTests
     }
 
     /// <summary>
+    /// A file does not select the receiving CPU model. Pentium III therefore
+    /// clears DAZ (MXCSR bit 6), while Pentium 4 retains it and both preserve
+    /// all other supported controls, flags and XMM register bits.
+    /// </summary>
+    [Theory]
+    [InlineData(CpuModel.PentiumIII, 0xFFBFu)]
+    [InlineData(CpuModel.Pentium4, 0xFFFFu)]
+    public void RestoringAPentium4FileMasksMxcsrForTheReceivingProcessor(
+        CpuModel targetModel, uint expectedMxcsr)
+    {
+        using Machine source = Build();
+        source.Cpu.State.SelectModel(CpuModel.Pentium4);
+        source.Cpu.Sse.Mxcsr = 0xFFFF; // All architecturally supported P4 MXCSR bits.
+        source.Cpu.Sse.Xmm(7).D0 = 0x12345678;
+        MachineSnapshot snapshot = ThroughAFile(MachineSnapshot.Capture(source));
+
+        using Machine target = Build();
+        target.Cpu.State.SelectModel(targetModel);
+        snapshot.RestoreTo(target);
+
+        Assert.Equal(targetModel, target.Cpu.State.Model);
+        Assert.Equal(expectedMxcsr, target.Cpu.Sse.Mxcsr);
+        Assert.Equal(0x12345678u, target.Cpu.Sse.Xmm(7).D0);
+    }
+
+    /// <summary>
     /// An MTRR does not accept UC- (type 7), which only a PAT entry may hold:
     /// WRMSR 200h with type 7 is refused (#GP), while PAT accepts it.
     /// </summary>
