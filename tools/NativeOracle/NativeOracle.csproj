@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>native-oracle</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The host stub is Windows x64 machine code called through kernel32
+         VirtualAlloc, so this tool only ever runs on that platform; nothing
+         here needs a Windows-specific RuntimeIdentifier to build. -->
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Aurora386.Core/Aurora386.Core.csproj" />
+  </ItemGroup>
+</Project>
