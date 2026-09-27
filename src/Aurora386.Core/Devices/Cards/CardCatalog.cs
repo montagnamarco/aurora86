@@ -23,6 +23,7 @@ public static class CardCatalog
         new(StringComparer.OrdinalIgnoreCase)
         {
             ["sb16"] = (_, settings) => new SoundBlaster16Card(settings),
+            ["mpu401-uart"] = (_, settings) => new Mpu401Card(settings),
             ["ne2000-isa"] = (_, settings) => new Ne2000Card(settings),
             ["rtl8029-pci"] = (_, settings) => new Rtl8029Card(settings),
             ["uhci-piix"] = (_, _) => new UhciCard(),
@@ -39,6 +40,7 @@ public static class CardCatalog
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["sb16"] = "sound",
+            ["mpu401-uart"] = "sound",
             ["ne2000-isa"] = "network",
             ["rtl8029-pci"] = "network",
             ["uhci-piix"] = "usb",
@@ -56,6 +58,7 @@ public static class CardCatalog
     public static readonly IReadOnlyDictionary<string, int> NewestSnapshotVersions = new Dictionary<string, int>
     {
         ["SB16"] = SoundBlaster16.SnapshotVersion,
+        [Mpu401Card.SnapshotSectionId] = Mpu401Uart.SnapshotVersion,
         ["NE2K"] = Ne2000.SnapshotVersion,
         [Rtl8029Card.SnapshotSectionId] = Rtl8029Card.CurrentSnapshotVersion,
         [UhciCard.SnapshotSectionId] = UhciCard.CurrentSnapshotVersion,
@@ -70,6 +73,7 @@ public static class CardCatalog
     public static readonly IReadOnlyDictionary<string, int> FixedSnapshotLengths = new Dictionary<string, int>
     {
         ["NE2K"] = Ne2000.SnapshotLength,
+        [Mpu401Card.SnapshotSectionId] = Mpu401Uart.SnapshotLength,
         [Rtl8029Card.SnapshotSectionId] = Rtl8029.SnapshotLength,
     };
 

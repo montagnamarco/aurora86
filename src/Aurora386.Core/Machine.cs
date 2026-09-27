@@ -113,6 +113,9 @@ public sealed partial class Machine : IDisposable
     /// </summary>
     public SoundBlaster16? SoundBlaster { get; private set; }
 
+    /// <summary>The optional standalone MPU-401 UART, whose output sink is owned by this machine.</summary>
+    public Mpu401Uart? Midi { get; private set; }
+
     /// <summary>
     /// The first NE2000 card fitted, or null on a machine built with an empty
     /// network list. With no card, ports 300h-31Fh answer as an empty bus and
@@ -533,7 +536,7 @@ public sealed partial class Machine : IDisposable
                 $"'{collision.Key}': fitting two of the same kind is not supported yet.", nameof(hardware));
         }
 
-        ValidateNetworkWindows(hardware.Network);
+        ValidateExpansionWindows(hardware.Sound, hardware.Network);
 
         // Only now does each card claim its ports, its PCI function, its
         // Plug and Play identity and -- for a NAT-backed network card -- its
@@ -559,6 +562,7 @@ public sealed partial class Machine : IDisposable
 
         Cards = cards;
         SoundBlaster = Cards.OfType<SoundBlaster16Card>().FirstOrDefault()?.Device;
+        Midi = Cards.OfType<Mpu401Card>().FirstOrDefault()?.Device;
         Network = Cards.Select(GetNetworkDevice).FirstOrDefault(device => device is not null);
         if (Cards.OfType<UhciCard>().FirstOrDefault() is { } usbCard)
         {
@@ -769,9 +773,35 @@ public sealed partial class Machine : IDisposable
         }
     }
 
+    /// <summary>Attaches a MIDI output and closes the previous host sink after detaching it.</summary>
+    public void ConnectMidi(IMidiSink sink)
+    {
+        ArgumentNullException.ThrowIfNull(sink);
+        if (Midi is null)
+        {
+            (sink as IDisposable)?.Dispose();
+            return;
+        }
+
+        IMidiSink previous = Midi.Sink;
+        if (ReferenceEquals(previous, sink))
+        {
+            return;
+        }
+
+        Midi.SetSink(sink);
+        (previous as IDisposable)?.Dispose();
+    }
+
     public void Dispose()
     {
         DisposeNetworkBackends(Cards);
+        if (Midi is not null)
+        {
+            Midi.Sink.Reset();
+            (Midi.Sink as IDisposable)?.Dispose();
+        }
+
         foreach (DiskImage disk in _disks) disk.Dispose();
         CompactDisc?.Dispose();
         UsbStorage?.Dispose();
@@ -789,23 +819,44 @@ public sealed partial class Machine : IDisposable
         };
     }
 
-    /// <summary>Rejects overlapping NE2000 windows before either card opens a wire.</summary>
-    private static void ValidateNetworkWindows(IEnumerable<CardSettings> settings)
+    /// <summary>Rejects overlapping sound and network windows before any card opens host resources.</summary>
+    private static void ValidateExpansionWindows(
+        IEnumerable<CardSettings> settings,
+        IEnumerable<CardSettings> networkSettings)
     {
-        const int networkWindowLength = 32;
         var ranges = new List<(int Start, int End)>();
         foreach (CardSettings card in settings)
         {
-            int start = card.Port;
-            if (start == 0 && string.Equals(card.Card, "rtl8029-pci", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(card.Card, "sb16", StringComparison.OrdinalIgnoreCase))
             {
-                start = 0x300;
+                AddRange(card.Port, 16); // DSP/mixer bank.
+                AddRange(0x388, 4); // OPL3 address/data banks.
+            }
+            else if (string.Equals(card.Card, "mpu401-uart", StringComparison.OrdinalIgnoreCase))
+            {
+                AddRange(card.Port, 2); // MIDI data and status/command.
+            }
+        }
+
+        // Network cards attach after sound cards. The ISA registrar would
+        // otherwise overwrite an already fitted MPU window silently.
+        foreach (CardSettings card in networkSettings)
+        {
+            int port = card.Port;
+            if (port == 0 && string.Equals(card.Card, "rtl8029-pci", StringComparison.OrdinalIgnoreCase))
+            {
+                port = 0x300;
             }
 
-            int end = start + networkWindowLength;
+            AddRange(port, 32);
+        }
+
+        void AddRange(int start, int length)
+        {
+            int end = start + length;
             if (ranges.Any(range => start < range.End && range.Start < end))
             {
-                throw new InvalidOperationException("Network cards require distinct initial I/O windows.");
+                throw new InvalidOperationException("Expansion cards require distinct initial I/O windows.");
             }
 
             ranges.Add((start, end));

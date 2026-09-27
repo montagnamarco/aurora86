@@ -521,6 +521,11 @@ public sealed class MachineSnapshot
                 {
                     Devices.Network.Rtl8029.ValidateSnapshot(section.Payload, section.Version);
                 }
+
+                if (name == Mpu401Card.SnapshotSectionId)
+                {
+                    Devices.Audio.Mpu401Uart.ValidateSnapshot(section.Payload, section.Version);
+                }
             }
 
             // A name neither the container nor any known card recognises is
@@ -699,6 +704,12 @@ public sealed class MachineSnapshot
             {
                 throw new InvalidDataException(
                     $"Snapshot has no '{card.SnapshotId}' section for the {card.Kind} card fitted to this machine.");
+            }
+
+            if (card is Mpu401Card midi && HasRealSection(card.SnapshotId))
+            {
+                Section midiState = _sections[card.SnapshotId];
+                midi.Device.ValidateSnapshotForDevice(midiState.Payload, midiState.Version);
             }
         }
 
