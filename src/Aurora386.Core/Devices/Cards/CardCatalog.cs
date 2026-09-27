@@ -26,6 +26,7 @@ public static class CardCatalog
             ["mpu401-uart"] = (_, settings) => new Mpu401Card(settings),
             ["ne2000-isa"] = (_, settings) => new Ne2000Card(settings),
             ["rtl8029-pci"] = (_, settings) => new Rtl8029Card(settings),
+            ["rtl8139-pci"] = (_, settings) => new Rtl8139Card(settings),
             ["uhci-piix"] = (_, _) => new UhciCard(),
         };
 
@@ -43,6 +44,7 @@ public static class CardCatalog
             ["mpu401-uart"] = "sound",
             ["ne2000-isa"] = "network",
             ["rtl8029-pci"] = "network",
+            ["rtl8139-pci"] = "network",
             ["uhci-piix"] = "usb",
         };
 
@@ -61,6 +63,7 @@ public static class CardCatalog
         [Mpu401Card.SnapshotSectionId] = Mpu401Uart.SnapshotVersion,
         ["NE2K"] = Ne2000.SnapshotVersion,
         [Rtl8029Card.SnapshotSectionId] = Rtl8029Card.CurrentSnapshotVersion,
+        [Rtl8139Card.SnapshotSectionId] = Rtl8139Card.CurrentSnapshotVersion,
         [UhciCard.SnapshotSectionId] = UhciCard.CurrentSnapshotVersion,
     };
 
@@ -75,6 +78,7 @@ public static class CardCatalog
         ["NE2K"] = Ne2000.SnapshotLength,
         [Mpu401Card.SnapshotSectionId] = Mpu401Uart.SnapshotLength,
         [Rtl8029Card.SnapshotSectionId] = Rtl8029.SnapshotLength,
+        [Rtl8139Card.SnapshotSectionId] = Rtl8139.SnapshotLength,
     };
 
     /// <summary>Whether a card of this name is registered.</summary>

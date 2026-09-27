@@ -154,6 +154,14 @@ public sealed partial class Machine
             card.Reset();
         }
 
+        // The RTL8139 keeps the same local reset needs as the RTL8029 above:
+        // PCI reset alone does not touch its command/interrupt-mask
+        // registers or reload its synthetic MAC.
+        foreach (Devices.Cards.Rtl8139Card card in Cards.OfType<Devices.Cards.Rtl8139Card>())
+        {
+            card.Reset();
+        }
+
         Midi?.Reset();
 
         // A reboot starts with no CD-ROM driver loaded; the guest reveals one

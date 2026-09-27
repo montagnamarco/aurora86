@@ -940,12 +940,20 @@ public sealed partial class Machine : IDisposable
         foreach (CardSettings card in networkSettings)
         {
             int port = card.Port;
+            bool isRtl8139 = string.Equals(card.Card, "rtl8139-pci", StringComparison.OrdinalIgnoreCase);
             if (port == 0 && string.Equals(card.Card, "rtl8029-pci", StringComparison.OrdinalIgnoreCase))
             {
                 port = 0x300;
             }
+            else if (port == 0 && isRtl8139)
+            {
+                port = 0xC200; // Rtl8139Card.DefaultPort: see that constant for why 300h will not do.
+            }
 
-            AddRange(port, 32);
+            // The RTL8139's I/O BAR is 256 bytes, eight times the DP8390
+            // core's own 32-byte window both the ISA NE2000 and the RTL8029
+            // share.
+            AddRange(port, isRtl8139 ? 256 : 32);
         }
 
         void AddRange(int start, int length)
@@ -966,7 +974,10 @@ public sealed partial class Machine : IDisposable
         var disposed = new HashSet<INetworkBackend>(ReferenceEqualityComparer.Instance);
         foreach (IExpansionCard card in cards)
         {
-            INetworkBackend? backend = GetNetworkDevice(card)?.Backend;
+            // The RTL8139 is not NE2000-compatible, so it carries its own
+            // backend rather than one GetNetworkDevice can reach; it is
+            // still just a wire to close, exactly like every other card's.
+            INetworkBackend? backend = card is Rtl8139Card rtl ? rtl.Backend : GetNetworkDevice(card)?.Backend;
             if (backend is IDisposable disposable && disposed.Add(backend))
             {
                 disposable.Dispose();
