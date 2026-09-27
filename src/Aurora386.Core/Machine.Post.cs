@@ -178,6 +178,14 @@ public sealed partial class Machine
             card.Reset();
         }
 
+        // Same reasoning again: PCI reset restores the ES1371's BAR and
+        // command register, but not CONTROL/SERIAL/the DMA channels or the
+        // embedded AC'97 codec.
+        foreach (Devices.Cards.Es1371Card card in Cards.OfType<Devices.Cards.Es1371Card>())
+        {
+            card.Reset();
+        }
+
         Midi?.Reset();
 
         // A reboot starts with no CD-ROM driver loaded; the guest reveals one
