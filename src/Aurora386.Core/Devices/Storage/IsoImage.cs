@@ -84,7 +84,10 @@ public sealed class IsoImage : IDisposable
     public void ReadSector(long lba, Span<byte> destination)
     {
         destination.Clear();
-        if (lba < 0 || lba >= TotalSectors) return;
+        if (lba < 0 || lba >= TotalSectors)
+        {
+            return;
+        }
 
         _stream.Seek(lba * SectorSize, SeekOrigin.Begin);
 
@@ -101,7 +104,10 @@ public sealed class IsoImage : IDisposable
         for (int i = 0; i < count; i++)
         {
             int offset = i * SectorSize;
-            if (offset >= destination.Length) break;
+            if (offset >= destination.Length)
+            {
+                break;
+            }
 
             int length = Math.Min(SectorSize, destination.Length - offset);
             ReadSector(lba + i, destination.Slice(offset, length));
@@ -134,12 +140,18 @@ public sealed class IsoImage : IDisposable
     public ElToritoBootEntry? ReadBootCatalogue()
     {
         long catalogueSector = FindBootCatalogueSector();
-        if (catalogueSector <= 0) return null;
+        if (catalogueSector <= 0)
+        {
+            return null;
+        }
 
         var catalogue = new byte[SectorSize];
         ReadSector(catalogueSector, catalogue);
 
-        if (!ValidationEntryIsSound(catalogue)) return null;
+        if (!ValidationEntryIsSound(catalogue))
+        {
+            return null;
+        }
 
         // The initial/default entry follows the validation entry. Only the
         // first is read: a multi-boot disc lists further entries in section
@@ -148,7 +160,10 @@ public sealed class IsoImage : IDisposable
         ReadOnlySpan<byte> entry = catalogue.AsSpan(32, 32);
 
         const byte bootableIndicator = 0x88;
-        if (entry[0] != bootableIndicator) return null;
+        if (entry[0] != bootableIndicator)
+        {
+            return null;
+        }
 
         return new ElToritoBootEntry
         {
@@ -178,21 +193,36 @@ public sealed class IsoImage : IDisposable
         for (int index = 0; index < maximumDescriptors; index++)
         {
             long sector = PrimaryVolumeDescriptorSector + index;
-            if (sector >= TotalSectors) return 0;
+            if (sector >= TotalSectors)
+            {
+                return 0;
+            }
 
             ReadSector(sector, descriptor);
-            if (!HasIsoSignature(descriptor)) return 0;
+            if (!HasIsoSignature(descriptor))
+            {
+                return 0;
+            }
 
             byte type = descriptor[0];
-            if (type == terminatorType) return 0;
-            if (type != bootRecordType) continue;
+            if (type == terminatorType)
+            {
+                return 0;
+            }
+            if (type != bootRecordType)
+            {
+                continue;
+            }
 
             // The boot record names its specification in 32 bytes at offset
             // 7, and the catalogue's sector number sits at offset 71.
             string specification = Encoding.ASCII
                 .GetString(descriptor, 7, 32)
                 .TrimEnd('\0', ' ');
-            if (specification != "EL TORITO SPECIFICATION") return 0;
+            if (specification != "EL TORITO SPECIFICATION")
+            {
+                return 0;
+            }
 
             return BitConverter.ToUInt32(descriptor, 71);
         }
@@ -216,8 +246,14 @@ public sealed class IsoImage : IDisposable
     private static bool ValidationEntryIsSound(ReadOnlySpan<byte> catalogue)
     {
         const byte validationHeaderId = 1;
-        if (catalogue[0] != validationHeaderId) return false;
-        if (catalogue[30] != 0x55 || catalogue[31] != 0xAA) return false;
+        if (catalogue[0] != validationHeaderId)
+        {
+            return false;
+        }
+        if (catalogue[30] != 0x55 || catalogue[31] != 0xAA)
+        {
+            return false;
+        }
 
         ushort sum = 0;
         for (int offset = 0; offset < 32; offset += 2)
@@ -237,12 +273,18 @@ public sealed class IsoImage : IDisposable
     /// </summary>
     private string ReadVolumeLabel()
     {
-        if (TotalSectors <= PrimaryVolumeDescriptorSector) return "";
+        if (TotalSectors <= PrimaryVolumeDescriptorSector)
+        {
+            return "";
+        }
 
         Span<byte> sector = stackalloc byte[SectorSize];
         ReadSector(PrimaryVolumeDescriptorSector, sector);
 
-        if (!IsPrimaryDescriptor(sector)) return "";
+        if (!IsPrimaryDescriptor(sector))
+        {
+            return "";
+        }
 
         return Encoding.ASCII.GetString(sector.Slice(40, 32)).TrimEnd(' ', '\0');
     }
@@ -260,12 +302,18 @@ public sealed class IsoImage : IDisposable
     /// </summary>
     private (long sector, long length) ReadRootDirectoryExtent()
     {
-        if (TotalSectors <= PrimaryVolumeDescriptorSector) return (0, 0);
+        if (TotalSectors <= PrimaryVolumeDescriptorSector)
+        {
+            return (0, 0);
+        }
 
         Span<byte> sector = stackalloc byte[SectorSize];
         ReadSector(PrimaryVolumeDescriptorSector, sector);
 
-        if (!IsPrimaryDescriptor(sector)) return (0, 0);
+        if (!IsPrimaryDescriptor(sector))
+        {
+            return (0, 0);
+        }
 
         ReadOnlySpan<byte> record = sector.Slice(RootDirectoryRecordOffset, 34);
         long extent = ReadBothEndianDword(record, 2);
@@ -273,7 +321,10 @@ public sealed class IsoImage : IDisposable
 
         // A root that claims to start beyond the end of the disc is a
         // truncated or corrupt image, not a filesystem.
-        if (extent <= 0 || extent >= TotalSectors) return (0, 0);
+        if (extent <= 0 || extent >= TotalSectors)
+        {
+            return (0, 0);
+        }
 
         return (extent, length);
     }
@@ -322,7 +373,10 @@ public sealed class IsoImage : IDisposable
     /// </summary>
     public IEnumerable<IsoDirectoryEntry> ReadDirectory(long sector, long length)
     {
-        if (sector <= 0 || length <= 0) yield break;
+        if (sector <= 0 || length <= 0)
+        {
+            yield break;
+        }
 
         int sectorCount = (int)((length + SectorSize - 1) / SectorSize);
         var block = new byte[SectorSize];
@@ -337,15 +391,27 @@ public sealed class IsoImage : IDisposable
                 byte recordLength = block[offset];
 
                 // Zero length: the rest of this sector is padding.
-                if (recordLength == 0) break;
+                if (recordLength == 0)
+                {
+                    break;
+                }
 
                 // A record that would run off the end of the block is a sign
                 // of a corrupt image; stop rather than read whatever follows.
-                if (offset + recordLength > SectorSize) break;
-                if (recordLength < 34) break;
+                if (offset + recordLength > SectorSize)
+                {
+                    break;
+                }
+                if (recordLength < 34)
+                {
+                    break;
+                }
 
                 IsoDirectoryEntry? entry = ParseRecord(block.AsSpan(offset, recordLength));
-                if (entry is not null) yield return entry;
+                if (entry is not null)
+                {
+                    yield return entry;
+                }
 
                 offset += recordLength;
             }
@@ -363,7 +429,10 @@ public sealed class IsoImage : IDisposable
         byte flags = record[25];
         int nameLength = record[32];
 
-        if (nameLength == 0 || 33 + nameLength > record.Length) return null;
+        if (nameLength == 0 || 33 + nameLength > record.Length)
+        {
+            return null;
+        }
 
         ReadOnlySpan<byte> rawName = record.Slice(33, nameLength);
 
@@ -418,9 +487,15 @@ public sealed class IsoImage : IDisposable
         string name = Encoding.ASCII.GetString(rawName);
 
         int semicolon = name.IndexOf(';');
-        if (semicolon >= 0) name = name[..semicolon];
+        if (semicolon >= 0)
+        {
+            name = name[..semicolon];
+        }
 
-        if (name.EndsWith('.')) name = name[..^1];
+        if (name.EndsWith('.'))
+        {
+            name = name[..^1];
+        }
 
         return name;
     }
@@ -437,8 +512,14 @@ public sealed class IsoImage : IDisposable
         int month = stamp[1];
         int day = stamp[2];
 
-        if (month is < 1 or > 12 || day is < 1 or > 31) return null;
-        if (year is < 1900 or > 9999) return null;
+        if (month is < 1 or > 12 || day is < 1 or > 31)
+        {
+            return null;
+        }
+        if (year is < 1900 or > 9999)
+        {
+            return null;
+        }
 
         int hour = Math.Min(stamp[3], (byte)23);
         int minute = Math.Min(stamp[4], (byte)59);
@@ -457,7 +538,10 @@ public sealed class IsoImage : IDisposable
 
     public void Dispose()
     {
-        if (_ownsStream) _stream.Dispose();
+        if (_ownsStream)
+        {
+            _stream.Dispose();
+        }
     }
 }
 

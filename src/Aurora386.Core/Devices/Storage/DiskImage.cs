@@ -164,13 +164,19 @@ public sealed class DiskImage : IDisposable
 
     public bool ReadSectors(int cylinder, int head, int sector, int count, Span<byte> destination)
     {
-        if (!IsValidChs(cylinder, head, sector)) return false;
+        if (!IsValidChs(cylinder, head, sector))
+        {
+            return false;
+        }
         return ReadLinear(ToLinearSector(cylinder, head, sector), count, destination);
     }
 
     public bool WriteSectors(int cylinder, int head, int sector, int count, ReadOnlySpan<byte> source)
     {
-        if (!IsValidChs(cylinder, head, sector)) return false;
+        if (!IsValidChs(cylinder, head, sector))
+        {
+            return false;
+        }
         return WriteLinear(ToLinearSector(cylinder, head, sector), count, source);
     }
 
@@ -181,7 +187,10 @@ public sealed class DiskImage : IDisposable
     /// </summary>
     public bool ReadLinear(long linear, int count, Span<byte> destination)
     {
-        if (linear < 0 || count < 0 || linear + count > TotalSectors) return false;
+        if (linear < 0 || count < 0 || linear + count > TotalSectors)
+        {
+            return false;
+        }
 
         _stream.Seek(linear * SectorSize, SeekOrigin.Begin);
         int wanted = count * SectorSize;
@@ -191,8 +200,14 @@ public sealed class DiskImage : IDisposable
 
     public bool WriteLinear(long linear, int count, ReadOnlySpan<byte> source)
     {
-        if (ReadOnly) return false;
-        if (linear < 0 || count < 0 || linear + count > TotalSectors) return false;
+        if (ReadOnly)
+        {
+            return false;
+        }
+        if (linear < 0 || count < 0 || linear + count > TotalSectors)
+        {
+            return false;
+        }
 
         _stream.Seek(linear * SectorSize, SeekOrigin.Begin);
         _stream.Write(source[..(count * SectorSize)]);
@@ -211,6 +226,9 @@ public sealed class DiskImage : IDisposable
 
     public void Dispose()
     {
-        if (_ownsStream) _stream.Dispose();
+        if (_ownsStream)
+        {
+            _stream.Dispose();
+        }
     }
 }

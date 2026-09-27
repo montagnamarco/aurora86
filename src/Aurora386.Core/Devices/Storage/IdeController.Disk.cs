@@ -358,7 +358,10 @@ public sealed partial class IdeController
         int cylinder = (_lbaHigh << 8) | _lbaMid;
         int head = _driveHead & 0x0F;
         int sector = _lbaLow;
-        if (sector < 1) return -1;
+        if (sector < 1)
+        {
+            return -1;
+        }
         return ((long)cylinder * _logicalHeads + head) * _logicalSectors + (sector - 1);
     }
 
@@ -397,12 +400,18 @@ public sealed partial class IdeController
 
     private byte ReadDiskData()
     {
-        if (_diskWriting || _diskPosition >= _diskBuffer.Length) return 0;
+        if (_diskWriting || _diskPosition >= _diskBuffer.Length)
+        {
+            return 0;
+        }
 
         byte value = _diskBuffer[_diskPosition++];
         if (_diskPosition >= _diskBuffer.Length)
         {
-            if (_diskRemaining > 0) LoadNextReadBlock();
+            if (_diskRemaining > 0)
+            {
+                LoadNextReadBlock();
+            }
             else _diskStatus = StatusReady | StatusSeekComplete;
         }
         return value;
@@ -436,10 +445,16 @@ public sealed partial class IdeController
 
     private void WriteDiskData(byte value)
     {
-        if (!_diskWriting || _diskPosition >= _diskBuffer.Length) return;
+        if (!_diskWriting || _diskPosition >= _diskBuffer.Length)
+        {
+            return;
+        }
 
         _diskBuffer[_diskPosition++] = value;
-        if (_diskPosition < _diskBuffer.Length) return;
+        if (_diskPosition < _diskBuffer.Length)
+        {
+            return;
+        }
 
         int sectors = _diskBuffer.Length / DiskImage.SectorSize;
         if (!_disk!.WriteLinear(_diskNextSector, sectors, _diskBuffer))

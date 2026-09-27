@@ -32,17 +32,26 @@ public static class ElTorito
     public static DiskImage? CreateBootDrive(IsoImage disc)
     {
         ElToritoBootEntry? entry = disc.ReadBootCatalogue();
-        if (entry is null) return null;
+        if (entry is null)
+        {
+            return null;
+        }
 
         // No-emulation discs are loaded and run directly; there is no drive to
         // build, and the caller handles them separately.
-        if (entry.Media == ElToritoMedia.NoEmulation) return null;
+        if (entry.Media == ElToritoMedia.NoEmulation)
+        {
+            return null;
+        }
 
         (int cylinders, int heads, int sectorsPerTrack) = entry.Media == ElToritoMedia.HardDisk
             ? GeometryFromPartitionTable(disc, entry.ImageSector)
             : GeometryForFloppy(entry.Media);
 
-        if (cylinders == 0) return null;
+        if (cylinders == 0)
+        {
+            return null;
+        }
 
         long sizeInBytes = (long)cylinders * heads * sectorsPerTrack * DiskImage.SectorSize;
         var contents = new byte[sizeInBytes];
@@ -76,7 +85,10 @@ public static class ElTorito
         var masterBootRecord = new byte[IsoImage.SectorSize];
         disc.ReadSector(imageSector, masterBootRecord);
 
-        if (masterBootRecord[510] != 0x55 || masterBootRecord[511] != 0xAA) return (0, 0, 0);
+        if (masterBootRecord[510] != 0x55 || masterBootRecord[511] != 0xAA)
+        {
+            return (0, 0, 0);
+        }
 
         const int firstPartitionEntry = 446;
         byte lastHead = masterBootRecord[firstPartitionEntry + 5];
@@ -86,7 +98,10 @@ public static class ElTorito
         int sectorsPerTrack = packedSector & 0x3F;
         int lastCylinder = lastCylinderLow | ((packedSector & 0xC0) << 2);
 
-        if (sectorsPerTrack == 0) return (0, 0, 0);
+        if (sectorsPerTrack == 0)
+        {
+            return (0, 0, 0);
+        }
 
         return (lastCylinder + 1, lastHead + 1, sectorsPerTrack);
     }

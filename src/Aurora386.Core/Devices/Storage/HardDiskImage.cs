@@ -62,13 +62,19 @@ public static class HardDiskImage
             const int sectorsPerTrack = 63;
             int cylinders = (int)(bytes / (heads * sectorsPerTrack * SectorSize));
 
-            if (cylinders < 1) cylinders = 1;
+            if (cylinders < 1)
+            {
+                cylinders = 1;
+            }
 
             // 16383 is the most an IDE drive can report, and with 16 heads
             // and 63 sectors it is 7.8 GB. The BIOS's own limit of 1024
             // cylinders is met by translation when it hands the geometry
             // out, not by shrinking the disk.
-            if (cylinders > 16383) cylinders = 16383;
+            if (cylinders > 16383)
+            {
+                cylinders = 16383;
+            }
 
             return new Geometry(cylinders, heads, sectorsPerTrack);
         }
@@ -345,7 +351,10 @@ public static class HardDiskImage
     {
         foreach (int candidate in new[] { 4, 8, 16, 32, 64, 128 })
         {
-            if (partitionSectors / candidate <= 65524) return candidate;
+            if (partitionSectors / candidate <= 65524)
+            {
+                return candidate;
+            }
         }
         return 128;
     }

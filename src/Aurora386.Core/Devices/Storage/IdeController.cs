@@ -187,7 +187,10 @@ public sealed partial class IdeController : IIoDevice
     /// </summary>
     public void SetIoDecoding(IoBus io, bool enabled)
     {
-        if (enabled) Register(io);
+        if (enabled)
+        {
+            Register(io);
+        }
         else
         {
             io.Unregister(_commandBase, 8, this);
@@ -229,8 +232,14 @@ public sealed partial class IdeController : IIoDevice
     /// </summary>
     private ushort Normalise(ushort port)
     {
-        if (port - _commandBase < 8) return (ushort)(0x1F0 + (port - _commandBase));
-        if (port - _controlBase < 2) return (ushort)(0x3F6 + (port - _controlBase));
+        if (port - _commandBase < 8)
+        {
+            return (ushort)(0x1F0 + (port - _commandBase));
+        }
+        if (port - _controlBase < 2)
+        {
+            return (ushort)(0x3F6 + (port - _controlBase));
+        }
         return port;
     }
 
@@ -281,11 +290,17 @@ public sealed partial class IdeController : IIoDevice
     {
         get
         {
-            if (AddressingDisk) return _diskStatus;
+            if (AddressingDisk)
+            {
+                return _diskStatus;
+            }
 
             // A master slot with no disk in it must look like a drive that
             // is not there.
-            if (!AddressingCompactDisc) return 0x00;
+            if (!AddressingCompactDisc)
+            {
+                return 0x00;
+            }
 
             return _status;
         }
@@ -311,7 +326,10 @@ public sealed partial class IdeController : IIoDevice
 
             case 0x1F7:
                 _diskSignaturePending = false;
-                if (AddressingDisk) ExecuteDiskCommand(value);
+                if (AddressingDisk)
+                {
+                    ExecuteDiskCommand(value);
+                }
                 else ExecuteCommand(value);
                 return;
 
@@ -341,7 +359,10 @@ public sealed partial class IdeController : IIoDevice
     /// </summary>
     public ushort ReadWord(ushort port)
     {
-        if (Normalise(port) != 0x1F0) return (ushort)(ReadByte(port) | (ReadByte((ushort)(port + 1)) << 8));
+        if (Normalise(port) != 0x1F0)
+        {
+            return (ushort)(ReadByte(port) | (ReadByte((ushort)(port + 1)) << 8));
+        }
 
         return (ushort)(ReadData() | (ReadData() << 8));
     }
@@ -380,7 +401,10 @@ public sealed partial class IdeController : IIoDevice
 
     private byte ReadData()
     {
-        if (AddressingDisk) return ReadDiskData();
+        if (AddressingDisk)
+        {
+            return ReadDiskData();
+        }
 
         if (_bufferPosition >= _buffer.Length)
         {
@@ -420,10 +444,19 @@ public sealed partial class IdeController : IIoDevice
     {
         if (AddressingDisk) { WriteDiskData(value); return; }
 
-        if (!_expectingPacket) return;
+        if (!_expectingPacket)
+        {
+            return;
+        }
 
-        if (_bufferPosition < _buffer.Length) _buffer[_bufferPosition++] = value;
-        if (_bufferPosition < _buffer.Length) return;
+        if (_bufferPosition < _buffer.Length)
+        {
+            _buffer[_bufferPosition++] = value;
+        }
+        if (_bufferPosition < _buffer.Length)
+        {
+            return;
+        }
 
         // The whole packet has arrived.
         _expectingPacket = false;
