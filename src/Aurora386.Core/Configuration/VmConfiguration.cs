@@ -111,10 +111,10 @@ public sealed class VmConfiguration
     /// </summary>
     public sealed class HardwareSettings
     {
-        /// <summary>The only chipset this build knows how to build.</summary>
+        /// <summary>The motherboard used by configurations which omit the chipset.</summary>
         public const string DefaultChipset = "i430fx";
 
-        /// <summary>Only "i430fx" is accepted for now; see <see cref="VmConfiguration.Migrate"/>.</summary>
+        /// <summary>Either "i430fx" or "i430tx"; see <see cref="VmConfiguration.Migrate"/>.</summary>
         public string Chipset { get; set; } = DefaultChipset;
 
         /// <summary>
@@ -358,10 +358,10 @@ public sealed class VmConfiguration
     /// </summary>
     private void Migrate()
     {
-        if (!string.Equals(Hardware.Chipset, HardwareSettings.DefaultChipset, StringComparison.OrdinalIgnoreCase))
+        if (Devices.Chipset.ChipsetNames.Parse(Hardware.Chipset) is null)
         {
             throw new InvalidDataException(
-                $"Unknown chipset '{Hardware.Chipset}'; only '{HardwareSettings.DefaultChipset}' is supported for now.");
+                $"Unknown chipset '{Hardware.Chipset}'; expected 'i430fx' or 'i430tx'.");
         }
 
         if (Version < CurrentVersion)
@@ -507,7 +507,9 @@ public sealed class VmConfiguration
             Usb = Hardware.Usb?.ToCardSettings(),
         };
 
-        Machine machine = new Machine(RamMegabytes * 1024 * 1024, hardware);
+        Devices.Chipset.Chipset chipset = Devices.Chipset.ChipsetNames.Parse(Hardware.Chipset)
+            ?? throw new InvalidDataException($"Unknown chipset '{Hardware.Chipset}'.");
+        Machine machine = new Machine(RamMegabytes * 1024 * 1024, hardware, chipset);
         try
         {
             machine.CpuModel = Cpu;

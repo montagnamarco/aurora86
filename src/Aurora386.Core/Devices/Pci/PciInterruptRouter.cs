@@ -35,6 +35,16 @@ public sealed class PciInterruptRouter
     private readonly PciFunction _bridge;
     private readonly HashSet<uint> _asserted = [];
 
+    /// <summary>
+    /// The device ID <see cref="BuildRoutingTable()"/>'s compatible-router
+    /// entry should name, read live from the ISA bridge function this router
+    /// was built with: PIIX's 122Eh on an i430FX machine, PIIX4's 7110h on an
+    /// i430TX one. Test case 9 of <c>plans/specs/pci-piix4.md</c> is this
+    /// value changing (and the table's checksum with it), not any change to
+    /// the link math itself.
+    /// </summary>
+    public ushort CompatibleRouterDeviceId => _bridge.DeviceId;
+
     public PciInterruptRouter(InterruptController pic, PciFunction bridge)
     {
         _pic = pic;
@@ -45,6 +55,13 @@ public sealed class PciInterruptRouter
 
     public static int Link(ushort address, byte pin)
     {
+        // PIIX4's integrated USB INTA is wired to PIRQD, independently of
+        // the slot rotation. The other southbridge functions use legacy IRQs.
+        if (address == 0x000A && pin == 1)
+        {
+            return 3;
+        }
+
         int device = (address & 255) >> 3;
         if ((address >> 8) != 0 || device is < 2 or > 5 || pin is < 1 or > 4) return -1;
         return (device - 2 + pin - 1) & 3;
@@ -148,16 +165,33 @@ public sealed class PciInterruptRouter
         Update();
     }
 
-    /// <summary>The same slot wiring consumed by the OS and by SetInterrupt.</summary>
+    /// <summary>
+    /// The router ID used by callers building the default i430FX BIOS.
+    /// </summary>
+    private const ushort DefaultRouterDeviceId = 0x122E;
+
+    /// <summary>The same slot wiring consumed by the OS and by SetInterrupt, for the default (i430FX/PIIX) router ID.</summary>
     public static byte[] BuildRoutingTable()
     {
-        byte[] table = new byte[32 + 4 * 16];
+        return BuildRoutingTable(DefaultRouterDeviceId);
+    }
+
+    /// <summary>
+    /// The routing table for a specific compatible-router device ID -- see
+    /// <see cref="CompatibleRouterDeviceId"/>. PIIX4 adds the motherboard
+    /// USB function; the four expansion slots keep their existing wiring.
+    /// </summary>
+    public static byte[] BuildRoutingTable(ushort routerDeviceId)
+    {
+        bool integratedUsb = routerDeviceId == 0x7110;
+        int entryCount = integratedUsb ? 5 : 4;
+        byte[] table = new byte[32 + entryCount * 16];
         BinaryPrimitives.WriteUInt32LittleEndian(table, 0x52495024); // $PIR
         BinaryPrimitives.WriteUInt16LittleEndian(table.AsSpan(4), 0x0100);
         BinaryPrimitives.WriteUInt16LittleEndian(table.AsSpan(6), (ushort)table.Length);
         table[9] = 8; // router 00:01.0
         BinaryPrimitives.WriteUInt16LittleEndian(table.AsSpan(12), 0x8086);
-        BinaryPrimitives.WriteUInt16LittleEndian(table.AsSpan(14), 0x122E);
+        BinaryPrimitives.WriteUInt16LittleEndian(table.AsSpan(14), routerDeviceId);
         for (int slot = 0; slot < 4; slot++)
         {
             int entry = 32 + slot * 16;
@@ -170,7 +204,16 @@ public sealed class PciInterruptRouter
                 BinaryPrimitives.WriteUInt16LittleEndian(table.AsSpan(at + 1), AllowedIrqs);
             }
         }
-        table[31] = unchecked((byte)-table.Sum(b => b));
+        if (integratedUsb)
+        {
+            const int integratedEntry = 32 + 4 * 16;
+            table[integratedEntry + 1] = 8; // Motherboard device 1, slot 0.
+            table[integratedEntry + 2] = 0x63; // INTA -> PIRQD.
+            BinaryPrimitives.WriteUInt16LittleEndian(
+                table.AsSpan(integratedEntry + 3), AllowedIrqs);
+        }
+
+        table[31] = unchecked((byte)-table.Sum(value => value));
         return table;
     }
 }

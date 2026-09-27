@@ -305,7 +305,7 @@ public static partial class BiosRom
         Post = 0xFF,
     }
 
-    public static byte[] Build()
+    public static byte[] Build(ushort pciRouterDeviceId = 0x122E)
     {
         var rom = new byte[Size];
 
@@ -404,7 +404,8 @@ public static partial class BiosRom
             rom[Entry.AdvancedPowerManagement + 2] = (byte)Handler.AdvancedPowerManagement;
             rom[Entry.AdvancedPowerManagement + 3] = 0xCB;
 
-            Aurora386.Core.Devices.Pci.PciInterruptRouter.BuildRoutingTable().CopyTo(rom, Entry.PciRoutingTable);
+            Aurora386.Core.Devices.Pci.PciInterruptRouter.BuildRoutingTable(pciRouterDeviceId)
+                .CopyTo(rom, Entry.PciRoutingTable);
             int b32 = Entry.Bios32Header;
             Array.Clear(rom, b32, 16);
             WriteDword(rom, b32, 0x5F32335F); // _32_

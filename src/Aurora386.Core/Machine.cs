@@ -9,6 +9,7 @@ using Aurora386.Core.Devices.System;
 using Aurora386.Core.Devices.Network;
 using Aurora386.Core.Devices.IsaPnp;
 using Aurora386.Core.Devices.Pci;
+using Aurora386.Core.Devices.Chipset;
 using Aurora386.Core.Devices.Audio;
 using Aurora386.Core.Devices.Cards;
 using Aurora386.Core.Devices.Video;
@@ -232,8 +233,26 @@ public sealed partial class Machine : IDisposable
     /// <summary>The S3's command register: I/O space (bit 0) and memory space (bit 1) always decode.</summary>
     private const uint S3CommandFixedDecode = 0x3;
 
-    public Machine(uint ramSize = 16 * 1024 * 1024, HardwareConfiguration? hardware = null)
+    /// <summary>The motherboard selected at construction; expansion cards retain their own configuration.</summary>
+    public Chipset Chipset { get; }
+
+    /// <summary>The PIIX4 IDE DMA engine, absent on the default PIO-only motherboard.</summary>
+    public BusMasterIdeController? BusMasterIde { get; }
+
+    /// <summary>The PIIX4 power-management timer and register block.</summary>
+    public Piix4PowerManagement? Piix4Power { get; }
+
+    public Machine(
+        uint ramSize = 16 * 1024 * 1024,
+        HardwareConfiguration? hardware = null,
+        Chipset chipset = Chipset.I430Fx)
     {
+        if (!Enum.IsDefined(chipset))
+        {
+            throw new ArgumentOutOfRangeException(nameof(chipset));
+        }
+
+        Chipset = chipset;
         hardware ??= HardwareConfiguration.Default;
 
         // The addressable space is larger than the RAM, because the linear
@@ -344,27 +363,43 @@ public sealed partial class Machine : IDisposable
         KeyboardServices = new KeyboardServices(Bda, Memory, Keyboard);
         CompactDiscServices = new CompactDiscServices(this);
 
-        Ide = new IdeController(this, Interrupts);
+        bool hasPiix4 = chipset == Chipset.I430Tx;
+        Ide = new IdeController(this, Interrupts, hasBusMasterDma: hasPiix4);
         Ide.Register(Io);
 
         // The second cable, for a second disk. It carries no CD-ROM: that
         // is the slave of the first, where drivers of the period expect it.
-        IdeSecondary = new IdeController(this, Interrupts, IdeController.Channel.Secondary);
+        IdeSecondary = new IdeController(
+            this, Interrupts, IdeController.Channel.Secondary, hasBusMasterDma: hasPiix4);
         IdeSecondary.Register(Io);
         Pci = new PciBus();
-        Pci.Add(new PciFunction(0x0000, 0x8086, 0x122D, 0x060000));
-        var pciIsa = new PciFunction(0x0008, 0x8086, 0x122E, 0x060100, headerType: 0x80);
+        Pci.DmaMemory = new PhysicalDmaMemory(Memory);
+        ushort hostBridgeId = hasPiix4 ? (ushort)0x7100 : (ushort)0x122D;
+        ushort isaBridgeId = hasPiix4 ? (ushort)0x7110 : (ushort)0x122E;
+        var pciHost = new PciFunction(0x0000, 0x8086, hostBridgeId, 0x060000);
+        if (hasPiix4)
+        {
+            pciHost.Define(8, 1, 1); // Production 82439TX A1/A2 revision.
+        }
+
+        Pci.Add(pciHost);
+        var pciIsa = new PciFunction(0x0008, 0x8086, isaBridgeId, 0x060100, headerType: 0x80);
         Pci.Add(pciIsa);
         Pci.InterruptRouter = new PciInterruptRouter(Interrupts, pciIsa);
-        // Compatibility PIO only: no native-mode BARs or bus-master capability.
-        var pciIde = new PciFunction(0x0009, 0x8086, 0x1230, 0x010100, commandMask: 1);
-        pciIde.Define(4, 1, 2, 1);
+        // Both chipsets use compatibility ports. Only PIIX4 exposes a DMA engine.
+        ushort ideDeviceId = hasPiix4 ? (ushort)0x7111 : (ushort)0x1230;
+        uint ideClass = hasPiix4 ? 0x010180u : 0x010100u;
+        ushort ideCommandMask = hasPiix4 ? (ushort)5 : (ushort)1;
+        var pciIde = new PciFunction(0x0009, 0x8086, ideDeviceId, ideClass,
+            commandMask: ideCommandMask);
+        pciIde.Define(4, 1, 2, ideCommandMask);
         // These reset defaults include BIOS setup, as does PCI command above.
         // IDETIM bit 15 enables each cable. Windows 95 reported code 29
         // with these registers zero despite the ports being decoded.
         // PIIX reserves bits 14 and 11:10; PIIX3 has a different bit-14 use.
-        pciIde.Define(0x40, 0x8000, 2, 0xB3FF);
-        pciIde.Define(0x42, 0x8000, 2, 0xB3FF);
+        uint ideTimingMask = hasPiix4 ? 0xF3FFu : 0xB3FFu;
+        pciIde.Define(0x40, 0x8000, 2, ideTimingMask);
+        pciIde.Define(0x42, 0x8000, 2, ideTimingMask);
         pciIde.ConfigurationChanged += () =>
         {
             bool ioEnabled = (pciIde.Command & 1) != 0;
@@ -374,6 +409,23 @@ public sealed partial class Machine : IDisposable
             IdeSecondary.SetIoDecoding(Io, ioEnabled && secondaryEnabled);
         };
         Pci.Add(pciIde);
+
+        if (hasPiix4)
+        {
+            // Timing selections are retained for the driver; transfers use
+            // the same deterministic sector engine for every negotiated mode.
+            pciIde.Define(0x44, 0, 1, 0xFF); // SIDETIM, slave DMA/PIO timing.
+            pciIde.Define(0x48, 0, 1, 0x0F); // UDMACTL, one enable bit per drive.
+            pciIde.Define(0x4A, 0, 2, 0x3333); // UDMATIM, two bits per drive.
+            pciIde.DefineBar(4, 16, io: true, address: 0xC000);
+            BusMasterIde = new BusMasterIdeController(
+                pciIde, Io, Pci.DmaMemory, Ide, IdeSecondary);
+
+            var pciPower = new PciFunction(0x000B, 0x8086, 0x7113, 0x068000);
+            Piix4Power = new Piix4PowerManagement(
+                pciPower, Io, 0xB000, () => Cpu.Cycles, () => CpuFrequencyHz);
+            Pci.Add(pciPower);
+        }
 
         // The S3 Trio64V+ as a PCI display adapter.
         //
@@ -427,12 +479,6 @@ public sealed partial class Machine : IDisposable
         Pci.Register(Io);
         PciServices = new PciBios(Pci);
 
-        // What a PCI bus master (today none; the bus-master IDE engine and
-        // a NIC's descriptor rings are planned) reaches to move bytes
-        // without going through the CPU. See IDmaMemory's own summary for
-        // the RAM-only rule.
-        Pci.DmaMemory = new PhysicalDmaMemory(Memory);
-
         // Expansion cards: built from the configuration in a stable order,
         // which is what fixes their PCI device numbers and Plug and Play
         // select numbers. Sound, network and USB have all moved into this
@@ -440,7 +486,8 @@ public sealed partial class Machine : IDisposable
         // can build the same card at run time, for a machine started with
         // none configured -- see that method's own summary.
         Audio = new AudioMixer();
-        _bus = new MachineBus(Io, Memory, Interrupts, Dma, Pci, IsaPlugAndPlay, Scheduler, Audio, () => CpuFrequencyHz);
+        _bus = new MachineBus(Io, Memory, Interrupts, Dma, Pci, IsaPlugAndPlay,
+            Scheduler, Audio, () => CpuFrequencyHz, chipset);
 
         // Built first, unattached: the factory step alone claims nothing --
         // no port, no PCI function, and critically no host socket for a
@@ -456,9 +503,16 @@ public sealed partial class Machine : IDisposable
         {
             cards.Add(CardCatalog.Build(_bus, settings));
         }
-        if (hardware.Usb is not null)
+        CardSettings? usbSettings = hardware.Usb;
+        if (hasPiix4 && usbSettings is null)
         {
-            cards.Add(CardCatalog.Build(_bus, hardware.Usb));
+            // PIIX4's integrated USB function is part of the motherboard.
+            usbSettings = new CardSettings { Card = "uhci-piix" };
+        }
+
+        if (usbSettings is not null)
+        {
+            cards.Add(CardCatalog.Build(_bus, usbSettings));
         }
 
         // Two cards of the same kind would keep their state under the same

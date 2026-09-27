@@ -13,8 +13,9 @@ namespace Aurora386.Core;
 /// work at that rate and a few minutes with a snapshot taken just before it.
 ///
 /// Captures CPU, FPU and RAM together with video, interrupt, timer, keyboard,
-/// PCI, USB, DOS integration and expansion card state. Coverage is still incomplete: in-flight
-/// IDE transfers and the serial mouse UART are not captured, nor is the
+/// PCI, USB, DOS integration, PIIX4 DMA and expansion card state. Coverage is
+/// still incomplete: in-flight PIO/ATAPI transfers and the serial mouse UART
+/// are not captured, nor is the
 /// software coprocessor a 386 without a 387 uses (<c>Machine.Fpu</c>); the FPU
 /// section holds the 486's on-die unit. Disk
 /// contents are external state and must be paired with the snapshot by the
@@ -127,6 +128,12 @@ public sealed class MachineSnapshot
     /// </summary>
     private const string CompactDiscSection = "CDRM";
 
+    // Motherboard state is separate from the expansion-card registry. The
+    // chipset identity prevents restoring compatible PCI keys onto different silicon.
+    private const string ChipsetSection = "CHIP";
+    private const string BusMasterIdeSection = "BMID";
+    private const string Piix4PowerSection = "PIXP";
+
     // Expansion cards each keep their own section, named by their
     // IExpansionCard.SnapshotId rather than a name fixed here: the container
     // does not know what cards exist, only that a section it does not
@@ -171,6 +178,17 @@ public sealed class MachineSnapshot
         Add(DosSection, 0, machine.CaptureDosState());
         Add(PciSection, PciVersionWithIdeTiming, machine.Pci.Capture());
         Add(CompactDiscSection, 0, [machine.GuestHasItsOwnCompactDiscExtensions ? (byte)1 : (byte)0]);
+        Add(ChipsetSection, 0, [(byte)machine.Chipset]);
+        if (machine.BusMasterIde is { } busMasterIde)
+        {
+            Add(BusMasterIdeSection, Devices.Storage.BusMasterIdeController.SnapshotVersion,
+                busMasterIde.Capture());
+        }
+
+        if (machine.Piix4Power is { } piix4Power)
+        {
+            Add(Piix4PowerSection, 1, piix4Power.Capture());
+        }
 
         foreach (IExpansionCard card in machine.Cards)
         {
@@ -268,6 +286,18 @@ public sealed class MachineSnapshot
         // After the memory, because attaching marks the CDS entries in it.
         machine.RestoreDosState(Payload(DosSection) ?? []);
         RestorePci(machine);
+
+        // PCI decode is restored before the register blocks. Neither device
+        // resumes a transfer merely because a snapshot contained Start=1.
+        if (machine.BusMasterIde is { } busMasterIde)
+        {
+            busMasterIde.Restore(_sections[BusMasterIdeSection].Payload);
+        }
+
+        if (machine.Piix4Power is { } piix4Power)
+        {
+            piix4Power.Restore(_sections[Piix4PowerSection].Payload);
+        }
 
         // Before the cards: a card mid-transfer (the sound card, streaming
         // over channel 1 or 5) reads the controller's address and count
@@ -371,6 +401,9 @@ public sealed class MachineSnapshot
         [DosSection] = 0,
         [PciSection] = PciVersionWithIdeTiming,
         [CompactDiscSection] = 0,
+        [ChipsetSection] = 0,
+        [BusMasterIdeSection] = Devices.Storage.BusMasterIdeController.SnapshotVersion,
+        [Piix4PowerSection] = 1,
     };
 
     /// <summary>
@@ -393,6 +426,7 @@ public sealed class MachineSnapshot
         (FpuSection, 2) => Cpu.Fpu.X87Unit.SnapshotLength,
         (A20Section, _) => 1,
         (CompactDiscSection, _) => 1,
+        (ChipsetSection, _) => 1,
         (DmaSection, 1) => Devices.System.Dma8237.SnapshotLength,
         _ => null,
     };
@@ -428,6 +462,26 @@ public sealed class MachineSnapshot
                 {
                     throw new InvalidDataException(
                         $"Snapshot section '{name}' holds {section.Payload.Length} bytes, not {expected}.");
+                }
+
+                if (name == BusMasterIdeSection)
+                {
+                    if (section.Version != Devices.Storage.BusMasterIdeController.SnapshotVersion)
+                    {
+                        throw new InvalidDataException("Unsupported bus-master IDE section version.");
+                    }
+
+                    Devices.Storage.BusMasterIdeController.ValidateSnapshot(section.Payload);
+                }
+
+                if (name == Piix4PowerSection)
+                {
+                    if (section.Version != 1)
+                    {
+                        throw new InvalidDataException("Unsupported PIIX4 power-management section version.");
+                    }
+
+                    Devices.Chipset.Piix4PowerManagement.ValidateSnapshot(section.Payload);
                 }
 
                 continue;
@@ -581,6 +635,27 @@ public sealed class MachineSnapshot
     /// </summary>
     private void ValidateAgainstMachine(Machine machine)
     {
+        // Files predating motherboard selection always describe i430FX.
+        byte chipset = _sections.TryGetValue(ChipsetSection, out Section motherboard)
+            ? motherboard.Payload[0]
+            : (byte)Devices.Chipset.Chipset.I430Fx;
+        if (chipset != (byte)machine.Chipset)
+        {
+            throw new InvalidDataException("Snapshot chipset differs from the machine's.");
+        }
+
+        bool hasPiix4 = machine.Chipset == Devices.Chipset.Chipset.I430Tx;
+        if (_sections.ContainsKey(BusMasterIdeSection) != hasPiix4 ||
+            _sections.ContainsKey(Piix4PowerSection) != hasPiix4)
+        {
+            throw new InvalidDataException("Snapshot is missing or has unexpected PIIX4 device state.");
+        }
+
+        if (machine.BusMasterIde is { } busMasterIde)
+        {
+            busMasterIde.ValidateSnapshotAgainstDrives(_sections[BusMasterIdeSection].Payload);
+        }
+
         if (_sections.TryGetValue(PciSection, out Section pci) && pci.Payload.Length > 0)
         {
             IReadOnlyList<ushort> fileFunctions = Devices.Pci.PciBus.ReadFunctionKeys(pci.Payload);

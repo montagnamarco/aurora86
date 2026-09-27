@@ -15,6 +15,8 @@ namespace Aurora386.Core.Devices.Cards;
 /// inserting a USB stick does not require the guest to notice a hot-plugged
 /// root hub port -- exactly the shape <c>Machine.Usb.cs</c> built before,
 /// kept unchanged here down to both PCI device numbers.
+/// On an i430TX motherboard the first controller instead occupies PIIX4's
+/// integrated function 00:01.2 (7112h); the second remains an expansion slot.
 ///
 /// Unlike the sound and network cards, this one is not necessarily built at
 /// construction time: <see cref="Machine.EnableUsb"/> adds it to <see
@@ -76,7 +78,11 @@ public sealed class UhciCard : IExpansionCard
     {
         // Keep the storage controller present even with an empty port, so
         // inserting an image does not require PCI hot-plug enumeration.
-        _controller = new UhciController(bus.Memory, bus.Io, bus.Pci);
+        bool integrated = bus.Chipset == Chipset.Chipset.I430Tx;
+        ushort functionAddress = integrated ? (ushort)0x0A : (ushort)0x10;
+        ushort deviceId = integrated ? (ushort)0x7112 : (ushort)0x7020;
+        _controller = new UhciController(
+            bus.Memory, bus.Io, bus.Pci, functionAddress, deviceId: deviceId);
         _storageController = new UhciController(bus.Memory, bus.Io, bus.Pci, 0x18, 0xC120);
         _keyboard = new UsbHidDevice(true);
         _mouse = new UsbHidDevice(false);

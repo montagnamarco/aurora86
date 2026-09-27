@@ -31,6 +31,9 @@ public sealed class MachineBus
     public IsaPnpBus IsaPlugAndPlay { get; }
     public Scheduler Scheduler { get; }
 
+    /// <summary>Determines whether USB belongs to the PIIX4's integrated function.</summary>
+    public Devices.Chipset.Chipset Chipset { get; }
+
     /// <summary>
     /// The host-side audio mix every sound-producing card feeds. A card with
     /// audio output registers itself here as an <see cref="IAudioSource"/>
@@ -58,7 +61,8 @@ public sealed class MachineBus
         IsaPnpBus isaPlugAndPlay,
         Scheduler scheduler,
         AudioMixer audio,
-        Func<int> cpuFrequencyHz)
+        Func<int> cpuFrequencyHz,
+        Devices.Chipset.Chipset chipset = Devices.Chipset.Chipset.I430Fx)
     {
         Io = io;
         Memory = memory;
@@ -69,6 +73,7 @@ public sealed class MachineBus
         Scheduler = scheduler;
         Audio = audio;
         _cpuFrequencyHz = cpuFrequencyHz;
+        Chipset = chipset;
     }
 
     /// <summary>

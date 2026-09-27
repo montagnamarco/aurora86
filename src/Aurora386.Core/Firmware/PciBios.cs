@@ -48,7 +48,9 @@ public sealed class PciBios(PciBus bus)
                 bool wide = fromEntryPoint && state.Cs.Big;
                 uint parameters = cpu.FarPointerToLinear(state.Es.Selector, wide ? state.Edi : state.Di);
                 ushort capacity = cpu.ReadLinearWord(parameters);
-                byte[] entries = PciInterruptRouter.BuildRoutingTable()[32..];
+                // Match the ROM table, including PIIX4's integrated USB entry.
+                ushort routerDeviceId = bus.InterruptRouter?.CompatibleRouterDeviceId ?? 0x122E;
+                byte[] entries = PciInterruptRouter.BuildRoutingTable(routerDeviceId)[32..];
                 cpu.WriteLinearWord(parameters, (ushort)entries.Length);
                 if (capacity < entries.Length) { status = 0x89; break; }
                 uint offset = cpu.ReadLinearWord(parameters + 2);

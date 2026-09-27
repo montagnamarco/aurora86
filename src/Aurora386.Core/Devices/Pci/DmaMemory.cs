@@ -29,6 +29,16 @@ public interface IDmaMemory
     void WriteDword(uint address, uint value);
 
     /// <summary>
+    /// How much installed RAM a bus master can actually reach -- the same
+    /// bound every read and write above already enforces internally. A
+    /// device that walks its own descriptors (UHCI's frame list, the
+    /// bus-master IDE engine's PRD table) uses this to raise a host-system
+    /// error on a wild pointer itself, rather than reading back the quiet
+    /// 0xFF this interface gives for an address past the end.
+    /// </summary>
+    uint RamSize { get; }
+
+    /// <summary>
     /// Raised after every write issued below the installed RAM size, with
     /// the physical address and the number of bytes, whether the bytes landed
     /// in RAM or were discarded by ROM. Nothing consumes this yet; it is the
@@ -43,6 +53,8 @@ public interface IDmaMemory
 public sealed class PhysicalDmaMemory(PhysicalMemoryBus memory) : IDmaMemory
 {
     public event Action<uint, uint>? Written;
+
+    public uint RamSize => memory.RamSize;
 
     public byte ReadByte(uint address) => InRam(address, 1) ? memory.ReadByteFromBusMaster(address) : (byte)0xFF;
 

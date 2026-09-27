@@ -140,11 +140,17 @@ public sealed class UhciController : IIoDwordDevice
 
     public PciFunction Function { get; }
 
-    public UhciController(PhysicalMemoryBus memory, IoBus io, PciBus bus, ushort functionAddress = 0x10, ushort ioAddress = 0xC100)
+    public UhciController(
+        PhysicalMemoryBus memory,
+        IoBus io,
+        PciBus bus,
+        ushort functionAddress = 0x10,
+        ushort ioAddress = 0xC100,
+        ushort deviceId = 0x7020)
     {
         _memory = memory;
         _router = bus.InterruptRouter ?? throw new ArgumentException("USB requires PCI routing.", nameof(bus));
-        Function = new PciFunction(functionAddress, 0x8086, 0x7020, 0x0C0300, commandMask: 5);
+        Function = new PciFunction(functionAddress, 0x8086, deviceId, 0x0C0300, commandMask: 5);
         Function.DefineBar(4, 32, true, ioAddress);
         Function.Define(4, 1, 2, 5);          // USBCMD's I/O space bit reads 1 at power-on; bus master starts off
         Function.Define(0x3C, 0xFF, 1, 0xFF); // interrupt line, unassigned until firmware picks one

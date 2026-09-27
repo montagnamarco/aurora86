@@ -16,6 +16,14 @@ namespace Aurora386.Core.Devices.Storage;
 /// </summary>
 public sealed partial class IdeController
 {
+    /// <summary>
+    /// Raised after READ DMA or WRITE DMA has captured the ATA task-file
+    /// range. The bus-master engine may already have its Start bit set: the
+    /// SFF sequence permits either programming order, so it must retry when
+    /// the second half arrives.
+    /// </summary>
+    internal event Action? BusMasterTransferArmed;
+
     private DiskImage? _disk;
 
     private byte _diskStatus = StatusReady | StatusSeekComplete;
@@ -43,6 +51,125 @@ public sealed partial class IdeController
     private const byte ErrorIdNotFound = 0x10;
     private const int MaxMultiple = 16;
 
+    // ---- bus-master DMA (P2.4, i430TX only: see _hasBusMasterDma) ------------
+
+    /// <summary>
+    /// READ DMA/WRITE DMA (0xC8/0xCA) armed but not yet moved: the sector
+    /// range the command named, waiting for <see
+    /// cref="BusMasterIdeController"/> to actually walk the PRD table and
+    /// call back in. SFF-8038i keeps the ATA command and the bus-master
+    /// engine's start bit as two independent steps -- see <see
+    /// cref="BeginBusMasterCommand"/> -- so this is what remembers the first
+    /// one until the second arrives, however long the guest waits between
+    /// them, including across a snapshot restore.
+    /// </summary>
+    private BusMasterTransferRequest? _pendingBusMasterTransfer;
+
+    /// <summary>The last transfer mode a SET FEATURES 03h selected, or null before any has been (PIO only).</summary>
+    private (bool Ultra, int Level)? _selectedTransferMode;
+
+    /// <summary>The DMA mode currently reported through IDENTIFY DEVICE.</summary>
+    internal (bool Ultra, int Level)? SelectedBusMasterTransferMode => _selectedTransferMode;
+
+    /// <summary>Restores the negotiated DMA mode without issuing an ATA command.</summary>
+    internal void RestoreSelectedBusMasterTransferMode((bool Ultra, int Level)? mode)
+    {
+        _selectedTransferMode = mode;
+    }
+
+    /// <summary>A READ/WRITE DMA command's sector range, recorded until the bus-master engine starts moving it.</summary>
+    internal readonly record struct BusMasterTransferRequest(long Lba, int SectorCount, bool WriteToDisk);
+
+    /// <summary>The request a READ/WRITE DMA command armed, for <see cref="MachineSnapshot"/> to carry across a restore.</summary>
+    internal BusMasterTransferRequest? PendingBusMasterTransfer => _pendingBusMasterTransfer;
+
+    /// <summary>Puts back a request a snapshot captured -- the disk-side half of restoring a configured-but-not-started bus-master transfer.</summary>
+    internal void RestorePendingBusMasterTransfer(BusMasterTransferRequest? request)
+    {
+        _pendingBusMasterTransfer = request;
+    }
+
+    /// <summary>Discards a DMA command a controller reset interrupted before it moved data.</summary>
+    internal void ClearPendingBusMasterTransfer()
+    {
+        _pendingBusMasterTransfer = null;
+    }
+
+    /// <summary>
+    /// Takes the armed request away, for <see
+    /// cref="BusMasterIdeController"/> to consume the instant the guest sets
+    /// BMICOM's start bit. A second start with nothing armed -- no command
+    /// issued since the last one ran, or none at all -- finds null and moves
+    /// no bytes, exactly as a real engine walking a schedule the drive never
+    /// asked for would move none.
+    /// </summary>
+    internal BusMasterTransferRequest? TakePendingBusMasterTransfer()
+    {
+        BusMasterTransferRequest? request = _pendingBusMasterTransfer;
+        _pendingBusMasterTransfer = null;
+        return request;
+    }
+
+    /// <summary>
+    /// The disk-side half of a completed bus-master READ DMA: the sectors
+    /// the request named are read straight into the buffer the engine is
+    /// about to hand to the PRD table, and the drive reports the same way a
+    /// PIO READ SECTORS command's last block does -- ready, no error,
+    /// INTRQ raised. A disk failure (the range went bad between the command
+    /// and the engine starting, which nothing in this emulator actually
+    /// causes but a real drive could hit) aborts with ID-not-found instead,
+    /// recording completion even if nIEN suppresses physical INTRQ. The
+    /// engine handles completion even when the cable remains low.
+    /// </summary>
+    internal bool FinishBusMasterRead(BusMasterTransferRequest request, byte[] buffer, Action beforeInterrupt)
+    {
+        if (_disk is null || request.Lba > _disk.TotalSectors - request.SectorCount ||
+            !_disk.ReadLinear(request.Lba, request.SectorCount, buffer))
+        {
+            FailDiskCommand(ErrorIdNotFound);
+            return false;
+        }
+
+        beforeInterrupt();
+        _diskStatus = StatusReady | StatusSeekComplete;
+        RaiseInterrupt();
+        return true;
+    }
+
+    /// <summary>The write counterpart of <see cref="FinishBusMasterRead"/>: the engine's own buffer, already filled from RAM, is committed to disk.</summary>
+    internal bool FinishBusMasterWrite(BusMasterTransferRequest request, byte[] buffer)
+    {
+        if (_disk is null || request.Lba > _disk.TotalSectors - request.SectorCount ||
+            !_disk.WriteLinear(request.Lba, request.SectorCount, buffer))
+        {
+            FailDiskCommand(ErrorIdNotFound);
+            return false;
+        }
+
+        _diskStatus = StatusReady | StatusSeekComplete;
+        RaiseInterrupt();
+        return true;
+    }
+
+    /// <summary>
+    /// Commits whole sectors supplied before a short PRD table ends. An
+    /// incomplete sector is never written, and this is not ATA completion:
+    /// the driver receives no interrupt and must recover the stopped command.
+    /// </summary>
+    internal void WriteShortBusMasterPrefix(BusMasterTransferRequest request, byte[] buffer)
+    {
+        int completeSectors = buffer.Length / DiskImage.SectorSize;
+        if (completeSectors == 0 || _disk is null)
+        {
+            return;
+        }
+
+        if (request.Lba <= _disk.TotalSectors - completeSectors)
+        {
+            _disk.WriteLinear(request.Lba, completeSectors, buffer);
+        }
+    }
+
     /// <summary>The disk on the master slot, or null for an empty slot.</summary>
     public DiskImage? HardDisk => _disk;
 
@@ -64,6 +191,8 @@ public sealed partial class IdeController
         _diskRemaining = 0;
         _diskWriting = false;
         _diskMultiple = 0;
+        _pendingBusMasterTransfer = null;
+        _selectedTransferMode = null;
         _diskSignaturePending = _disk is not null;
         _logicalHeads = _disk?.Heads ?? 16;
         _logicalSectors = _disk?.SectorsPerTrack ?? 63;
@@ -81,6 +210,14 @@ public sealed partial class IdeController
             case 0xC4: BeginDiskRead(multiple: true); return;
             case 0x30 or 0x31: BeginDiskWrite(multiple: false); return;
             case 0xC5: BeginDiskWrite(multiple: true); return;
+
+            case 0xC8 or 0xC9:
+                BeginBusMasterCommand(writeToDisk: false);
+                return;
+
+            case 0xCA or 0xCB:
+                BeginBusMasterCommand(writeToDisk: true);
+                return;
 
             case 0xC6:
                 // SET MULTIPLE MODE: how many sectors move per interrupt
@@ -104,9 +241,12 @@ public sealed partial class IdeController
                 CompleteDiskCommand();
                 return;
 
+            case 0xEF:
+                SetTransferMode();
+                return;
+
             case >= 0x10 and <= 0x1F:   // RECALIBRATE
             case >= 0x70 and <= 0x7F:   // SEEK
-            case 0xEF:                  // SET FEATURES
             case 0xE0 or 0xE1 or 0xE2 or 0xE3 or 0xE6:   // power management
             case 0xE7:                  // FLUSH CACHE
                 CompleteDiskCommand();
@@ -131,6 +271,79 @@ public sealed partial class IdeController
     }
 
     private int DiskCount() => _sectorCount == 0 ? 256 : _sectorCount;
+
+    /// <summary>
+    /// Captures an ATA DMA request without making the data port ready. DMA
+    /// commands are accepted only on the PIIX4 path; the i430FX controller
+    /// retains its historic PIO-only abort for every one of these opcodes.
+    /// </summary>
+    private void BeginBusMasterCommand(bool writeToDisk)
+    {
+        if (!_hasBusMasterDma)
+        {
+            AbortDiskCommand();
+            return;
+        }
+
+        long first = DiskAddress();
+        int count = DiskCount();
+        if (!DiskRangeIsValid(first, count) || writeToDisk && _disk!.ReadOnly)
+        {
+            AbortDiskCommand();
+            return;
+        }
+
+        _diskWriting = false;
+        _diskRemaining = 0;
+        _diskBuffer = [];
+        _diskStatus = StatusReady | StatusSeekComplete;
+        _pendingBusMasterTransfer = new BusMasterTransferRequest(first, count, writeToDisk);
+        BusMasterTransferArmed?.Invoke();
+    }
+
+    /// <summary>
+    /// Implements SET FEATURES subcommand 03h for the modes PIIX4 can use.
+    /// ATA-4 gives the requested transfer mode in the sector-count register:
+    /// 20h-22h name multiword DMA 0-2 and 40h-42h name Ultra DMA 0-2.
+    /// Unsupported requests abort, which is what makes a driver fall back
+    /// rather than believing it negotiated a timing this controller lacks.
+    /// </summary>
+    private void SetTransferMode()
+    {
+        if (!_hasBusMasterDma || _features != 0x03)
+        {
+            CompleteDiskCommand();
+            return;
+        }
+
+        byte requested = _sectorCount;
+        if (requested is 0x00 or 0x01 or >= 0x08 and <= 0x0C)
+        {
+            // PIO default, flow-control and PIO 3/4 are valid SET FEATURES
+            // requests. This disk advertises PIO 3/4 and performs every PIO
+            // transfer through the same port engine, so no separate timing
+            // state is observable; selecting one ends any DMA selection.
+            _selectedTransferMode = null;
+            CompleteDiskCommand();
+            return;
+        }
+
+        if (requested is >= 0x20 and <= 0x22)
+        {
+            _selectedTransferMode = (false, requested - 0x20);
+            CompleteDiskCommand();
+            return;
+        }
+
+        if (requested is >= 0x40 and <= 0x42)
+        {
+            _selectedTransferMode = (true, requested - 0x40);
+            CompleteDiskCommand();
+            return;
+        }
+
+        AbortDiskCommand();
+    }
 
     /// <summary>
     /// The sector the address registers name. Bit 6 of the drive/head
@@ -289,9 +502,9 @@ public sealed partial class IdeController
         WriteText(words, 23, "1.0     ", 4);
         WriteText(words, 27, "Aurora386 Virtual Hard Disk", 20);
         words[47] = 0x8000 | MaxMultiple;                      // sectors per interrupt, at most
-        words[49] = 0x0200;                                    // sector numbers (LBA) accepted
+        words[49] = (ushort)(0x0200 | (_hasBusMasterDma ? 0x0100 : 0)); // LBA and PIIX4 DMA
         words[51] = 0x0200;                                    // PIO timing mode 2
-        words[53] = 0x0003;                                    // words 54-58 and 64-70 are valid
+        words[53] = (ushort)(0x0003 | (_hasBusMasterDma ? 0x0004 : 0)); // 54-58, 64-70 and 88
         words[54] = (ushort)Math.Min(disk.TotalSectors / ((long)_logicalHeads * _logicalSectors), 16383);
         words[55] = (ushort)_logicalHeads;
         words[56] = (ushort)_logicalSectors;
@@ -302,6 +515,11 @@ public sealed partial class IdeController
         words[60] = (ushort)capacity;
         words[61] = (ushort)(capacity >> 16);
         words[64] = 0x0003;                                    // PIO modes 3 and 4
+        if (_hasBusMasterDma)
+        {
+            words[63] = SelectedModeWord(ultra: false);         // multiword DMA 0-2
+            words[88] = SelectedModeWord(ultra: true);          // Ultra DMA 0-2
+        }
         words[80] = 0x001E;                                    // ATA-1 to ATA-4
 
         var bytes = new byte[512];
@@ -317,5 +535,17 @@ public sealed partial class IdeController
         _diskPosition = 0;
         _diskStatus = StatusReady | StatusSeekComplete | StatusDataRequest;
         RaiseInterrupt();
+    }
+
+    /// <summary>Builds ATA IDENTIFY's supported and selected DMA mode word.</summary>
+    private ushort SelectedModeWord(bool ultra)
+    {
+        const ushort ModesZeroToTwo = 0x0007;
+        if (_selectedTransferMode is not { } selected || selected.Ultra != ultra)
+        {
+            return ModesZeroToTwo;
+        }
+
+        return (ushort)(ModesZeroToTwo | (1 << (8 + selected.Level)));
     }
 }

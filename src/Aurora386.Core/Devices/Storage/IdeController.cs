@@ -88,16 +88,78 @@ public sealed partial class IdeController : IIoDevice
     private readonly ushort _controlBase;
     private readonly int _irq;
     private bool _interruptPending;
+    private bool _interruptLineRaised;
 
     /// <summary>The last device-control write, including the active-low interrupt enable.</summary>
     public byte DeviceControl { get; private set; }
 
+    /// <summary>Restores the device-control latch without pulsing software reset.</summary>
+    internal void RestoreDeviceControl(byte value)
+    {
+        DeviceControl = value;
+        UpdateInterruptLine();
+    }
+
+    /// <summary>The ATA-visible completion latches a BMIDE snapshot must retain.</summary>
+    internal readonly record struct BusMasterAtaLatches(
+        byte AtapiStatus,
+        byte AtapiError,
+        byte DiskStatus,
+        byte DiskError,
+        bool InterruptPending,
+        byte DeviceControl);
+
+    /// <summary>Captures the task-file latches left by an ATA DMA completion.</summary>
+    internal BusMasterAtaLatches CaptureBusMasterAtaLatches()
+    {
+        return new BusMasterAtaLatches(
+            _status,
+            _error,
+            _diskStatus,
+            _diskError,
+            _interruptPending,
+            DeviceControl);
+    }
+
+    /// <summary>Restores ATA completion latches without raising a fresh drive edge.</summary>
+    internal void RestoreBusMasterAtaLatches(BusMasterAtaLatches state)
+    {
+        _status = state.AtapiStatus;
+        _error = state.AtapiError;
+        _diskStatus = state.DiskStatus;
+        _diskError = state.DiskError;
+        _interruptPending = state.InterruptPending;
+        DeviceControl = state.DeviceControl;
+        UpdateInterruptLine();
+    }
+
+    /// <summary>
+    /// Whether a PIIX4-class bus-master IDE engine (SFF-8038i) sits behind
+    /// this cable -- true only for the i430TX chipset (P2.4). Gates every
+    /// difference bus-master DMA makes to this channel: READ/WRITE DMA
+    /// (0xC8/0xCA) actually arm a transfer instead of aborting, SET FEATURES
+    /// 03h negotiates a transfer mode instead of being a no-op, and IDENTIFY
+    /// DEVICE advertises DMA at all. On i430FX this stays false and every
+    /// one of those paths is the exact code that ran before this package
+    /// existed, which is what keeps i430FX's IDE byte-for-byte unchanged.
+    /// </summary>
+    private readonly bool _hasBusMasterDma;
+
+    /// <summary>
+    /// Raised on the cable's INTRQ edge, including one caused by clearing
+    /// nIEN. Device Control suppresses the edge; PIC masking cannot. The
+    /// BMISTA latch observes the cable before the PIC, so its companion listens
+    /// here rather than trying to infer it from IRQ 14 or 15.
+    /// </summary>
+    internal event Action? DeviceInterruptRaised;
+
     public IdeController(Machine machine, InterruptController interrupts,
-                         Channel channel = Channel.Primary)
+                         Channel channel = Channel.Primary, bool hasBusMasterDma = false)
     {
         _machine = machine;
         _interrupts = interrupts;
         Cable = channel;
+        _hasBusMasterDma = hasBusMasterDma;
 
         (_commandBase, _controlBase, _irq) = channel == Channel.Primary
             ? ((ushort)0x1F0, (ushort)0x3F6, 14)
@@ -194,7 +256,7 @@ public sealed partial class IdeController : IIoDevice
                 // is the register software polls, so the acknowledgement has
                 // to happen here rather than anywhere more obvious.
                 _interruptPending = false;
-                _interrupts.LowerIrq(_irq);
+                UpdateInterruptLine();
                 return CurrentStatus;
 
             // The alternate status register: the same value, without the
@@ -1036,18 +1098,28 @@ public sealed partial class IdeController : IIoDevice
     {
         _interruptPending = true;
         _interrupts.LowerIrq(_irq);
+        _interruptLineRaised = false;
         UpdateInterruptLine();
     }
 
+    /// <summary>Drives ATA INTRQ and reports actual rising edges, including an nIEN unmask.</summary>
     private void UpdateInterruptLine()
     {
-        if (_interruptPending && (DeviceControl & 2) == 0)
+        bool raised = _interruptPending && (DeviceControl & 2) == 0;
+        bool risingEdge = raised && !_interruptLineRaised;
+        _interruptLineRaised = raised;
+        if (raised)
         {
             _interrupts.RaiseIrq(_irq);
         }
         else
         {
             _interrupts.LowerIrq(_irq);
+        }
+
+        if (risingEdge)
+        {
+            DeviceInterruptRaised?.Invoke();
         }
     }
 }

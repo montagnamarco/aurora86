@@ -31,7 +31,8 @@ public sealed partial class Machine
 
     private void InstallBios()
     {
-        Memory.MapRom(BiosRom.Base, BiosRom.Build());
+        ushort routerDeviceId = Pci.InterruptRouter!.CompatibleRouterDeviceId;
+        Memory.MapRom(BiosRom.Base, BiosRom.Build(routerDeviceId));
 
         // The 386 begins fetching at 0xFFFFFFF0, so the top 64 KB of the
         // 32-bit space must show the same ROM that is mapped at 0xF0000.
@@ -53,6 +54,9 @@ public sealed partial class Machine
         // their IRQs level-triggered, which a later reset would undo.
         Interrupts.ResetTriggerModes();
         Pci.Reset();
+        BusMasterIde?.Reset();
+        BusMasterIde?.InitializeDriveCapabilities();
+        Piix4Power?.Reset();
         _usbCard?.Reset();
         // A reboot starts with no CD-ROM driver loaded; the guest reveals one
         // again by sending its first packet.
