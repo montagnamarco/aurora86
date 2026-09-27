@@ -300,4 +300,22 @@ public struct LazyFlags
         readonly get => (Stored & Flags.Trap) != 0;
         set => Stored = value ? Stored | Flags.Trap : Stored & ~Flags.Trap;
     }
+
+    // --- VME/PVI (P2.3) ---------------------------------------------------
+    // Neither bit is ever lazy -- no arithmetic operation produces either --
+    // so, like Interrupt/Direction/Trap above, they read and write Stored
+    // directly. Cpu.VirtualMode.cs is what decides *when* code may touch
+    // them; these two properties only say *how*.
+
+    public bool VirtualInterrupt
+    {
+        readonly get => (Stored & Flags.VirtualInterrupt) != 0;
+        set => Stored = value ? Stored | Flags.VirtualInterrupt : Stored & ~Flags.VirtualInterrupt;
+    }
+
+    public bool VirtualInterruptPending
+    {
+        readonly get => (Stored & Flags.VirtualInterruptPending) != 0;
+        set => Stored = value ? Stored | Flags.VirtualInterruptPending : Stored & ~Flags.VirtualInterruptPending;
+    }
 }

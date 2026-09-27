@@ -910,7 +910,7 @@ public sealed partial class Cpu
             // IOPL. A ring 3 IRET whose flags image carries IOPL 0 -- DOSX's
             // real-mode side builds exactly such images -- must therefore
             // leave IOPL alone, or every CLI in the client faults from then on.
-            returnFlags = GuardFlagsFromStack(returnFlags);
+            returnFlags = GuardFlagsFromStack(returnFlags, loadsVirtualInterruptBits: OperandSize32);
 
             if (returnPrivilege > currentPrivilege)
             {

@@ -268,6 +268,9 @@ public sealed class DescriptorTables
         if ((state.Cr0 & CpuState.Cr0Paging) == 0)
             return $"{linear:X8} -> {linear:X8} (paging off)";
 
+        if ((state.Cr4 & CpuState.Cr4Pae) != 0)
+            return DescribePaeTranslation(linear);
+
         uint directoryEntry = ReadDword((state.Cr3 & 0xFFFFF000) + ((linear >> 22) << 2));
         if ((directoryEntry & 1) == 0)
             return $"{linear:X8} -> page directory entry not present ({directoryEntry:X8})";
@@ -284,6 +287,55 @@ public sealed class DescriptorTables
         return $"{linear:X8} -> {physical:X8}  {writable}, {user}{dirty}";
     }
 
+    /// <summary>
+    /// <see cref="DescribeTranslation"/>'s walk through CR4.PAE's three
+    /// levels instead of the legacy two: <see cref="Cpu.Pdpte"/> in place of
+    /// reading CR3's own table (the processor keeps those four qwords in
+    /// internal registers between reloads, never re-reading them from memory
+    /// mid-walk -- see Cpu.Paging.cs's own remarks), then a 64-bit PDE and,
+    /// unless PS says the PDE is a 2 MB page in its own right, a 64-bit PTE.
+    /// Mirrors PeekLinearPae's non-faulting contract: nothing here disturbs
+    /// the guest, so a malformed entry is simply reported rather than raising
+    /// #PF.
+    /// </summary>
+    private string DescribePaeTranslation(uint linear)
+    {
+        const ulong AddressMask4K = ((1UL << 36) - 1) & ~0xFFFUL;
+        const ulong AddressMask2M = ((1UL << 36) - 1) & ~((1UL << 21) - 1);
+
+        ulong pdpte = _machine.Cpu.Pdpte[(linear >> 30) & 0x3];
+        if ((pdpte & 1) == 0)
+            return $"{linear:X8} -> page-directory-pointer entry not present ({pdpte:X16})";
+
+        uint pdeAddress = (uint)((pdpte & AddressMask4K) + ((linear >> 21) & 0x1FFu) * 8);
+        ulong pde = ReadQword(pdeAddress);
+        if ((pde & 1) == 0)
+            return $"{linear:X8} -> page directory entry not present ({pde:X16})";
+
+        if ((pde & (1UL << 7)) != 0)
+        {
+            // A 2 MB page: the PDE is the whole translation, no PTE underneath it.
+            ulong physical = (pde & AddressMask2M) | (linear & 0x1FFFFFu);
+            string writable2M = (pde & 2) != 0 ? "writable" : "read-only";
+            string user2M = (pde & 4) != 0 ? "user" : "supervisor";
+            string dirty2M = (pde & 0x40) != 0 ? ", dirty" : "";
+            return $"{linear:X8} -> {physical:X10}  {writable2M}, {user2M}{dirty2M} (2 MB page)";
+        }
+
+        uint pteAddress = (uint)((pde & AddressMask4K) + ((linear >> 12) & 0x1FFu) * 8);
+        ulong pte = ReadQword(pteAddress);
+        if ((pte & 1) == 0)
+            return $"{linear:X8} -> page table entry not present ({pte:X16})";
+
+        ulong finalPhysical = (pte & AddressMask4K) | (linear & 0xFFFu);
+        string writable = (pde & pte & 2) != 0 ? "writable" : "read-only";
+        string user = (pde & pte & 4) != 0 ? "user" : "supervisor";
+        string dirty = (pte & 0x40) != 0 ? ", dirty" : "";
+
+        return $"{linear:X8} -> {finalPhysical:X10}  {writable}, {user}{dirty}";
+    }
+
     private uint ReadDword(uint physical) => _machine.Memory.ReadDword(physical);
     private ushort ReadWord(uint physical) => _machine.Memory.ReadWord(physical);
+    private ulong ReadQword(uint physical) => ReadDword(physical) | ((ulong)ReadDword(physical + 4) << 32);
 }

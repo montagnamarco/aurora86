@@ -196,4 +196,38 @@ public class DescriptorTableTests
         Assert.Contains("writable", tables.DescribeTranslation(0x00400000));
         Assert.Contains("not present", tables.DescribeTranslation(0x00500000));
     }
+
+    /// <summary>
+    /// Fix D9: the diagnostic walker used to follow only the legacy
+    /// two-level format, even under CR4.PAE -- reading CR3 as a page
+    /// directory that was not there at all, PAE's own PDPT registers
+    /// (<see cref="Cpu.Pdpte"/>) living purely in the processor, never at
+    /// the address CR3 names. It now dispatches to a PAE-aware walk the same
+    /// way <see cref="Cpu.PeekLinear"/> does.
+    /// </summary>
+    [Fact]
+    public void ATranslationWalksPaesThreeLevelsInsteadOfTheLegacyTwo()
+    {
+        using Machine machine = WithTables();
+        var tables = new DescriptorTables(machine);
+
+        const uint PdAddress = 0x60000;
+        const uint PtAddress = 0x61000;
+        const uint Linear = 0x00400000;   // PDPTE 0: linear[31:30] = 00
+        const uint Frame = 0x00330000;
+
+        machine.Cpu.Pdpte[0] = PdAddress | 1;   // present
+        machine.Memory.WriteDword(PdAddress + ((Linear >> 21) & 0x1FF) * 8, PtAddress | 7);
+        machine.Memory.WriteDword(PtAddress + ((Linear >> 12) & 0x1FF) * 8, Frame | 7);
+
+        machine.Cpu.State.Cr4 |= CpuState.Cr4Pae;
+        machine.Cpu.State.Cr0 |= CpuState.Cr0ProtectionEnable | CpuState.Cr0Paging;
+
+        Assert.Contains("00330000", tables.DescribeTranslation(Linear));
+        Assert.Contains("writable", tables.DescribeTranslation(Linear));
+
+        // PDPTE 1 (linear[31:30] = 01) was never loaded: it is left at its
+        // reset value of zero, i.e. not present.
+        Assert.Contains("not present", tables.DescribeTranslation(0x40400000));
+    }
 }

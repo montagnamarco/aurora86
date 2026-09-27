@@ -40,6 +40,27 @@ public enum CpuModel
 {
     Intel386,
     Intel486,
+
+    /// <summary>P54C, the original Pentium.</summary>
+    Pentium,
+
+    /// <summary>P55C: the Pentium with MMX.</summary>
+    PentiumMmx,
+
+    /// <summary>Deschutes, the second-generation Pentium II.</summary>
+    PentiumII,
+
+    /// <summary>Coppermine, the on-die-cache Pentium III.</summary>
+    PentiumIII,
+
+    /// <summary>Northwood, the die-shrunk NetBurst Pentium 4.</summary>
+    Pentium4,
+
+    /// <summary>Conroe, the first Core 2 Duo.</summary>
+    Core2,
+
+    /// <summary>Haswell, 4th-generation Core.</summary>
+    Haswell,
 }
 
 public sealed class CpuState
@@ -86,32 +107,135 @@ public sealed class CpuState
     /// </summary>
     public uint Cr3;
 
+    /// <summary>
+    /// CR4: the register the Pentium introduced to hold every extension a
+    /// 386/486 CR0 had no room for. Unlike CR0, an invalid CR4 bit is not
+    /// silently dropped -- writing one raises <c>#GP(0)</c> (SDM Vol.3 §2.5),
+    /// so <see cref="Cr4Writable"/> exists to say exactly which bits this
+    /// processor may hold before the write is even attempted. See
+    /// cpu-models.md §2 for the P5 bit list and work package P2.1 for which
+    /// of those bits Aurora backs today.
+    /// </summary>
+    public uint Cr4;
+
+    /// <summary>Virtual-8086 Mode Extensions: hardware-assisted CLI/STI/PUSHF/POPF/INT trapping in a V86 task. Implemented by P2.3 (Cpu.VirtualMode.cs).</summary>
+    public const uint Cr4Vme = 1u << 0;
+
+    /// <summary>Protected-mode Virtual Interrupts: the VME idea extended to protected-mode ring-3 code. Implemented by P2.3 (Cpu.VirtualMode.cs).</summary>
+    public const uint Cr4Pvi = 1u << 1;
+
+    /// <summary>Time Stamp Disable: with this set, RDTSC is a ring-0-only instruction instead of one any ring may execute.</summary>
+    public const uint Cr4Tsd = 1u << 2;
+
+    /// <summary>
+    /// Debug Extensions: enables I/O breakpoint length/type checking and
+    /// makes DR4/DR5 raise <c>#UD</c> instead of aliasing DR6/DR7 the way a
+    /// 386/486 always does.
+    /// </summary>
+    public const uint Cr4De = 1u << 3;
+
+    /// <summary>Page Size Extension: 4 MB pages alongside the ordinary 4 KB ones. Implemented by P2.2 (Cpu.Paging.cs, TranslateLargePage).</summary>
+    public const uint Cr4Pse = 1u << 4;
+
+    /// <summary>Physical Address Extension: the 36-bit-physical 3-level paging mode. Absent on every P5 -- PAE is a P6-and-later bit. Not implemented.</summary>
+    public const uint Cr4Pae = 1u << 5;
+
+    /// <summary>Machine-Check Enable: whether a detected machine-check condition may be signalled as exception 18 at all. Aurora has no machine-check hardware, so this bit is just held -- #MC is never raised whatever it says.</summary>
+    public const uint Cr4Mce = 1u << 6;
+
+    /// <summary>Page Global Enable: pages marked global survive a CR3 reload instead of being flushed from the TLB. Not implemented.</summary>
+    public const uint Cr4Pge = 1u << 7;
+
+    /// <summary>Performance-Counter Enable: lets CPL&gt;0 execute RDPMC. Writable wherever <see cref="CpuFeature.Pmc"/> is implemented (work package P3.1) -- a family-six-or-later model, since that is where RDPMC and the counters behind PERFCTR0/1 first exist.</summary>
+    public const uint Cr4Pce = 1u << 8;
+
+    /// <summary>
+    /// Operating System support for FXSAVE/FXRSTOR: software sets this to
+    /// say it saves and restores the FPU/MMX (and, from the Pentium III,
+    /// SSE) state with FXSAVE/FXRSTOR rather than FSAVE/FRSTOR. Aurora's own
+    /// FXSAVE/FXRSTOR (Cpu.P6.cs) does not read this bit at all -- like real
+    /// silicon, they are gated on CPUID.FXSR alone -- so it is pure storage,
+    /// writable wherever <see cref="CpuFeature.Fxsr"/> is implemented.
+    /// </summary>
+    public const uint Cr4OsFxsr = 1u << 9;
+
+    /// <summary>
+    /// Every CR4 bit this processor may hold, derived from
+    /// <see cref="Features"/> rather than from the model directly: a bit is
+    /// writable exactly when the subsystem behind it exists, the same rule
+    /// <see cref="CpuFeatures.Implemented"/> applies everywhere else.
+    /// Writing a 1 to any bit outside this set is <c>#GP(0)</c>; see
+    /// <see cref="CpuFeatures"/> for which bits each work package turned on.
+    /// </summary>
+    public uint Cr4Writable
+    {
+        get
+        {
+            uint bits = 0;
+            if (Features.Has(CpuFeature.Vme)) bits |= Cr4Vme | Cr4Pvi;
+            if (Features.Has(CpuFeature.Tsc)) bits |= Cr4Tsd;
+            if (Features.Has(CpuFeature.De)) bits |= Cr4De;
+            if (Features.Has(CpuFeature.Pse)) bits |= Cr4Pse;
+            if (Features.Has(CpuFeature.Pae)) bits |= Cr4Pae;
+            if (Features.Has(CpuFeature.Mce)) bits |= Cr4Mce;
+            if (Features.Has(CpuFeature.Pge)) bits |= Cr4Pge;
+            if (Features.Has(CpuFeature.Pmc)) bits |= Cr4Pce;
+            if (Features.Has(CpuFeature.Fxsr)) bits |= Cr4OsFxsr;
+            return bits;
+        }
+    }
+
     // --- descriptor tables ----------------------------------------------------
+
+    private CpuModel _model;
+
     /// <summary>
     /// Which processor this is pretending to be.
     ///
     /// It is not decoration: a program probes for a 486 by executing one of
     /// its new instructions and catching the fault, and a machine that runs
     /// them regardless would be detected as a 486 while claiming to be a 386.
+    ///
+    /// Writing this recomputes <see cref="Features"/> from the model's own
+    /// table (see CpuModelCatalog): there would be no point pretending to be
+    /// a Pentium while still answering every probe the way a 486 does.
+    /// Nothing else about the processor changes here -- in particular this
+    /// is not RESET, so an already-running machine keeps its registers.
     /// </summary>
-    public CpuModel Model = CpuModel.Intel486;
+    public CpuModel Model
+    {
+        get => _model;
+        set
+        {
+            _model = value;
+            Features = CpuModelCatalog.Get(value).Silicon.Intersect(CpuFeatures.ImplementedFor(value));
+        }
+    }
+
+    /// <summary>
+    /// What this processor actually shows a guest: the selected model's own
+    /// feature bits, held down to what Aurora implements (see
+    /// <see cref="CpuFeatures.Implemented"/>). Setting <see cref="Model"/>
+    /// computes this from the model's table; it is also settable directly,
+    /// so a test can build a processor with an arbitrary feature combination
+    /// that does not correspond to any one real chip.
+    /// </summary>
+    public CpuFeatures Features { get; set; }
 
     /// <summary>
     /// Whether the identification bit of EFLAGS may be changed, which is how
     /// software decides CPUID is available. A 486 without it is a perfectly
     /// ordinary 486: the instruction arrived partway through the model's life.
     /// </summary>
-    public bool HasIdentification = true;
+    public bool HasIdentification => Features.Has(CpuFeature.Identification);
 
     /// <summary>
-    /// Selects a processor model and the features that come with it. Setting
-    /// the model alone would leave a 386 answering CPUID, which no 386 does.
+    /// Selects a processor model and the features that come with it.
+    /// Equivalent to assigning <see cref="Model"/> directly; kept as a
+    /// method because "select a model" reads better at call sites that are
+    /// not also reading the model back.
     /// </summary>
-    public void SelectModel(CpuModel model)
-    {
-        Model = model;
-        HasIdentification = model >= CpuModel.Intel486;
-    }
+    public void SelectModel(CpuModel model) => Model = model;
 
     public uint GdtBase;
     public ushort GdtLimit;
@@ -268,15 +392,26 @@ public sealed class CpuState
     /// <summary>
     /// Every bit CR0 is allowed to hold on this processor. A 386 has no
     /// write protection, no alignment mask and no cache to configure, so on
-    /// one of those the four late bits do not exist and writes to them are
-    /// dropped.
+    /// one that lacks <see cref="CpuFeature.Isa486"/> -- the 486's own
+    /// instructions and CR0 bits, see CpuFeatures.cs -- the four late bits
+    /// do not exist and writes to them are dropped.
     /// </summary>
-    public uint Cr0Writable => Model >= CpuModel.Intel486
+    public uint Cr0Writable => Features.Has(CpuFeature.Isa486)
         ? Cr0ProtectionEnable | Cr0MonitorCoprocessor | Cr0Emulation | Cr0TaskSwitched
         | Cr0ExtensionType | Cr0NumericError | Cr0WriteProtect | Cr0AlignmentMask
         | Cr0NotWriteThrough | Cr0CacheDisable | Cr0Paging
         : Cr0ProtectionEnable | Cr0MonitorCoprocessor | Cr0Emulation | Cr0TaskSwitched
         | Cr0ExtensionType | Cr0Paging;
+
+    /// <summary>
+    /// Defaults to a 486, as the field it replaces did. This runs the
+    /// <see cref="Model"/> setter, so <see cref="Features"/> is correct from
+    /// the moment a CpuState exists rather than only from the first RESET.
+    /// </summary>
+    public CpuState()
+    {
+        Model = CpuModel.Intel486;
+    }
 
     // --- general-purpose register access --------------------------------------
 
@@ -405,15 +540,21 @@ public sealed class CpuState
         // the same layout CPUID function 1 later returns: family in bits
         // 8-11, model in 4-7, stepping in 0-3. It is the only identification
         // available to firmware before any instruction has run, and it is
-        // where a BIOS looks to decide which chip it has woken up on.
-        Gpr[(int)Reg.Edx] = Model >= CpuModel.Intel486 ? 0x0480u : 0x0308u;
+        // where a BIOS looks to decide which chip it has woken up on. The
+        // signature comes from the same per-model table CPUID itself reads
+        // (CpuModelCatalog), so RESET and CPUID can never disagree about
+        // what this processor is.
+        Gpr[(int)Reg.Edx] = CpuModelCatalog.Get(Model).Signature;
 
-        // A 486DX carries its coprocessor on the die, so the bit that says
-        // one is present is not something software gets to choose: it is set
-        // at RESET and stays set.
-        Cr0 = Model >= CpuModel.Intel486 ? Cr0ExtensionType : 0;
+        // A 486DX, and every model after it, carries its coprocessor on the
+        // die, so the bit that says one is present is not something
+        // software gets to choose: it is set at RESET and stays set. See
+        // CpuFeature.Isa486 for why this is the right test: it is exactly
+        // the "486 or later" feature bundle, not the model number itself.
+        Cr0 = Features.Has(CpuFeature.Isa486) ? Cr0ExtensionType : 0;
         Cr2 = 0;
         Cr3 = 0;
+        Cr4 = 0;
         GdtBase = IdtBase = 0;
         GdtLimit = IdtLimit = 0xFFFF;
         Ldtr = TaskRegister = 0;

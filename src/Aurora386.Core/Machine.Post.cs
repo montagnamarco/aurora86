@@ -95,7 +95,13 @@ public sealed partial class Machine
         // every floating-point instruction faults to vector 7, where a
         // software library finishes the work. A real BIOS decided this during
         // POST, by probing for the chip and not finding it.
-        if (Cpu.State.Model >= Aurora386.Core.Cpu.CpuModel.Intel486)
+        //
+        // The test is the 486's own instruction-and-CR0-bit bundle
+        // (CpuFeature.Isa486), not a model comparison: every model from the
+        // 486 onward carries its coprocessor on the die the same way, so the
+        // feature that says "this is 486-class or later" is exactly the
+        // right question to ask here too.
+        if (Cpu.State.Features.Has(Aurora386.Core.Cpu.CpuFeature.Isa486))
         {
             Cpu.State.Cr0 |= Aurora386.Core.Cpu.CpuState.Cr0MonitorCoprocessor;
             Bda.EquipmentWord |= 0x0002;

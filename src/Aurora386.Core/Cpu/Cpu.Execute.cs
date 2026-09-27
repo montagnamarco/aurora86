@@ -17,7 +17,16 @@ public sealed partial class Cpu
     /// </summary>
     public int Step()
     {
-        if (State.Halted) return 1;
+        // A halted processor still spends the cycle. The machine advances its
+        // devices for every step it asks for, and the time-stamp counter has
+        // to keep pace with them: skipping the count here made the TSC fall
+        // behind the timer while the guest waited in HLT with an interrupt
+        // masked or not yet acknowledged.
+        if (State.Halted)
+        {
+            Cycles++;
+            return 1;
+        }
 
         _instructionStart = State.Eip;
         _prefixes.Clear();
@@ -87,9 +96,13 @@ public sealed partial class Cpu
     {
         try
         {
-            uint linear = State.Cs.Base + offset;
-            uint physical = State.PagingEnabled ? TranslatePaged(linear, false) : linear;
-            return _memory.ReadByte(physical);
+            // PeekLinear already dispatches to PeekLinearPae under CR4.PAE
+            // and, either way, never walks a live table the way TranslatePaged
+            // itself would: a trace must never set an A bit, mark a page
+            // dirty or fill a TLB slot merely because a debugger is watching
+            // (coordinator decision D2). Calling TranslatePaged directly here
+            // used to do exactly that, and skipped the PAE walk entirely.
+            return PeekLinear(State.Cs.Base + offset);
         }
         catch (Exception ex) when (ex is CpuException or PageFaultException)
         {
@@ -332,6 +345,15 @@ public sealed partial class Cpu
             // reference count. Leaving them out of this list made both fault
             // with #UD. On a 386 the instructions themselves are #UD anyway.
             0xB0 or 0xB1 or 0xC0 or 0xC1 => memory,
+            // CMPXCHG8B, /1 only: LOCK is implicit on real silicon (the
+            // instruction is a locked read-modify-write regardless of
+            // whether it is written), so the memory form has to stay legal
+            // here or the ordinary "LOCK CMPXCHG8B mem" a guest is entitled
+            // to write would wrongly fault before Cpu.TwoByte.cs's own /1
+            // check ever runs. The register form is excluded on purpose: it
+            // is the F00F erratum's trigger byte, and Cpu.Pentium.cs already
+            // turns it into an ordinary #UD without this prefix's help.
+            0xC7 => memory && reg == 1,
             _ => false,
         };
     }
@@ -748,7 +770,26 @@ public sealed partial class Cpu
                 // itself. Consulting the gate first turns a trap the monitor
                 // is built to handle into #NP or #GP(selector), which it is
                 // not -- and the DOS session dies on its first INT 21h.
-                if (State.Virtual8086Mode) RequireIoPrivilege();
+                //
+                // CR4.VME replaces that trap with a table of its own (SDM
+                // Table 20-2): a vector whose bit is clear in the task's
+                // interrupt redirection bitmap never reaches this check at
+                // all, at any IOPL -- it goes straight back into the V86
+                // task's own real-mode handler (Cpu.VirtualMode.cs). A bit
+                // that is set falls through to exactly the check below,
+                // which is what turns "IOPL 3, VME on, bit set" back into the
+                // ordinary IDT delivery and "IOPL < 3, VME on, bit set" back
+                // into the #GP(0) trap this comment describes -- both
+                // unchanged from a processor without VME at all.
+                if (State.Virtual8086Mode)
+                {
+                    if (RedirectsSoftwareInterrupt(vector))
+                    {
+                        RedirectV86SoftwareInterrupt(vector);
+                        return;
+                    }
+                    RequireIoPrivilege();
+                }
                 // A monitor keeps its service gates at ring 0 and lets ring 3
                 // INT n fault into it -- Windows reflects every INT 21h and
                 // INT 31h of a protected-mode program this way, thousands of
@@ -788,17 +829,11 @@ public sealed partial class Cpu
             case 0xF5: Flags.Carry = !Flags.Carry; return;
             case 0xF8: Flags.Carry = false; return;
             case 0xF9: Flags.Carry = true; return;
-            case 0xFA:
-                if (!IoPrivileged()) { FaultNow(13, 0); return; }
-                Flags.Interrupt = false;
-                return;
-            case 0xFB:
-                if (!IoPrivileged()) { FaultNow(13, 0); return; }
-                // Enabling takes effect only after the next instruction, not
-                // immediately: see _interruptShadow.
-                Flags.Interrupt = true;
-                _interruptShadow = true;
-                return;
+            // CLI/STI: ordinarily IOPL-sensitive (#GP below IOPL 3), but
+            // CR4.VME in a V86 task or CR4.PVI at ring 3 replaces that trap
+            // with a virtualized IF -- see Cli()/Sti() in Cpu.VirtualMode.cs.
+            case 0xFA: Cli(); return;
+            case 0xFB: Sti(); return;
             case 0xFC: Flags.Direction = false; return;
             case 0xFD: Flags.Direction = true; return;
 

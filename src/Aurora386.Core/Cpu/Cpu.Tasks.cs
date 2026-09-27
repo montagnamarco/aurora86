@@ -219,11 +219,19 @@ public sealed partial class Cpu
         State.TssLimit = incomingLimit;
 
         // CR3 first: every address the segment loads are about to translate
-        // belongs to the new task's address space, not the old one.
+        // belongs to the new task's address space, not the old one. Under
+        // CR4.PAE this is also one of the points that reloads the four PDPT
+        // registers (SDM Vol.3A §4.4.1; see LoadPdptRegisters in
+        // Cpu.Paging.cs), from the incoming task's CR3 rather than the
+        // outgoing one. With CR4.PGE set, the reload keeps whatever global
+        // entries survive it instead of dropping everything, exactly as MOV
+        // CR3 does (FlushTlbForCr3Load).
         if (incomingIs386 && State.PagingEnabled)
         {
+            if ((State.Cr4 & CpuState.Cr4Pae) != 0) LoadPdptRegisters(next.Cr3);
+
             State.Cr3 = next.Cr3;
-            FlushTlb();
+            FlushTlbForCr3Load();
         }
 
         for (int i = 0; i < 8; i++) State.Gpr[i] = next.Gpr[i];

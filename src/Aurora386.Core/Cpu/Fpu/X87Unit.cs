@@ -25,7 +25,11 @@ namespace Aurora386.Core.Cpu.Fpu;
 /// </summary>
 public sealed class X87Unit
 {
-    private readonly Extended80[] _stack = new Extended80[8];
+    /// <summary>
+    /// The eight physical registers, raw: see <see cref="Raw80"/> for why
+    /// they are not held as numbers.
+    /// </summary>
+    private readonly Raw80[] _stack = new Raw80[8];
 
     /// <summary>
     /// Which slots hold a value. The 387 keeps this in a tag word of eight
@@ -72,11 +76,7 @@ public sealed class X87Unit
             ushort tags = 0;
             for (int i = 0; i < 8; i++)
             {
-                int tag;
-                if (!_used[i]) tag = 3;
-                else if (_stack[i].IsZero) tag = 1;
-                else if (_stack[i].IsNaN || _stack[i].IsInfinity) tag = 2;
-                else tag = 0;
+                int tag = _used[i] ? _stack[i].Tag : 3;
 
                 tags |= (ushort)(tag << (i * 2));
             }
@@ -84,10 +84,50 @@ public sealed class X87Unit
         }
     }
 
-    /// <summary>Puts the unit back to its power-on state, as FINIT does.</summary>
+    /// <summary>
+    /// FXSAVE's own tag word (plans/specs/p6.md item 9): one bit per
+    /// physical register, set when the register is not empty, instead of
+    /// <see cref="TagWord"/>'s two. FXRSTOR only ever needs to tell empty
+    /// apart from not, which is exactly what a register's own bits cannot
+    /// say by themselves -- an all-zero register is a perfectly ordinary
+    /// value at this width, not necessarily an unused slot -- so the save
+    /// side has to carry that one bit explicitly, physical register by
+    /// physical register, the same indexing <see cref="TagWord"/> uses.
+    /// </summary>
+    public byte AbridgedTagWord
+    {
+        get
+        {
+            byte tag = 0;
+            for (int i = 0; i < 8; i++)
+            {
+                if (_used[i])
+                {
+                    tag |= (byte)(1 << i);
+                }
+            }
+            return tag;
+        }
+    }
+
+    /// <summary>
+    /// Puts the unit back to its power-on state: registers cleared as well
+    /// as everything <see cref="Initialize"/> resets.
+    /// </summary>
     public void Reset()
     {
         Array.Clear(_stack);
+        Initialize();
+    }
+
+    /// <summary>
+    /// What FNINIT, and FNSAVE after it has stored the image, do: control
+    /// word 037F, status 0, every register tagged empty, TOP 0. The register
+    /// contents themselves are left alone (SDM FINIT), which MMX code can
+    /// observe: a value in MM0 survives FNINIT and reads back afterwards.
+    /// </summary>
+    public void Initialize()
+    {
         Array.Clear(_used);
         _top = 0;
         _control = 0x037F;
@@ -99,8 +139,14 @@ public sealed class X87Unit
     // ST(i) counts down from the top and wraps: the file is a ring of eight and
     // it is the top pointer that moves, so a push shuffles nothing.
 
-    public Extended80 Get(int i) => _stack[(_top + i) & 7];
-    private void Set(int i, Extended80 value)
+    public Extended80 Get(int i) => _stack[(_top + i) & 7].ToExtended();
+
+    /// <summary>ST(i) as its ten bytes, for the moves that must not normalise it.</summary>
+    public Raw80 GetRaw(int i) => _stack[(_top + i) & 7];
+
+    private void Set(int i, Extended80 value) => SetRaw(i, Raw80.FromExtended(value));
+
+    private void SetRaw(int i, Raw80 value)
     {
         _stack[(_top + i) & 7] = value;
         _used[(_top + i) & 7] = true;
@@ -119,7 +165,9 @@ public sealed class X87Unit
     /// <summary>Whether ST(i) holds a value at all.</summary>
     public bool IsUsed(int i) => _used[(_top + i) & 7];
 
-    private void Push(Extended80 value)
+    private void Push(Extended80 value) => PushRaw(Raw80.FromExtended(value));
+
+    private void PushRaw(Raw80 value)
     {
         _top = (_top - 1) & 7;
         _stack[_top] = value;
@@ -128,9 +176,11 @@ public sealed class X87Unit
 
     private void Push(double value) => Push(Extended80.FromDouble(value));
 
-    private Extended80 Pop()
+    private Extended80 Pop() => PopRaw().ToExtended();
+
+    private Raw80 PopRaw()
     {
-        Extended80 value = _stack[_top];
+        Raw80 value = _stack[_top];
         _used[_top] = false;
         _top = (_top + 1) & 7;
         return value;
@@ -220,7 +270,7 @@ public sealed class X87Unit
                         // FNCLEX clears the exception flags; FNINIT resets the
                         // whole unit. Both arrive here, told apart by rm.
                         if (rm == 2) _status &= 0xFF00;          // FNCLEX
-                        else if (rm == 3) Reset();               // FNINIT
+                        else if (rm == 3) Initialize();          // FNINIT
                         return;
                 }
                 return;
@@ -234,6 +284,59 @@ public sealed class X87Unit
                 if (reg == 4 && rm == 0) statusToAx = StatusWord;
                 return;
         }
+    }
+
+    /// <summary>
+    /// FCMOVcc (DA/DB, reg 0-3): ST(0) &lt;- ST(i) when <paramref name="condition"/>
+    /// holds, untouched otherwise. The condition itself is the caller's to
+    /// evaluate -- it reads the integer EFLAGS (CF/ZF/PF), which live on
+    /// <see cref="Cpu"/> and not here -- so this method only ever performs
+    /// or skips the copy. An empty source is read exactly as
+    /// <see cref="ExecuteD9"/>'s own FLD ST(i)/FXCH already do: this unit
+    /// does not model the x87 stack-fault condition codes at all
+    /// (plans/specs/p6.md item 1 marks the exact status "uncertain", and
+    /// every FPU exception here is masked unconditionally regardless -- see
+    /// the FSAVE/FRSTOR pointer fields' own comment on why nothing has ever
+    /// needed them delivered).
+    /// </summary>
+    public void ConditionalMove(int rm, bool condition)
+    {
+        Executed++;
+
+        if (condition)
+        {
+            SetRaw(0, GetRaw(rm));
+        }
+    }
+
+    /// <summary>
+    /// FCOMI/FCOMIP/FUCOMI/FUCOMIP: compares ST(0) against ST(rm) and
+    /// reports the result the way the integer EFLAGS encode a CMP, since
+    /// that is the whole point of the instruction -- Jcc can then read the
+    /// answer without an intervening FNSTSW AX/SAHF pair. <paramref name="pop"/>
+    /// is true for the two P forms. FUCOMI is meant to signal invalid only
+    /// for a signalling NaN; <see cref="Extended80"/> does not keep the
+    /// signalling/quiet distinction at all (nor does anything here ever
+    /// deliver a floating-point exception -- see <see cref="ConditionalMove"/>),
+    /// so that distinction is not made -- an open point, not a guess.
+    /// </summary>
+    public (bool Zero, bool Parity, bool Carry) CompareForEflags(int rm, bool pop)
+    {
+        Executed++;
+
+        int result = Extended80.Compare(Get(0), Get(rm));
+        if (pop)
+        {
+            Pop();
+        }
+
+        return result switch
+        {
+            2 => (true, true, true),      // unordered: ZF PF CF = 111
+            0 => (true, false, false),    // equal: 100
+            -1 => (false, false, true),   // less: 001
+            _ => (false, false, false),   // greater: 000
+        };
     }
 
     /// <summary>
@@ -272,19 +375,21 @@ public sealed class X87Unit
     {
         switch (reg)
         {
-            case 0: Push(Get(rm)); return;                       // FLD ST(i)
+            case 0: PushRaw(GetRaw(rm)); return;                 // FLD ST(i)
 
             case 1:                                              // FXCH
             {
-                Extended80 t = Get(0); Set(0, Get(rm)); Set(rm, t);
+                Raw80 top = GetRaw(0);
+                SetRaw(0, GetRaw(rm));
+                SetRaw(rm, top);
                 return;
             }
 
             case 4:
                 switch (rm)
                 {
-                    case 0: Set(0, -Get(0)); return;                          // FCHS
-                    case 1: Set(0, Math.Abs(Get(0).ToDouble())); return;      // FABS
+                    case 0: ChangeSign(invert: true); return;                // FCHS
+                    case 1: ChangeSign(invert: false); return;               // FABS
                     case 4: Compare(Get(0), 0.0); return;                     // FTST
                     case 5: Examine(); return;                                // FXAM
                 }
@@ -416,8 +521,14 @@ public sealed class X87Unit
         switch (reg)
         {
             case 0: _used[(_top + rm) & 7] = false; return;   // FFREE
-            case 2: Set(rm, Get(0)); return;                  // FST ST(i)
-            case 3: Set(rm, Get(0)); Pop(); return;           // FSTP ST(i)
+            case 2:                                           // FST ST(i)
+                SetRaw(rm, GetRaw(0));
+                return;
+
+            case 3:                                           // FSTP ST(i)
+                SetRaw(rm, GetRaw(0));
+                Pop();
+                return;
             case 4: Compare(Get(0), Get(rm)); return;         // FUCOM
             case 5: Compare(Get(0), Get(rm)); Pop(); return;  // FUCOMP
         }
@@ -433,14 +544,57 @@ public sealed class X87Unit
     {
         _status &= unchecked((ushort)~(C0 | C1 | C2 | C3));
 
-        Extended80 value = Get(0);
-        if (value.Negative) _status |= C1;
+        // Classified on the register's own bits, not on a number made from
+        // them: the classes FXAM reports -- unsupported, denormal, a NaN's
+        // sign -- are exactly what a conversion to a number throws away.
+        Raw80 value = GetRaw(0);
+        const ushort signBit = 0x8000;
+        const ulong integerBit = 1UL << 63;
+        const int maximumExponent = 0x7FFF;
 
-        if (!_used[_top & 7]) { _status |= C0 | C3; return; }        // empty
-        if (value.IsNaN) { _status |= C0; return; }
-        if (value.IsInfinity) { _status |= C0 | C2; return; }
-        if (value.IsZero) { _status |= C3; return; }
-        _status |= C2;                                                // normal
+        if ((value.SignExponent & signBit) != 0) _status |= C1;
+
+        int exponent = value.BiasedExponent;
+        bool integerBitSet = (value.Significand & integerBit) != 0;
+        bool fractionZero = (value.Significand & ~integerBit) == 0;
+
+        if (!_used[_top & 7])
+        {
+            _status |= C3 | C0;                                  // empty
+        }
+        else if (exponent == 0)
+        {
+            _status |= value.Significand == 0 ? C3 : (ushort)(C3 | C2);   // zero, denormal
+        }
+        else if (!integerBitSet)
+        {
+            // Unsupported: an unnormal, pseudo-NaN or pseudo-infinity, and
+            // every MMX value whose top bit is clear. C3 C2 C0 = 000.
+        }
+        else if (exponent == maximumExponent)
+        {
+            _status |= fractionZero ? (ushort)(C2 | C0) : C0;    // infinity, NaN
+        }
+        else
+        {
+            _status |= C2;                                       // normal
+        }
+    }
+
+    /// <summary>
+    /// FCHS and FABS: they change bit 79 and nothing else, so they work on
+    /// the raw register -- a NaN keeps its payload and a denormal its value.
+    /// </summary>
+    private void ChangeSign(bool invert)
+    {
+        const ushort signBit = 0x8000;
+
+        Raw80 value = GetRaw(0);
+        ushort signExponent = invert
+            ? (ushort)(value.SignExponent ^ signBit)
+            : (ushort)(value.SignExponent & ~signBit);
+
+        SetRaw(0, new Raw80(value.Significand, signExponent));
     }
 
     // ---- the memory forms ---------------------------------------------------
@@ -471,6 +625,24 @@ public sealed class X87Unit
         return Pop();
     }
 
+    /// <summary>
+    /// FLD TBYTE: the ten bytes pushed as they are. This is the one load
+    /// that carries a register's exact bits, and code that spills and
+    /// reloads registers through it expects them back unchanged.
+    /// </summary>
+    public void LoadRawFromMemory(Raw80 value)
+    {
+        PushRaw(value);
+        Executed++;
+    }
+
+    /// <summary>FSTP TBYTE: ST(0)'s ten bytes, popped.</summary>
+    public Raw80 PopTopRaw()
+    {
+        Executed++;
+        return PopRaw();
+    }
+
     /// <summary>The integer ST(0) rounds to, under the current rounding mode.</summary>
     public long RoundTop() => Round(Get(0).ToDouble());
 
@@ -495,7 +667,7 @@ public sealed class X87Unit
     /// Restores the whole visible state, as FRSTOR does after a task switch
     /// has saved it. The registers themselves are handed over separately.
     /// </summary>
-    public void RestoreState(ushort control, ushort status, ushort tags, Extended80[] registers)
+    public void RestoreState(ushort control, ushort status, ushort tags, Raw80[] registers)
     {
         _control = control;
         _status = (ushort)(status & 0x47FF);
@@ -509,10 +681,136 @@ public sealed class X87Unit
     }
 
     /// <summary>The eight registers in physical order, for FSAVE.</summary>
-    public Extended80[] PhysicalRegisters()
+    public Raw80[] PhysicalRegisters()
     {
-        var copy = new Extended80[8];
+        var copy = new Raw80[8];
         Array.Copy(_stack, copy, 8);
         return copy;
+    }
+
+    // ---- MMX ----------------------------------------------------------------
+    //
+    // The Pentium MMX added eight 64-bit registers without adding any state:
+    // MM0-MM7 are the significands of the physical x87 registers R0-R7, which
+    // is what let every existing operating system save them with the FSAVE it
+    // already executed on a task switch. The price is that the two cannot be
+    // used at once, and the rules below are what make the hand-over visible
+    // (SDM vol. 3, "MMX technology system programming model").
+
+    /// <summary>
+    /// MMn, read. The index is physical: MM0 is R0 whatever TOP says.
+    /// </summary>
+    public ulong ReadMmx(int index) => _stack[index & 7].Significand;
+
+    /// <summary>
+    /// MMn, written: the significand takes the value and the sign and exponent
+    /// are set to all ones, so that x87 code finding it reads a NaN rather
+    /// than a plausible number.
+    /// </summary>
+    public void WriteMmx(int index, ulong value)
+    {
+        const ushort mmxSignExponent = 0xFFFF;
+
+        _stack[index & 7] = new Raw80(value, mmxSignExponent);
+    }
+
+    /// <summary>
+    /// What every MMX instruction does to the x87 state besides its own
+    /// work, reads included: TOP becomes 0 and every register is tagged as
+    /// holding a value, so that the unit is visibly in use by MMX code.
+    /// </summary>
+    public void EnterMmxState()
+    {
+        _top = 0;
+        Array.Fill(_used, true);
+    }
+
+    /// <summary>
+    /// EMMS: every register tagged empty, so that floating-point code that
+    /// follows finds a clean stack instead of eight NaNs and a stack
+    /// overflow on its first load.
+    /// </summary>
+    public void EmptyMmxState()
+    {
+        // TOP goes to 0 as for every MMX instruction (SDM table "effects of
+        // MMX instructions on x87 FPU state"; Bochs agrees) -- unverified
+        // against silicon, QEMU leaves it.
+        _top = 0;
+        Array.Clear(_used);
+    }
+
+    // ---- machine snapshots --------------------------------------------------
+
+    /// <summary>
+    /// The layout <see cref="WriteSnapshot"/> produces. Version 1 held the
+    /// registers as normalised numbers and is still read; version 2 holds
+    /// them raw, which is what the unit itself now keeps.
+    /// </summary>
+    public const int SnapshotVersion = 2;
+
+    /// <summary>The size of a version-2 section.</summary>
+    public const int SnapshotLength = 2 + 2 + 1 + 8 * (1 + 8 + 2);
+
+    /// <summary>
+    /// Writes everything the unit holds for a machine snapshot: control,
+    /// status, TOP, and for each physical register whether it is in use and
+    /// its ten bytes as they are.
+    /// </summary>
+    public void WriteSnapshot(BinaryWriter writer)
+    {
+        writer.Write(_control);
+        writer.Write(_status);
+        writer.Write((byte)_top);
+
+        for (int i = 0; i < 8; i++)
+        {
+            writer.Write(_used[i]);
+            writer.Write(_stack[i].Significand);
+            writer.Write(_stack[i].SignExponent);
+        }
+    }
+
+    /// <summary>Reads back what <see cref="WriteSnapshot"/> wrote, in either version.</summary>
+    public void ReadSnapshot(BinaryReader reader, int version)
+    {
+        if (version < 1 || version > SnapshotVersion)
+        {
+            throw new InvalidDataException($"FPU snapshot version {version} is not supported.");
+        }
+
+        _control = reader.ReadUInt16();
+        _status = reader.ReadUInt16();
+        _top = reader.ReadByte() & 7;
+
+        for (int i = 0; i < 8; i++)
+        {
+            _used[i] = reader.ReadBoolean();
+            _stack[i] = version == 1 ? ReadVersionOneRegister(reader) : ReadRawRegister(reader);
+        }
+    }
+
+    private static Raw80 ReadRawRegister(BinaryReader reader)
+    {
+        ulong significand = reader.ReadUInt64();
+        ushort signExponent = reader.ReadUInt16();
+
+        return new Raw80(significand, signExponent);
+    }
+
+    /// <summary>
+    /// A version-1 register: the fields of a normalised number, converted to
+    /// the bits it is stored as. Those files were written before MMX, when
+    /// the registers held only numbers the conversion reproduces.
+    /// </summary>
+    private static Raw80 ReadVersionOneRegister(BinaryReader reader)
+    {
+        ulong significand = reader.ReadUInt64();
+        int exponent = reader.ReadInt32();
+        bool negative = reader.ReadBoolean();
+        bool isNaN = reader.ReadBoolean();
+        bool isInfinity = reader.ReadBoolean();
+
+        Extended80 value = Extended80.FromFields(significand, exponent, negative, isNaN, isInfinity);
+        return Raw80.FromExtended(value);
     }
 }

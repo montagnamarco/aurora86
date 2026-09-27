@@ -66,6 +66,14 @@ public sealed partial class Machine
                     // thing that can produce the interrupt that will wake the
                     // CPU back up. Skipping the device advance here would wedge
                     // the machine permanently.
+                    //
+                    // The steps this iteration never got to run still have to
+                    // reach the cycle counter, or a machine that spends most
+                    // of its life halted -- almost every guest, between
+                    // keystrokes -- would report a time-stamp counter far
+                    // behind the wall-clock time the rest of the emulator
+                    // just advanced by.
+                    Cpu.AccountIdleCycles(steps - i);
                     break;
                 }
                 Cpu.StepWithInterrupts();

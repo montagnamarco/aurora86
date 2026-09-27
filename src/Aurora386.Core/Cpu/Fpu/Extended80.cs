@@ -39,7 +39,11 @@ public readonly struct Extended80
     }
 
     public static readonly Extended80 Zero = new(0, 0, false);
-    public static readonly Extended80 NaN = new(0xC000000000000000, 0, false, isNaN: true);
+    /// <summary>
+    /// The real indefinite: the NaN the x87 produces when an invalid operation
+    /// is masked. It is negative -- FFFF:C000000000000000 in the register.
+    /// </summary>
+    public static readonly Extended80 NaN = new(0xC000000000000000, 0, true, isNaN: true);
 
     public static Extended80 Infinity(bool negative)
         => new(0x8000000000000000, 0, negative, isInfinity: true);
@@ -126,21 +130,60 @@ public readonly struct Extended80
 
         if (biased == 0 && significand == 0) return new Extended80(0, 0, negative);
 
-        return Normalise(significand, biased - 16383, negative);
+        // A denormal (biased exponent 0) has the same scale as the smallest
+        // normal number, 2^-16382, not 2^-16383: the exponent field is 0 but
+        // the value it stands for is 1 - 16383.
+        const int exponentBias = 16383;
+        int exponent = biased == 0 ? 1 - exponentBias : biased - exponentBias;
+
+        return Normalise(significand, exponent, negative);
     }
+
+    /// <summary>
+    /// Rebuilds a value from its fields exactly as they were held, for a
+    /// machine snapshot. <see cref="FromBits"/> is not enough there: it goes
+    /// through the memory format, which cannot carry an exponent below the
+    /// denormal range, and a snapshot must give back what the unit held rather
+    /// than what FSAVE would have written.
+    /// </summary>
+    internal static Extended80 FromFields(ulong significand, int exponent, bool negative,
+                                          bool isNaN, bool isInfinity)
+        => new(significand, exponent, negative, isNaN, isInfinity);
 
     /// <summary>The pair of words the format occupies in memory.</summary>
     public (ulong Significand, ushort SignAndExponent) ToBits()
     {
-        if (IsNaN) return (0xC000000000000000, 0x7FFF);
+        if (IsNaN) return (0xC000000000000000, (ushort)(Negative ? 0xFFFF : 0x7FFF));
         if (IsInfinity) return (0x8000000000000000, (ushort)(Negative ? 0xFFFF : 0x7FFF));
         if (IsZero) return (0, (ushort)(Negative ? 0x8000 : 0));
 
         int biased = Exponent + 16383;
         if (biased >= 0x7FFF) return (0x8000000000000000, (ushort)(Negative ? 0xFFFF : 0x7FFF));
-        if (biased <= 0) return (0, (ushort)(Negative ? 0x8000 : 0));
+        if (biased <= 0) return ToDenormalBits(biased);
 
         return (Significand, (ushort)(biased | (Negative ? 0x8000 : 0)));
+    }
+
+    /// <summary>
+    /// A value too small for a normal exponent, stored as the x87 stores it
+    /// with underflow masked: exponent field 0 and the significand shifted
+    /// right until its scale is 2^-16382. Bits shifted out are dropped
+    /// (truncation; the x87 would round by the control word, which is not
+    /// modelled). Past 64 bits of shift the value is a signed zero.
+    /// </summary>
+    private (ulong Significand, ushort SignAndExponent) ToDenormalBits(int biased)
+    {
+        const int significandBits = 64;
+
+        ushort sign = (ushort)(Negative ? 0x8000 : 0);
+        int shift = 1 - biased;
+
+        if (shift >= significandBits)
+        {
+            return (0, sign);
+        }
+
+        return (Significand >> shift, sign);
     }
 
     // ---- arithmetic --------------------------------------------------------

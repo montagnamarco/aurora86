@@ -68,4 +68,27 @@ public enum Flags : uint
     /// without CPUID it reads back unchanged.
     /// </summary>
     Identification = 1u << 21,
+
+    /// <summary>
+    /// Virtual interrupt flag (P2.3, VME/PVI). The monitor's own copy of IF,
+    /// substituted for the real one wherever CR4.VME (in a V86 task) or
+    /// CR4.PVI (ring 3 in protected mode) says the current privilege is not
+    /// trusted with the real flag: CLI/STI, and below IOPL 3 also PUSHF,
+    /// POPF, IRET and a redirected INT n, read and write this bit instead of
+    /// <see cref="Interrupt"/>. Exists at all only on silicon that carries
+    /// CPUID.VME (Intel SDM Vol.1 §3.4.3) -- see the Identification bit
+    /// above for the same "does this bit even exist" gate.
+    /// </summary>
+    VirtualInterrupt = 1u << 19,
+
+    /// <summary>
+    /// Virtual interrupt pending (P2.3, VME/PVI). Set only by software -- the
+    /// monitor, through an IRET or POPF at CPL 0 -- to record that a virtual
+    /// interrupt is queued behind <see cref="VirtualInterrupt"/> being clear;
+    /// no hardware interrupt or exception ever touches it. STI (real or
+    /// virtualized) and the VME/PVI virtualized POPF/IRET refuse to set VIF
+    /// while this bit is set, with #GP(0), which is precisely the signal that
+    /// tells the monitor to deliver what it was holding back.
+    /// </summary>
+    VirtualInterruptPending = 1u << 20,
 }

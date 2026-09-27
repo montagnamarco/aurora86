@@ -342,7 +342,14 @@ public class BootRegressionTests
     {
         // The diagnostic that led us to the missing XLAT: without it, an
         // unimplemented opcode is indistinguishable from a bad jump.
-        var (cpu, bus) = Setup(0x0F, 0x0B);   // a two-byte opcode that does not exist
+        //
+        // 0x0F 0x0B used to be this test's stand-in "opcode that does not
+        // exist" -- until work package P3.1 gave it a name (UD2), which is
+        // now a recognised #UD rather than an unknown one, exactly as 0xAA
+        // (RSM) already was. 0x0F 0x0D remains genuinely unassigned: Intel's
+        // own P6 documents it staying undefined (AMD's PREFETCH lives there
+        // instead), and Aurora has nothing behind it either.
+        var (cpu, bus) = Setup(0x0F, 0x0D);   // a two-byte opcode that does not exist
         using (bus)
         {
             byte reported = 0;
@@ -354,7 +361,7 @@ public class BootRegressionTests
             cpu.Step();
 
             Assert.True(called, "the unknown opcode was not reported");
-            Assert.Equal(0x0B, reported);
+            Assert.Equal(0x0D, reported);
         }
     }
 }

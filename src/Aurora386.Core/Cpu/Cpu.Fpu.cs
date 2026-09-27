@@ -61,12 +61,78 @@ public sealed partial class Cpu
 
         if (operand.IsRegister)
         {
+            if (ExecuteP6RegisterForm(opcode, operand.Reg, operand.Register))
+            {
+                return;
+            }
+
             Fpu.ExecuteRegister(opcode, operand.Reg, operand.Register, out ushort? status);
             if (status is { } value) State.Ax = value;
             return;
         }
 
         ExecuteEscapeWithMemory(opcode, operand);
+    }
+
+    /// <summary>
+    /// FCMOVcc (DA/DB, reg 0-3) and the FCOMI family (DB/DF, reg 5/6): the
+    /// register-operand escapes work package P3.1 adds, which need the
+    /// integer EFLAGS that live on <see cref="Cpu"/> rather than on
+    /// <see cref="Fpu"/> -- the condition CMOVcc tests, and the ZF/PF/CF
+    /// triple FCOMI/FUCOMI report. Every other register-operand escape
+    /// returns false unchanged, for <see cref="X87Unit.ExecuteRegister"/> to
+    /// keep handling exactly as before. Gated on CPUID.CMOV, which the SDM
+    /// documents as covering this whole family, not just the integer
+    /// CMOVcc (plans/specs/p6.md item 1); without it the encodings fall back to
+    /// the unit's old handling.
+    /// </summary>
+    private bool ExecuteP6RegisterForm(byte opcode, int reg, int rm)
+    {
+        bool isFCmov = (opcode == 0xDA || opcode == 0xDB) && reg is 0 or 1 or 2 or 3;
+        bool isFComi = (opcode == 0xDB || opcode == 0xDF) && reg is 5 or 6;
+
+        if (!isFCmov && !isFComi)
+        {
+            return false;
+        }
+
+        // Before the P6 these encodings are reserved. They are left to the
+        // unit's ordinary dispatch, which ignores them as it always has: a
+        // 387 or a 486 is not documented to raise #UD for a reserved escape.
+        if (!State.Features.Has(CpuFeature.Cmov))
+        {
+            return false;
+        }
+
+        if (isFCmov)
+        {
+            // DA is the true-condition quartet (B, E, BE, U); DB is the same
+            // four conditions inverted (NB, NE, NBE, NU).
+            bool condition = reg switch
+            {
+                0 => Flags.Carry,
+                1 => Flags.Zero,
+                2 => Flags.Carry || Flags.Zero,
+                _ => Flags.Parity,
+            };
+            if (opcode == 0xDB) condition = !condition;
+
+            Fpu.ConditionalMove(rm, condition);
+            return true;
+        }
+
+        // reg 6 (DB/DF) is the ordered compare, reg 5 the unordered one; DF
+        // pops (FCOMIP/FUCOMIP), DB does not (FCOMI/FUCOMI).
+        bool pop = opcode == 0xDF;
+        (bool zero, bool parity, bool carry) = Fpu.CompareForEflags(rm, pop);
+
+        Flags.Zero = zero;
+        Flags.Parity = parity;
+        Flags.Carry = carry;
+        Flags.Overflow = false;
+        Flags.Sign = false;
+        Flags.Adjust = false;
+        return true;
     }
 
     /// <summary>
@@ -154,8 +220,8 @@ public sealed partial class Cpu
             // compiler spills a register to when the full width has to
             // survive. Nothing is narrowed on the way through, which is the
             // whole reason the format exists.
-            case 5: Fpu.LoadFromMemory(ReadExtended(segment, address)); return;     // FLD
-            case 7: WriteExtended(segment, address, Fpu.PopTop()); return;          // FSTP
+            case 5: Fpu.LoadRawFromMemory(ReadRaw(segment, address)); return;       // FLD
+            case 7: WriteRaw(segment, address, Fpu.PopTopRaw()); return;            // FSTP
         }
     }
 
@@ -238,19 +304,20 @@ public sealed partial class Cpu
     /// implied as it is in the shorter formats. Ten bytes, so the last two
     /// are read on their own.
     /// </summary>
-    private Extended80 ReadExtended(SegReg segment, uint address)
+    private Raw80 ReadRaw(SegReg segment, uint address)
     {
         ulong significand = ReadMem32(segment, address)
                           | ((ulong)ReadMem32(segment, address + 4) << 32);
-        return Extended80.FromBits(significand, ReadMem16(segment, address + 8));
+        ushort signExponent = ReadMem16(segment, address + 8);
+
+        return new Raw80(significand, signExponent);
     }
 
-    private void WriteExtended(SegReg segment, uint address, Extended80 value)
+    private void WriteRaw(SegReg segment, uint address, Raw80 value)
     {
-        (ulong significand, ushort signAndExponent) = value.ToBits();
-        WriteMem32(segment, address, (uint)significand);
-        WriteMem32(segment, address + 4, (uint)(significand >> 32));
-        WriteMem16(segment, address + 8, signAndExponent);
+        WriteMem32(segment, address, (uint)value.Significand);
+        WriteMem32(segment, address + 4, (uint)(value.Significand >> 32));
+        WriteMem16(segment, address + 8, value.SignExponent);
     }
 
     // ---- saving and restoring the unit ---------------------------------------
@@ -311,25 +378,27 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// FNSAVE: the environment followed by the eight registers in physical
-    /// order, ten bytes each. Physical order, not stack order -- the top of
-    /// stack pointer is in the status word, and restoring puts it back, so
-    /// the registers must not be rotated on the way out.
+    /// FNSAVE: the environment followed by the eight registers in stack
+    /// order, ST(0) first, ten bytes each (SDM FSAVE: "Destination[ST(0)]
+    /// ... [ST(7)]"). The tag word in the environment is the one indexed by
+    /// physical register; the register area is indexed from the top of the
+    /// stack. This was written in physical order until the P2.5 review, which
+    /// only showed when TOP was not 0.
     /// </summary>
     private void SaveFullState(SegReg segment, uint address)
     {
         StoreEnvironment(segment, address);
 
         uint registersAt = address + (EnvironmentIs32Bit ? 28u : 14u);
-        Extended80[] registers = Fpu.PhysicalRegisters();
-
         for (int i = 0; i < 8; i++)
-            WriteExtended(segment, registersAt + (uint)(i * 10), registers[i]);
+        {
+            WriteRaw(segment, registersAt + (uint)(i * 10), Fpu.GetRaw(i));
+        }
 
         // FNSAVE leaves the unit initialised, which is what makes it usable
         // as the "save and forget" half of a context switch: the incoming
         // task finds a clean stack without having to run FINIT itself.
-        Fpu.Reset();
+        Fpu.Initialize();
     }
 
     private void RestoreFullState(SegReg segment, uint address)
@@ -350,9 +419,15 @@ public sealed partial class Cpu
         }
 
         uint registersAt = address + (EnvironmentIs32Bit ? 28u : 14u);
-        var registers = new Extended80[8];
+        // The image holds ST(0)..ST(7); the unit is given them by physical
+        // register, which the restored TOP decides.
+        int top = (status >> 11) & 7;
+        var registers = new Raw80[8];
+
         for (int i = 0; i < 8; i++)
-            registers[i] = ReadExtended(segment, registersAt + (uint)(i * 10));
+        {
+            registers[(top + i) & 7] = ReadRaw(segment, registersAt + (uint)(i * 10));
+        }
 
         Fpu.RestoreState(control, status, tags, registers);
     }

@@ -252,30 +252,83 @@ public sealed partial class Cpu
     private const uint InterruptFlag = 1u << 9;
     private const uint IoplMask = 3u << 12;
     private const uint IdentificationFlag = 1u << 21;
+
+    /// <summary>EFLAGS.AC, bit 18: the alignment-check flag the 486 added.</summary>
+    private const uint AlignmentCheckBit = 1u << 18;
+
     private const uint ResumeFlag = 1u << 16;
 
     private void Pushf()
     {
         // In virtual 8086 mode PUSHF is IOPL-sensitive: a task that could read
         // the real flags would learn the real IF, and the monitor virtualises
-        // that flag precisely so the task cannot. Below IOPL 3 it traps.
-        if (State.Virtual8086Mode) RequireIoPrivilege();
+        // that flag precisely so the task cannot. Below IOPL 3 it traps --
+        // unless CR4.VME is on, in which case Table 20-2 replaces the trap
+        // with a virtualized image (Cpu.VirtualMode.cs) instead of a fault
+        // into the monitor for every PUSHF a DOS box executes.
+        if (State.Virtual8086Mode)
+        {
+            if (TryPushVirtualizedFlags()) return;
+            RequireIoPrivilege();
+        }
 
-        // A 386 has nothing above bit 15 that the stack may see: VM and RF are
-        // pushed as zero, so the mask is the same for both operand sizes.
-        PushOperand(Flags.Value & 0xFFFFu);
+        // PUSHFD pushes EFLAGS AND 00FCFFFFh: VM and RF are always seen as
+        // zero, and everything above them -- AC, VIF, VIP and ID, on the
+        // processors that have them -- is visible. Masking the image to 16
+        // bits, as this did until the P2.3 review, made the standard probes
+        // fail: a 486 is told from a 386 by toggling AC with POPFD and reading
+        // it back with PUSHFD, and CPUID is found the same way through ID, so
+        // no guest could ever see that CPUID was there.
+        // Of those upper bits only the ones this processor has are visible:
+        // the rest are reserved and read as zero, which the 386EX vectors show
+        // -- PUSHFD there pushes zero above bit 15 whatever the flags hold.
+        PushOperand(Flags.Value & PushedFlagsMask());
+    }
+
+    /// <summary>
+    /// The EFLAGS bits PUSHFD lets the stack see: the low sixteen, then AC
+    /// from the 486, VIF and VIP with the virtual-mode extensions, and ID
+    /// where CPUID exists. VM and RF are never among them.
+    /// </summary>
+    private uint PushedFlagsMask()
+    {
+        uint mask = 0x0000FFFF;
+
+        if (State.Features.Has(CpuFeature.Isa486))
+        {
+            mask |= AlignmentCheckBit;
+        }
+
+        if (State.Features.Has(CpuFeature.Vme))
+        {
+            mask |= VifFlag | VipFlag;
+        }
+
+        if (State.Features.Has(CpuFeature.Identification))
+        {
+            mask |= IdentificationFlag;
+        }
+
+        return mask;
     }
 
     private void Popf()
     {
-        // IOPL-sensitive in virtual 8086 mode, for the same reason as PUSHF:
-        // the monitor owns the interrupt flag, and a task below IOPL 3 that
-        // tried to write it has to be caught and have the write emulated.
-        if (State.Virtual8086Mode) RequireIoPrivilege();
+        // IOPL-sensitive in virtual 8086 mode, for the same reason as PUSHF,
+        // and with the same CR4.VME exception below IOPL 3
+        // (TryPopVirtualizedFlags, Cpu.VirtualMode.cs): the monitor owns the
+        // interrupt flag, and a task below IOPL 3 that tried to write it has
+        // to be caught and have the write emulated -- unless VME lets the
+        // write land on VIF directly instead.
+        if (State.Virtual8086Mode)
+        {
+            if (TryPopVirtualizedFlags(iret: false)) return;
+            RequireIoPrivilege();
+        }
 
         uint value = PopOperand();
         uint next = OperandSize32 ? value : (Flags.Value & 0xFFFF0000) | (value & 0xFFFF);
-        Flags.SetValue(GuardFlagsFromStack(next));
+        Flags.SetValue(GuardFlagsFromStack(next, loadsVirtualInterruptBits: false));
     }
 
     /// <summary>
@@ -287,7 +340,7 @@ public sealed partial class Cpu
     /// IOPL is already 3, IF. Without these rules a task could raise its own
     /// IOPL and step out from under the monitor.
     /// </summary>
-    private uint GuardFlagsFromStack(uint next)
+    private uint GuardFlagsFromStack(uint next, bool loadsVirtualInterruptBits)
     {
         uint current = Flags.Value;
         const uint fixedBits = VirtualModeFlag | ResumeFlag;
@@ -298,8 +351,28 @@ public sealed partial class Cpu
         // change sticks is precisely how software decides the instruction is
         // there, so a 386 that let it move would be asked a question it
         // cannot answer.
-        if (!State.HasIdentification)
+        // AC (bit 18) arrived with the 486: on a 386 the bit does not exist,
+        // and a 386 that let POPFD set it would pass the probe that tells the
+        // two apart.
+        if (!State.Features.Has(CpuFeature.Isa486))
+            next = (next & ~AlignmentCheckBit) | (current & AlignmentCheckBit);
+
+        if (!State.Features.Has(CpuFeature.Identification))
             next = (next & ~IdentificationFlag) | (current & IdentificationFlag);
+
+        // VIF and VIP are loaded from a stack image only by a 32-bit IRET at
+        // ring 0 in protected mode (and by the task switch and the return to
+        // V86, which do not come through here). POPF never loads them at any
+        // privilege -- the SDM: "VIP, VIF and VM remain unaffected" -- and
+        // neither does a real-mode IRETD. They also exist only on processors
+        // with the virtual-mode extensions.
+        bool virtualInterruptBitsLoad = loadsVirtualInterruptBits
+                                        && State.Features.Has(CpuFeature.Vme)
+                                        && State.ProtectedMode
+                                        && State.Cpl == 0;
+
+        if (!virtualInterruptBitsLoad)
+            next = (next & ~VirtualInterruptBits) | (current & VirtualInterruptBits);
 
         if (!State.ProtectedMode) return next;
 
@@ -808,14 +881,22 @@ public sealed partial class Cpu
     /// IRET inside a virtual 8086 task. IOPL-sensitive like the other flag
     /// instructions: below IOPL 3 it traps to the monitor as #GP(0), which is
     /// how the monitor sees every interrupt return the task makes and keeps
-    /// its virtual interrupt flag honest. At IOPL 3 it is a real-mode return
-    /// within the task -- 16-bit pops, a paragraph loaded into CS, a 64 KB
-    /// limit -- with the flags filtered so the task can change neither IOPL
-    /// nor VM.
+    /// its virtual interrupt flag honest -- unless CR4.VME is on, in which
+    /// case Table 20-2 replaces that trap with the same virtualized image
+    /// POPF applies (Cpu.VirtualMode.cs's ApplyVirtualInterruptImage), faulting
+    /// like POPF on TF = 1 or on IF = 1 with VIP = 1 in the image: the SDM
+    /// IRET pseudocode and Bochs agree on this, against the note's reading of
+    /// Collins (unverified against silicon). At
+    /// IOPL 3 it is a real-mode return within the task -- 16-bit pops, a
+    /// paragraph loaded into CS, a 64 KB limit -- with the flags filtered so
+    /// the task can change neither IOPL nor VM.
     /// </summary>
     private void IretVirtual8086()
     {
-        RequireIoPrivilege();
+        // Only the 16-bit IRET is virtualised: an IRETD below IOPL 3 traps
+        // to the monitor with VME on exactly as without it (SDM IRET).
+        bool virtualized = VmeBelowIopl3() && !OperandSize32;
+        if (!virtualized) RequireIoPrivilege();
 
         uint espBefore = State.Esp;
         try
@@ -836,11 +917,19 @@ public sealed partial class Cpu
                 returnFlags = (Flags.Value & 0xFFFF0000) | Pop16();
             }
 
+            // Computed -- and, on the virtualized path, potentially faulted
+            // on -- before CS or EIP moves, so a #GP(0) here (VIP = 1 and the
+            // image asks for interrupts) leaves the whole IRET looking like
+            // it never started once the catch below restores ESP.
+            uint guardedFlags = virtualized
+                ? ApplyVirtualInterruptImage(returnFlags, trapFlagFaults: true)
+                : GuardFlagsFromStack(returnFlags, loadsVirtualInterruptBits: false);
+
             // LoadSegment routes a V86 load to the real-mode form that also
             // resets the limit, which is the confinement the task must keep.
             LoadSegment(SegReg.Cs, returnCs);
             State.Eip = returnEip & 0xFFFF;
-            Flags.SetValue(GuardFlagsFromStack(returnFlags));
+            Flags.SetValue(guardedFlags);
         }
         catch (CpuException)
         {
@@ -884,7 +973,11 @@ public sealed partial class Cpu
                 if (destination > RealModeLimit(selector)) throw new CpuException(13, 0);
                 State.LoadSegmentRealMode(SegReg.Cs, selector);
                 State.Eip = destination;
-                Flags.SetValue(Pop32());
+                // A real-mode IRETD loads (image AND 257FD5h) and keeps VIF, VIP
+                // and VM (SDM IRET); the ID and AC rules still apply.
+                const uint realModeLoaded = 0x257FD5;
+                uint image = (Pop32() & realModeLoaded) | (Flags.Value & ~realModeLoaded);
+                Flags.SetValue(GuardFlagsFromStack(image, loadsVirtualInterruptBits: false));
             }
             else
             {
@@ -1095,14 +1188,17 @@ public sealed partial class Cpu
     /// chance to emulate what the task was trying to do.
     /// </summary>
     /// <summary>
-    /// Raises the invalid-opcode fault when the instruction belongs to a
-    /// later processor than the one being emulated. Deliberately a fault and
-    /// not a silent no-op: a program probing for a 486 executes one of its
-    /// new instructions and waits to see whether it faults.
+    /// Raises the invalid-opcode fault when the processor being emulated
+    /// does not carry the given feature. Deliberately a fault and not a
+    /// silent no-op: a program probing for a 486 executes one of its new
+    /// instructions and waits to see whether it faults, and CPUID itself is
+    /// gated the same way for the processors that predate it. One field
+    /// read and one bit test, same cost as the model comparison this
+    /// replaces.
     /// </summary>
-    private void RequireCpuAtLeast486(byte opcode)
+    private void RequireFeature(CpuFeature feature)
     {
-        if (State.Model < CpuModel.Intel486) throw new CpuException(6);
+        if (!State.Features.Has(feature)) throw new CpuException(6);
     }
 
     private void RequireSupervisor()

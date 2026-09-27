@@ -35,6 +35,11 @@ public sealed partial class Cpu
                 return;
             }
 
+            // --- CMOVcc (0x40-0x4F): Cpu.P6.cs -------------------------------
+            case >= 0x40 and <= 0x4F:
+                ExecuteCmovcc((byte)(opcode & 0x0F));
+                return;
+
             // --- PUSH/POP of FS and GS, both new in the 386 -----------------
             case 0xA0: PushOperand(State.Fs.Selector); return;
             case 0xA1: PopSegment(SegReg.Fs); return;
@@ -185,7 +190,7 @@ public sealed partial class Cpu
 
                     case 7:   // INVLPG: drops one page's cached translation
                     {
-                        RequireCpuAtLeast486(0x01);
+                        RequireFeature(CpuFeature.Isa486);
                         RequireSupervisor();
 
                         // The operand is an address, not a value read from
@@ -266,6 +271,104 @@ public sealed partial class Cpu
             // --- CLTS: clears the "task switched" bit of CR0 ----------------
             case 0x06: RequireSupervisor(); State.Cr0 &= ~CpuState.Cr0TaskSwitched; return;
 
+            // --- UD2: guaranteed-undefined since the Pentium Pro ------------
+            // Recognised explicitly, like RSM further down, so a deliberate
+            // #UD shows in the trace as "UD2" rather than an unknown opcode.
+            // Unconditional on every model: the byte was already undefined
+            // before Intel gave it a name (plans/specs/p6.md item 3).
+            case 0x0B: throw new CpuException(6);
+
+            // --- P6 hint NOPs (plans/specs/p6.md item 3, coordinator's own
+            // decision) -----------------------------------------------------
+            // 0F 18 /0-7 is the multi-byte PREFETCHh space: a memory operand
+            // is a NOP, mod=11 (nothing to prefetch) is #UD. 0F 19-0F 1F are
+            // NOP unconditionally, register or memory alike -- the reserved-
+            // NOP-space Intel documents from the Pentium Pro onward. Neither
+            // is a CPUID bit (CpuFeature.HintNops), so earlier silicon simply
+            // does not have this: the feature check alone gives #UD there.
+            case 0x18:
+            {
+                RequireFeature(CpuFeature.HintNops);
+                var m = DecodeModRm();
+                if (m.IsRegister) throw new CpuException(6);
+                return;
+            }
+
+            case 0x19: case 0x1A: case 0x1B: case 0x1C:
+            case 0x1D: case 0x1E: case 0x1F:
+                RequireFeature(CpuFeature.HintNops);
+                DecodeModRm();
+                return;
+
+            // --- the Pentium's own instructions (Cpu.Pentium.cs) -------------
+            case 0x30: ExecuteWrmsr(); return;
+            case 0x31: ExecuteRdtsc(); return;
+            case 0x32: ExecuteRdmsr(); return;
+
+            // --- the Pentium Pro/Pentium II's own instructions (Cpu.P6.cs) ---
+            case 0x33: ExecuteRdpmc(); return;
+            case 0x34: ExecuteSysenter(); return;
+            case 0x35: ExecuteSysexit(); return;
+
+            // RSM: returns from system-management mode. There is no SMM here
+            // -- no SMRAM, no SMI line -- so this is exactly the #UD a real
+            // processor without SMM gives; handled explicitly rather than
+            // falling through to the default case so the intent (a
+            // recognised but absent instruction, not a decode failure) is on
+            // the record.
+            case 0xAA: throw new CpuException(6);
+
+            case 0xC7:
+            {
+                var m = DecodeModRm();
+                // Only /1 (CMPXCHG8B) exists at this opcode on the models
+                // Aurora emulates; every other reg field -- including the
+                // VMPTRLD/VMPTRST encodings later chips added, which need
+                // VMX this emulator does not have -- is undefined here.
+                if (m.Reg != 1) throw new CpuException(6);
+                RequireFeature(CpuFeature.Cx8);
+                ExecuteCmpXchg8B(m);
+                return;
+            }
+
+            // --- FXSAVE / FXRSTOR (Cpu.P6.cs) ----------------------------------
+            // Group 15. Only /0 and /1 exist on these models, both gated by
+            // CPUID.FXSR; the rest of the group (LDMXCSR, STMXCSR, SFENCE)
+            // arrives with SSE.
+            case 0xAE:
+            {
+                var m = DecodeModRm();
+                switch (m.Reg)
+                {
+                    case 0: RequireFeature(CpuFeature.Fxsr); ExecuteFxsave(m); return;
+                    case 1: RequireFeature(CpuFeature.Fxsr); ExecuteFxrstor(m); return;
+                    default: throw new CpuException(6);
+                }
+            }
+
+            // --- MMX (Pentium MMX): Cpu.Mmx.cs ------------------------------
+            // Every opcode below is dispatched to ExecuteMmx, which decodes
+            // its own ModRM/immediate bytes -- the feature check, the CR0.EM/TS
+            // checks and the 66/F2/F3-prefix rejection all live there, ahead
+            // of any operand decoding, exactly like the 486 opcodes above check
+            // RequireFeature before touching ModRM.
+            case 0x60: case 0x61: case 0x62: case 0x63:
+            case 0x64: case 0x65: case 0x66: case 0x67:
+            case 0x68: case 0x69: case 0x6A: case 0x6B:
+            case 0x6E: case 0x6F:
+            case 0x71: case 0x72: case 0x73:
+            case 0x74: case 0x75: case 0x76: case 0x77:
+            case 0x7E: case 0x7F:
+            case 0xD1: case 0xD2: case 0xD3: case 0xD5:
+            case 0xD8: case 0xD9: case 0xDB: case 0xDC: case 0xDD: case 0xDF:
+            case 0xE1: case 0xE2: case 0xE5:
+            case 0xE8: case 0xE9:
+            case 0xEB: case 0xEC: case 0xED: case 0xEF:
+            case 0xF1: case 0xF2: case 0xF3: case 0xF5:
+            case 0xF8: case 0xF9: case 0xFA: case 0xFC: case 0xFD: case 0xFE:
+                ExecuteMmx(opcode);
+                return;
+
             // --- bit instructions -------------------------------------------
             // In the /r form the bit index is a signed register value, and on a
             // memory operand it may point well outside the addressed word: the
@@ -313,7 +416,7 @@ public sealed partial class Cpu
             // that was three instructions.
             case >= 0xC8 and <= 0xCF:
             {
-                RequireCpuAtLeast486(opcode);
+                RequireFeature(CpuFeature.Isa486);
                 int register = opcode & 7;
 
                 // Only defined for a 32-bit operand. With a 16-bit one Intel
@@ -337,7 +440,7 @@ public sealed partial class Cpu
             // after 1989 uses it.
             case 0xC0:
             {
-                RequireCpuAtLeast486(opcode);
+                RequireFeature(CpuFeature.Isa486);
                 var m = DecodeModRm();
                 byte destination = ReadRm8(m);
                 byte source = State.GetReg8(m.Reg);
@@ -350,7 +453,7 @@ public sealed partial class Cpu
             }
             case 0xC1:
             {
-                RequireCpuAtLeast486(opcode);
+                RequireFeature(CpuFeature.Isa486);
                 var m = DecodeModRm();
                 uint destination = ReadRm(m);
                 uint source = ReadRegOperand(m);
@@ -370,7 +473,7 @@ public sealed partial class Cpu
             // the instruction every lock-free algorithm is built on.
             case 0xB0:
             {
-                RequireCpuAtLeast486(opcode);
+                RequireFeature(CpuFeature.Isa486);
                 var m = DecodeModRm();
                 byte destination = ReadRm8(m);
                 byte accumulator = State.GetReg8(0);
@@ -383,7 +486,7 @@ public sealed partial class Cpu
             }
             case 0xB1:
             {
-                RequireCpuAtLeast486(opcode);
+                RequireFeature(CpuFeature.Isa486);
                 var m = DecodeModRm();
                 uint destination = ReadRm(m);
                 uint accumulator = OperandSize32 ? State.Eax : State.Ax;
@@ -402,44 +505,17 @@ public sealed partial class Cpu
                 return;
             }
 
-            // CPUID: the processor says what it is.
-            //
-            // Before it, software identified the processor by the differences
-            // between the models -- which flags a shift left alone, whether an
-            // instruction existed -- a collection of tricks that got less
-            // reliable with each generation. CPUID replaced all of it with a
-            // question, and from Windows 95 onwards everything asks.
-            //
-            // The function number is in EAX. Zero returns the highest function
-            // supported and the vendor string, in a register order that looks
-            // arbitrary and is not: EBX, EDX, ECX spells "GenuineIntel" when
-            // the twelve bytes are laid out in that sequence.
+            // CPUID: the processor says what it is. See Cpu.Identification.cs
+            // for what each function returns and CpuModelCatalog for the
+            // per-model signatures, brand strings and feature bits it reads
+            // from. Gated on Identification alone, not a model check: a
+            // processor whose silicon lacks CPUID (every 386, and any 486
+            // model built before the instruction existed) has nothing behind
+            // this opcode at all, which is exactly what Identification means.
             case 0xA2:
-            {
-                RequireCpuAtLeast486(opcode);
-                if (!State.HasIdentification) throw new CpuException(6);
-
-                switch (State.Eax)
-                {
-                    case 0:
-                        State.Eax = 1;                 // highest function we answer
-                        State.Ebx = 0x756E6547;        // "Genu"
-                        State.Edx = 0x49656E69;        // "ineI"
-                        State.Ecx = 0x6C65746E;        // "ntel"
-                        return;
-
-                    default:
-                        // Family 4, model 8, stepping 0: an Intel486 DX4. The
-                        // feature bits say what the processor can do; ours has
-                        // an on-chip floating point unit and nothing else that
-                        // needs announcing.
-                        State.Eax = 0x0480;
-                        State.Ebx = 0;
-                        State.Ecx = 0;
-                        State.Edx = 0x00000001;        // bit 0: floating point on chip
-                        return;
-                }
-            }
+                RequireFeature(CpuFeature.Identification);
+                ExecuteCpuId();
+                return;
 
             // INVD and WBINVD: throw the caches away, with and without writing
             // dirty lines back first. This processor has no cache to speak of,
@@ -447,7 +523,7 @@ public sealed partial class Cpu
             // is exactly what they do on a 486 with caching disabled.
             case 0x08:
             case 0x09:
-                RequireCpuAtLeast486(opcode);
+                RequireFeature(CpuFeature.Isa486);
                 RequireSupervisor();
                 return;
 
@@ -457,23 +533,33 @@ public sealed partial class Cpu
             case 0xB5: LoadFarPointer(SegReg.Gs); return;
 
             // --- control register access ------------------------------------
+            // CR4 (reg field 4) exists only from the Pentium onward: naming
+            // it on a 386/486 is exactly as undefined as naming the
+            // perpetually reserved CR1/CR5/CR6/CR7, which is why the feature
+            // check happens before the privilege one -- decode-time faults
+            // outrank execute-time ones (SDM Vol.3 Table 6-1's exception
+            // priority), and "this control register does not exist on this
+            // processor" is a decode-time question.
             case 0x20:
             {
-                RequireSupervisor();
                 var m = DecodeModRm();
+                if (m.Reg == 4) RequireFeature(CpuFeature.ControlRegister4);
+                RequireSupervisor();
                 State.SetReg32(m.Register, m.Reg switch
                 {
                     0 => State.Cr0,
                     2 => State.Cr2,
                     3 => State.Cr3,
+                    4 => State.Cr4,
                     _ => 0,
                 });
                 return;
             }
             case 0x22:
             {
-                RequireSupervisor();
                 var m = DecodeModRm();
+                if (m.Reg == 4) RequireFeature(CpuFeature.ControlRegister4);
+                RequireSupervisor();
                 uint value = State.GetReg32(m.Register);
                 switch (m.Reg)
                 {
@@ -482,10 +568,22 @@ public sealed partial class Cpu
                     case 3:
                         // Loading CR3 points the processor at a different set
                         // of page tables, so every cached translation is now
-                        // about the wrong address space.
+                        // about the wrong address space. With PAE paging
+                        // active -- CR4.PAE and CR0.PG both set (SDM Vol.3A
+                        // §4.4.1's own condition; coordinator decision D1) --
+                        // it also reloads the four PDPT registers from the
+                        // new tables: a reserved bit in a present one is
+                        // #GP(0) right here, before CR3 changes, not a page
+                        // fault deferred to first use. With CR0.PG clear, CR3
+                        // is simply stored -- there is no paging, PAE or
+                        // otherwise, for it to be part of yet.
+                        if ((State.Cr4 & CpuState.Cr4Pae) != 0 && (State.Cr0 & CpuState.Cr0Paging) != 0)
+                            LoadPdptRegisters(value);
+
                         State.Cr3 = value;
-                        FlushTlb();
+                        FlushTlbForCr3Load();
                         break;
+                    case 4: WriteCr4(value); break;
                 }
                 return;
             }
@@ -493,20 +591,32 @@ public sealed partial class Cpu
             // --- debug register access --------------------------------------
             // There is no breakpoint hardware behind these, but the values
             // still have to be kept: whoever writes them expects to read the
-            // same values back, and debuggers probe exactly that way.
-            // On 386/486 DR4 and DR5 alias DR6 and DR7. There is no CR4.DE
-            // on these models to disable the legacy aliases.
+            // same values back, and debuggers probe exactly that way. (This
+            // emulator has no data/I/O breakpoint hardware at all -- DR0-DR3
+            // and the length/type fields of DR7 are storage only, on every
+            // model -- so CR4.DE changes nothing about what a breakpoint
+            // does here, only whether DR4/DR5 may be named.)
+            //
+            // On 386/486 DR4 and DR5 always alias DR6 and DR7: there is no
+            // CR4 on those models to say otherwise. From the Pentium, CR4.DE
+            // (Debug Extensions) turns that alias off -- naming DR4 or DR5
+            // with DE set raises #UD. That check depends on CR4 at run time,
+            // so it comes after the privilege check, as in Bochs and QEMU:
+            // ring-3 and V86 code get #GP(0) whatever DE says, which is what
+            // a V86 monitor emulating MOV DRx from its #GP handler expects.
             case 0x21:
             {
-                RequireSupervisor();
                 var m = DecodeModRm();
+                RequireSupervisor();
+                RequireDebugRegister(m.Reg);
                 State.SetReg32(m.Register, State.Dr[m.Reg is 4 or 5 ? m.Reg + 2 : m.Reg]);
                 return;
             }
             case 0x23:
             {
-                RequireSupervisor();
                 var m = DecodeModRm();
+                RequireSupervisor();
+                RequireDebugRegister(m.Reg);
                 State.Dr[m.Reg is 4 or 5 ? m.Reg + 2 : m.Reg] = State.GetReg32(m.Register);
                 return;
             }
@@ -517,9 +627,11 @@ public sealed partial class Cpu
             // but memory sizers and CPU probes do read them to tell a 386 from
             // a 486, so they have to exist and hold what was written rather than
             // fault. The TLB here is a plain cache with no test path, so the
-            // registers are storage and nothing more.
+            // registers are storage and nothing more. The Pentium removed them:
+            // there both encodings are #UD (see CpuFeature.TestRegisters).
             case 0x24:
             {
+                RequireFeature(CpuFeature.TestRegisters);
                 RequireSupervisor();
                 var m = DecodeModRm();
                 State.SetReg32(m.Register, m.Reg >= 6 ? State.Tr[m.Reg - 6] : 0);
@@ -528,6 +640,7 @@ public sealed partial class Cpu
 
             case 0x26:
             {
+                RequireFeature(CpuFeature.TestRegisters);
                 RequireSupervisor();
                 var m = DecodeModRm();
                 if (m.Reg >= 6) State.Tr[m.Reg - 6] = State.GetReg32(m.Register);
@@ -796,10 +909,34 @@ public sealed partial class Cpu
         // alignment mask bit and sees whether it stuck.
         value &= State.Cr0Writable;
 
-        // On a 486DX the coprocessor is on the die and the bit that says so
-        // is not writable: clearing it would be claiming the chip does not
-        // contain a part of itself.
-        if (State.Model >= CpuModel.Intel486) value |= CpuState.Cr0ExtensionType;
+        // On a 486DX, and everything after it, the coprocessor is on the die
+        // and the bit that says so is not writable: clearing it would be
+        // claiming the chip does not contain a part of itself.
+        if (State.Features.Has(CpuFeature.Isa486)) value |= CpuState.Cr0ExtensionType;
+
+        // Paging has no meaning without protected mode to run it in: setting
+        // PG while PE is (or would be left) clear is #GP(0), CR0 left
+        // exactly as it was (SDM Vol.3 "MOV--Move to/from Control
+        // Registers"; coordinator decision U5).
+        if ((value & CpuState.Cr0Paging) != 0 && (value & CpuState.Cr0ProtectionEnable) == 0)
+            throw new CpuException(13, 0);
+
+        // While PAE paging will be active once this write commits -- PAE
+        // already set in CR4, and PG about to be either already set or set
+        // by this very write -- a change to PG, CD or NW reloads the four
+        // PDPT registers from the current CR3 (SDM Vol.3A §4.4.1's own
+        // narrower rule names only PG's 0-to-1 transition; the wider one
+        // here also covers CD and NW, which change what a cached
+        // translation's write-protect decision means exactly as PG and WP
+        // already do below -- coordinator decision U1). This has to happen
+        // before State.Cr0 is written: a reserved bit in a present PDPTE is
+        // #GP(0) at this instruction, leaving CR0 exactly as it was, not
+        // paging (or its cache-control bits) changed over an invalid
+        // address space.
+        bool paePagingActiveAfterWrite = (value & CpuState.Cr0Paging) != 0 && (State.Cr4 & CpuState.Cr4Pae) != 0;
+        const uint PdptReloadTriggers = CpuState.Cr0Paging | CpuState.Cr0CacheDisable | CpuState.Cr0NotWriteThrough;
+        if (paePagingActiveAfterWrite && ((State.Cr0 ^ value) & PdptReloadTriggers) != 0)
+            LoadPdptRegisters(State.Cr3);
 
         // Turning paging on or off changes what every linear address means,
         // so nothing cached under the old arrangement is still true. So does
@@ -810,5 +947,67 @@ public sealed partial class Cpu
         if (((State.Cr0 ^ value) & Invalidating) != 0) FlushTlb();
 
         State.Cr0 = value;
+    }
+
+    /// <summary>
+    /// #UD for DR4 or DR5 while CR4.DE is set: with the Debug Extensions on
+    /// those two names no longer alias DR6 and DR7, and naming them is an
+    /// invalid opcode (SDM vol. 3, "Debug Registers").
+    /// </summary>
+    private void RequireDebugRegister(int index)
+    {
+        bool debugExtensions = (State.Cr4 & CpuState.Cr4De) != 0;
+        bool aliasedName = index is 4 or 5;
+
+        if (debugExtensions && aliasedName)
+        {
+            throw new CpuException(6);
+        }
+    }
+
+    /// <summary>
+    /// Writes CR4. Unlike CR0, a bit this processor does not carry is not
+    /// silently dropped: writing a 1 to it is <c>#GP(0)</c> (SDM Vol.3 §2.5,
+    /// cpu-models.md §2), so the whole write is rejected and CR4 is left
+    /// exactly as it was rather than being clipped to the writable subset.
+    /// </summary>
+    private void WriteCr4(uint value)
+    {
+        if ((value & ~State.Cr4Writable) != 0) throw new CpuException(13, 0);
+
+        // While PAE paging will be active once this write commits -- paging
+        // already on, and PAE about to be either already set or set by this
+        // very write -- a change to PAE, PGE or PSE reloads the four PDPT
+        // registers from the current CR3 (see WriteCr0's equivalent check,
+        // and LoadPdptRegisters' remarks). SDM Vol.3A §4.4.1 names only
+        // PAE's own 0-to-1 transition; the wider rule here also covers PGE
+        // and PSE, which -- like PAE itself -- change how a cached
+        // translation's permissions are decided or what a linear address
+        // even means (coordinator decision U1). Also before State.Cr4 is
+        // written, for the same reason: a bad PDPTE must leave CR4
+        // unchanged, whichever of the three bits triggered the reload.
+        bool paePagingActiveAfterWrite = (value & CpuState.Cr4Pae) != 0 && (State.Cr0 & CpuState.Cr0Paging) != 0;
+        const uint PdptReloadTriggers = CpuState.Cr4Pae | CpuState.Cr4Pge | CpuState.Cr4Pse;
+        if (paePagingActiveAfterWrite && ((State.Cr4 ^ value) & PdptReloadTriggers) != 0)
+            LoadPdptRegisters(State.Cr3);
+
+        // PSE, PAE and PGE all change what a linear address means or how its
+        // permissions are decided, exactly like CR0's own Paging and
+        // WriteProtect bits -- so a change to any of them invalidates every
+        // cached translation. PSE is reachable since work package P2.2
+        // (CpuFeatures.Implemented); PAE and PGE are P3.1's own. Collins
+        // measured that a real P5 does *not* flush its TLB on a bare
+        // CR4.PSE toggle, but flushing unconditionally is what later
+        // processors are documented to do and is always safe here -- it
+        // only costs a re-walk, never a wrong answer (plans/specs/pse-vme.md's
+        // P2.2 section, coordinator note). This is the unconditional
+        // FlushTlb a CR3 reload does not use -- see FlushTlbForCr3Load in
+        // Cpu.Paging.cs -- because here it is what a linear address means or
+        // how rights are decided that changed, not merely which address
+        // space is current, so even a page marked global must go.
+        const uint Invalidating = CpuState.Cr4Pse | CpuState.Cr4Pae | CpuState.Cr4Pge;
+        if (((State.Cr4 ^ value) & Invalidating) != 0) FlushTlb();
+
+        State.Cr4 = value;
     }
 }

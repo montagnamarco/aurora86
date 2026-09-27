@@ -35,6 +35,54 @@ public sealed partial class Cpu
     public long Cycles { get; private set; }
 
     /// <summary>
+    /// Counts cycles for instructions that were never actually stepped: the
+    /// batch loop (<see cref="Aurora386.Core.Machine.RunInstructions"/>) still
+    /// has to advance the devices while the CPU sits in HLT, and if a
+    /// pending interrupt is what will eventually wake it, that waiting time
+    /// is exactly as real to the time-stamp counter as time spent executing.
+    /// Without this, RDTSC on a machine that spends most of its life halted
+    /// -- almost every guest, between keystrokes -- would report far fewer
+    /// cycles than the wall-clock time the rest of the emulator advanced by.
+    /// </summary>
+    public void AccountIdleCycles(long steps) => Cycles += steps;
+
+    /// <summary>
+    /// The offset RDTSC's counter runs at ahead of or behind
+    /// <see cref="Cycles"/>. Zero until a WRMSR to the time-stamp-counter MSR
+    /// (index 0x10) moves it; see <see cref="WriteTsc"/>.
+    /// </summary>
+    private long _tscOffset;
+
+    /// <summary>
+    /// The 64-bit time-stamp counter RDTSC and RDMSR(0x10) both read: one
+    /// cycle per instruction retired, the same approximation
+    /// <see cref="Cycles"/> already makes, offset by whatever the last
+    /// WRMSR to it asked for. Wraps the way real 64-bit hardware would
+    /// rather than throwing, which matters once a guest deliberately writes
+    /// a value near the top of the range to test wraparound handling.
+    /// </summary>
+    public ulong Tsc => unchecked((ulong)(Cycles + _tscOffset));
+
+    /// <summary>
+    /// WRMSR to the time-stamp-counter MSR on a P5: writes the low 32 bits
+    /// and clears the high 32 (cpu-models.md §2, SDM Vol.3 §17 footnote on
+    /// TSC write semantics) -- later cores allow a full 64-bit write, but
+    /// that is out of scope for this work package's Pentium-only model.
+    /// Implemented as an offset adjustment so <see cref="Cycles"/> itself
+    /// never has to move backwards.
+    /// </summary>
+    public void WriteTsc(uint low) => _tscOffset = unchecked((long)low - (Cycles + 1));
+
+    /// <summary>
+    /// The model-specific registers this processor answers RDMSR/WRMSR
+    /// against. Owned by the Cpu instance, not static, because the register
+    /// values themselves (the TSC aside, which lives in <see cref="Cycles"/>
+    /// and <see cref="_tscOffset"/>) are per-CPU state a snapshot has to
+    /// carry.
+    /// </summary>
+    public ModelSpecificRegisters Msrs { get; }
+
+    /// <summary>
     /// The interrupt controller. Without one the CPU never sees a hardware
     /// interrupt, which is fine for unit tests but not for a whole machine.
     /// </summary>
@@ -54,6 +102,7 @@ public sealed partial class Cpu
         // With no devices attached every port reads back 0xFF, which is also
         // what a real PC returns for an empty slot.
         _io = io ?? new IoBus();
+        Msrs = new ModelSpecificRegisters(this);
         Reset();
     }
 
@@ -64,6 +113,19 @@ public sealed partial class Cpu
         Flags.SetValue((uint)Aurora386.Core.Cpu.Flags.Reserved1);
         _prefixes.Clear();
         Cycles = 0;
+        _tscOffset = 0;
+
+        // RESET clears the performance-monitoring MSRs along with the TSC
+        // (SDM vol. 3, table 9-1); only INIT would have kept them.
+        Msrs.Reset();
+
+        // The four PAE PDPT registers are as much a part of RESET's initial
+        // state as CR3 itself (State.Reset() already zeroes that): a stale
+        // qword surviving a reset would translate through whatever the
+        // previous guest's page tables happened to leave there the moment
+        // CR4.PAE and CR0.PG are turned back on, before the new guest has
+        // written a CR3 of its own at all.
+        Array.Clear(Pdpte);
     }
 
     // --- effective operand and address sizes ---------------------------------
@@ -96,15 +158,14 @@ public sealed partial class Cpu
 
     /// <summary>
     /// Linear -> physical. With paging off it is the identity; with paging on
-    /// it walks the page directory. A TLB will arrive together with full
-    /// protected mode support: as long as we run in real mode this is just the
-    /// identity function.
+    /// it walks the page directory -- the ordinary two-level one, or PAE's
+    /// three-level one when CR4.PAE is set (<see cref="TranslateWhenPaging"/>).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint TranslateLinear(uint linear, bool write)
     {
         if (!State.PagingEnabled) return linear;
-        return TranslatePaged(linear, write);
+        return TranslateWhenPaging(linear, write);
     }
 
     /// <summary>
@@ -125,10 +186,24 @@ public sealed partial class Cpu
     {
         if (!State.PagingEnabled) return _memory.ReadByte(linear);
 
+        if ((State.Cr4 & CpuState.Cr4Pae) != 0) return PeekLinearPae(linear);
+
         // The walk by hand, because TranslatePaged raises a page fault on a
         // missing page and an inspection must never disturb the machine.
         uint directory = _memory.ReadDword((State.Cr3 & 0xFFFFF000) + ((linear >> 22) << 2));
         if ((directory & 1) == 0) return 0xFF;
+
+        // A 4 MB PDE (CR4.PSE on, PDE.PS on) is the whole translation: no
+        // page table underneath it to read. Same frame arithmetic as
+        // TranslateLargePage, but this inspection never raises the reserved-
+        // bit fault a real access would -- it just has nothing meaningful to
+        // show for a malformed entry either, so 0xFF covers that too.
+        if ((State.Cr4 & CpuState.Cr4Pse) != 0 && (directory & (1u << 7)) != 0)
+        {
+            if ((directory & LargePageReservedMask) != 0) return 0xFF;
+            uint largeFrame = (directory & 0xFFC00000) | (linear & 0x003FF000);
+            return _memory.ReadByte(largeFrame | (linear & 0xFFF));
+        }
 
         uint table = _memory.ReadDword((directory & 0xFFFFF000) + (((linear >> 12) & 0x3FF) << 2));
         if ((table & 1) == 0) return 0xFF;
@@ -327,14 +402,14 @@ public sealed partial class Cpu
     {
         uint value = 0;
         for (int i = size - 1; i >= 0; i--)
-            value = (value << 8) | _memory.ReadByte(TranslatePaged(linear + (uint)i, false));
+            value = (value << 8) | _memory.ReadByte(TranslateWhenPaging(linear + (uint)i, false));
         return value;
     }
 
     private void WriteSplit(uint linear, int size, uint value)
     {
         Span<uint> physical = stackalloc uint[4];
-        for (int i = 0; i < size; i++) physical[i] = TranslatePaged(linear + (uint)i, true);
+        for (int i = 0; i < size; i++) physical[i] = TranslateWhenPaging(linear + (uint)i, true);
         for (int i = 0; i < size; i++) _memory.WriteByte(physical[i], (byte)(value >> (8 * i)));
     }
 
@@ -360,7 +435,7 @@ public sealed partial class Cpu
         uint page = linear & 0xFFFFF000;
         if (page != _fetchPage || State.Cpl != _fetchCpl)
         {
-            _fetchPhysical = TranslatePaged(linear, false) & 0xFFFFF000;
+            _fetchPhysical = TranslateWhenPaging(linear, false) & 0xFFFFF000;
             _fetchPage = page;
             _fetchCpl = State.Cpl;
         }
