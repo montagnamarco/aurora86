@@ -17,3 +17,9 @@ docs/PIANO-1-storico.md
 
 # macOS
 .DS_Store
+
+# Working plans per initiative, and Claude Code local settings. The agent
+# definitions in .claude/agents are committed.
+plans/
+**/.claude/settings.local.json
+**/CLAUDE.local.md
