@@ -234,7 +234,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private void RefreshNetworkLight()
     {
         (long sent, long received) = Session.WithMachine(
-            machine => (machine.Network.FramesSent, machine.Network.FramesReceived));
+            machine => machine.Network is { } network ? (network.FramesSent, network.FramesReceived) : (0L, 0L));
 
         NetworkLedOn = sent != _lastFramesSent || received != _lastFramesReceived;
         _lastFramesSent = sent;
@@ -346,16 +346,30 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool _networkIsNat;
 
     /// <summary>
+    /// Whether the file's network card, if it has one, is configured for
+    /// NAT. Reads <see cref="VmConfiguration.HardwareSettings.Network"/>,
+    /// the source of truth from version 2 on -- see its own summary and
+    /// <see cref="VmConfiguration.Network"/>'s.
+    /// </summary>
+    private static bool IsConfiguredForNat(VmConfiguration configuration)
+        => configuration.Hardware.Network is [{ } card, ..]
+        && card.Mode == VmConfiguration.NetworkMode.Nat;
+
+    /// <summary>
     /// Plugs the card into a NAT or unplugs it, leaving it alone if it is
     /// already where it should be: a NAT holds host ports, and building a
     /// second one while the first is still listening would find them taken.
+    /// Does nothing at all when the machine has no network card fitted.
     /// </summary>
     private void ApplyNetwork(Aurora386.Core.Machine machine, bool nat)
     {
+        if (machine.Network is null) return;
         if (machine.Network.Backend is NatBackend == nat) return;
-        machine.ConnectNetwork(nat
-            ? VmConfiguration.BuildNat(_vmConfiguration?.Network.Forwards ?? [])
-            : new LoopbackBackend());
+
+        List<VmConfiguration.PortForward> forwards = _vmConfiguration?.Hardware.Network is { Count: > 0 } cards
+            ? cards[0].Forwards
+            : [];
+        machine.ConnectNetwork(nat ? VmConfiguration.BuildNat(forwards) : new LoopbackBackend());
     }
 
     // COM1 by default: it is what MOUSE.DRV and every DOS program of the
@@ -747,7 +761,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         // The settings the window shows follow the file, not the other way.
         CpuModel = configuration.Cpu;
         MouseInterface = configuration.Mouse;
-        NetworkIsNat = configuration.Network.Mode == VmConfiguration.NetworkMode.Nat;
+        NetworkIsNat = IsConfiguredForNat(configuration);
 
         RefreshDriveList();
         Session.Start();
@@ -788,9 +802,23 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 : null;
             configuration.Mouse = machine.MouseInterface;
             configuration.BootOrder = machine.BootDrives.ToList();
-            configuration.Network.Mode = machine.Network.Backend is NatBackend
-                ? VmConfiguration.NetworkMode.Nat
-                : VmConfiguration.NetworkMode.None;
+
+            // Hardware.Network is the source of truth from version 2 on; a
+            // machine built with no network card at all has nothing here to
+            // update.
+            if (machine.Network is { } network && configuration.Hardware.Network.Count > 0)
+            {
+                configuration.Hardware.Network[0].Mode = network.Backend is NatBackend
+                    ? VmConfiguration.NetworkMode.Nat
+                    : VmConfiguration.NetworkMode.None;
+            }
+
+            // Hardware.Usb is the source of truth from version 2 on, the same
+            // as Hardware.Network above; UsbEnabled and UsbStorage are kept
+            // only for a version-1 reader.
+            configuration.Hardware.Usb = machine.Usb is not null
+                ? new VmConfiguration.UsbSettings { Storage = configuration.UsbStorage }
+                : null;
 
             configuration.Disks = machine.DiskServices.AttachedDrives
                 .Where(d => d.DriveNumber >= 0x80 && d.SourcePath is not null)
@@ -931,7 +959,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             _vmConfiguration = configuration;
             CpuModel = configuration.Cpu;
             MouseInterface = configuration.Mouse;
-            NetworkIsNat = configuration.Network.Mode == VmConfiguration.NetworkMode.Nat;
+            NetworkIsNat = IsConfiguredForNat(configuration);
             RefreshDriveList();
             WindowTitle = $"Aurora386 \u2014 {configuration.Name}";
             StatusText = $"Opened {configuration.Name}";

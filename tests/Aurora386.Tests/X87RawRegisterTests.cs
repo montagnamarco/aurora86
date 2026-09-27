@@ -261,4 +261,30 @@ public class X87RawRegisterTests
         Assert.Equal(denormalSignificand, ReadSignificand(bus, 0x4010));
         Assert.Equal(0, bus.ReadWord(0x4018));
     }
+
+    /// <summary>An MMX value comes back from a machine snapshot bit for bit.</summary>
+    [Fact]
+    public void AnMmxValueSurvivesASnapshotFile()
+    {
+        const ulong value = 0xFEDCBA9876543210;
+        string path = Path.GetTempFileName();
+        try
+        {
+            using var machine = new Machine();
+            machine.RunInstructions(200);
+            machine.Cpu.Fpu.WriteMmx(5, value);
+            machine.Cpu.Fpu.EnterMmxState();
+
+            MachineSnapshot.Capture(machine).Save(path);
+            machine.Cpu.Fpu.Reset();
+            MachineSnapshot.Load(path).RestoreTo(machine);
+
+            Assert.Equal(value, machine.Cpu.Fpu.ReadMmx(5));
+            Assert.Equal(0xFFFF, machine.Cpu.Fpu.GetRaw(5).SignExponent);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

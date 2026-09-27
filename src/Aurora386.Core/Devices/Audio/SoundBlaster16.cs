@@ -40,6 +40,14 @@ public sealed class SoundBlaster16 : IIoDevice
     public const byte VersionMajor = 4;
     public const byte VersionMinor = 5;
 
+    /// <summary>
+    /// The version of the payload <see cref="Capture"/> produces today.
+    /// Version 2 added the OPL3's timer accumulators to the end of the FM
+    /// section (see <see cref="Opl3.Capture"/>); a version-1 payload is still
+    /// read, simply without them, by <see cref="Restore"/>.
+    /// </summary>
+    public const int SnapshotVersion = 2;
+
     private readonly InterruptController? _interrupts;
     private readonly Dma8237? _dma;
 
@@ -326,6 +334,19 @@ public sealed class SoundBlaster16 : IIoDevice
         }
     }
 
+    /// <summary>
+    /// Puts the whole card back to its power-on state: the DSP, exactly as
+    /// the reset port already does, plus the mixer and the FM synthesiser --
+    /// what unplugging and replugging the card would do, not just the
+    /// software reset a driver issues over the reset port.
+    /// </summary>
+    public void Reset()
+    {
+        ResetDsp();
+        Mixer.Reset();
+        Fm.Reset();
+    }
+
     private void ResetDsp()
     {
         _outputFifo.Clear();
@@ -338,6 +359,24 @@ public sealed class SoundBlaster16 : IIoDevice
         _blockRemaining = 0;
         SpeakerEnabled = false;
         Mixer.InterruptStatus = 0;
+
+        // Power-on values for the rest of the DSP's own state: the time
+        // constant and the sample rate it implies, the test register,
+        // the last byte pushed to the read FIFO (0xFF, what an empty FIFO
+        // has always answered with), the identification echo, and the
+        // running accumulators that track fractional samples between
+        // calls to Advance. Left as they were before this fix, a
+        // driver that reset the card and then read any of these back
+        // found the previous session's values rather than a card that
+        // had genuinely just powered on.
+        _timeConstant = 0;
+        _sampleRate = 22050;
+        _testRegister = 0;
+        _lastOutputByte = 0xFF;
+        _identificationValue = 0;
+        _sampleAccumulator = 0;
+        _resampleAccumulator = 0;
+        _fmAccumulator = 0;
     }
 
     /// <summary>
@@ -877,4 +916,134 @@ public sealed class SoundBlaster16 : IIoDevice
 
     /// <summary>True when the current transfer is stereo.</summary>
     public bool IsStereo => _isStereo;
+
+    // --- snapshot ---------------------------------------------------------
+
+    /// <summary>
+    /// Captures enough of the card to carry on playing after a restore: the
+    /// DSP's command state, the programmed transfer, the mixer and the OPL3.
+    ///
+    /// Left out: the ring buffer of already-rendered samples waiting for the
+    /// host to collect (presentation state, not guest-visible -- the guest
+    /// only ever learns about a block through the interrupt it has already
+    /// raised by the time this runs), and the OPL3's per-operator oscillator
+    /// phase and envelope level (see <see cref="Opl3.Capture"/>). Both are a
+    /// few milliseconds of audio at most, not a difference a restored guest
+    /// can observe through a register.
+    /// </summary>
+    public byte[] Capture()
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        writer.Write(BasePort);
+        writer.Write(Irq);
+        writer.Write(Dma8);
+        writer.Write(Dma16);
+        writer.Write(Enabled);
+
+        writer.Write(_lastResetWrite);
+        writer.Write(_pendingCommand);
+        writer.Write(_pendingArgumentCount);
+        writer.Write(_arguments);
+        writer.Write(_argumentsReceived);
+
+        writer.Write(SpeakerEnabled);
+        writer.Write(_identificationValue);
+        writer.Write(_testRegister);
+        writer.Write(_lastOutputByte);
+
+        writer.Write(_timeConstant);
+        writer.Write(_sampleRate);
+        writer.Write(_blockLength);
+        writer.Write(_blockRemaining);
+        writer.Write(_autoInit);
+        writer.Write(_is16Bit);
+        writer.Write(_isStereo);
+        writer.Write(_isSigned);
+        writer.Write(_paused);
+        writer.Write(_playing);
+
+        writer.Write(_sampleAccumulator);
+        writer.Write(_resampleAccumulator);
+        writer.Write(_fmAccumulator);
+        writer.Write(InterruptCount);
+
+        writer.Write(_outputFifo.Count);
+        foreach (byte value in _outputFifo) writer.Write(value);
+
+        Mixer.Capture(writer);
+        Fm.Capture(writer);
+
+        writer.Flush();
+        return stream.ToArray();
+    }
+
+    /// <summary>Restores what <see cref="Capture"/> wrote. See its summary for what is left out.</summary>
+    public void Restore(byte[] payload, int version)
+    {
+        if (version > SnapshotVersion)
+        {
+            throw new InvalidDataException(
+                $"Sound Blaster snapshot is version {version}; this build reads up to version {SnapshotVersion}.");
+        }
+
+        using var reader = new BinaryReader(new MemoryStream(payload));
+
+        // Read here, applied through Relocate once every other field below
+        // has been restored: Relocate is what moves the I/O registration,
+        // the mixer's own reported IRQ and DMA channels, and the enabled
+        // flag together, exactly as Plug and Play configuring the card does.
+        // Setting the fields directly, as this used to, left the card
+        // registered at its old address while believing it answered at the
+        // new one -- silent everywhere except the one place a driver could
+        // actually notice, the ports themselves.
+        ushort basePort = reader.ReadUInt16();
+        int irq = reader.ReadInt32();
+        int dma8 = reader.ReadInt32();
+        int dma16 = reader.ReadInt32();
+        bool enabled = reader.ReadBoolean();
+
+        _lastResetWrite = reader.ReadByte();
+        _pendingCommand = reader.ReadByte();
+        _pendingArgumentCount = reader.ReadInt32();
+        byte[] arguments = reader.ReadBytes(4);
+        arguments.CopyTo(_arguments, 0);
+        _argumentsReceived = reader.ReadInt32();
+
+        SpeakerEnabled = reader.ReadBoolean();
+        _identificationValue = reader.ReadByte();
+        _testRegister = reader.ReadByte();
+        _lastOutputByte = reader.ReadByte();
+
+        _timeConstant = reader.ReadByte();
+        _sampleRate = reader.ReadInt32();
+        _blockLength = reader.ReadInt32();
+        _blockRemaining = reader.ReadInt32();
+        _autoInit = reader.ReadBoolean();
+        _is16Bit = reader.ReadBoolean();
+        _isStereo = reader.ReadBoolean();
+        _isSigned = reader.ReadBoolean();
+        _paused = reader.ReadBoolean();
+        _playing = reader.ReadBoolean();
+
+        _sampleAccumulator = reader.ReadDouble();
+        _resampleAccumulator = reader.ReadDouble();
+        _fmAccumulator = reader.ReadDouble();
+        InterruptCount = reader.ReadInt32();
+
+        _outputFifo.Clear();
+        int fifoCount = reader.ReadInt32();
+        for (int i = 0; i < fifoCount; i++) _outputFifo.Enqueue(reader.ReadByte());
+
+        Mixer.Restore(reader);
+        Fm.Restore(reader, version);
+
+        // Applied last: everything else above is restored into the fields
+        // directly, but the address, IRQ, DMA channels and enabled flag go
+        // through the same path Plug and Play uses to move the card, so the
+        // I/O registration and the mixer's own copies of IRQ/DMA end up
+        // matching what the fields say rather than lagging behind them.
+        Relocate(basePort, irq, dma8, dma16, enabled);
+    }
 }

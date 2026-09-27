@@ -68,6 +68,30 @@ public sealed class PciBus : IIoDwordDevice
         }
         return stream.ToArray();
     }
+    /// <summary>
+    /// The function keys a captured "PCI " payload names, without applying
+    /// any of it -- for checking a snapshot's topology against a machine's
+    /// before <see cref="Restore"/> touches anything. Mirrors the header
+    /// <see cref="Restore"/> itself reads (the address latch, then a key and
+    /// a fixed 256-byte block per function), but is a plain read: it neither
+    /// requires nor changes anything about this bus.
+    /// </summary>
+    public static IReadOnlyList<ushort> ReadFunctionKeys(ReadOnlySpan<byte> data)
+    {
+        if (data.IsEmpty) return [];
+
+        using var reader = new BinaryReader(new MemoryStream(data.ToArray()));
+        reader.ReadUInt32();   // the address latch; irrelevant to topology
+        int count = reader.ReadInt32();
+        var keys = new List<ushort>(Math.Max(count, 0));
+        for (int i = 0; i < count; i++)
+        {
+            keys.Add(reader.ReadUInt16());
+            reader.ReadBytes(256);
+        }
+        return keys;
+    }
+
     public void Restore(ReadOnlySpan<byte> data)
     {
         if (data.IsEmpty) { Reset(); return; }

@@ -10,6 +10,7 @@ using Aurora386.Core.Devices.Network;
 using Aurora386.Core.Devices.IsaPnp;
 using Aurora386.Core.Devices.Pci;
 using Aurora386.Core.Devices.Audio;
+using Aurora386.Core.Devices.Cards;
 using Aurora386.Core.Devices.Video;
 using Aurora386.Core.Dos;
 using Aurora386.Core.IO;
@@ -26,6 +27,14 @@ namespace Aurora386.Core;
 /// </summary>
 public sealed partial class Machine : IDisposable
 {
+    public PhysicalMemoryBus Memory { get; }
+    public IoBus Io { get; }
+    public PciBus Pci { get; }
+    public PciBios PciServices { get; }
+    public CpuNs.Cpu Cpu { get; }
+
+    public InterruptController Interrupts { get; }
+
     /// <summary>
     /// The cycle-accurate event queue that sits alongside <see
     /// cref="AdvanceDevices"/>: due cycles are the same count as <see
@@ -37,13 +46,6 @@ public sealed partial class Machine : IDisposable
     /// </summary>
     public Scheduler Scheduler { get; } = new();
 
-    public PhysicalMemoryBus Memory { get; }
-    public IoBus Io { get; }
-    public PciBus Pci { get; }
-    public PciBios PciServices { get; }
-    public CpuNs.Cpu Cpu { get; }
-
-    public InterruptController Interrupts { get; }
     public Pit8253 Timer { get; }
     public Keyboard8042 Keyboard { get; }
     public SystemControlPort SystemControl { get; }
@@ -75,10 +77,38 @@ public sealed partial class Machine : IDisposable
     // Audio: the DMA controller is a system device rather than part of the
     // sound card, but the card is the only thing here that uses it.
     public Dma8237 Dma { get; }
-    public SoundBlaster16 SoundBlaster { get; }
 
-    /// <summary>The NE2000 Ethernet card.</summary>
-    public Ne2000 Network { get; }
+    /// <summary>
+    /// Every expansion card fitted -- sound, network and USB -- in the stable
+    /// order that fixed its Plug and Play select number when the machine was
+    /// built. <see cref="EnableUsb"/> may append the USB card to this list
+    /// after construction, for a machine that started with none configured;
+    /// nothing else does, so every other card's position is fixed for the
+    /// machine's whole life.
+    /// </summary>
+    public IReadOnlyList<IExpansionCard> Cards { get; private set; } = [];
+
+    /// <summary>
+    /// The bus every expansion card was, or will be, attached through --
+    /// kept so that <see cref="EnableUsb"/> can build the USB card the same
+    /// way at run time as the constructor builds every other card.
+    /// </summary>
+    private readonly MachineBus _bus;
+
+    /// <summary>
+    /// The first Sound Blaster 16 card fitted, or null on a machine built
+    /// with an empty sound list. With no card, ports 220h-22Fh answer as an
+    /// empty bus -- 0xFF, like any unclaimed port -- and nothing else about
+    /// the machine notices.
+    /// </summary>
+    public SoundBlaster16? SoundBlaster { get; private set; }
+
+    /// <summary>
+    /// The first NE2000 card fitted, or null on a machine built with an empty
+    /// network list. With no card, ports 300h-31Fh answer as an empty bus and
+    /// no Plug and Play identity for it is on the ISA bus either.
+    /// </summary>
+    public Ne2000? Network { get; private set; }
 
     public BiosDataArea Bda { get; }
     public VideoServices VideoServices { get; }
@@ -190,8 +220,10 @@ public sealed partial class Machine : IDisposable
     /// <summary>The Trio64V+ memory-mapped registers sit this far above the linear frame buffer.</summary>
     public const uint TrioMmioOffset = 0x1000000;
 
-    public Machine(uint ramSize = 16 * 1024 * 1024)
+    public Machine(uint ramSize = 16 * 1024 * 1024, HardwareConfiguration? hardware = null)
     {
+        hardware ??= HardwareConfiguration.Default;
+
         // The addressable space is larger than the RAM, because the linear
         // frame buffer lives above it. A real card put it above the 16 MB
         // line -- below that is the ISA hole and whatever memory the machine
@@ -277,28 +309,19 @@ public sealed partial class Machine : IDisposable
         // from a trace of a driver that filled nothing.
         Memory.MapDevice(LinearFrameBufferBase + TrioMmioOffset, 0x10000, Accelerator.Mmio);
 
-        // The 8237 DMA pair and the Sound Blaster 16 that streams through it.
-        // Registering the card also claims the OPL3's own ports at 0x388.
+        // The 8237 DMA pair. Any card that streams through it -- the sound
+        // card, below -- reaches it through MachineBus rather than owning it:
+        // on real hardware this was wired to the slot connector, not fitted
+        // to any one card.
         Dma = new Dma8237(Memory);
         Dma.Register(Io);
 
-        SoundBlaster = new SoundBlaster16(Interrupts, Dma);
-        SoundBlaster.Register(Io);
-
-        // The network card starts with a loopback backend: frames it sends
-        // come straight back to it. That is enough for a driver to find the
-        // card and configure it, and it keeps the emulator from touching the
-        // host's network until somebody deliberately asks it to.
-        Network = new Ne2000(Interrupts, new LoopbackBackend());
-        Network.Register(Io);
-
-        // Both cards are Plug and Play as well as being at their usual
-        // addresses: DOS finds them where it expects, and Windows 95 finds
-        // them by asking the bus, and may move them.
+        // Every card -- every expansion card built below -- is Plug and Play
+        // as well as being at its usual address: DOS finds it where it
+        // expects, and Windows 95 finds it by asking the bus, and may move
+        // it. The bus itself starts answering its own three ports only once
+        // every card has had a chance to add itself, further down.
         IsaPlugAndPlay = new IsaPnpBus();
-        IsaPlugAndPlay.Add(IsaPnpCards.ForSoundBlaster16(SoundBlaster));
-        IsaPlugAndPlay.Add(IsaPnpCards.ForNe2000(Network));
-        IsaPlugAndPlay.Register(Io);
 
         Cpu = new CpuNs.Cpu(Memory, Io) { Interrupts = Interrupts };
 
@@ -375,6 +398,92 @@ public sealed partial class Machine : IDisposable
 
         Pci.Register(Io);
         PciServices = new PciBios(Pci);
+
+        // Expansion cards: built from the configuration in a stable order,
+        // which is what fixes their PCI device numbers and Plug and Play
+        // select numbers. Sound, network and USB have all moved into this
+        // registry (F1.4a, F1.4b, F1.4c). The bus is kept so that EnableUsb
+        // can build the same card at run time, for a machine started with
+        // none configured -- see that method's own summary.
+        _bus = new MachineBus(Io, Memory, Interrupts, Dma, Pci, IsaPlugAndPlay, Scheduler, () => CpuFrequencyHz);
+
+        // Built first, unattached: the factory step alone claims nothing --
+        // no port, no PCI function, and critically no host socket for a
+        // NAT-backed network card -- so the collision check below runs
+        // before any card has opened a resource that would need closing if
+        // the check fails.
+        var cards = new List<IExpansionCard>();
+        foreach (CardSettings settings in hardware.Sound)
+        {
+            cards.Add(CardCatalog.Build(_bus, settings));
+        }
+        foreach (CardSettings settings in hardware.Network)
+        {
+            cards.Add(CardCatalog.Build(_bus, settings));
+        }
+        if (hardware.Usb is not null)
+        {
+            cards.Add(CardCatalog.Build(_bus, hardware.Usb));
+        }
+
+        // Two cards of the same kind would keep their state under the same
+        // snapshot section name -- IExpansionCard.SnapshotId is a fixed
+        // four letters per card type, not assigned per instance -- and
+        // MachineSnapshot has no way to tell them apart on either capture or
+        // restore. Rather than silently letting the second card's state
+        // overwrite the first's section (or restore into the wrong card),
+        // such a configuration is refused up front: fitting two of the same
+        // kind is not supported yet.
+        IGrouping<string, IExpansionCard>? collision = cards
+            .GroupBy(card => card.SnapshotId)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (collision is not null)
+        {
+            throw new ArgumentException(
+                $"Two cards fitted to this machine both keep their state under snapshot section " +
+                $"'{collision.Key}': fitting two of the same kind is not supported yet.", nameof(hardware));
+        }
+
+        // Only now does each card claim its ports, its PCI function, its
+        // Plug and Play identity and -- for a NAT-backed network card -- its
+        // host listening sockets. If attaching one card throws (two cards
+        // asked for the same forwarded host port, say), whatever the cards
+        // before it already opened is closed again before the exception
+        // reaches the caller, who has no machine to dispose: the
+        // constructor never returns one.
+        var attached = new List<IExpansionCard>();
+        try
+        {
+            foreach (IExpansionCard card in cards)
+            {
+                card.Attach(_bus);
+                attached.Add(card);
+            }
+        }
+        catch
+        {
+            foreach (IExpansionCard card in attached)
+            {
+                if (card is Ne2000Card ne2000 && ne2000.Device.Backend is IDisposable disposableBackend)
+                {
+                    disposableBackend.Dispose();
+                }
+            }
+            throw;
+        }
+
+        Cards = cards;
+        SoundBlaster = Cards.OfType<SoundBlaster16Card>().FirstOrDefault()?.Device;
+        Network = Cards.OfType<Ne2000Card>().FirstOrDefault()?.Device;
+        if (Cards.OfType<UhciCard>().FirstOrDefault() is { } usbCard)
+        {
+            WireUsbCard(usbCard);
+        }
+
+        // Registered last, now that every card -- the network card above and
+        // whatever sound cards were just built -- has added its identity.
+        IsaPlugAndPlay.Register(Io);
+
         Redirector = new RedirectorServices(this);
         _redirectorInstaller = new RedirectorInstaller(this);
         WatchForCommandProcessor();
@@ -546,9 +655,20 @@ public sealed partial class Machine : IDisposable
     /// Plugs the network card into a different wire. The one it had is
     /// closed if it owns anything -- a NAT holds host sockets -- so that
     /// switching a machine off the network really takes it off.
+    ///
+    /// Does nothing but close the offered backend when there is no network
+    /// card fitted at all: there is nowhere to plug it in, and leaving the
+    /// backend's own sockets open with nothing ever going to read them would
+    /// be the actual leak.
     /// </summary>
     public void ConnectNetwork(INetworkBackend backend)
     {
+        if (Network is null)
+        {
+            (backend as IDisposable)?.Dispose();
+            return;
+        }
+
         INetworkBackend previous = Network.Backend;
         if (ReferenceEquals(previous, backend)) return;
         Network.Backend = backend;
@@ -557,10 +677,10 @@ public sealed partial class Machine : IDisposable
 
     public void Dispose()
     {
-        (Network.Backend as IDisposable)?.Dispose();
+        (Network?.Backend as IDisposable)?.Dispose();
         foreach (DiskImage disk in _disks) disk.Dispose();
         CompactDisc?.Dispose();
         UsbStorage?.Dispose();
-        Memory.Dispose();
+        Memory?.Dispose();
     }
 }

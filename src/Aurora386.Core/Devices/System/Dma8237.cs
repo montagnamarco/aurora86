@@ -208,6 +208,72 @@ public sealed class Dma8237
         return value;
     }
 
+    // --- snapshot --------------------------------------------------------
+
+    /// <summary>The version of the payload <see cref="Capture"/> produces today.</summary>
+    public const int SnapshotVersion = 1;
+
+    /// <summary>
+    /// The fixed size of a version-1 payload: eight channels, each its base
+    /// and current address, base and current count, page, mode, masked and
+    /// terminal-count flags, then the two controllers' own byte-pointer
+    /// flip-flops.
+    /// </summary>
+    public const int SnapshotLength = 8 * (2 + 2 + 2 + 2 + 1 + 1 + 1 + 1) + 1 + 1;
+
+    /// <summary>
+    /// Captures every channel on both controllers -- a card mid-transfer
+    /// depends on the address and count registers matching exactly where it
+    /// left off, not merely on being masked or unmasked -- and the two
+    /// byte-pointer flip-flops, so a driver that has written only the low
+    /// half of a register when the snapshot is taken does not have its next
+    /// write land in the wrong half after a restore.
+    /// </summary>
+    public byte[] Capture()
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        foreach (Channel c in _channels)
+        {
+            writer.Write(c.BaseAddress);
+            writer.Write(c.BaseCount);
+            writer.Write(c.CurrentAddress);
+            writer.Write(c.CurrentCount);
+            writer.Write(c.Page);
+            writer.Write(c.Mode);
+            writer.Write(c.Masked);
+            writer.Write(c.TerminalCount);
+        }
+
+        writer.Write(_highByte8);
+        writer.Write(_highByte16);
+
+        writer.Flush();
+        return stream.ToArray();
+    }
+
+    /// <summary>Restores what <see cref="Capture"/> wrote.</summary>
+    public void Restore(byte[] payload)
+    {
+        using var reader = new BinaryReader(new MemoryStream(payload));
+
+        foreach (Channel c in _channels)
+        {
+            c.BaseAddress = reader.ReadUInt16();
+            c.BaseCount = reader.ReadUInt16();
+            c.CurrentAddress = reader.ReadUInt16();
+            c.CurrentCount = reader.ReadUInt16();
+            c.Page = reader.ReadByte();
+            c.Mode = reader.ReadByte();
+            c.Masked = reader.ReadBoolean();
+            c.TerminalCount = reader.ReadBoolean();
+        }
+
+        _highByte8 = reader.ReadBoolean();
+        _highByte16 = reader.ReadBoolean();
+    }
+
     // --- port decoding ---------------------------------------------------------
 
     private void WriteChannelRegister(int channel, bool isCount, byte value, ref bool flipFlop)

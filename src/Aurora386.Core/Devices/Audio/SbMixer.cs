@@ -189,6 +189,22 @@ public sealed class SbMixer : IIoDevice
     /// <summary>Reads a mixer register directly, bypassing the index port.</summary>
     public byte GetRegister(int register) => _registers[register & 0xFF];
 
+    /// <summary>Writes the whole register file and the index, for the card's own snapshot.</summary>
+    internal void Capture(BinaryWriter writer)
+    {
+        writer.Write(_registers);
+        writer.Write(_index);
+        writer.Write(InterruptStatus);
+    }
+
+    /// <summary>Restores what <see cref="Capture"/> wrote.</summary>
+    internal void Restore(BinaryReader reader)
+    {
+        reader.ReadBytes(_registers.Length).CopyTo(_registers, 0);
+        _index = reader.ReadByte();
+        InterruptStatus = reader.ReadByte();
+    }
+
     /// <summary>
     /// Master output level as a 0..1 gain, averaged across the two channels.
     /// The caller applies it when mixing, since we have no analogue path.

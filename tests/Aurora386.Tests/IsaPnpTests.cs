@@ -303,7 +303,7 @@ public class IsaPnpTests
         Write(machine.Io, 0x70, 7);
         Write(machine.Io, 0x30, 1);
 
-        Assert.Equal(0x240, machine.SoundBlaster.BasePort);
+        Assert.Equal(0x240, machine.SoundBlaster!.BasePort);
         Assert.Equal(7, machine.SoundBlaster.Irq);
         Assert.Equal(7, machine.SoundBlaster.Mixer.Irq);
 
@@ -329,7 +329,7 @@ public class IsaPnpTests
         Write(machine.Io, 0x70, 10);
         Write(machine.Io, 0x30, 1);
 
-        Assert.Equal(0x320, machine.Network.BasePort);
+        Assert.Equal(0x320, machine.Network!.BasePort);
         Assert.Equal(10, machine.Network.IrqLine);
         Assert.NotEqual(0xFF, machine.Io.ReadByte(0x320));    // the command register answers
         Assert.Equal(0xFF, machine.Io.ReadByte(0x300));

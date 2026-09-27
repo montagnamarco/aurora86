@@ -85,11 +85,7 @@ public class CompactDiscLetterTests
         string snapshotPath = Path.GetTempFileName();
         try
         {
-            MachineSnapshot.Capture(machine).Save(snapshotPath);
-            using (FileStream file = File.OpenWrite(snapshotPath))
-            {
-                file.SetLength(file.Length - 2);
-            }
+            LegacySnapshotFile.Write(machine, snapshotPath, LegacySnapshotEnd.AfterUsb);
             MachineSnapshot.Load(snapshotPath).RestoreTo(machine);
             Assert.Equal((byte)3, machine.QueryCompactDiscLetter());
         }

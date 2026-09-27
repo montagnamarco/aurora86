@@ -378,6 +378,141 @@ public sealed class Opl3 : IIoDevice
     public byte ReadRegister(int bank, int register) => _registers[bank, register & 0xFF];
 
     /// <summary>
+    /// Back to power-on: every register, both timers and every operator and
+    /// voice silent.
+    /// </summary>
+    public void Reset()
+    {
+        Array.Clear(_registers);
+        _selected[0] = 0;
+        _selected[1] = 0;
+        _opl3Mode = false;
+        _timer1 = 0;
+        _timer2 = 0;
+        _timerControl = 0;
+        _status = 0;
+        _timer1Accumulator = 0;
+        _timer2Accumulator = 0;
+
+        for (int i = 0; i < _operators.Length; i++) _operators[i] = new Operator();
+        for (int i = 0; i < _voices.Length; i++) _voices[i] = new Voice();
+    }
+
+    /// <summary>
+    /// Writes the register file, the selected indices, OPL3 mode and the
+    /// timers, for the card's own snapshot.
+    ///
+    /// Left out: each operator's oscillator phase and envelope level, and
+    /// each voice's key-on latch. Restoring replays every register through
+    /// <see cref="Restore"/>, which reconstructs a voice's key-on/key-off
+    /// state -- a currently-held note starts its envelope over from Attack
+    /// rather than resuming mid-decay, an inaudible difference next to a
+    /// synthesiser chip's usual few-millisecond envelope times.
+    /// </summary>
+    internal void Capture(BinaryWriter writer)
+    {
+        for (int bank = 0; bank < 2; bank++)
+            for (int register = 0; register < 256; register++)
+                writer.Write(_registers[bank, register]);
+
+        writer.Write(_selected[0]);
+        writer.Write(_selected[1]);
+        writer.Write(_opl3Mode);
+        writer.Write(_timer1);
+        writer.Write(_timer2);
+        writer.Write(_timerControl);
+        writer.Write(_status);
+        writer.Write(_timer1Accumulator);
+        writer.Write(_timer2Accumulator);
+    }
+
+    /// <summary>
+    /// Restores what <see cref="Capture"/> wrote. See its summary for what
+    /// is left out.
+    ///
+    /// <paramref name="version"/> is the Sound Blaster snapshot's own
+    /// version, since the OPL3 has no section of its own: version 2 is the
+    /// first that captured the timer accumulators below, so a version-1
+    /// payload simply ends before them and they are left at zero -- the
+    /// power-on value, and the worst a timer already running gets is losing
+    /// up to one step's worth of progress toward its next overflow.
+    /// </summary>
+    internal void Restore(BinaryReader reader, int version)
+    {
+        var captured = new byte[2, 256];
+        for (int bank = 0; bank < 2; bank++)
+            for (int register = 0; register < 256; register++)
+                captured[bank, register] = reader.ReadByte();
+
+        int selected0 = reader.ReadInt32();
+        int selected1 = reader.ReadInt32();
+        bool opl3Mode = reader.ReadBoolean();
+        byte timer1 = reader.ReadByte();
+        byte timer2 = reader.ReadByte();
+        byte timerControl = reader.ReadByte();
+        byte status = reader.ReadByte();
+        double timer1Accumulator = version >= 2 ? reader.ReadDouble() : 0;
+        double timer2Accumulator = version >= 2 ? reader.ReadDouble() : 0;
+
+        // OPL3 mode decides how two of the groups replayed below decode
+        // their value: waveform select (0xE0) only allows 4-7 in OPL3 mode,
+        // and the panning bits of 0xC0 only exist in OPL3 mode at all. It
+        // must be in place before any register is replayed, not left to be
+        // set by register 0x105 partway through the loop -- replaying an
+        // operator's waveform or a voice's panning before then read the
+        // wrong mode and masked or dropped bits the guest's own writes never
+        // touched.
+        _opl3Mode = opl3Mode;
+
+        // Every operator and voice starts fresh, exactly as Reset() leaves
+        // them, so a note already sounding in whatever this instance held
+        // before the restore does not linger through the replay below: the
+        // registers describe the guest's intended state completely, and
+        // nothing here should depend on what was true a moment ago.
+        for (int i = 0; i < _operators.Length; i++) _operators[i] = new Operator();
+        for (int i = 0; i < _voices.Length; i++) _voices[i] = new Voice();
+
+        // Replayed through the normal write path, so every operator and
+        // voice picks up the multiplier, level, rates, waveform, pitch and
+        // key-on state the registers describe -- the same thing the guest's
+        // own writes did to produce this state in the first place.
+        for (int bank = 0; bank < 2; bank++)
+            for (int register = 0; register < 256; register++)
+                WriteRegister(bank, register, captured[bank, register]);
+
+        _selected[0] = selected0;
+        _selected[1] = selected1;
+        _timer1 = timer1;
+        _timer2 = timer2;
+        _timerControl = timerControl;
+        _timer1Accumulator = timer1Accumulator;
+        _timer2Accumulator = timer2Accumulator;
+
+        // Set after the replay: writing register 4 with bit 7 set (the
+        // timer-reset every detection routine issues) would otherwise clear
+        // the very flags being restored.
+        _status = status;
+    }
+
+    /// <summary>
+    /// The waveform an operator's oscillator is actually using, for tests
+    /// and diagnostics: the derived state a restore must replay correctly,
+    /// as distinct from the raw register byte <see cref="ReadRegister"/>
+    /// returns, which round-trips unchanged regardless of what order OPL3
+    /// mode was set in during the replay. <paramref name="index"/> is the
+    /// register-file operator index (as register 0xE0's own bits address
+    /// it), not a plain 0-17 slot number -- see <see cref="GetOperator"/>.
+    /// </summary>
+    internal int WaveformOf(int bank, int index) => GetOperator(bank, index)?.Waveform ?? -1;
+
+    /// <summary>A voice's stereo panning as the synthesiser is actually applying it. See <see cref="WaveformOf"/>.</summary>
+    internal (bool Left, bool Right) PanningOf(int bank, int voiceIndex)
+    {
+        Voice voice = _voices[bank * 9 + voiceIndex];
+        return (voice.Left, voice.Right);
+    }
+
+    /// <summary>
     /// Maps a register's operator index to an operator. The chip's operator
     /// numbering has holes: registers 0x06-0x07, 0x0E-0x0F and 0x16-0x1F
     /// address nothing, because the 18 operators are laid out as three groups

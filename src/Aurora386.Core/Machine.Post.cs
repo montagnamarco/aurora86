@@ -51,8 +51,7 @@ public sealed partial class Machine
     {
         Pci.Reset();
         Interrupts.ResetTriggerModes();
-        Usb?.Reset();
-        UsbStorageController?.Reset();
+        _usbCard?.Reset();
         // A reboot starts with no CD-ROM driver loaded; the guest reveals one
         // again by sending its first packet.
         GuestHasItsOwnCompactDiscExtensions = false;

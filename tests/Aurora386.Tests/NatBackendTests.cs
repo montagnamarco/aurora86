@@ -803,7 +803,7 @@ public class NatBackendTests
         using var machine = new Aurora386.Core.Machine(1024 * 1024);
         var nat = new NatBackend(new FakeHost(), () => 0);
         machine.ConnectNetwork(nat);
-        Assert.Same(nat, machine.Network.Backend);
+        Assert.Same(nat, machine.Network!.Backend);
         var loopback = new LoopbackBackend();
         machine.ConnectNetwork(loopback);
         Assert.Same(loopback, machine.Network.Backend);

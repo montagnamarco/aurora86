@@ -36,6 +36,9 @@ public sealed class AudioOutput : IDisposable
     private readonly EmulatorSession _session;
     private readonly short[] _staging;
 
+    /// <summary>The card's own rate, fixed once <see cref="Start"/> finds a card fitted.</summary>
+    private int _sampleRate = 44100;
+
     private ALDevice _device;
     private ALContext _context;
     private int _source;
@@ -64,6 +67,12 @@ public sealed class AudioOutput : IDisposable
     {
         if (_running) return;
 
+        // No card, no sound -- exactly as a machine built with an empty
+        // sound list looks to a real listener: silent, not broken.
+        int? sampleRate = _session.WithMachine(m => m.SoundBlaster?.SampleRate);
+        if (sampleRate is null) return;
+        _sampleRate = sampleRate.Value;
+
         try
         {
             _device = ALC.OpenDevice(null);
@@ -82,8 +91,7 @@ public sealed class AudioOutput : IDisposable
             Array.Clear(_staging);
             foreach (int buffer in _buffers)
             {
-                AL.BufferData(buffer, ALFormat.Stereo16, _staging,
-                              _session.WithMachine(m => m.SoundBlaster.SampleRate));
+                AL.BufferData(buffer, ALFormat.Stereo16, _staging, _sampleRate);
                 AL.SourceQueueBuffer(_source, buffer);
             }
 
@@ -116,7 +124,7 @@ public sealed class AudioOutput : IDisposable
     /// </summary>
     private void FeedLoop()
     {
-        int sampleRate = _session.WithMachine(m => m.SoundBlaster.SampleRate);
+        int sampleRate = _sampleRate;
 
         while (_running)
         {
@@ -135,7 +143,7 @@ public sealed class AudioOutput : IDisposable
                 int buffer = AL.SourceUnqueueBuffer(_source);
 
                 int written = _session.WithMachine(
-                    machine => machine.SoundBlaster.ReadSamples(_staging));
+                    machine => machine.SoundBlaster?.ReadSamples(_staging) ?? 0);
 
                 // The card may not have produced a full buffer's worth. Pad
                 // with silence rather than shortening the buffer: a short

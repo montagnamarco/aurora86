@@ -187,7 +187,12 @@ public class UhciTests
     [Fact]
     public void VmSettingEnablesUsbAndEmulatedTimeAdvancesIt()
     {
-        using var m = new VmConfiguration { UsbEnabled = true }.BuildMachine();
+        // Hardware.Usb is the source of truth BuildMachine reads from
+        // version 2 on; a version-1 file's UsbEnabled instead converts into
+        // it during Migrate -- see UhciCardTests for that conversion.
+        var configuration = new VmConfiguration();
+        configuration.Hardware.Usb = new VmConfiguration.UsbSettings();
+        using var m = configuration.BuildMachine();
         m.RunInstructions(3000);
         Assert.NotNull(m.Usb);
         m.Io.WriteWord(Base, 1);

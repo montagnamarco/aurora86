@@ -6,8 +6,8 @@ using Aurora386.Core.Devices.Input;
 using Aurora386.Core.Devices.Interrupts;
 using Aurora386.Core.Devices.Timing;
 using Aurora386.Core.Devices.System;
-using Aurora386.Core.Devices.Network;
 using Aurora386.Core.Devices.Audio;
+using Aurora386.Core.Devices.Cards;
 using Aurora386.Core.Devices.Video;
 using Aurora386.Core.Dos;
 using Aurora386.Core.IO;
@@ -367,12 +367,10 @@ public sealed partial class Machine
         double pitCycles = (double)instructions * Pit8253.ClockHz / CpuFrequencyHz;
         Timer.Advance(pitCycles);
 
-        // The sound card is driven from the same clock: microseconds of
-        // emulated time, converted from the instructions just executed.
+        // Every expansion card is driven from the same clock: microseconds
+        // of emulated time, converted from the instructions just executed.
         double microseconds = (double)instructions * 1_000_000.0 / CpuFrequencyHz;
-        SoundBlaster.Advance(microseconds);
-        Usb?.Advance(microseconds);
-        UsbStorageController?.Advance(microseconds);
+        foreach (IExpansionCard card in Cards) card.Advance(microseconds);
 
         // And so is the video beam. A program polling for vertical retrace is
         // waiting for a moment that has a duration; without the clock behind
@@ -384,11 +382,9 @@ public sealed partial class Machine
         // repeat, without the guest having to ask for anything.
         Keyboard.Advance((double)instructions * 1000.0 / CpuFrequencyHz);
 
-        // Collect anything that arrived on the wire. A real card would act the
-        // instant a frame appeared; polling here is close enough, because the
-        // guest cannot observe the difference -- it only ever learns about a
-        // frame through the interrupt the card raises when it files one.
-        Network.Poll();
+        // The network card, if one is fitted, collects anything that arrived
+        // on the wire from the same Cards.Advance loop above -- see
+        // Ne2000Card.Advance.
 
         // The two mouse ports, which push rather than being polled by the
         // guest: each turns whatever movement has accumulated into a packet

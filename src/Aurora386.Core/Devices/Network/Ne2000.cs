@@ -627,4 +627,89 @@ public sealed class Ne2000 : IIoDevice
         if ((status & mask & 0x7F) != 0) _interrupts.RaiseIrq(_irqLine);
         else _interrupts.LowerIrq(_irqLine);
     }
+
+    // --- snapshot --------------------------------------------------------
+
+    /// <summary>The version of the payload <see cref="Capture"/> produces today.</summary>
+    public const int SnapshotVersion = 1;
+
+    /// <summary>
+    /// The fixed size of a version-1 payload: base port, IRQ line and enabled
+    /// flag, the register file for all four pages, the command register, the
+    /// remote DMA cursor, the station address, then the whole 16 KB buffer.
+    /// </summary>
+    public const int SnapshotLength =
+        sizeof(ushort) + sizeof(int) + sizeof(bool)
+        + 4 * 16
+        + sizeof(byte)
+        + sizeof(int) * 2
+        + 6
+        + MemorySize;
+
+    /// <summary>
+    /// Captures everything a driver could read back and notice was wrong:
+    /// every register on every page (which includes the receive ring's own
+    /// pointers -- PSTART, PSTOP, BNRY and CURR are ordinary registers, not
+    /// separate state), the command register, the remote DMA cursor, the
+    /// station address and the 16 KB buffer RAM.
+    ///
+    /// The backend -- the wire the card is plugged into -- is not captured.
+    /// It is host state with no counterpart on the guest's side of the card:
+    /// an open NAT connection is a socket the host holds, not a register the
+    /// driver can read, and it is meaningless once moved to a different point
+    /// in time anyway. A restored guest keeps whatever backend the machine
+    /// was built with; any TCP connection the NAT had open by then is gone,
+    /// exactly as unplugging and replugging a real cable would end one.
+    /// </summary>
+    public byte[] Capture()
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        writer.Write(_basePort);
+        writer.Write(_irqLine);
+        writer.Write(Enabled);
+
+        writer.Write(_registers);
+        writer.Write(_commandRegister);
+        writer.Write(_remoteAddress);
+        writer.Write(_remoteCount);
+        writer.Write(_macAddress);
+        writer.Write(_memory);
+
+        writer.Flush();
+        return stream.ToArray();
+    }
+
+    /// <summary>Restores what <see cref="Capture"/> wrote. See its summary for what is left out.</summary>
+    public void Restore(byte[] payload, int version)
+    {
+        if (version != SnapshotVersion)
+        {
+            throw new InvalidDataException(
+                $"NE2000 snapshot is version {version}; this build reads version {SnapshotVersion}.");
+        }
+
+        using var reader = new BinaryReader(new MemoryStream(payload));
+
+        // Read here, applied through Relocate below once the rest of the
+        // card's state is restored: Relocate is what moves the I/O
+        // registration together with the fields, exactly as Plug and Play
+        // configuring the card does. Setting the fields directly, as this
+        // used to, left the card registered at its old address while
+        // believing it answered at the new one -- silent everywhere except
+        // the one place a driver could actually notice, the ports themselves.
+        ushort basePort = reader.ReadUInt16();
+        int irqLine = reader.ReadInt32();
+        bool enabled = reader.ReadBoolean();
+
+        reader.ReadBytes(_registers.Length).CopyTo(_registers, 0);
+        _commandRegister = reader.ReadByte();
+        _remoteAddress = reader.ReadInt32();
+        _remoteCount = reader.ReadInt32();
+        reader.ReadBytes(_macAddress.Length).CopyTo(_macAddress, 0);
+        reader.ReadBytes(_memory.Length).CopyTo(_memory, 0);
+
+        Relocate(basePort, irqLine, enabled);
+    }
 }
