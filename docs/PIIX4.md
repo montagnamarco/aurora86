@@ -25,13 +25,17 @@ hardware transfer latency, so throughput is not a timing model of a PIIX4.
 
 The power-management block uses configuration register PMBA at `40h`,
 initially `B001h`. PMREGMISC at `80h`, bit 0, enables its 64-port window;
-PCI Command I/O enable is independent. The 24-bit timer runs at 3.579545 MHz
+PCI Command I/O enable is independent. `Machine.RunPost` sets that bit
+itself on the i430TX board, the same as a real BIOS would for any of the
+chipset's own fixed hardware register blocks. The 24-bit timer runs at 3.579545 MHz
 from emulated time, and its overflow status can be acknowledged with a
 write-one-to-clear operation. Snapshots preserve its phase and the IDE
 engine's pending DMA state, along with PCI configuration.
 
-This is not full ACPI or host-memory-controller emulation. SCI/SMI delivery,
-suspend, SMBus, PAM shadow routing and SMRAM/SMM remain unimplemented.
+ACPI 1.0b tables and the SCI/SMI-adjacent runtime (SMI_CMD, GPE0, the power
+button, SLP_EN) are covered separately in `docs/ACPI.md` (work package
+P4.5). This is still not full host-memory-controller emulation: SMBus, PAM
+shadow routing and SMRAM/SMM proper remain unimplemented.
 In-flight PIO/ATAPI transfers are outside snapshot coverage. Disk contents
 are external to snapshots and must still be paired with the saved state.
 Windows 95 OSR2 driver use and throughput require a separate guest

@@ -214,7 +214,7 @@ public sealed class MachineSnapshot
 
         if (machine.Piix4Power is { } piix4Power)
         {
-            Add(Piix4PowerSection, 1, piix4Power.Capture());
+            Add(Piix4PowerSection, Devices.Chipset.Piix4PowerManagement.SnapshotVersion, piix4Power.Capture());
         }
 
         foreach (IExpansionCard card in machine.Cards)
@@ -379,7 +379,8 @@ public sealed class MachineSnapshot
 
         if (machine.Piix4Power is { } piix4Power)
         {
-            piix4Power.Restore(_sections[Piix4PowerSection].Payload);
+            Section piix4PowerState = _sections[Piix4PowerSection];
+            piix4Power.Restore(piix4PowerState.Payload, piix4PowerState.Version);
         }
 
         // Before the cards: a card mid-transfer (the sound card, streaming
@@ -486,7 +487,7 @@ public sealed class MachineSnapshot
         [CompactDiscSection] = 0,
         [ChipsetSection] = 0,
         [BusMasterIdeSection] = Devices.Storage.BusMasterIdeController.SnapshotVersion,
-        [Piix4PowerSection] = 1,
+        [Piix4PowerSection] = Devices.Chipset.Piix4PowerManagement.SnapshotVersion,
         [LocalApicSection] = 1,
         [IoApicSection] = 1,
         [ImcrSection] = 0,
@@ -565,12 +566,15 @@ public sealed class MachineSnapshot
 
                 if (name == Piix4PowerSection)
                 {
-                    if (section.Version != 1)
+                    // Version 1 (no GPE0) must still be readable; the check
+                    // above already refused anything newer than this build's
+                    // own SnapshotVersion.
+                    if (section.Version != 1 && section.Version != Devices.Chipset.Piix4PowerManagement.SnapshotVersion)
                     {
                         throw new InvalidDataException("Unsupported PIIX4 power-management section version.");
                     }
 
-                    Devices.Chipset.Piix4PowerManagement.ValidateSnapshot(section.Payload);
+                    Devices.Chipset.Piix4PowerManagement.ValidateSnapshot(section.Payload, section.Version);
                 }
 
                 continue;

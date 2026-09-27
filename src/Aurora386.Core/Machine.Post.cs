@@ -70,6 +70,18 @@ public sealed partial class Machine
         Memory.WriteRomBytes(
             BiosRom.Base + BiosRom.Entry.MpFloatingPointer,
             freshImage.AsSpan(BiosRom.Entry.MpFloatingPointer, BiosRom.Entry.MpRegionLength));
+
+        // The ACPI tables depend on exactly the same facts the MP tables do
+        // -- the MADT's own existence, and through it the FADT's INT_MODEL
+        // byte and the RSDT's own pointer count (work package P4.5's own
+        // note that an OS reading the MADT and the MP table must never see
+        // them disagree) -- so a CPU-model switch has to refresh this
+        // region too, the same way and for the same reason. Patched
+        // unconditionally: on an i430FX board this region is still just the
+        // 0xCC filler before and after, so the extra write is harmless.
+        Memory.WriteRomBytes(
+            BiosRom.Base + BiosRom.Entry.AcpiRegion,
+            freshImage.AsSpan(BiosRom.Entry.AcpiRegion, BiosRom.Entry.AcpiRegionLength));
     }
 
     /// <summary>
@@ -92,8 +104,31 @@ public sealed partial class Machine
                 (byte)(LocalApic.VersionRegisterFor(Cpu.State.Model) & 0xFF))
             : null;
 
-        return BiosRom.Build(routerDeviceId, mpTables);
+        // ACPI tables exist only on the i430TX/PIIX4 board (decision C1 in
+        // plans/specs/acpi.md); the MADT within them exists exactly when the
+        // MP tables do, since both describe the same LAPIC+IOAPIC
+        // configuration built from the same facts.
+        AcpiSystemInfo? acpiTables = Piix4Power is not null
+            ? new AcpiSystemInfo(
+                HasMadt: mpTables is not null,
+                CenturyRegister: CenturyCmosRegister,
+                PmBase: Devices.Chipset.Piix4PowerManagement.DefaultPmBase,
+                Pci0MemoryBase: LinearFrameBufferBase,
+                Pci0MemoryLength: TrioMmioOffset + 0x10000)
+            : null;
+
+        return BiosRom.Build(routerDeviceId, mpTables, acpiTables);
     }
+
+    /// <summary>
+    /// The CMOS/RTC register that keeps the century (<see
+    /// cref="Devices.Timing.Cmos"/>'s own register 0x32), which the FADT's
+    /// CENTURY field names (decision C2 in plans/specs/acpi.md). This
+    /// codebase's CMOS always implements it, so unlike the coordinator
+    /// decision's own conditional wording there is no "else 0" case to
+    /// choose between here.
+    /// </summary>
+    private const byte CenturyCmosRegister = 0x32;
 
     /// <summary>
     /// The MP table's own approximation of CPUID.1:EDX, built from the same
@@ -152,9 +187,32 @@ public sealed partial class Machine
         // their IRQs level-triggered, which a later reset would undo.
         Interrupts.ResetTriggerModes();
         Pci.Reset();
+
+        // The SCI is a shareable level line, exactly like the PIRQ lines
+        // just routed above (plans/specs/acpi.md, decision C4): the i430TX
+        // board's POST marks IRQ 9 level-triggered in the ELCR the same way,
+        // on the slave controller's own bit (IRQ 8 is bit 0, so IRQ 9 is
+        // bit 1). The MADT's own override for GSI 9 (level, active low)
+        // describes the same wiring to whatever an ACPI OS later programs
+        // into the I/O APIC; nothing here has to touch that redirection
+        // entry itself.
+        if (Chipset == Devices.Chipset.Chipset.I430Tx)
+        {
+            const ushort ElcrSlavePort = 0x4D1;
+            const byte SciElcrBit = 1 << 1;
+            Interrupts.WriteByte(ElcrSlavePort, (byte)(Interrupts.ReadByte(ElcrSlavePort) | SciElcrBit));
+        }
+
         BusMasterIde?.Reset();
         BusMasterIde?.InitializeDriveCapabilities();
         Piix4Power?.Reset();
+
+        // A real BIOS enables the PM block's own I/O decode during POST,
+        // the same as every other chipset-fixed register block: an ACPI OS
+        // trusts the FADT's PM1a_EVT_BLK and its neighbours to already
+        // answer at B000h, rather than negotiating this decode through PCI
+        // configuration space the way an ordinary BAR is sized and enabled.
+        Piix4Power?.EnablePmDecode();
 
         // The IMCR must clear on INIT/RESET (plans/specs/apic.md §3), which
         // in turn tells the local APIC to go back to forwarding the 8259

@@ -277,6 +277,31 @@ public static partial class BiosRom
         /// at runtime (independent review, item N5).
         /// </summary>
         public const int MpRegionLength = 0x200;
+
+        /// <summary>
+        /// The ACPI tables (work package P4.5): the RSDP, RSDT, FADT, FACS,
+        /// MADT and DSDT the i430TX/PIIX4 board's BIOS ships (coordinator
+        /// decision C1 in plans/specs/acpi.md -- an i430FX board never calls
+        /// <c>BiosRom.WriteAcpiTables</c> at all, and this whole region
+        /// stays filled with the 0xCC breakpoint filler). Placed right after
+        /// the MP region, inside the free space plans/specs/acpi.md's own
+        /// "Repository facts" section names (2000h-FFF0h) -- MpFloatingPointer
+        /// (0x1E00) plus MpRegionLength (0x200) already ends exactly here.
+        /// </summary>
+        public const ushort AcpiRegion = 0x2000;
+
+        /// <summary>
+        /// The largest this region ever needs to be: the DSDT is the only
+        /// table whose size depends on the namespace's own content rather
+        /// than a fixed ACPI layout, and even the whole namespace plans/specs/acpi.md
+        /// §3 describes comes to well under a kilobyte of AML. <see
+        /// cref="Machine.RefreshBiosMpTables"/> patches exactly this many
+        /// bytes in place after a CPU model switch, the same way it already
+        /// does for <see cref="MpRegionLength"/> -- see that method's own
+        /// summary for why re-mapping the whole ROM image is not done
+        /// instead.
+        /// </summary>
+        public const int AcpiRegionLength = 0x2000;
     }
 
     /// <summary>
@@ -334,7 +359,8 @@ public static partial class BiosRom
         Post = 0xFF,
     }
 
-    public static byte[] Build(ushort pciRouterDeviceId = 0x122E, MpSystemInfo? mpTables = null)
+    public static byte[] Build(
+        ushort pciRouterDeviceId = 0x122E, MpSystemInfo? mpTables = null, AcpiSystemInfo? acpiTables = null)
     {
         var rom = new byte[Size];
 
@@ -444,6 +470,14 @@ public static partial class BiosRom
             {
                 WriteMpTables(rom, info);
             }
+
+            // ACPI tables (work package P4.5): only on the i430TX/PIIX4
+            // board (decision C1) -- see Machine.BuildBiosImage's call site.
+            if (acpiTables is { } acpiInfo)
+            {
+                WriteAcpiTables(rom, acpiInfo);
+            }
+
             int b32 = Entry.Bios32Header;
             Array.Clear(rom, b32, 16);
             WriteDword(rom, b32, 0x5F32335F); // _32_

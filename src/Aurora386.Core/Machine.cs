@@ -159,6 +159,34 @@ public sealed partial class Machine : IDisposable
     public event Action? PowerOffRequested;
 
     internal void RequestPowerOff() => PowerOffRequested?.Invoke();
+
+    /// <summary>
+    /// The host's own power button, for a front end's power icon or
+    /// window-close handler -- distinct from <see cref="RequestPowerOff"/>,
+    /// which is the guest's own APM request from inside the machine.
+    ///
+    /// Decision C5 in plans/specs/acpi.md: while an ACPI-aware guest has
+    /// taken charge (PM1_CNT.SCI_EN set on the i430TX board), pressing it
+    /// only sets PWRBTN_STS and lets the SCI carry it to the guest's own
+    /// power-button driver, exactly as a real ATX case button would -- the
+    /// guest decides whether to show a prompt, log off first, and so on.
+    /// Otherwise -- no ACPI guest in charge yet, or an i430FX board that has
+    /// no SCI to carry it on at all -- it is answered the same way the
+    /// guest's own APM power-off already is: immediately, as a hard ATX
+    /// soft-off with nobody else in charge.
+    /// </summary>
+    public void PressPowerButton()
+    {
+        if (Piix4Power is { SciEnabled: true } power)
+        {
+            power.RaisePowerButton();
+        }
+        else
+        {
+            RequestPowerOff();
+        }
+    }
+
     public IsaPnpBus IsaPlugAndPlay { get; }
 
     /// <summary>
@@ -511,7 +539,8 @@ public sealed partial class Machine : IDisposable
 
             var pciPower = new PciFunction(0x000B, 0x8086, 0x7113, 0x068000);
             Piix4Power = new Piix4PowerManagement(
-                pciPower, Io, 0xB000, () => Cpu.Cycles, () => CpuFrequencyHz);
+                pciPower, Io, Piix4PowerManagement.DefaultPmBase, Interrupts, RequestPowerOff,
+                () => Cpu.Cycles, () => CpuFrequencyHz);
             Pci.Add(pciPower);
         }
 
