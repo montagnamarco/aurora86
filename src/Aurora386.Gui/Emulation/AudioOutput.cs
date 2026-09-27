@@ -70,7 +70,10 @@ public sealed class AudioOutput : IDisposable
     /// </summary>
     public void Start()
     {
-        if (_running) return;
+        if (_running)
+        {
+            return;
+        }
 
         // No source, no sound -- exactly as a machine built with an empty
         // sound list looks to a real listener: silent, not broken. The
@@ -78,13 +81,19 @@ public sealed class AudioOutput : IDisposable
         // "no card fitted" now means "the mixer has no sources" rather than
         // "there is no mixer".
         bool hasSource = _session.WithMachine(m => m.Audio.Sources.Count > 0);
-        if (!hasSource) return;
+        if (!hasSource)
+        {
+            return;
+        }
         _sampleRate = _session.WithMachine(m => m.Audio.OutputSampleRate);
 
         try
         {
             _device = ALC.OpenDevice(null);
-            if (_device == ALDevice.Null) return;
+            if (_device == ALDevice.Null)
+            {
+                return;
+            }
 
             _context = ALC.CreateContext(_device, (int[]?)null);
             if (_context == ALContext.Null) { ALC.CloseDevice(_device); return; }
@@ -175,13 +184,19 @@ public sealed class AudioOutput : IDisposable
         _running = false;
         _thread?.Join(TimeSpan.FromSeconds(1));
 
-        if (!IsAvailable) return;
+        if (!IsAvailable)
+        {
+            return;
+        }
 
         try
         {
             AL.SourceStop(_source);
             AL.DeleteSource(_source);
-            if (_buffers.Length > 0) AL.DeleteBuffers(_buffers);
+            if (_buffers.Length > 0)
+            {
+                AL.DeleteBuffers(_buffers);
+            }
 
             ALC.MakeContextCurrent(ALContext.Null);
             ALC.DestroyContext(_context);

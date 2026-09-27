@@ -172,7 +172,10 @@ public static class MiscFamilies
         uint[] gpr = context.FreshGpr();
 
         var code = new List<byte>();
-        if (prefixed) code.Add(0x66);
+        if (prefixed)
+        {
+            code.Add(0x66);
+        }
         code.Add(opcode);
 
         return new TestCase

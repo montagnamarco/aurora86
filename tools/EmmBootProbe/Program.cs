@@ -49,5 +49,8 @@ try
 }
 finally
 {
-    if (File.Exists(copy)) File.Delete(copy);
+    if (File.Exists(copy))
+    {
+        File.Delete(copy);
+    }
 }

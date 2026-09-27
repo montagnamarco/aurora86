@@ -98,7 +98,10 @@ public sealed class FatVolume
         bool looksLikeBootSector =
             image[0] is 0xEB or 0xE9 && bytesPerSector is 512 or 1024 or 2048 or 4096;
 
-        if (looksLikeBootSector) return 0;
+        if (looksLikeBootSector)
+        {
+            return 0;
+        }
 
         // Otherwise read the first partition entry. Offset 8 of the entry is
         // the sector the partition starts at.
@@ -129,7 +132,10 @@ public sealed class FatVolume
     /// </summary>
     private uint ReadFat(uint cluster)
     {
-        if (!_isFat12) return ReadWord(FatOffset + cluster * 2);
+        if (!_isFat12)
+        {
+            return ReadWord(FatOffset + cluster * 2);
+        }
 
         uint offset = FatOffset + cluster + cluster / 2;
         ushort pair = ReadWord(offset);
@@ -175,7 +181,10 @@ public sealed class FatVolume
         var chain = new List<uint>(clustersNeeded);
 
         for (uint cluster = 2; cluster < _clusterCount + 2 && chain.Count < clustersNeeded; cluster++)
-            if (ReadFat(cluster) == 0) chain.Add(cluster);
+            if (ReadFat(cluster) == 0)
+            {
+                chain.Add(cluster);
+            }
 
         if (chain.Count < clustersNeeded)
             throw new IOException(
@@ -222,12 +231,18 @@ public sealed class FatVolume
             // file being overwritten with a bigger one could fail for lack of
             // room it already owns.
             uint oldCluster = ReadWord(EntryOffset(entry) + 26);
-            if (oldCluster >= 2) ReleaseChain(oldCluster);
+            if (oldCluster >= 2)
+            {
+                ReleaseChain(oldCluster);
+            }
         }
         else
         {
             entry = FindFreeEntry();
-            if (entry < 0) throw new IOException("The root directory is full.");
+            if (entry < 0)
+            {
+                throw new IOException("The root directory is full.");
+            }
         }
 
         uint clusterBytes = (uint)_sectorsPerCluster * _bytesPerSector;
@@ -259,7 +274,10 @@ public sealed class FatVolume
     {
         (string stem, string extension) = SplitShortName(shortName);
         int entry = FindEntry(stem, extension);
-        if (entry < 0) return null;
+        if (entry < 0)
+        {
+            return null;
+        }
 
         uint offset = EntryOffset(entry);
         uint cluster = ReadWord(offset + 26);
@@ -289,11 +307,20 @@ public sealed class FatVolume
             uint offset = EntryOffset(i);
             byte first = _image[offset];
 
-            if (first is 0x00) break;          // nothing beyond here has ever been used
-            if (first is 0xE5) continue;       // deleted
+            if (first is 0x00)
+            {
+                break;          // nothing beyond here has ever been used
+            }
+            if (first is 0xE5)
+            {
+                continue;       // deleted
+            }
 
             byte attributes = _image[offset + 11];
-            if ((attributes & 0x08) != 0) continue;   // the volume label, not a file
+            if ((attributes & 0x08) != 0)
+            {
+                continue;   // the volume label, not a file
+            }
 
             string stem = System.Text.Encoding.ASCII.GetString(_image, (int)offset, 8).TrimEnd();
             string extension = System.Text.Encoding.ASCII.GetString(_image, (int)offset + 8, 3).TrimEnd();
@@ -318,14 +345,20 @@ public sealed class FatVolume
     {
         (string stem, string extension) = SplitShortName(name);
         int entry = FindEntry(stem, extension);
-        if (entry < 0) return false;
+        if (entry < 0)
+        {
+            return false;
+        }
 
         uint offset = EntryOffset(entry);
         if ((_image[offset + 11] & 0x10) == 0)
             throw new IOException($"{name} is a file, not a directory.");
 
         uint firstCluster = ReadWord(offset + 26);
-        if (firstCluster >= 2) ReleaseDirectoryTree(firstCluster);
+        if (firstCluster >= 2)
+        {
+            ReleaseDirectoryTree(firstCluster);
+        }
 
         // 0xE5 in the first byte is how FAT marks an entry deleted: the name
         // is gone but the slot stays where it is, so nothing after it has to
@@ -353,16 +386,31 @@ public sealed class FatVolume
             for (uint i = 0; i < clusterBytes; i += 32)
             {
                 byte first = _image[offset + i];
-                if (first == 0x00) break;
-                if (first == 0xE5 || first == (byte)'.') continue;
+                if (first == 0x00)
+                {
+                    break;
+                }
+                if (first == 0xE5 || first == (byte)'.')
+                {
+                    continue;
+                }
 
                 byte attributes = _image[offset + i + 11];
-                if ((attributes & 0x08) != 0) continue;   // volume label
+                if ((attributes & 0x08) != 0)
+                {
+                    continue;   // volume label
+                }
 
                 uint child = ReadWord(offset + i + 26);
-                if (child < 2) continue;
+                if (child < 2)
+                {
+                    continue;
+                }
 
-                if ((attributes & 0x10) != 0) ReleaseDirectoryTree(child);
+                if ((attributes & 0x10) != 0)
+                {
+                    ReleaseDirectoryTree(child);
+                }
                 else ReleaseChain(child);
             }
 
@@ -379,8 +427,14 @@ public sealed class FatVolume
         for (int i = 0; i < _rootEntries; i++)
         {
             uint offset = EntryOffset(i);
-            if (_image[offset] is 0x00) return -1;
-            if (_image[offset] is 0xE5) continue;
+            if (_image[offset] is 0x00)
+            {
+                return -1;
+            }
+            if (_image[offset] is 0xE5)
+            {
+                continue;
+            }
 
             string entryStem = System.Text.Encoding.ASCII.GetString(_image, (int)offset, 8);
             string entryExtension = System.Text.Encoding.ASCII.GetString(_image, (int)offset + 8, 3);
@@ -397,7 +451,10 @@ public sealed class FatVolume
         for (int i = 0; i < _rootEntries; i++)
         {
             byte first = _image[EntryOffset(i)];
-            if (first is 0x00 or 0xE5) return i;
+            if (first is 0x00 or 0xE5)
+            {
+                return i;
+            }
         }
 
         return -1;

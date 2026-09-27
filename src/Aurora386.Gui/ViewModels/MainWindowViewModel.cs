@@ -112,7 +112,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         // The machine that was open last, if it is still where it was; the
         // default disk otherwise.
-        if (!TryReopenLastVm()) AttachDefaultHardDisk();
+        if (!TryReopenLastVm())
+        {
+            AttachDefaultHardDisk();
+        }
 
         // Four refreshes a second is enough for a human to read, and cheap
         // enough that it never competes with the emulation thread.
@@ -134,7 +137,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         foreach (string candidate in DefaultHardDiskPaths())
         {
-            if (!File.Exists(candidate)) continue;
+            if (!File.Exists(candidate))
+            {
+                continue;
+            }
 
             try
             {
@@ -294,7 +300,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         foreach (DiskImage image in attached)
             Drives.Add(new DriveIndicator(image));
 
-        if (disc is not null) Drives.Add(new DriveIndicator(disc, letter));
+        if (disc is not null)
+        {
+            Drives.Add(new DriveIndicator(disc, letter));
+        }
 
         // Shared folders, by the letter the guest reaches them as.
         foreach ((byte drive, string folder) in Session.WithMachine(machine =>
@@ -327,7 +336,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             // Pushed to the machine even when unchanged: the machine may have
             // been rebuilt (cold reset, new session) with its own default.
             Session.WithMachine(machine => machine.MouseInterface = value);
-            if (!SetProperty(ref _mouseInterface, value)) return;
+            if (!SetProperty(ref _mouseInterface, value))
+            {
+                return;
+            }
 
             // The three "is this the one" properties the menu ticks are
             // derived from this one, so they have to be announced by hand.
@@ -356,7 +368,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         set
         {
             Session.WithMachine(machine => ApplyNetwork(machine, value));
-            if (!SetProperty(ref _networkIsNat, value)) return;
+            if (!SetProperty(ref _networkIsNat, value))
+            {
+                return;
+            }
             OnPropertyChanged(nameof(NetworkIsOff));
             StatusText = value
                 ? "Network: NAT through this computer (guest 10.0.2.15, gateway 10.0.2.2)"
@@ -390,8 +405,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// </summary>
     private void ApplyNetwork(Aurora386.Core.Machine machine, bool nat)
     {
-        if (machine.Network is null) return;
-        if (machine.Network.Backend is NatBackend == nat) return;
+        if (machine.Network is null)
+        {
+            return;
+        }
+        if (machine.Network.Backend is NatBackend == nat)
+        {
+            return;
+        }
 
         List<VmConfiguration.PortForward> forwards = _vmConfiguration?.Hardware.Network is { Count: > 0 } cards
             ? cards[0].Forwards
@@ -449,7 +470,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         set
         {
             Session.WithMachine(machine => machine.CpuModel = value);
-            if (!SetProperty(ref _cpuModel, value)) return;
+            if (!SetProperty(ref _cpuModel, value))
+            {
+                return;
+            }
 
             OnPropertyChanged(nameof(CpuIs486));
             OnPropertyChanged(nameof(CpuIs386));
@@ -568,7 +592,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             AttachImage(path, drive, readOnly);
 
         RefreshDriveList();
-        if (wasRunning) Session.Start();
+        if (wasRunning)
+        {
+            Session.Start();
+        }
         StatusText = "Reset";
     }
 
@@ -587,7 +614,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void OpenDebugger()
     {
-        if (ShowDebugger is null) return;
+        if (ShowDebugger is null)
+        {
+            return;
+        }
 
         Session.Pause();
         ShowDebugger(new DebuggerViewModel(Session));
@@ -600,7 +630,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void OpenVideoInspector()
     {
-        if (ShowVideoInspector is null) return;
+        if (ShowVideoInspector is null)
+        {
+            return;
+        }
 
         // Paused, like the debugger: reading two megabytes of video memory
         // while the guest is writing it would show a picture that is half of
@@ -614,7 +647,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task Screenshot()
     {
-        if (SaveScreenshotAsync is null) return;
+        if (SaveScreenshotAsync is null)
+        {
+            return;
+        }
 
         string name = $"aurora386-{DateTime.Now:yyyyMMdd-HHmmss}.png";
         string path = Path.Combine(
@@ -646,9 +682,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task MountUsbStorage(string? mode)
     {
-        if (PickFileAsync is null) return;
+        if (PickFileAsync is null)
+        {
+            return;
+        }
         string? path = await PickFileAsync("Select a USB disk image", HardDiskFilters);
-        if (path is null) return;
+        if (path is null)
+        {
+            return;
+        }
         try
         {
             bool wasEnabled = Session.WithMachine(machine => machine.Usb is not null);
@@ -669,10 +711,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task MountCompactDisc()
     {
-        if (PickFileAsync is null) return;
+        if (PickFileAsync is null)
+        {
+            return;
+        }
 
         string? path = await PickFileAsync("Select a CD-ROM image", CdFilters);
-        if (path is null) return;
+        if (path is null)
+        {
+            return;
+        }
 
         try
         {
@@ -698,10 +746,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task ShareFolder()
     {
-        if (PickFolderAsync is null) return;
+        if (PickFolderAsync is null)
+        {
+            return;
+        }
 
         string? path = await PickFolderAsync("Choose a folder to share with the guest");
-        if (path is null) return;
+        if (path is null)
+        {
+            return;
+        }
 
         try
         {
@@ -754,10 +808,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task OpenVm()
     {
-        if (PickFolderAsync is null) return;
+        if (PickFolderAsync is null)
+        {
+            return;
+        }
 
         string? folder = await PickFolderAsync("Open a machine folder (one with vm.json in it)");
-        if (folder is null) return;
+        if (folder is null)
+        {
+            return;
+        }
 
         VmConfiguration configuration;
         try { configuration = VmConfiguration.Load(folder); }
@@ -810,9 +870,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         string? folder = _vmFolder;
         if (folder is null)
         {
-            if (PickFolderAsync is null) return;
+            if (PickFolderAsync is null)
+            {
+                return;
+            }
             folder = await PickFolderAsync("Choose a folder to keep this machine in");
-            if (folder is null) return;
+            if (folder is null)
+            {
+                return;
+            }
         }
 
         VmConfiguration configuration = _vmConfiguration ?? new VmConfiguration
@@ -898,9 +964,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         else
         {
-            if (PickSaveAsync is null) return;
+            if (PickSaveAsync is null)
+            {
+                return;
+            }
             path = await PickSaveAsync("Save the machine's state", "machine.state");
-            if (path is null) return;
+            if (path is null)
+            {
+                return;
+            }
         }
 
         // Paused, not stopped: the emulation thread keeps its place and the
@@ -919,7 +991,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            if (wasRunning) Session.Resume();
+            if (wasRunning)
+            {
+                Session.Resume();
+            }
         }
     }
 
@@ -931,10 +1006,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task RestoreState()
     {
-        if (PickFileAsync is null) return;
+        if (PickFileAsync is null)
+        {
+            return;
+        }
 
         string? path = await PickFileAsync("Restore a saved state", ["state"]);
-        if (path is null) return;
+        if (path is null)
+        {
+            return;
+        }
 
         bool wasRunning = Session.IsRunning;
         Session.Pause();
@@ -950,7 +1031,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            if (wasRunning) Session.Resume();
+            if (wasRunning)
+            {
+                Session.Resume();
+            }
         }
     }
 
@@ -1014,10 +1098,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task CreateDisk()
     {
-        if (PickSaveAsync is null) return;
+        if (PickSaveAsync is null)
+        {
+            return;
+        }
 
         string? path = await PickSaveAsync("Create a hard disk image", "disk.img");
-        if (path is null) return;
+        if (path is null)
+        {
+            return;
+        }
 
         try
         {
@@ -1060,7 +1150,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 .ToHashSet();
 
             for (byte candidate = 0x80; candidate < 0x84; candidate++)
-                if (!used.Contains(candidate)) return candidate;
+                if (!used.Contains(candidate))
+                {
+                    return candidate;
+                }
 
             // All four slots taken: replace the last one rather than refuse.
             return (byte)0x83;
@@ -1081,10 +1174,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// </summary>
     private async Task MountAsync(byte driveNumber, string title, string[] extensions)
     {
-        if (PickFileAsync is null) return;
+        if (PickFileAsync is null)
+        {
+            return;
+        }
 
         string? path = await PickFileAsync(title, extensions);
-        if (path is null) return;
+        if (path is null)
+        {
+            return;
+        }
 
         try
         {
@@ -1176,7 +1275,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void EjectDrive(DriveIndicator? drive)
     {
-        if (drive is null) return;
+        if (drive is null)
+        {
+            return;
+        }
 
         Session.WithMachine(machine =>
         {

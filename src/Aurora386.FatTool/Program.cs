@@ -133,7 +133,10 @@ try
             // DOS text files end their lines with carriage return and line
             // feed, and a file that does not is read as one enormous line.
             string text = System.Text.Encoding.ASCII.GetString(existing);
-            if (text.Length > 0 && !text.EndsWith('\n')) text += "\r\n";
+            if (text.Length > 0 && !text.EndsWith('\n'))
+            {
+                text += "\r\n";
+            }
 
             text += args[3] + "\r\n";
 

@@ -254,9 +254,18 @@ static List<string> Compare(Cpu cpu, PhysicalMemoryBus memory, MooTest test, Moo
         uint ours = OursValue(state, cpu.Flags, bit);
 
         uint mask = 0xFFFFFFFFu;
-        if (topMask is { } tm && tm.Has(bit)) mask &= MooReader.Get(tm, bit);
-        if (test.FinalMask is { } fm && fm.Has(bit)) mask &= MooReader.Get(fm, bit);
-        if (bit == MooReader.EFlagsBit) mask &= ~(UndefinedFlags.For(test.Bytes, test.InitRegs.Ecx) | UndefinedFlags.Reserved386);
+        if (topMask is { } tm && tm.Has(bit))
+        {
+            mask &= MooReader.Get(tm, bit);
+        }
+        if (test.FinalMask is { } fm && fm.Has(bit))
+        {
+            mask &= MooReader.Get(fm, bit);
+        }
+        if (bit == MooReader.EFlagsBit)
+        {
+            mask &= ~(UndefinedFlags.For(test.Bytes, test.InitRegs.Ecx) | UndefinedFlags.Reserved386);
+        }
 
         if (((ours ^ expected) & mask) != 0)
             errors.Add($"{MooReader.SlotName(bit)} {ours:X}!={expected:X}");
@@ -268,8 +277,14 @@ static List<string> Compare(Cpu cpu, PhysicalMemoryBus memory, MooTest test, Moo
     // addresses -- this is exactly what the README's "flag_address" field
     // is for, so the same eflags mask applies there, byte-sliced.
     uint eflagsMask = 0xFFFFFFFFu;
-    if (topMask is { } tmFlags && tmFlags.Has(MooReader.EFlagsBit)) eflagsMask &= MooReader.Get(tmFlags, MooReader.EFlagsBit);
-    if (test.FinalMask is { } fmFlags && fmFlags.Has(MooReader.EFlagsBit)) eflagsMask &= MooReader.Get(fmFlags, MooReader.EFlagsBit);
+    if (topMask is { } tmFlags && tmFlags.Has(MooReader.EFlagsBit))
+    {
+        eflagsMask &= MooReader.Get(tmFlags, MooReader.EFlagsBit);
+    }
+    if (test.FinalMask is { } fmFlags && fmFlags.Has(MooReader.EFlagsBit))
+    {
+        eflagsMask &= MooReader.Get(fmFlags, MooReader.EFlagsBit);
+    }
     eflagsMask &= ~UndefinedFlags.For(test.Bytes, test.InitRegs.Ecx);
     uint? flagAddress = test.Exception?.FlagAddress;
 
@@ -318,8 +333,14 @@ static uint OursValue(CpuState state, LazyFlags flags, int bit) => bit switch
 static HashSet<string> LoadRevocationList(string vectorDirectory)
 {
     string? candidate = Path.Combine(vectorDirectory, "..", "revocation_list.txt");
-    if (!File.Exists(candidate)) candidate = Path.Combine(vectorDirectory, "revocation_list.txt");
-    if (!File.Exists(candidate)) return [];
+    if (!File.Exists(candidate))
+    {
+        candidate = Path.Combine(vectorDirectory, "revocation_list.txt");
+    }
+    if (!File.Exists(candidate))
+    {
+        return [];
+    }
 
     return File.ReadAllLines(candidate)
         .Select(line => line.Trim())

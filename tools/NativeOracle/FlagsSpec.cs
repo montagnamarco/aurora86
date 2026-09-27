@@ -54,7 +54,10 @@ public static class FlagsSpec
     /// </summary>
     public static uint ForShift(int operationField, uint maskedCount, int operandBits)
     {
-        if (maskedCount == 0) return AllArithmetic;
+        if (maskedCount == 0)
+        {
+            return AllArithmetic;
+        }
 
         uint undefined = maskedCount > 1 ? Overflow : 0;
         bool isShift = operationField >= 4;
@@ -62,7 +65,10 @@ public static class FlagsSpec
         if (isShift)
         {
             undefined |= Adjust;
-            if (maskedCount >= operandBits) undefined |= Carry;
+            if (maskedCount >= operandBits)
+            {
+                undefined |= Carry;
+            }
         }
 
         return AllArithmetic & ~undefined;
@@ -75,11 +81,20 @@ public static class FlagsSpec
     /// </summary>
     public static uint ForDoubleShift(uint maskedCount, bool operandSize32)
     {
-        if (maskedCount == 0) return AllArithmetic;
-        if (!operandSize32 && maskedCount > 16) return 0;
+        if (maskedCount == 0)
+        {
+            return AllArithmetic;
+        }
+        if (!operandSize32 && maskedCount > 16)
+        {
+            return 0;
+        }
 
         uint undefined = Adjust;
-        if (maskedCount > 1) undefined |= Overflow;
+        if (maskedCount > 1)
+        {
+            undefined |= Overflow;
+        }
 
         return AllArithmetic & ~undefined;
     }

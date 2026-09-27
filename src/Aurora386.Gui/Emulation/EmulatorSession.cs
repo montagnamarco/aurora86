@@ -92,7 +92,10 @@ public sealed class EmulatorSession : IDisposable
 
     public void Start()
     {
-        if (_running) return;
+        if (_running)
+        {
+            return;
+        }
 
         _stopRequested = false;
         _paused = false;
@@ -216,7 +219,10 @@ public sealed class EmulatorSession : IDisposable
             // visible casualty -- hold a key for an instant and DOS receives a
             // burst of characters, which is what makes the prompt run away.
             TimeSpan ahead = emulatedTime - now;
-            if (Unthrottled) emulatedTime = now;
+            if (Unthrottled)
+            {
+                emulatedTime = now;
+            }
             else if (ahead > TimeSpan.FromMilliseconds(2))
                 Thread.Sleep(ahead - TimeSpan.FromMilliseconds(1));
             else if (ahead < TimeSpan.FromMilliseconds(-250))

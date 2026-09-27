@@ -213,7 +213,10 @@ public static class Sse2Families
             code.Add(InstructionEncoding.ModRmMemory(destination, baseRegister));
             InstructionEncoding.AppendDisplacement(code, displacement);
 
-            if (scalar) BitConverter.GetBytes(RandomDoubleBits(rng)).CopyTo(buffer, displacement);
+            if (scalar)
+            {
+                BitConverter.GetBytes(RandomDoubleBits(rng)).CopyTo(buffer, displacement);
+            }
             else WriteXmmToBuffer(buffer, displacement, RandomXmmDouble(rng));
             operand = $"XMM{destination}, [{baseRegister}+{displacement}]";
         }
@@ -264,7 +267,10 @@ public static class Sse2Families
             code.Add(InstructionEncoding.ModRmMemory(destination, baseRegister));
             InstructionEncoding.AppendDisplacement(code, displacement);
 
-            if (scalar) BitConverter.GetBytes(RandomDoubleBits(rng)).CopyTo(buffer, displacement);
+            if (scalar)
+            {
+                BitConverter.GetBytes(RandomDoubleBits(rng)).CopyTo(buffer, displacement);
+            }
             else WriteXmmToBuffer(buffer, displacement, RandomXmmDouble(rng));
             operand = $"XMM{destination}, [{baseRegister}+{displacement}]";
         }
@@ -363,7 +369,10 @@ public static class Sse2Families
             code.Add(InstructionEncoding.ModRmMemory(destination, baseRegister));
             InstructionEncoding.AppendDisplacement(code, displacement);
 
-            if (scalar) BitConverter.GetBytes(RandomDoubleBits(rng)).CopyTo(buffer, displacement);
+            if (scalar)
+            {
+                BitConverter.GetBytes(RandomDoubleBits(rng)).CopyTo(buffer, displacement);
+            }
             else WriteXmmToBuffer(buffer, displacement, RandomXmmDouble(rng));
             operand = $"XMM{destination}, [{baseRegister}+{displacement}], {predicate}";
         }
@@ -516,7 +525,10 @@ public static class Sse2Families
 
             if (!store)
             {
-                if (scalar) BitConverter.GetBytes(RandomDoubleBits(rng)).CopyTo(buffer, displacement);
+                if (scalar)
+                {
+                    BitConverter.GetBytes(RandomDoubleBits(rng)).CopyTo(buffer, displacement);
+                }
                 else WriteXmmToBuffer(buffer, displacement, RandomXmmDouble(rng));
             }
             operand = store ? $"[{baseRegister}+{displacement}], XMM{regField}" : $"XMM{regField}, [{baseRegister}+{displacement}]";
@@ -563,7 +575,10 @@ public static class Sse2Families
         code.Add(InstructionEncoding.ModRmMemory(regField, baseRegister));
         InstructionEncoding.AppendDisplacement(code, displacement);
 
-        if (!store) BitConverter.GetBytes(RandomDoubleBits(rng)).CopyTo(buffer, displacement);
+        if (!store)
+        {
+            BitConverter.GetBytes(RandomDoubleBits(rng)).CopyTo(buffer, displacement);
+        }
 
         return new TestCase
         {
@@ -654,7 +669,10 @@ public static class Sse2Families
             gpr[(int)baseRegister] = context.BufferAddress;
             code.Add(InstructionEncoding.ModRmMemory(regField, baseRegister));
             InstructionEncoding.AppendDisplacement(code, displacement);
-            if (!store) WriteXmmToBuffer(buffer, displacement, RandomXmmDouble(rng));
+            if (!store)
+            {
+                WriteXmmToBuffer(buffer, displacement, RandomXmmDouble(rng));
+            }
             operand = store ? $"[{baseRegister}+{displacement}], XMM{regField}" : $"XMM{regField}, [{baseRegister}+{displacement}]";
         }
         else
@@ -767,7 +785,10 @@ public static class Sse2Families
             InstructionEncoding.AppendDisplacement(code, displacement);
 
             BitConverter.GetBytes(rng.NextUInt32()).CopyTo(buffer, displacement);
-            if (!scalar) BitConverter.GetBytes(rng.NextUInt32()).CopyTo(buffer, displacement + 4);
+            if (!scalar)
+            {
+                BitConverter.GetBytes(rng.NextUInt32()).CopyTo(buffer, displacement + 4);
+            }
             operand = $"XMM{destination}, [{baseRegister}+{displacement}]";
         }
         else if (scalar)
@@ -893,7 +914,10 @@ public static class Sse2Families
         int destination = rng.Next(8);
 
         var code = new List<byte>();
-        if (prefix != 0) code.Add(prefix);
+        if (prefix != 0)
+        {
+            code.Add(prefix);
+        }
         code.Add(0x0F);
         code.Add(0x5A);
 
@@ -954,7 +978,10 @@ public static class Sse2Families
         int destination = rng.Next(8);
 
         var code = new List<byte>();
-        if (prefix != 0) code.Add(prefix);
+        if (prefix != 0)
+        {
+            code.Add(prefix);
+        }
         code.Add(0x0F);
         code.Add(0x5B);
 
@@ -1018,7 +1045,10 @@ public static class Sse2Families
             code.Add(InstructionEncoding.ModRmMemory(destination, baseRegister));
             InstructionEncoding.AppendDisplacement(code, displacement);
 
-            if (wideSource) WriteXmmToBuffer(buffer, displacement, RandomXmmDouble(rng));
+            if (wideSource)
+            {
+                WriteXmmToBuffer(buffer, displacement, RandomXmmDouble(rng));
+            }
             else { BitConverter.GetBytes(rng.NextUInt32()).CopyTo(buffer, displacement); BitConverter.GetBytes(rng.NextUInt32()).CopyTo(buffer, displacement + 4); }
             operand = $"XMM{destination}, [{baseRegister}+{displacement}]";
         }
@@ -1152,7 +1182,10 @@ public static class Sse2Families
             gpr[(int)baseRegister] = context.BufferAddress;
             code.Add(InstructionEncoding.ModRmMemory(regField, baseRegister));
             InstructionEncoding.AppendDisplacement(code, displacement);
-            if (!store) WriteXmmToBuffer(buffer, displacement, RandomXmmDouble(rng));
+            if (!store)
+            {
+                WriteXmmToBuffer(buffer, displacement, RandomXmmDouble(rng));
+            }
             operand = store ? $"[{baseRegister}+{displacement}], XMM{regField}" : $"XMM{regField}, [{baseRegister}+{displacement}]";
         }
         else

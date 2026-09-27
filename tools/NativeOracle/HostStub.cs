@@ -36,13 +36,19 @@ public static class HostStub
 
     private static void Push64(List<byte> code, int register)
     {
-        if (register >= 8) code.Add(Rex(false, false, false, true));
+        if (register >= 8)
+        {
+            code.Add(Rex(false, false, false, true));
+        }
         code.Add((byte)(0x50 + (register & 7)));
     }
 
     private static void Pop64(List<byte> code, int register)
     {
-        if (register >= 8) code.Add(Rex(false, false, false, true));
+        if (register >= 8)
+        {
+            code.Add(Rex(false, false, false, true));
+        }
         code.Add((byte)(0x58 + (register & 7)));
     }
 
@@ -115,7 +121,10 @@ public static class HostStub
         Push64(code, Rax);
         code.Add(0x9D);                                     // popfq
 
-        if (useExtendedState) FxsaveOrRestore(code, restore: true, HostState.FxsaveOffset);
+        if (useExtendedState)
+        {
+            FxsaveOrRestore(code, restore: true, HostState.FxsaveOffset);
+        }
 
         // Load the seven general registers the test instruction is allowed
         // to touch. This happens last in the prologue, after RAX/RDX were
@@ -141,7 +150,10 @@ public static class HostStub
         StoreToState(code, Rsi, HostState.EsiOffset);
         StoreToState(code, Rdi, HostState.EdiOffset);
 
-        if (useExtendedState) FxsaveOrRestore(code, restore: false, HostState.FxsaveOffset);
+        if (useExtendedState)
+        {
+            FxsaveOrRestore(code, restore: false, HostState.FxsaveOffset);
+        }
 
         code.Add(0x9C);                                     // pushfq
         Pop64(code, Rax);

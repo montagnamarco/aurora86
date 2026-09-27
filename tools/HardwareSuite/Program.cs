@@ -29,10 +29,16 @@ string[] filters = args.Length > 1 ? args[1].Split(',') : [];
 int totalPassed = 0, totalFailed = 0;
 foreach (string file in Directory.GetFiles(directory, "*.json").OrderBy(x => x))
 {
-    if (filters.Length > 0 && !filters.Any(f => Path.GetFileName(file).Contains(f))) continue;
+    if (filters.Length > 0 && !filters.Any(f => Path.GetFileName(file).Contains(f)))
+    {
+        continue;
+    }
 
     string text = File.ReadAllText(file);
-    if (text.Length < 100) continue;      // a placeholder left by a failed download
+    if (text.Length < 100)
+    {
+        continue;      // a placeholder left by a failed download
+    }
 
     JsonElement tests = JsonDocument.Parse(text).RootElement;
     int passed = 0, failed = 0;
@@ -61,7 +67,10 @@ foreach (string file in Directory.GetFiles(directory, "*.json").OrderBy(x => x))
         state.IdtBase = tables.GetProperty("idt").GetProperty("base").GetUInt32();
         state.IdtLimit = (ushort)tables.GetProperty("idt").GetProperty("limit").GetUInt32();
         state.Cr0 = initial.GetProperty("cr0").GetUInt32();
-        if (initial.TryGetProperty("cr3", out JsonElement cr3)) state.Cr3 = cr3.GetUInt32();
+        if (initial.TryGetProperty("cr3", out JsonElement cr3))
+        {
+            state.Cr3 = cr3.GetUInt32();
+        }
 
         // The task register: without it every change of privilege raises
         // #TS, because the processor cannot find the stack of the level it
@@ -83,7 +92,10 @@ foreach (string file in Directory.GetFiles(directory, "*.json").OrderBy(x => x))
         foreach (JsonElement cell in initial.GetProperty("ram").EnumerateArray())
         {
             uint address = cell[0].GetUInt32();
-            if (address < memory.RamSize) memory.WriteByte(address, (byte)cell[1].GetUInt32());
+            if (address < memory.RamSize)
+            {
+                memory.WriteByte(address, (byte)cell[1].GetUInt32());
+            }
         }
 
         // Segments go straight into the descriptor cache, as the test
@@ -107,7 +119,10 @@ foreach (string file in Directory.GetFiles(directory, "*.json").OrderBy(x => x))
             byte access = memory.ReadByte(address + 5);
             byte granularity = memory.ReadByte(address + 6);
             uint limit = (uint)(memory.ReadWord(address) | ((granularity & 0x0F) << 16));
-            if ((granularity & 0x80) != 0) limit = (limit << 12) | 0xFFF;
+            if ((granularity & 0x80) != 0)
+            {
+                limit = (limit << 12) | 0xFFF;
+            }
             cache.Limit = limit;
             cache.Big = (granularity & 0x40) != 0;
             bool code = (access & 0x08) != 0;
@@ -139,11 +154,20 @@ foreach (string file in Directory.GetFiles(directory, "*.json").OrderBy(x => x))
         // test's page tables map it, not to that physical address.
         uint Physical(uint linear)
         {
-            if ((state.Cr0 & 0x80000000u) == 0) return linear;
+            if ((state.Cr0 & 0x80000000u) == 0)
+            {
+                return linear;
+            }
             uint pde = memory.ReadDword(state.Cr3 + (linear >> 22) * 4);
-            if ((pde & 1) == 0) return linear;
+            if ((pde & 1) == 0)
+            {
+                return linear;
+            }
             uint pte = memory.ReadDword((pde & 0xFFFFF000u) + ((linear >> 12) & 0x3FF) * 4);
-            if ((pte & 1) == 0) return linear;
+            if ((pte & 1) == 0)
+            {
+                return linear;
+            }
             return (pte & 0xFFFFF000u) | (linear & 0xFFF);
         }
         uint instruction = state.Cs.Base + state.Eip;
@@ -232,7 +256,10 @@ foreach (string file in Directory.GetFiles(directory, "*.json").OrderBy(x => x))
         }
         else if (vector != 255) errors.Add($"unexpected fault {vector:X2}");
 
-        if (errors.Count == 0) passed++;
+        if (errors.Count == 0)
+        {
+            passed++;
+        }
         else
         {
             failed++;

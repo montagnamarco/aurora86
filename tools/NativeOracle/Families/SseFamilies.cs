@@ -173,7 +173,10 @@ public static class SseFamilies
         int destination = rng.Next(8);
 
         var code = new List<byte>();
-        if (scalar) code.Add(0xF3);
+        if (scalar)
+        {
+            code.Add(0xF3);
+        }
         code.Add(0x0F);
         code.Add(opcode);
 
@@ -188,7 +191,10 @@ public static class SseFamilies
             code.Add(InstructionEncoding.ModRmMemory(destination, baseRegister));
             InstructionEncoding.AppendDisplacement(code, displacement);
 
-            if (scalar) BitConverter.GetBytes(RandomSingleBits(rng)).CopyTo(buffer, displacement);
+            if (scalar)
+            {
+                BitConverter.GetBytes(RandomSingleBits(rng)).CopyTo(buffer, displacement);
+            }
             else WriteXmmToBuffer(buffer, displacement, RandomXmm(rng));
             operand = $"XMM{destination}, [{baseRegister}+{displacement}]";
         }
@@ -228,7 +234,10 @@ public static class SseFamilies
         int destination = rng.Next(8);
 
         var code = new List<byte>();
-        if (scalar) code.Add(0xF3);
+        if (scalar)
+        {
+            code.Add(0xF3);
+        }
         code.Add(0x0F);
         code.Add(opcode);
 
@@ -243,7 +252,10 @@ public static class SseFamilies
             code.Add(InstructionEncoding.ModRmMemory(destination, baseRegister));
             InstructionEncoding.AppendDisplacement(code, displacement);
 
-            if (scalar) BitConverter.GetBytes(RandomSingleBits(rng)).CopyTo(buffer, displacement);
+            if (scalar)
+            {
+                BitConverter.GetBytes(RandomSingleBits(rng)).CopyTo(buffer, displacement);
+            }
             else WriteXmmToBuffer(buffer, displacement, RandomXmm(rng));
             operand = $"XMM{destination}, [{baseRegister}+{displacement}]";
         }
@@ -379,7 +391,10 @@ public static class SseFamilies
         int destination = rng.Next(8);
 
         var code = new List<byte>();
-        if (scalar) code.Add(0xF3);
+        if (scalar)
+        {
+            code.Add(0xF3);
+        }
         code.Add(0x0F);
         code.Add(0xC2);
 
@@ -394,7 +409,10 @@ public static class SseFamilies
             code.Add(InstructionEncoding.ModRmMemory(destination, baseRegister));
             InstructionEncoding.AppendDisplacement(code, displacement);
 
-            if (scalar) BitConverter.GetBytes(RandomSingleBits(rng)).CopyTo(buffer, displacement);
+            if (scalar)
+            {
+                BitConverter.GetBytes(RandomSingleBits(rng)).CopyTo(buffer, displacement);
+            }
             else WriteXmmToBuffer(buffer, displacement, RandomXmm(rng));
             operand = $"XMM{destination}, [{baseRegister}+{displacement}], {predicate}";
         }
@@ -536,7 +554,10 @@ public static class SseFamilies
         int regField = rng.Next(8);
 
         var code = new List<byte>();
-        if (scalar) code.Add(0xF3);
+        if (scalar)
+        {
+            code.Add(0xF3);
+        }
         code.Add(0x0F);
         code.Add(store ? (byte)0x11 : (byte)0x10);
 
@@ -553,7 +574,10 @@ public static class SseFamilies
 
             if (!store)
             {
-                if (scalar) BitConverter.GetBytes(RandomSingleBits(rng)).CopyTo(buffer, displacement);
+                if (scalar)
+                {
+                    BitConverter.GetBytes(RandomSingleBits(rng)).CopyTo(buffer, displacement);
+                }
                 else WriteXmmToBuffer(buffer, displacement, RandomXmm(rng));
             }
             operand = store ? $"[{baseRegister}+{displacement}], XMM{regField}" : $"XMM{regField}, [{baseRegister}+{displacement}]";
@@ -659,7 +683,10 @@ public static class SseFamilies
             gpr[(int)baseRegister] = context.BufferAddress;
             code.Add(InstructionEncoding.ModRmMemory(regField, baseRegister));
             InstructionEncoding.AppendDisplacement(code, displacement);
-            if (!store) WriteXmmToBuffer(buffer, displacement, RandomXmm(rng));
+            if (!store)
+            {
+                WriteXmmToBuffer(buffer, displacement, RandomXmm(rng));
+            }
             operand = store ? $"[{baseRegister}+{displacement}], XMM{regField}" : $"XMM{regField}, [{baseRegister}+{displacement}]";
         }
         else
@@ -760,7 +787,10 @@ public static class SseFamilies
         ulong[]? mmx = null;
 
         var code = new List<byte>();
-        if (scalar) code.Add(0xF3);
+        if (scalar)
+        {
+            code.Add(0xF3);
+        }
         code.Add(0x0F);
         code.Add(0x2A);
 
@@ -776,7 +806,10 @@ public static class SseFamilies
             InstructionEncoding.AppendDisplacement(code, displacement);
 
             BitConverter.GetBytes(rng.NextUInt32()).CopyTo(buffer, displacement);
-            if (!scalar) BitConverter.GetBytes(rng.NextUInt32()).CopyTo(buffer, displacement + 4);
+            if (!scalar)
+            {
+                BitConverter.GetBytes(rng.NextUInt32()).CopyTo(buffer, displacement + 4);
+            }
             operand = $"XMM{destination}, [{baseRegister}+{displacement}]";
         }
         else if (scalar)
@@ -826,7 +859,10 @@ public static class SseFamilies
         ulong[]? mmx = null;
 
         var code = new List<byte>();
-        if (scalar) code.Add(0xF3);
+        if (scalar)
+        {
+            code.Add(0xF3);
+        }
         code.Add(0x0F);
         code.Add(truncate ? (byte)0x2C : (byte)0x2D);
 

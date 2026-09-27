@@ -84,7 +84,10 @@ public sealed unsafe class EmulatorWindow : IDisposable
 
             while (accumulatedSeconds >= TargetFrameSeconds)
             {
-                if (!_paused) RunOneFrame(TargetFrameSeconds);
+                if (!_paused)
+                {
+                    RunOneFrame(TargetFrameSeconds);
+                }
                 accumulatedSeconds -= TargetFrameSeconds;
             }
 
@@ -122,7 +125,10 @@ public sealed unsafe class EmulatorWindow : IDisposable
 
     private void CreateTexture()
     {
-        if (_texture is not null) _sdl.DestroyTexture(_texture);
+        if (_texture is not null)
+        {
+            _sdl.DestroyTexture(_texture);
+        }
 
         _textureWidth = _machine.Video.Width;
         _textureHeight = _machine.Video.Height;
@@ -239,14 +245,26 @@ public sealed unsafe class EmulatorWindow : IDisposable
         // SDL's own key auto-repeat: the emulated BIOS implements typematic
         // repeat itself, so repeated press events must be dropped or the
         // keyboard buffer fills with duplicates.
-        if (pressed && key.Repeat != 0) return;
+        if (pressed && key.Repeat != 0)
+        {
+            return;
+        }
 
         byte scanCode = KeyMap.ToScanCode(code);
-        if (scanCode == 0) return;
+        if (scanCode == 0)
+        {
+            return;
+        }
 
-        if (KeyMap.IsExtended(code)) _machine.Keyboard.PushScanCode(0xE0);
+        if (KeyMap.IsExtended(code))
+        {
+            _machine.Keyboard.PushScanCode(0xE0);
+        }
 
-        if (pressed) _machine.PressKey(scanCode);
+        if (pressed)
+        {
+            _machine.PressKey(scanCode);
+        }
         else _machine.ReleaseKey(scanCode);
     }
 
@@ -260,7 +278,10 @@ public sealed unsafe class EmulatorWindow : IDisposable
 
     private void UpdateTitle()
     {
-        if (_statsTimer.ElapsedMilliseconds < 1000) return;
+        if (_statsTimer.ElapsedMilliseconds < 1000)
+        {
+            return;
+        }
 
         ReportMidiStatus();
 
@@ -301,9 +322,18 @@ public sealed unsafe class EmulatorWindow : IDisposable
     public void Dispose()
     {
         _audio.Dispose();
-        if (_texture is not null) _sdl.DestroyTexture(_texture);
-        if (_renderer is not null) _sdl.DestroyRenderer(_renderer);
-        if (_window is not null) _sdl.DestroyWindow(_window);
+        if (_texture is not null)
+        {
+            _sdl.DestroyTexture(_texture);
+        }
+        if (_renderer is not null)
+        {
+            _sdl.DestroyRenderer(_renderer);
+        }
+        if (_window is not null)
+        {
+            _sdl.DestroyWindow(_window);
+        }
         _sdl.Quit();
         _sdl.Dispose();
     }

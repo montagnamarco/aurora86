@@ -354,7 +354,10 @@ while ((input = Console.ReadLine()) is not null)
                 string location = $"{state.Cs.Selector:X4}:{state.Eip:X8}";
                 counts.TryGetValue(location, out int count);
                 counts[location] = count + 1;
-                if (count >= 32) return;
+                if (count >= 32)
+                {
+                    return;
+                }
                 videoLog.WriteLine($"RAM {location} {address:X8}={value:X2} AX={state.Eax:X8} BX={state.Ebx:X8} CX={state.Ecx:X8} DX={state.Edx:X8} SI={state.Esi:X8} DI={state.Edi:X8} DS={state.Ds.Base:X8} ES={state.Es.Base:X8} CODE={ReadBytes(state.Cs.Base + state.Eip - 16, 32)} SOURCE={ReadBytes(state.Ds.Base + state.Si, 32)}");
             };
             break;

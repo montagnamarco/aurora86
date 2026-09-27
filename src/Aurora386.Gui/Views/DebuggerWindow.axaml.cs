@@ -22,7 +22,10 @@ public partial class DebuggerWindow : Window
         // it a callback keeps it testable.
         DataContextChanged += (_, _) =>
         {
-            if (ViewModel is { } model) model.PickSaveAsync = PickSaveAsync;
+            if (ViewModel is { } model)
+            {
+                model.PickSaveAsync = PickSaveAsync;
+            }
         };
     }
 
@@ -32,7 +35,10 @@ public partial class DebuggerWindow : Window
     private async Task<string?> PickSaveAsync(string title, string suggestedName)
     {
         IStorageProvider? storage = StorageProvider;
-        if (storage is null) return null;
+        if (storage is null)
+        {
+            return null;
+        }
 
         IStorageFile? chosen = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
         {

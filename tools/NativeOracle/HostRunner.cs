@@ -63,7 +63,10 @@ public sealed unsafe class HostRunner : IDisposable
         foreach (nint candidate in BufferAddressCandidates)
         {
             nint address = VirtualAlloc(candidate, BufferSize, MemCommit | MemReserve, PageReadWrite);
-            if (address != 0) return address;
+            if (address != 0)
+            {
+                return address;
+            }
         }
 
         throw new InvalidOperationException("Every candidate address for the shared data buffer was already in use.");

@@ -71,14 +71,23 @@ public sealed unsafe class AudioOutput : IDisposable
     /// </summary>
     public void Start()
     {
-        if (IsAvailable) return;
+        if (IsAvailable)
+        {
+            return;
+        }
 
         // No source, no sound: opening a device nobody will ever feed
         // buys nothing and would only add a spurious dependency on the
         // host's audio stack to a headless run.
-        if (_machine.Audio.Sources.Count == 0) return;
+        if (_machine.Audio.Sources.Count == 0)
+        {
+            return;
+        }
 
-        if (_sdl.InitSubSystem(Silk.NET.SDL.Sdl.InitAudio) < 0) return;
+        if (_sdl.InitSubSystem(Silk.NET.SDL.Sdl.InitAudio) < 0)
+        {
+            return;
+        }
 
         _sampleRate = _machine.Audio.OutputSampleRate;
 
@@ -96,7 +105,10 @@ public sealed unsafe class AudioOutput : IDisposable
         // 16-bit signed stereo at the mixer's rate -- and silently accepting
         // a different one would resample nothing and just play noise.
         _device = _sdl.OpenAudioDevice((byte*)null, 0, &desired, &obtained, 0);
-        if (_device == 0) return;
+        if (_device == 0)
+        {
+            return;
+        }
 
         int stagingFrames = _sampleRate * MaxPumpMilliseconds / 1000;
         _staging = new short[stagingFrames * 2];
@@ -115,7 +127,10 @@ public sealed unsafe class AudioOutput : IDisposable
     /// </summary>
     public void Pump()
     {
-        if (!IsAvailable) return;
+        if (!IsAvailable)
+        {
+            return;
+        }
 
         const int BytesPerFrame = 2 * sizeof(short); // stereo, 16-bit
 
@@ -124,10 +139,16 @@ public sealed unsafe class AudioOutput : IDisposable
 
         int targetFrames = _sampleRate * TargetQueuedMilliseconds / 1000;
         int wantedFrames = targetFrames - queuedFrames;
-        if (wantedFrames <= 0) return;
+        if (wantedFrames <= 0)
+        {
+            return;
+        }
 
         int maxFrames = _staging.Length / 2;
-        if (wantedFrames > maxFrames) wantedFrames = maxFrames;
+        if (wantedFrames > maxFrames)
+        {
+            wantedFrames = maxFrames;
+        }
 
         Span<short> destination = _staging.AsSpan(0, wantedFrames * 2);
         _machine.Audio.ReadFrames(destination);
@@ -140,7 +161,10 @@ public sealed unsafe class AudioOutput : IDisposable
 
     public void Dispose()
     {
-        if (!IsAvailable) return;
+        if (!IsAvailable)
+        {
+            return;
+        }
 
         _sdl.CloseAudioDevice(_device);
         IsAvailable = false;

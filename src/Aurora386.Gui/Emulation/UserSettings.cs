@@ -32,7 +32,10 @@ public sealed class UserSettings
     {
         try
         {
-            if (!File.Exists(FilePath)) return new UserSettings();
+            if (!File.Exists(FilePath))
+            {
+                return new UserSettings();
+            }
             return JsonSerializer.Deserialize<UserSettings>(File.ReadAllText(FilePath), Options)
                    ?? new UserSettings();
         }

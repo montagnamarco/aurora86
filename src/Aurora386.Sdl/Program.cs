@@ -57,17 +57,26 @@ for (int i = 0; i < args.Length; i++)
     switch (args[i])
     {
         case "--floppy" or "-f":
-            if (++i >= args.Length) return Fail("--floppy needs a path");
+            if (++i >= args.Length)
+            {
+                return Fail("--floppy needs a path");
+            }
             floppies.Add(args[i]);
             break;
 
         case "--hdd" or "-d":
-            if (++i >= args.Length) return Fail("--hdd needs a path");
+            if (++i >= args.Length)
+            {
+                return Fail("--hdd needs a path");
+            }
             hardDisk = args[i];
             break;
 
         case "--create-hdd":
-            if (++i >= args.Length) return Fail("--create-hdd needs a path");
+            if (++i >= args.Length)
+            {
+                return Fail("--create-hdd needs a path");
+            }
             createDisk = args[i];
             break;
 
@@ -82,17 +91,26 @@ for (int i = 0; i < args.Length; i++)
             break;
 
         case "--vm":
-            if (++i >= args.Length) return Fail("--vm needs a folder");
+            if (++i >= args.Length)
+            {
+                return Fail("--vm needs a folder");
+            }
             vmFolder = args[i];
             break;
 
         case "--hdd2":
-            if (++i >= args.Length) return Fail("--hdd2 needs a path");
+            if (++i >= args.Length)
+            {
+                return Fail("--hdd2 needs a path");
+            }
             secondDisk = args[i];
             break;
 
         case "--cd":
-            if (++i >= args.Length) return Fail("--cd needs a path");
+            if (++i >= args.Length)
+            {
+                return Fail("--cd needs a path");
+            }
             compactDisc = args[i];
             break;
 
@@ -101,7 +119,10 @@ for (int i = 0; i < args.Length; i++)
             // A folder, or a letter and a folder: "--share F:/some/folder".
             // Without a letter the next free one after the disks is used,
             // E: on a one-disk machine. The option repeats for more folders.
-            if (++i >= args.Length) return Fail("--share needs a folder");
+            if (++i >= args.Length)
+            {
+                return Fail("--share needs a folder");
+            }
             string spec = args[i];
             byte? letter = null;
             if (spec.Length > 2 && spec[1] == ':' && char.IsAsciiLetter(spec[0]) && !Directory.Exists(spec))
@@ -114,7 +135,10 @@ for (int i = 0; i < args.Length; i++)
         }
 
         case "--boot":
-            if (++i >= args.Length) return Fail("--boot needs a list of drives, like A,C or CD,C");
+            if (++i >= args.Length)
+            {
+                return Fail("--boot needs a list of drives, like A,C or CD,C");
+            }
             bootOrder = args[i];
             break;
 
@@ -133,7 +157,10 @@ for (int i = 0; i < args.Length; i++)
         case "--forward":
         {
             // tcp:8080:80 -- host port 8080 reaches guest port 80.
-            if (++i >= args.Length) return Fail("--forward needs proto:hostport:guestport");
+            if (++i >= args.Length)
+            {
+                return Fail("--forward needs proto:hostport:guestport");
+            }
             string[] parts = args[i].Split(':');
             if (parts.Length != 3 || parts[0] is not ("tcp" or "udp")
                 || !int.TryParse(parts[1], out int hostPort) || !int.TryParse(parts[2], out int guestPort))
@@ -143,24 +170,36 @@ for (int i = 0; i < args.Length; i++)
         }
 
         case "--snapshot":
-            if (++i >= args.Length) return Fail("--snapshot needs a path");
+            if (++i >= args.Length)
+            {
+                return Fail("--snapshot needs a path");
+            }
             snapshot = args[i];
             break;
 
         case "--doslog":
-            if (++i >= args.Length) return Fail("--doslog needs a path");
+            if (++i >= args.Length)
+            {
+                return Fail("--doslog needs a path");
+            }
             dosLogPath = args[i];
             break;
 
         case "--writelog":
-            if (++i >= args.Length) return Fail("--writelog needs a path");
+            if (++i >= args.Length)
+            {
+                return Fail("--writelog needs a path");
+            }
             writeLogPath = args[i];
             break;
 
         default:
             // A bare path with no option is taken as a floppy image: it is by
             // far the most common case, so it is worth saving the typing.
-            if (!args[i].StartsWith('-')) floppies.Add(args[i]);
+            if (!args[i].StartsWith('-'))
+            {
+                floppies.Add(args[i]);
+            }
             else return Fail($"opzione sconosciuta: {args[i]}");
             break;
     }
@@ -179,7 +218,10 @@ if (createDisk is not null)
     Console.WriteLine("The disk is partitioned and formatted FAT16, ready to install onto.");
 
     // If nothing else was requested, creating the image was the whole job.
-    if (floppies.Count == 0 && hardDisk is null) return 0;
+    if (floppies.Count == 0 && hardDisk is null)
+    {
+        return 0;
+    }
     hardDisk ??= createDisk;
 }
 
@@ -243,7 +285,10 @@ foreach ((byte? requested, string folder) in sharedFolders)
 {
     if (!Directory.Exists(folder)) return Fail($"cartella non trovata: {folder}");
     byte drive;
-    if (requested is { } explicitDrive) drive = explicitDrive;
+    if (requested is { } explicitDrive)
+    {
+        drive = explicitDrive;
+    }
     else if (!machine.TryGetNextSharedFolderDrive(out drive))
         return Fail("nessuna lettera DOS libera per la cartella condivisa; controllare le unità occupate e LASTDRIVE");
     machine.Redirector.Mount(drive, new HostDirectoryFileSystem(folder));

@@ -52,11 +52,20 @@ public sealed class ScreenView : Control
         get => _session;
         set
         {
-            if (ReferenceEquals(_session, value)) return;
+            if (ReferenceEquals(_session, value))
+            {
+                return;
+            }
 
-            if (_session is not null) _session.FrameReady -= OnFrameReady;
+            if (_session is not null)
+            {
+                _session.FrameReady -= OnFrameReady;
+            }
             SetAndRaise(SessionProperty, ref _session, value);
-            if (_session is not null) _session.FrameReady += OnFrameReady;
+            if (_session is not null)
+            {
+                _session.FrameReady += OnFrameReady;
+            }
         }
     }
 
@@ -134,7 +143,10 @@ public sealed class ScreenView : Control
     {
         base.OnPointerMoved(e);
 
-        if (!TryReadMovement(e, out double hostX, out double hostY)) return;
+        if (!TryReadMovement(e, out double hostX, out double hostY))
+        {
+            return;
+        }
 
         // Round rather than truncate, and accumulate what rounding drops.
         // A slow drag produces sub-pixel movements every frame; truncating
@@ -149,7 +161,10 @@ public sealed class ScreenView : Control
         _residualX = deltaX - countsX;
         _residualY = deltaY - countsY;
 
-        if (countsX == 0 && countsY == 0) return;
+        if (countsX == 0 && countsY == 0)
+        {
+            return;
+        }
 
         _session?.WithMachine(machine => machine.MoveMouse(countsX, countsY));
     }
@@ -290,11 +305,17 @@ public sealed class ScreenView : Control
             width = machine.Video.Width;
             height = machine.Video.Height;
 
-            if (width <= 0 || height <= 0) return;
+            if (width <= 0 || height <= 0)
+            {
+                return;
+            }
 
             bool resized = _bitmap is null || _bitmapWidth != width || _bitmapHeight != height;
             EnsureBitmap(width, height);
-            if (changed || resized) CopyFramebuffer(machine.Video.Framebuffer, width, height);
+            if (changed || resized)
+            {
+                CopyFramebuffer(machine.Video.Framebuffer, width, height);
+            }
 
             // Read here, inside the lock the frame copy already holds, rather
             // than taking it a second time further down: this runs sixty
@@ -339,7 +360,10 @@ public sealed class ScreenView : Control
     /// </summary>
     private static Rect FitToMonitorAspect(Size available)
     {
-        if (available.Width <= 0 || available.Height <= 0) return default;
+        if (available.Width <= 0 || available.Height <= 0)
+        {
+            return default;
+        }
 
         double width = available.Width;
         double height = width / MonitorAspect;
@@ -378,7 +402,10 @@ public sealed class ScreenView : Control
 
     private unsafe void CopyFramebuffer(ReadOnlySpan<uint> source, int width, int height)
     {
-        if (_bitmap is null) return;
+        if (_bitmap is null)
+        {
+            return;
+        }
 
         using ILockedFramebuffer locked = _bitmap.Lock();
         var destination = (uint*)locked.Address;

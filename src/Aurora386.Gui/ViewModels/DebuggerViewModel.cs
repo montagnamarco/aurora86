@@ -84,7 +84,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
         get => _traceEnabled;
         set
         {
-            if (!SetProperty(ref _traceEnabled, value)) return;
+            if (!SetProperty(ref _traceEnabled, value))
+            {
+                return;
+            }
             _session.WithMachine(machine =>
             {
                 machine.Cpu.Trace ??= new InstructionTrace();
@@ -174,7 +177,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
         // Paging is a property of protected mode, and saying so only when it
         // applies keeps the line from claiming something impossible: a real
         // mode machine with paging on is not a state that exists.
-        if (state.ProtectedMode && state.PagingEnabled) mode += ", paged";
+        if (state.ProtectedMode && state.PagingEnabled)
+        {
+            mode += ", paged";
+        }
 
         // IOPL matters exactly when it is not 3, because at 3 nothing is
         // privileged and it explains nothing. Below that it is often the
@@ -249,7 +255,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     /// </summary>
     private static string? Annotate(string text, CpuState state)
     {
-        if (!text.StartsWith("int ")) return null;
+        if (!text.StartsWith("int "))
+        {
+            return null;
+        }
         if (!byte.TryParse(text[4..].Trim(), System.Globalization.NumberStyles.HexNumber,
                            null, out byte vector))
             return null;
@@ -360,7 +369,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     /// </summary>
     private static string? RomRoutine(CpuState state)
     {
-        if (state.Cs.Base != 0xF0000) return null;
+        if (state.Cs.Base != 0xF0000)
+        {
+            return null;
+        }
 
         uint offset = state.Eip;
         ushort at = 0;
@@ -368,11 +380,17 @@ public sealed partial class DebuggerViewModel : ObservableObject
 
         foreach ((ushort start, string entry) in RomEntries)
         {
-            if (start > offset) break;
+            if (start > offset)
+            {
+                break;
+            }
             (at, name) = (start, entry);
         }
 
-        if (name is null) return null;
+        if (name is null)
+        {
+            return null;
+        }
         return offset == at ? $"ROM {name}" : $"ROM {name}+{offset - at:X}";
     }
 
@@ -455,7 +473,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveMemory()
     {
-        if (PickSaveAsync is null) return;
+        if (PickSaveAsync is null)
+        {
+            return;
+        }
 
         if (!TryParseAddress(MemoryAddressText, out uint linear))
         {
@@ -471,7 +492,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
         }
 
         string? path = await PickSaveAsync("Save memory to a file", $"memory-{linear:X6}.bin");
-        if (path is null) return;
+        if (path is null)
+        {
+            return;
+        }
 
         var bytes = new byte[length];
         _session.WithMachine(machine =>
@@ -495,7 +519,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     {
         MemoryLines.Clear();
 
-        if (!TryParseAddress(MemoryAddressText, out uint linear)) return;
+        if (!TryParseAddress(MemoryAddressText, out uint linear))
+        {
+            return;
+        }
 
         bool sameView = linear == _viewedAddress;
         var current = new byte[256];
@@ -555,7 +582,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
         foreach (InstructionTrace.Entry entry in trace.Last(400))
             TraceLines.Add(entry.ToString());
 
-        if (TraceLines.Count == 0) TraceLines.Add("nothing recorded yet");
+        if (TraceLines.Count == 0)
+        {
+            TraceLines.Add("nothing recorded yet");
+        }
     }
 
     [RelayCommand]
@@ -597,7 +627,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
             return;
         }
 
-        if (!long.TryParse(DiskSectorText.Trim(), out long sector)) sector = 0;
+        if (!long.TryParse(DiskSectorText.Trim(), out long sector))
+        {
+            sector = 0;
+        }
         _diskSectorNumber = Math.Clamp(sector, 0, Math.Max(0, inspector.TotalSectors - 1));
         _diskSector = inspector.ReadSector(_diskSectorNumber);
 
@@ -613,7 +646,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
                             + $"  start {partition.FirstSector}  size {partition.SectorCount}"
                             + (partition.Bootable ? "  bootable" : ""));
 
-            if (inspector.ReadBootParameters(partition.FirstSector) is not { } bpb) continue;
+            if (inspector.ReadBootParameters(partition.FirstSector) is not { } bpb)
+            {
+                continue;
+            }
 
             DiskStructure.Add($"   FAT{bpb.FatBits}  cluster {bpb.SectorsPerCluster} sectors"
                             + $"  fats {bpb.FatCount}x{bpb.SectorsPerFat}"
@@ -641,7 +677,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     private DiskInspector? OpenInspector() => _session.WithMachine(machine =>
     {
         List<DiskImage> drives = machine.DiskServices.AttachedDrives.ToList();
-        if (DiskIndex < 0 || DiskIndex >= drives.Count) return null;
+        if (DiskIndex < 0 || DiskIndex >= drives.Count)
+        {
+            return null;
+        }
         return new DiskInspector(drives[DiskIndex]);
     });
 
@@ -727,7 +766,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     [RelayCommand]
     private async Task ExportFile()
     {
-        if (PickSaveAsync is null) return;
+        if (PickSaveAsync is null)
+        {
+            return;
+        }
 
         DiskInspector? inspector = OpenInspector();
         if (inspector is null) { DiskStatusText = "No disk"; return; }
@@ -738,7 +780,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
 
         string name = DiskFileText.Split('\\', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "file.bin";
         string? path = await PickSaveAsync($"Export {name}", name);
-        if (path is null) return;
+        if (path is null)
+        {
+            return;
+        }
 
         System.IO.File.WriteAllBytes(path, content);
         DiskStatusText = $"Exported {name}: {content.Length} bytes";
@@ -795,7 +840,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     /// </summary>
     private byte ReadForView(Machine machine, uint address)
     {
-        if (!MemoryFollowsPaging) return machine.Memory.ReadByte(address);
+        if (!MemoryFollowsPaging)
+        {
+            return machine.Memory.ReadByte(address);
+        }
 
         uint physical = TranslateForView(machine, address);
         return physical == uint.MaxValue ? (byte)0xFF : machine.Memory.ReadByte(physical);
@@ -809,13 +857,22 @@ public sealed partial class DebuggerViewModel : ObservableObject
     private static uint TranslateForView(Machine machine, uint linear)
     {
         CpuState state = machine.Cpu.State;
-        if ((state.Cr0 & CpuState.Cr0Paging) == 0) return linear;
+        if ((state.Cr0 & CpuState.Cr0Paging) == 0)
+        {
+            return linear;
+        }
 
         uint directory = machine.Memory.ReadDword((state.Cr3 & 0xFFFFF000) + ((linear >> 22) << 2));
-        if ((directory & 1) == 0) return uint.MaxValue;
+        if ((directory & 1) == 0)
+        {
+            return uint.MaxValue;
+        }
 
         uint table = machine.Memory.ReadDword((directory & 0xFFFFF000) + (((linear >> 12) & 0x3FF) << 2));
-        if ((table & 1) == 0) return uint.MaxValue;
+        if ((table & 1) == 0)
+        {
+            return uint.MaxValue;
+        }
 
         return (table & 0xFFFFF000) | (linear & 0xFFF);
     }
@@ -851,7 +908,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
                 if (MemoryFollowsPaging)
                 {
                     target = TranslateForView(machine, target);
-                    if (target == uint.MaxValue) continue;
+                    if (target == uint.MaxValue)
+                    {
+                        continue;
+                    }
                 }
                 machine.Memory.WriteByte(target, bytes[i]);
             }
@@ -884,7 +944,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
             {
                 int i = 0;
                 while (i < pattern.Length && ReadForView(machine, address + (uint)i) == pattern[i]) i++;
-                if (i == pattern.Length) return address;
+                if (i == pattern.Length)
+                {
+                    return address;
+                }
             }
             return uint.MaxValue;
         });
@@ -909,7 +972,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     {
         bytes = [];
         text = text.Trim();
-        if (text.Length == 0) return false;
+        if (text.Length == 0)
+        {
+            return false;
+        }
 
         if (text.Length >= 2 && text[0] == '"' && text[^1] == '"')
         {
@@ -918,7 +984,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
         }
 
         string digits = text.Replace(" ", "").Replace("-", "");
-        if (digits.Length % 2 != 0) return false;
+        if (digits.Length % 2 != 0)
+        {
+            return false;
+        }
 
         var result = new byte[digits.Length / 2];
         for (int i = 0; i < result.Length; i++)
@@ -937,7 +1006,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     {
         linear = 0;
         text = text.Trim();
-        if (text.Length == 0) return false;
+        if (text.Length == 0)
+        {
+            return false;
+        }
 
         int colon = text.IndexOf(':');
         if (colon < 0)
@@ -1016,7 +1088,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
         RunUntil(machine =>
         {
             CpuState state = machine.Cpu.State;
-            if (state.Ss.Selector != ss) return false;     // another stack: a task switch, or a ring change
+            if (state.Ss.Selector != ss)
+            {
+                return false;     // another stack: a task switch, or a ring change
+            }
             uint now = state.Ss.Big ? state.Esp : (ushort)state.Esp;
             return now > esp;
         }, budget: 200_000_000);
@@ -1049,7 +1124,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
         foreach (string raw in text.Split(',', StringSplitOptions.RemoveEmptyEntries))
         {
             int eq = raw.IndexOf('=');
-            if (eq < 0) return null;
+            if (eq < 0)
+            {
+                return null;
+            }
 
             string name = raw[..eq].Trim().ToUpperInvariant();
             string valueText = raw[(eq + 1)..].Trim().ToUpperInvariant();
@@ -1063,7 +1141,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
                     "V86" => s => s.Virtual8086Mode,
                     _ => null,
                 };
-                if (mode is null) return null;
+                if (mode is null)
+                {
+                    return null;
+                }
                 clauses.Add(mode);
                 continue;
             }
@@ -1087,7 +1168,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
                 "CPL" => s => (uint)(s.Cs.Selector & 3),
                 _ => null,
             };
-            if (read is null) return null;
+            if (read is null)
+            {
+                return null;
+            }
 
             clauses.Add(s => read(s) == value);
         }
@@ -1138,7 +1222,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
             for (long i = 0; i < budget; i++)
             {
                 machine.RunInstructions(1);
-                if (condition(machine)) return;
+                if (condition(machine))
+                {
+                    return;
+                }
             }
         });
     }
@@ -1146,8 +1233,14 @@ public sealed partial class DebuggerViewModel : ObservableObject
     [RelayCommand]
     private void AddBreakpoint()
     {
-        if (!TryParseAddress(BreakpointAddressText, out uint linear)) return;
-        if (!_breakpoints.Add(linear)) return;
+        if (!TryParseAddress(BreakpointAddressText, out uint linear))
+        {
+            return;
+        }
+        if (!_breakpoints.Add(linear))
+        {
+            return;
+        }
 
         Breakpoints.Add(new BreakpointEntry(linear, BreakpointAddressText.Trim()));
         BreakpointAddressText = "";
@@ -1157,7 +1250,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     [RelayCommand]
     private void RemoveBreakpoint(BreakpointEntry? entry)
     {
-        if (entry is null) return;
+        if (entry is null)
+        {
+            return;
+        }
 
         _breakpoints.Remove(entry.LinearAddress);
         Breakpoints.Remove(entry);
@@ -1241,13 +1337,19 @@ public sealed partial class DebuggerViewModel : ObservableObject
                 TableLines.Add("");
                 TableLines.Add("LDT");
                 foreach (DescriptorTables.Descriptor entry in ldt)
-                    if (entry.Access != 0) TableLines.Add("  " + entry);
+                    if (entry.Access != 0)
+                    {
+                        TableLines.Add("  " + entry);
+                    }
             }
 
             TableLines.Add("");
             TableLines.Add("IDT (present gates only)");
             foreach (DescriptorTables.Gate gate in tables.ReadInterruptTable())
-                if (gate.Present) TableLines.Add("  " + gate);
+                if (gate.Present)
+                {
+                    TableLines.Add("  " + gate);
+                }
         });
     }
 
@@ -1308,7 +1410,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
             return;
         }
 
-        if (!uint.TryParse(WatchLengthText.Trim(), out uint length) || length == 0) length = 1;
+        if (!uint.TryParse(WatchLengthText.Trim(), out uint length) || length == 0)
+        {
+            length = 1;
+        }
 
         var entry = new WatchpointEntry(address, length,
             WatchReads ? $"{address:X6}+{length} (reads)" : $"{address:X6}+{length}");
@@ -1323,7 +1428,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     [RelayCommand]
     private void RemoveWatchpoint(WatchpointEntry? entry)
     {
-        if (entry is null) return;
+        if (entry is null)
+        {
+            return;
+        }
 
         _watches.Remove(entry);
         _readWatches.Remove(entry);
@@ -1341,7 +1449,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
 
         // Hooked once and left: the handlers do nothing while the lists are
         // empty, and subscribing twice would log every access twice.
-        if (_watchHooked) return;
+        if (_watchHooked)
+        {
+            return;
+        }
         _watchHooked = true;
         machine.Memory.Watched += OnWatchedWrite;
         machine.Memory.ReadWatched += OnWatchedRead;
@@ -1355,7 +1466,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     /// </summary>
     private void OnWatchedWrite(uint address, byte value)
     {
-        if (_watches.Count == 0) return;
+        if (_watches.Count == 0)
+        {
+            return;
+        }
 
         string where = _session.WithMachine(machine =>
         {
@@ -1369,7 +1483,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
 
     private void OnWatchedRead(uint address)
     {
-        if (_readWatches.Count == 0) return;
+        if (_readWatches.Count == 0)
+        {
+            return;
+        }
 
         string where = _session.WithMachine(machine =>
         {
@@ -1413,7 +1530,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     private void AddPortWatch()
     {
         string text = PortWatchText.Trim();
-        if (text.Length == 0) return;
+        if (text.Length == 0)
+        {
+            return;
+        }
 
         int dash = text.IndexOf('-');
         string firstText = dash < 0 ? text : text[..dash];
@@ -1428,7 +1548,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
             return;
         }
 
-        if (last < first) (first, last) = (last, first);
+        if (last < first)
+        {
+            (first, last) = (last, first);
+        }
 
         _portWatches.Add((first, last));
         PortWatches.Add(first == last ? $"{first:X3}" : $"{first:X3}-{last:X3}");
@@ -1444,7 +1567,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     private void RemovePortWatch(string? entry)
     {
         int index = entry is null ? -1 : PortWatches.IndexOf(entry);
-        if (index < 0) return;
+        if (index < 0)
+        {
+            return;
+        }
 
         PortWatches.RemoveAt(index);
         _portWatches.RemoveAt(index);
@@ -1455,7 +1581,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
 
     private void HookPorts() => _session.WithMachine(machine =>
     {
-        if (_portHooked) return;
+        if (_portHooked)
+        {
+            return;
+        }
         _portHooked = true;
         machine.Io.PortAccessed += OnPortAccessed;
     });
@@ -1467,17 +1596,26 @@ public sealed partial class DebuggerViewModel : ObservableObject
     /// </summary>
     private void OnPortAccessed(ushort port, bool write, byte value)
     {
-        if (_portWatches.Count == 0) return;
+        if (_portWatches.Count == 0)
+        {
+            return;
+        }
 
         bool watched = false;
         foreach ((ushort first, ushort last) in _portWatches)
         {
-            if (port < first || port > last) continue;
+            if (port < first || port > last)
+            {
+                continue;
+            }
             watched = true;
             break;
         }
 
-        if (!watched) return;
+        if (!watched)
+        {
+            return;
+        }
 
         string where = _session.WithMachine(machine =>
         {
@@ -1519,7 +1657,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     [RelayCommand]
     private void StartLog()
     {
-        if (LogRunning) return;
+        if (LogRunning)
+        {
+            return;
+        }
 
         _session.WithMachine(machine =>
         {
@@ -1557,7 +1698,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
     {
         LogLines.Clear();
         foreach (string line in _allLogLines)
-            if (PassesLogFilter(line)) LogLines.Add(line);
+            if (PassesLogFilter(line))
+            {
+                LogLines.Add(line);
+            }
     }
 
     private bool PassesLogFilter(string line)
@@ -1573,7 +1717,10 @@ public sealed partial class DebuggerViewModel : ObservableObject
         _allLogLines.Add(line);
         while (_allLogLines.Count > 2000) _allLogLines.RemoveAt(0);
 
-        if (!PassesLogFilter(line)) return;
+        if (!PassesLogFilter(line))
+        {
+            return;
+        }
         LogLines.Add(line);
         while (LogLines.Count > 2000) LogLines.RemoveAt(0);
     }

@@ -73,7 +73,10 @@ public sealed class MouseCapture
 
     public void Capture()
     {
-        if (IsCaptured) return;
+        if (IsCaptured)
+        {
+            return;
+        }
 
         IsCaptured = true;
         _lock.Engage();
@@ -82,7 +85,10 @@ public sealed class MouseCapture
 
     public void Release()
     {
-        if (!IsCaptured) return;
+        if (!IsCaptured)
+        {
+            return;
+        }
 
         IsCaptured = false;
         _releaseKeyHeld = false;
@@ -132,12 +138,18 @@ public sealed class MouseCapture
     /// </summary>
     public bool NotifyKeyUp(PhysicalKey key)
     {
-        if (key != PhysicalKey.ControlLeft) return false;
+        if (key != PhysicalKey.ControlLeft)
+        {
+            return false;
+        }
 
         bool wasTap = _releaseKeyHeld;
         _releaseKeyHeld = false;
 
-        if (!wasTap || !IsCaptured) return false;
+        if (!wasTap || !IsCaptured)
+        {
+            return false;
+        }
 
         Release();
         return true;

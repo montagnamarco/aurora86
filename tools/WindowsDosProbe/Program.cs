@@ -47,7 +47,10 @@ try
         uint[] pixels = machine.Video.Framebuffer.ToArray();
         int differences = incremental.Zip(pixels).Count(pair => pair.First != pair.Second);
         Console.WriteLine($"{name}: {machine.Video.Width}x{machine.Video.Height}, incremental differences: {differences}");
-        if (differences != 0) throw new InvalidOperationException("Incremental rendering differs from a full redraw.");
+        if (differences != 0)
+        {
+            throw new InvalidOperationException("Incremental rendering differs from a full redraw.");
+        }
         using var file = File.Create(Path.Combine(output, name + ".ppm"));
         file.Write(Encoding.ASCII.GetBytes($"P6\n{machine.Video.Width} {machine.Video.Height}\n255\n"));
         foreach (uint pixel in pixels)
@@ -63,7 +66,10 @@ try
         {
             var position = machine.VideoRegisters.CursorPosition;
             int dx = x - position.X, dy = y - position.Y;
-            if (Math.Abs(dx) < 2 && Math.Abs(dy) < 2) return;
+            if (Math.Abs(dx) < 2 && Math.Abs(dy) < 2)
+            {
+                return;
+            }
             machine.Mouse.Move(Math.Clamp(dx / 2, -10, 10), Math.Clamp(dy / 2, -10, 10));
             Run(1_000_000);
         }
@@ -73,7 +79,10 @@ try
     bool tracing = false;
     machine.Cpu.SoftwareInterruptIssued += vector =>
     {
-        if (!tracing) return;
+        if (!tracing)
+        {
+            return;
+        }
         var st = machine.Cpu.State;
         if ((vector == 0x10 && (st.Ax < 0x0100 || st.Ax == 0x4F02)) ||
             (vector == 0x21 && (st.Ax >> 8 is 0x4B or 0x4C or 0x31 or 0x00)))
@@ -121,5 +130,8 @@ try
 }
 finally
 {
-    if (File.Exists(copy)) File.Delete(copy);
+    if (File.Exists(copy))
+    {
+        File.Delete(copy);
+    }
 }

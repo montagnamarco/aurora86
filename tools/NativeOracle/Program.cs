@@ -82,7 +82,10 @@ for (int familyIndex = 0; familyIndex < FamilyCatalog.All.Count; familyIndex++)
         else
         {
             failed++;
-            if (firstFailures.Count < 5) firstFailures.Add(result);
+            if (firstFailures.Count < 5)
+            {
+                firstFailures.Add(result);
+            }
         }
 
         written?.Add(result);

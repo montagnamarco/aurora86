@@ -69,7 +69,10 @@ public static class PointerLockFactory
 {
     public static IPointerLock Create()
     {
-        if (OperatingSystem.IsMacOS()) return new MacPointerLock();
+        if (OperatingSystem.IsMacOS())
+        {
+            return new MacPointerLock();
+        }
         return new NullPointerLock();
     }
 }
@@ -140,7 +143,10 @@ public sealed class MacPointerLock : IPointerLock
 
     public void Engage()
     {
-        if (_engaged) return;
+        if (_engaged)
+        {
+            return;
+        }
 
         // Order matters only in that both must happen; but hiding first means
         // that if the association call throws -- a sandbox denying it, say --
@@ -153,7 +159,10 @@ public sealed class MacPointerLock : IPointerLock
 
     public void Release()
     {
-        if (!_engaged) return;
+        if (!_engaged)
+        {
+            return;
+        }
 
         _engaged = false;
         CGAssociateMouseAndMouseCursorPosition(true);

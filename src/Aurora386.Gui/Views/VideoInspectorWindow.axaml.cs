@@ -30,7 +30,10 @@ public partial class VideoInspectorWindow : Window
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
-        if (ViewModel is not { } model) return;
+        if (ViewModel is not { } model)
+        {
+            return;
+        }
 
         model.PictureChanged += Redraw;
 
@@ -52,9 +55,18 @@ public partial class VideoInspectorWindow : Window
     /// </summary>
     private void ApplyZoom()
     {
-        if (ViewModel is not { } model) return;
-        if (this.FindControl<Image>("MemoryView") is not { } image) return;
-        if (model.PictureWidth <= 0) return;
+        if (ViewModel is not { } model)
+        {
+            return;
+        }
+        if (this.FindControl<Image>("MemoryView") is not { } image)
+        {
+            return;
+        }
+        if (model.PictureWidth <= 0)
+        {
+            return;
+        }
 
         image.Width = model.PictureWidth * model.Zoom;
         image.Height = model.PictureHeight * model.Zoom;
@@ -62,11 +74,20 @@ public partial class VideoInspectorWindow : Window
 
     private void Redraw()
     {
-        if (ViewModel is not { } model) return;
-        if (model.PictureWidth <= 0 || model.PictureHeight <= 0) return;
+        if (ViewModel is not { } model)
+        {
+            return;
+        }
+        if (model.PictureWidth <= 0 || model.PictureHeight <= 0)
+        {
+            return;
+        }
 
         var image = this.FindControl<Image>("MemoryView");
-        if (image is null) return;
+        if (image is null)
+        {
+            return;
+        }
 
         // A new bitmap whenever the shape changes. Reusing one of the wrong
         // size would silently draw the picture into the wrong rows, which is
@@ -116,8 +137,14 @@ public partial class VideoInspectorWindow : Window
         if (ViewModel is { } model
             && (e.KeyModifiers & (KeyModifiers.Control | KeyModifiers.Meta)) != 0)
         {
-            if (e.Delta.Y > 0) model.ZoomInCommand.Execute(null);
-            else if (e.Delta.Y < 0) model.ZoomOutCommand.Execute(null);
+            if (e.Delta.Y > 0)
+            {
+                model.ZoomInCommand.Execute(null);
+            }
+            else if (e.Delta.Y < 0)
+            {
+                model.ZoomOutCommand.Execute(null);
+            }
             e.Handled = true;
             return;
         }

@@ -41,8 +41,14 @@ public sealed class OracleComparer
         // is written into it -- a case that carries both (CVTPI2PS's MM
         // source alongside its XMM destination) needs both writes to land
         // on top of the same cleared image, not one wiping the other's.
-        if (isMmx || isSse) _host.PrepareFxsaveDefaults();
-        if (isMmx) _host.WriteMmxRegisters(testCase.InitialMmx!);
+        if (isMmx || isSse)
+        {
+            _host.PrepareFxsaveDefaults();
+        }
+        if (isMmx)
+        {
+            _host.WriteMmxRegisters(testCase.InitialMmx!);
+        }
         if (isSse)
         {
             _host.WriteXmmRegisters(testCase.InitialXmm!);
@@ -65,7 +71,10 @@ public sealed class OracleComparer
 
         foreach (Reg register in InstructionEncoding.AddressableRegisters)
         {
-            if (testCase.IgnoredRegisters.Contains(register)) continue;
+            if (testCase.IgnoredRegisters.Contains(register))
+            {
+                continue;
+            }
 
             int index = (int)register;
             if (hostGpr[index] != emulatorGpr[index])
@@ -152,7 +161,10 @@ public sealed class OracleComparer
         byte abridged = 0;
         for (int i = 0; i < 8; i++)
         {
-            if (((fullTagWord >> (i * 2)) & 3) != 3) abridged |= (byte)(1 << i);
+            if (((fullTagWord >> (i * 2)) & 3) != 3)
+            {
+                abridged |= (byte)(1 << i);
+            }
         }
         return abridged;
     }

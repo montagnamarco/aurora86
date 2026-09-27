@@ -96,13 +96,19 @@ public partial class MainWindow : Window
         Avalonia.Threading.Dispatcher.UIThread.Post(() =>
         {
             // A dialog or a flyout is on screen and is entitled to the keys.
-            if (!IsActive) return;
+            if (!IsActive)
+            {
+                return;
+            }
             Screen.Focus();
         }, Avalonia.Threading.DispatcherPriority.Background);
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
-        if (ViewModel is null) return;
+        if (ViewModel is null)
+        {
+            return;
+        }
 
         ViewModel.PickFileAsync = PickFileAsync;
         ViewModel.PickSaveAsync = PickSaveAsync;
@@ -298,7 +304,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (SendKey(e.PhysicalKey, released: true)) e.Handled = true;
+        if (SendKey(e.PhysicalKey, released: true))
+        {
+            e.Handled = true;
+        }
         else base.OnKeyUp(e);
     }
 
@@ -317,7 +326,10 @@ public partial class MainWindow : Window
         {
             // Again, a press that never went by position has no release to
             // send -- not even here, where the point is to leave nothing held.
-            if (_divertedToText.Contains(key)) continue;
+            if (_divertedToText.Contains(key))
+            {
+                continue;
+            }
             SendKey(key, released: true);
         }
 
@@ -349,18 +361,30 @@ public partial class MainWindow : Window
     {
         (byte code, bool shift) = UsKeyboardLayout.KeyForCharacter(character);
 
-        if (code == 0) return false;
+        if (code == 0)
+        {
+            return false;
+        }
 
         MainWindowViewModel? model = ViewModel;
-        if (model is null) return false;
+        if (model is null)
+        {
+            return false;
+        }
 
         model.Session.WithMachine(machine =>
         {
             const byte LeftShift = 0x2A;
-            if (shift) machine.Keyboard.PushScanCode(LeftShift);
+            if (shift)
+            {
+                machine.Keyboard.PushScanCode(LeftShift);
+            }
             machine.Keyboard.PushScanCode(code);
             machine.Keyboard.PushScanCode((byte)(code | 0x80));
-            if (shift) machine.Keyboard.PushScanCode(LeftShift | 0x80);
+            if (shift)
+            {
+                machine.Keyboard.PushScanCode(LeftShift | 0x80);
+            }
         });
 
         return true;
@@ -401,7 +425,10 @@ public partial class MainWindow : Window
         bool sent = false;
         foreach (char character in e.Text) sent |= SendCharacter(character);
 
-        if (sent) e.Handled = true;
+        if (sent)
+        {
+            e.Handled = true;
+        }
         else base.OnTextInput(e);
     }
 
@@ -417,17 +444,26 @@ public partial class MainWindow : Window
     private bool SendKey(PhysicalKey key, bool released)
     {
         MainWindowViewModel? model = ViewModel;
-        if (model is null) return false;
+        if (model is null)
+        {
+            return false;
+        }
 
         byte code = PhysicalKeyMap.ToScanCode(key, out bool extended);
-        if (code == 0) return false;
+        if (code == 0)
+        {
+            return false;
+        }
 
         model.Session.WithMachine(machine =>
         {
             // Extended keys are announced by a 0xE0 byte ahead of the code,
             // which is how the controller distinguishes the arrow keys from
             // the numeric keypad keys that share their scancodes.
-            if (extended) machine.Keyboard.PushScanCode(0xE0);
+            if (extended)
+            {
+                machine.Keyboard.PushScanCode(0xE0);
+            }
             machine.Keyboard.PushScanCode(released ? (byte)(code | 0x80) : code);
         });
 
@@ -442,7 +478,10 @@ public partial class MainWindow : Window
     private async Task<string?> PickFolderAsync(string title)
     {
         IStorageProvider? storage = StorageProvider;
-        if (storage is null) return null;
+        if (storage is null)
+        {
+            return null;
+        }
 
         IReadOnlyList<IStorageFolder> chosen = await storage.OpenFolderPickerAsync(
             new FolderPickerOpenOptions { Title = title, AllowMultiple = false });
@@ -458,7 +497,10 @@ public partial class MainWindow : Window
     private async Task<string?> PickSaveAsync(string title, string suggestedName)
     {
         IStorageProvider? storage = StorageProvider;
-        if (storage is null) return null;
+        if (storage is null)
+        {
+            return null;
+        }
 
         IStorageFile? chosen = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
         {
@@ -477,7 +519,10 @@ public partial class MainWindow : Window
     private async Task<string?> PickFileAsync(string title, IReadOnlyList<string> extensions)
     {
         IStorageProvider? storage = StorageProvider;
-        if (storage is null) return null;
+        if (storage is null)
+        {
+            return null;
+        }
 
         var options = new FilePickerOpenOptions
         {
