@@ -533,6 +533,8 @@ public sealed partial class Machine : IDisposable
                 $"'{collision.Key}': fitting two of the same kind is not supported yet.", nameof(hardware));
         }
 
+        ValidateNetworkWindows(hardware.Network);
+
         // Only now does each card claim its ports, its PCI function, its
         // Plug and Play identity and -- for a NAT-backed network card -- its
         // host listening sockets. If attaching one card throws (two cards
@@ -551,19 +553,13 @@ public sealed partial class Machine : IDisposable
         }
         catch
         {
-            foreach (IExpansionCard card in attached)
-            {
-                if (card is Ne2000Card ne2000 && ne2000.Device.Backend is IDisposable disposableBackend)
-                {
-                    disposableBackend.Dispose();
-                }
-            }
+            DisposeNetworkBackends(attached);
             throw;
         }
 
         Cards = cards;
         SoundBlaster = Cards.OfType<SoundBlaster16Card>().FirstOrDefault()?.Device;
-        Network = Cards.OfType<Ne2000Card>().FirstOrDefault()?.Device;
+        Network = Cards.Select(GetNetworkDevice).FirstOrDefault(device => device is not null);
         if (Cards.OfType<UhciCard>().FirstOrDefault() is { } usbCard)
         {
             WireUsbCard(usbCard);
@@ -759,17 +755,74 @@ public sealed partial class Machine : IDisposable
         }
 
         INetworkBackend previous = Network.Backend;
-        if (ReferenceEquals(previous, backend)) return;
+        if (ReferenceEquals(previous, backend))
+        {
+            return;
+        }
+
         Network.Backend = backend;
-        (previous as IDisposable)?.Dispose();
+        bool stillConnected = Cards.Any(card =>
+            ReferenceEquals(GetNetworkDevice(card)?.Backend, previous));
+        if (!stillConnected)
+        {
+            (previous as IDisposable)?.Dispose();
+        }
     }
 
     public void Dispose()
     {
-        (Network?.Backend as IDisposable)?.Dispose();
+        DisposeNetworkBackends(Cards);
         foreach (DiskImage disk in _disks) disk.Dispose();
         CompactDisc?.Dispose();
         UsbStorage?.Dispose();
         Memory?.Dispose();
+    }
+
+    /// <summary>Preserves the legacy network service for either NE2000 bus attachment.</summary>
+    private static Ne2000? GetNetworkDevice(IExpansionCard card)
+    {
+        return card switch
+        {
+            Ne2000Card isa => isa.Device,
+            Rtl8029Card pci => pci.Device.Core,
+            _ => null,
+        };
+    }
+
+    /// <summary>Rejects overlapping NE2000 windows before either card opens a wire.</summary>
+    private static void ValidateNetworkWindows(IEnumerable<CardSettings> settings)
+    {
+        const int networkWindowLength = 32;
+        var ranges = new List<(int Start, int End)>();
+        foreach (CardSettings card in settings)
+        {
+            int start = card.Port;
+            if (start == 0 && string.Equals(card.Card, "rtl8029-pci", StringComparison.OrdinalIgnoreCase))
+            {
+                start = 0x300;
+            }
+
+            int end = start + networkWindowLength;
+            if (ranges.Any(range => start < range.End && range.Start < end))
+            {
+                throw new InvalidOperationException("Network cards require distinct initial I/O windows.");
+            }
+
+            ranges.Add((start, end));
+        }
+    }
+
+    /// <summary>Closes every network wire once, including partially attached machines.</summary>
+    private static void DisposeNetworkBackends(IEnumerable<IExpansionCard> cards)
+    {
+        var disposed = new HashSet<INetworkBackend>(ReferenceEqualityComparer.Instance);
+        foreach (IExpansionCard card in cards)
+        {
+            INetworkBackend? backend = GetNetworkDevice(card)?.Backend;
+            if (backend is IDisposable disposable && disposed.Add(backend))
+            {
+                disposable.Dispose();
+            }
+        }
     }
 }

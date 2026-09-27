@@ -120,7 +120,7 @@ public sealed class Ne2000 : IIoDevice
     private readonly byte[] _memory = new byte[MemorySize];
     private readonly byte[] _registers = new byte[RegisterPageCount * RegisterPageLength];
     private readonly byte[] _macAddress = new byte[6];
-    private readonly InterruptController _interrupts;
+    private readonly Action<bool> _interruptSink;
     private ushort _basePort;
     private int _irqLine;
     private IoBus? _io;
@@ -151,7 +151,17 @@ public sealed class Ne2000 : IIoDevice
                   ushort basePort = 0x300, int irqLine = 3,
                   ReadOnlySpan<byte> macAddress = default)
     {
-        _interrupts = interrupts;
+        _interruptSink = asserted =>
+        {
+            if (asserted)
+            {
+                interrupts.RaiseIrq(_irqLine);
+            }
+            else
+            {
+                interrupts.LowerIrq(_irqLine);
+            }
+        };
         Backend = backend;
         _basePort = basePort;
         _irqLine = irqLine;
@@ -160,6 +170,28 @@ public sealed class Ne2000 : IIoDevice
         // assigned by the network's owner rather than by a manufacturer, which
         // is exactly what an emulated card is.
         if (macAddress.Length == 6)
+        {
+            macAddress.CopyTo(_macAddress);
+        }
+        else
+        {
+            _macAddress = [0x02, 0x00, 0x41, 0x55, 0x52, 0x41];
+        }
+
+        Reset();
+    }
+
+    /// <summary>Builds an unregistered core whose owner routes its level IRQ.</summary>
+    public Ne2000(Action<bool> interruptSink, INetworkBackend backend,
+                  ReadOnlySpan<byte> macAddress = default)
+    {
+        ArgumentNullException.ThrowIfNull(interruptSink);
+        _interruptSink = interruptSink;
+        Backend = backend;
+        _basePort = 0;
+        _irqLine = 0;
+
+        if (macAddress.Length == _macAddress.Length)
         {
             macAddress.CopyTo(_macAddress);
         }
@@ -226,6 +258,8 @@ public sealed class Ne2000 : IIoDevice
         {
             SetRegister(1, PhysicalAddress0 + i, _macAddress[i]);
         }
+
+        UpdateInterruptLine();
     }
 
     // --- register file access ------------------------------------------------
@@ -745,11 +779,11 @@ public sealed class Ne2000 : IIoDevice
 
         if ((status & mask & 0x7F) != 0)
         {
-            _interrupts.RaiseIrq(_irqLine);
+            _interruptSink(true);
         }
         else
         {
-            _interrupts.LowerIrq(_irqLine);
+            _interruptSink(false);
         }
     }
 
@@ -836,5 +870,6 @@ public sealed class Ne2000 : IIoDevice
         reader.ReadBytes(_memory.Length).CopyTo(_memory, 0);
 
         Relocate(basePort, irqLine, enabled);
+        UpdateInterruptLine();
     }
 }

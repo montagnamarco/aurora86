@@ -514,6 +514,13 @@ public sealed class MachineSnapshot
                     throw new InvalidDataException(
                         $"Snapshot section '{name}' holds {section.Payload.Length} bytes, not {cardExpected}.");
                 }
+
+                // Reject an invalid embedded core or page-3 state before any
+                // machine RAM is restored, not halfway through card restoration.
+                if (name == Rtl8029Card.SnapshotSectionId)
+                {
+                    Devices.Network.Rtl8029.ValidateSnapshot(section.Payload, section.Version);
+                }
             }
 
             // A name neither the container nor any known card recognises is

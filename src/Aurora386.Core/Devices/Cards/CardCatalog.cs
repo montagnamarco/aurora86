@@ -24,6 +24,7 @@ public static class CardCatalog
         {
             ["sb16"] = (_, settings) => new SoundBlaster16Card(settings),
             ["ne2000-isa"] = (_, settings) => new Ne2000Card(settings),
+            ["rtl8029-pci"] = (_, settings) => new Rtl8029Card(settings),
             ["uhci-piix"] = (_, _) => new UhciCard(),
         };
 
@@ -39,6 +40,7 @@ public static class CardCatalog
         {
             ["sb16"] = "sound",
             ["ne2000-isa"] = "network",
+            ["rtl8029-pci"] = "network",
             ["uhci-piix"] = "usb",
         };
 
@@ -55,6 +57,7 @@ public static class CardCatalog
     {
         ["SB16"] = SoundBlaster16.SnapshotVersion,
         ["NE2K"] = Ne2000.SnapshotVersion,
+        [Rtl8029Card.SnapshotSectionId] = Rtl8029Card.CurrentSnapshotVersion,
         [UhciCard.SnapshotSectionId] = UhciCard.CurrentSnapshotVersion,
     };
 
@@ -67,6 +70,7 @@ public static class CardCatalog
     public static readonly IReadOnlyDictionary<string, int> FixedSnapshotLengths = new Dictionary<string, int>
     {
         ["NE2K"] = Ne2000.SnapshotLength,
+        [Rtl8029Card.SnapshotSectionId] = Rtl8029.SnapshotLength,
     };
 
     /// <summary>Whether a card of this name is registered.</summary>
