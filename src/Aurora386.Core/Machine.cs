@@ -79,6 +79,15 @@ public sealed partial class Machine : IDisposable
     public Dma8237 Dma { get; }
 
     /// <summary>
+    /// The host-side mix every sound card's output ends up in (F1.6). A
+    /// front end pulls interleaved stereo frames from here, at <see
+    /// cref="AudioMixer.OutputSampleRate"/>, rather than from any one card's
+    /// own buffer, which is what lets more than one audio source (the SB16
+    /// today, later an ES1371 and an MPU-401 synth) share one host device.
+    /// </summary>
+    public AudioMixer Audio { get; }
+
+    /// <summary>
     /// Every expansion card fitted -- sound, network and USB -- in the stable
     /// order that fixed its Plug and Play select number when the machine was
     /// built. <see cref="EnableUsb"/> may append the USB card to this list
@@ -430,7 +439,8 @@ public sealed partial class Machine : IDisposable
         // registry (F1.4a, F1.4b, F1.4c). The bus is kept so that EnableUsb
         // can build the same card at run time, for a machine started with
         // none configured -- see that method's own summary.
-        _bus = new MachineBus(Io, Memory, Interrupts, Dma, Pci, IsaPlugAndPlay, Scheduler, () => CpuFrequencyHz);
+        Audio = new AudioMixer();
+        _bus = new MachineBus(Io, Memory, Interrupts, Dma, Pci, IsaPlugAndPlay, Scheduler, Audio, () => CpuFrequencyHz);
 
         // Built first, unattached: the factory step alone claims nothing --
         // no port, no PCI function, and critically no host socket for a

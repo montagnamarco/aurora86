@@ -18,6 +18,7 @@ public sealed unsafe class EmulatorWindow : IDisposable
 {
     private readonly Silk.NET.SDL.Sdl _sdl;
     private readonly Machine _machine;
+    private readonly AudioOutput _audio;
 
     private Window* _window;
     private Renderer* _renderer;
@@ -41,6 +42,7 @@ public sealed unsafe class EmulatorWindow : IDisposable
     {
         _machine = machine;
         _sdl = Silk.NET.SDL.Sdl.GetApi();
+        _audio = new AudioOutput(_sdl, machine);
 
         // APM power-off from the guest ends the run, as it would on a real
         // machine with a power supply the BIOS can switch.
@@ -54,6 +56,7 @@ public sealed unsafe class EmulatorWindow : IDisposable
     public void Run()
     {
         Initialize();
+        _audio.Start();
         _running = true;
 
         var frameTimer = Stopwatch.StartNew();
@@ -84,6 +87,7 @@ public sealed unsafe class EmulatorWindow : IDisposable
             }
 
             Render();
+            _audio.Pump();
             UpdateTitle();
         }
     }
@@ -271,6 +275,7 @@ public sealed unsafe class EmulatorWindow : IDisposable
 
     public void Dispose()
     {
+        _audio.Dispose();
         if (_texture is not null) _sdl.DestroyTexture(_texture);
         if (_renderer is not null) _sdl.DestroyRenderer(_renderer);
         if (_window is not null) _sdl.DestroyWindow(_window);

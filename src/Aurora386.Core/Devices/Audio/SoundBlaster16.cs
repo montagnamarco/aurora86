@@ -34,7 +34,7 @@ namespace Aurora386.Core.Devices.Audio;
 /// bits -- is the traditional one for proving a data bus is really being
 /// driven rather than floating.
 /// </summary>
-public sealed class SoundBlaster16 : IIoDevice
+public sealed class SoundBlaster16 : IIoDevice, IAudioSource
 {
     /// <summary>The DSP version reported by command 0xE1. 4.05 identifies an SB16.</summary>
     public const byte VersionMajor = 4;
@@ -156,6 +156,19 @@ public sealed class SoundBlaster16 : IIoDevice
 
     /// <summary>The rate at which <see cref="ReadSamples"/> delivers frames.</summary>
     public int SampleRate { get; }
+
+    // --- IAudioSource ------------------------------------------------------
+
+    /// <summary>The card's name as an <see cref="AudioMixer"/> source, for diagnostics.</summary>
+    string IAudioSource.Name => "SB16";
+
+    /// <summary>
+    /// The rate this card hands frames to the mixer at -- the same <see
+    /// cref="SampleRate"/> the DSP's own DMA/FM path has already resampled
+    /// everything to internally (see <see cref="PushStereoSample"/>), which
+    /// is why the mixer needs no knowledge of the DSP's programmed rate.
+    /// </summary>
+    int IAudioSource.NativeSampleRate => SampleRate;
 
     /// <summary>True while a DMA transfer is running and not paused.</summary>
     public bool IsPlaying => _playing && !_paused;

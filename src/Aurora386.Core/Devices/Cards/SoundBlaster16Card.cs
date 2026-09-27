@@ -44,6 +44,11 @@ public sealed class SoundBlaster16Card : IExpansionCard
         // where it expects, and Windows 95 finds it by asking the bus, and
         // may move it.
         bus.IsaPlugAndPlay.Add(IsaPnpCards.ForSoundBlaster16(_device));
+
+        // Joins the host mix (F1.6): DMA-driven digital audio and the OPL3
+        // both leave the card through the same ring buffer (see
+        // SoundBlaster16.ReadSamples), so one registration carries both.
+        bus.Audio.AddSource(_device);
     }
 
     public void Reset() => _device?.Reset();

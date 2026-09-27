@@ -1,17 +1,22 @@
 using System;
 using System.Threading;
+using Aurora386.Core.Devices.Audio;
 using OpenTK.Audio.OpenAL;
 
 namespace Aurora386.Gui.Emulation;
 
 /// <summary>
-/// Carries the sound card's output to the host's speakers.
+/// Carries <see cref="Aurora386.Core.Machine.Audio"/>'s mixed output to the
+/// host's speakers.
 ///
-/// The emulator core deliberately knows nothing about audio hardware: the
-/// Sound Blaster renders into a buffer and stops there. That keeps the core
-/// headless and testable, and it puts the awkward part -- staying ahead of a
-/// device that consumes samples in real time, on a machine whose clock has
-/// nothing to do with the guest's -- in one place, here.
+/// The emulator core deliberately knows nothing about audio hardware: every
+/// sound source renders into its own buffer, <c>AudioMixer</c> resamples and
+/// sums them, and stops there. That keeps the core headless and testable,
+/// and it puts the awkward part -- staying ahead of a device that consumes
+/// samples in real time, on a machine whose clock has nothing to do with the
+/// guest's -- in one place, here. Pulling from the mixer rather than from
+/// the Sound Blaster directly is what lets a second source (an ES1371, an
+/// MPU-401 synth) join the mix later without this file changing at all.
 ///
 /// The mechanism is a small queue of buffers. We hand OpenAL several short
 /// buffers, and as it finishes each one we refill it and hand it back. The
@@ -36,8 +41,8 @@ public sealed class AudioOutput : IDisposable
     private readonly EmulatorSession _session;
     private readonly short[] _staging;
 
-    /// <summary>The card's own rate, fixed once <see cref="Start"/> finds a card fitted.</summary>
-    private int _sampleRate = 44100;
+    /// <summary>The mixer's output rate, fixed once <see cref="Start"/> reads it.</summary>
+    private int _sampleRate = AudioMixer.DefaultOutputSampleRate;
 
     private ALDevice _device;
     private ALContext _context;
@@ -67,11 +72,14 @@ public sealed class AudioOutput : IDisposable
     {
         if (_running) return;
 
-        // No card, no sound -- exactly as a machine built with an empty
-        // sound list looks to a real listener: silent, not broken.
-        int? sampleRate = _session.WithMachine(m => m.SoundBlaster?.SampleRate);
-        if (sampleRate is null) return;
-        _sampleRate = sampleRate.Value;
+        // No source, no sound -- exactly as a machine built with an empty
+        // sound list looks to a real listener: silent, not broken. The
+        // mixer itself always exists, even with nothing plugged into it, so
+        // "no card fitted" now means "the mixer has no sources" rather than
+        // "there is no mixer".
+        bool hasSource = _session.WithMachine(m => m.Audio.Sources.Count > 0);
+        if (!hasSource) return;
+        _sampleRate = _session.WithMachine(m => m.Audio.OutputSampleRate);
 
         try
         {
@@ -142,15 +150,12 @@ public sealed class AudioOutput : IDisposable
             {
                 int buffer = AL.SourceUnqueueBuffer(_source);
 
-                int written = _session.WithMachine(
-                    machine => machine.SoundBlaster?.ReadSamples(_staging) ?? 0);
-
-                // The card may not have produced a full buffer's worth. Pad
-                // with silence rather than shortening the buffer: a short
-                // buffer would make the stream run faster than real time and
-                // the pitch would drift upwards.
-                if (written < _staging.Length)
-                    Array.Clear(_staging, written, _staging.Length - written);
+                // The mixer always fills the whole span itself -- a source
+                // with nothing new to say contributes silence rather than
+                // shortening the read (see AudioMixer's own summary) -- so
+                // there is no short read here to pad, unlike pulling a
+                // single card's buffer directly used to require.
+                _session.WithMachine(machine => machine.Audio.ReadFrames(_staging));
 
                 AL.BufferData(buffer, ALFormat.Stereo16, _staging, sampleRate);
                 AL.SourceQueueBuffer(_source, buffer);

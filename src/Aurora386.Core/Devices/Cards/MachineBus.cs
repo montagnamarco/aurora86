@@ -1,3 +1,4 @@
+using Aurora386.Core.Devices.Audio;
 using Aurora386.Core.Devices.Interrupts;
 using Aurora386.Core.Devices.IsaPnp;
 using Aurora386.Core.Devices.Pci;
@@ -30,6 +31,14 @@ public sealed class MachineBus
     public IsaPnpBus IsaPlugAndPlay { get; }
     public Scheduler Scheduler { get; }
 
+    /// <summary>
+    /// The host-side audio mix every sound-producing card feeds. A card with
+    /// audio output registers itself here as an <see cref="IAudioSource"/>
+    /// the same moment it claims its ports, exactly as it registers with
+    /// <see cref="IsaPlugAndPlay"/> or <see cref="Pci"/>.
+    /// </summary>
+    public AudioMixer Audio { get; }
+
     private readonly Func<int> _cpuFrequencyHz;
 
     /// <summary>
@@ -48,6 +57,7 @@ public sealed class MachineBus
         PciBus pci,
         IsaPnpBus isaPlugAndPlay,
         Scheduler scheduler,
+        AudioMixer audio,
         Func<int> cpuFrequencyHz)
     {
         Io = io;
@@ -57,6 +67,7 @@ public sealed class MachineBus
         Pci = pci;
         IsaPlugAndPlay = isaPlugAndPlay;
         Scheduler = scheduler;
+        Audio = audio;
         _cpuFrequencyHz = cpuFrequencyHz;
     }
 
