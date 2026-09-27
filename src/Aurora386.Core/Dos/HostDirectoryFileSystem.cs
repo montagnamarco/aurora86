@@ -71,7 +71,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
         }
 
         string? host = ResolveHostPath(path);
-        if (host is null) return null;
+        if (host is null)
+        {
+            return null;
+        }
 
         if (Directory.Exists(host))
         {
@@ -92,7 +95,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     {
         string? host = IsRootPath(directoryPath) ? _root.FullName
                                                  : ResolveHostPath(directoryPath);
-        if (host is null || !Directory.Exists(host)) yield break;
+        if (host is null || !Directory.Exists(host))
+        {
+            yield break;
+        }
 
         // Shortening has to consider the whole directory at once, because
         // uniqueness is only meaningful within one directory: two files in
@@ -124,7 +130,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
             // shorten to nothing once the illegal characters are stripped --
             // are hidden rather than shown under a made-up name.
             string? shortName = ShortenName(entry.Name, taken);
-            if (shortName is null) continue;
+            if (shortName is null)
+            {
+                continue;
+            }
 
             taken.Add(shortName);
             _shortNames[JoinDosPath(dosDirectory, shortName)] = entry.FullName;
@@ -138,11 +147,17 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     public int Read(string path, long offset, Span<byte> destination)
     {
         string? host = ResolveHostPath(path);
-        if (host is null || !File.Exists(host)) return 0;
+        if (host is null || !File.Exists(host))
+        {
+            return 0;
+        }
 
         using var stream = new FileStream(host, FileMode.Open, FileAccess.Read,
                                           FileShare.ReadWrite);
-        if (offset >= stream.Length) return 0;
+        if (offset >= stream.Length)
+        {
+            return 0;
+        }
 
         stream.Seek(offset, SeekOrigin.Begin);
         return stream.Read(destination);
@@ -194,7 +209,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     {
         RequireWritable();
         string? host = ResolveHostPath(path);
-        if (host is null || !File.Exists(host)) return;
+        if (host is null || !File.Exists(host))
+        {
+            return;
+        }
 
         using var stream = new FileStream(host, FileMode.Open, FileAccess.Write);
         stream.SetLength(length);
@@ -204,7 +222,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     {
         RequireWritable();
         string? host = ResolveHostPath(path);
-        if (host is null || !File.Exists(host)) return;
+        if (host is null || !File.Exists(host))
+        {
+            return;
+        }
 
         File.Delete(host);
         _shortNames.Remove(NormalizePath(path));
@@ -214,11 +235,17 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     {
         RequireWritable();
         string? source = ResolveHostPath(fromPath);
-        if (source is null) return;
+        if (source is null)
+        {
+            return;
+        }
 
         string target = ResolveOrPlanHostPath(toPath);
 
-        if (Directory.Exists(source)) Directory.Move(source, target);
+        if (Directory.Exists(source))
+        {
+            Directory.Move(source, target);
+        }
         else File.Move(source, target, overwrite: false);
 
         _shortNames.Remove(NormalizePath(fromPath));
@@ -237,7 +264,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     {
         RequireWritable();
         string? host = ResolveHostPath(path);
-        if (host is null || !Directory.Exists(host)) return;
+        if (host is null || !Directory.Exists(host))
+        {
+            return;
+        }
 
         // Non-recursive on purpose: DOS's RMDIR removes an empty directory
         // and nothing else, and a redirector that quietly deleted a tree
@@ -248,7 +278,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
 
     private void RequireWritable()
     {
-        if (IsReadOnly) throw new NotSupportedException("This share is read-only.");
+        if (IsReadOnly)
+        {
+            throw new NotSupportedException("This share is read-only.");
+        }
     }
 
     // --- path handling ---------------------------------------------------------
@@ -263,7 +296,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     private static string NormalizePath(string path)
     {
         string cleaned = path.Replace('/', '\\').Trim();
-        if (!cleaned.StartsWith('\\')) cleaned = "\\" + cleaned;
+        if (!cleaned.StartsWith('\\'))
+        {
+            cleaned = "\\" + cleaned;
+        }
         while (cleaned.Length > 1 && cleaned.EndsWith('\\')) cleaned = cleaned[..^1];
         return cleaned.ToUpperInvariant();
     }
@@ -283,7 +319,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     private string? ResolveHostPath(string path)
     {
         string normalized = NormalizePath(path);
-        if (normalized == "\\") return _root.FullName;
+        if (normalized == "\\")
+        {
+            return _root.FullName;
+        }
 
         if (_shortNames.TryGetValue(normalized, out string? cached)
             && (File.Exists(cached) || Directory.Exists(cached)))
@@ -305,7 +344,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
             }
 
             string? matched = FindByShortName(current, component);
-            if (matched is null) return null;
+            if (matched is null)
+            {
+                return null;
+            }
 
             current = matched;
             dosSoFar = JoinDosPath(dosSoFar, component);
@@ -338,7 +380,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
         foreach (FileSystemInfo entry in entries.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase))
         {
             string? shortName = ShortenName(entry.Name, taken);
-            if (shortName is null) continue;
+            if (shortName is null)
+            {
+                continue;
+            }
 
             taken.Add(shortName);
             if (string.Equals(shortName, dosName, StringComparison.OrdinalIgnoreCase))
@@ -387,7 +432,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     /// </summary>
     internal static string? ShortenName(string hostName, HashSet<string> taken)
     {
-        if (string.IsNullOrEmpty(hostName)) return null;
+        if (string.IsNullOrEmpty(hostName))
+        {
+            return null;
+        }
 
         // The extension is whatever follows the LAST dot; earlier dots are
         // part of the name and get stripped, which is why "my.notes.txt"
@@ -402,9 +450,15 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
         string cleanStem = Sanitize(stem);
         string cleanExtension = Sanitize(extension);
 
-        if (cleanStem.Length == 0) return null;
+        if (cleanStem.Length == 0)
+        {
+            return null;
+        }
 
-        if (cleanExtension.Length > 3) cleanExtension = cleanExtension[..3];
+        if (cleanExtension.Length > 3)
+        {
+            cleanExtension = cleanExtension[..3];
+        }
 
         // A name that already fits and is already unique passes through
         // untouched -- important, because most files on a share put there for
@@ -414,7 +468,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
                                    cleanExtension);
 
         bool needsMangling = cleanStem.Length > 8 || taken.Contains(candidate);
-        if (!needsMangling) return candidate;
+        if (!needsMangling)
+        {
+            return candidate;
+        }
 
         for (int index = 1; index < 1000; index++)
         {
@@ -423,7 +480,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
             string head = cleanStem.Length > keep ? cleanStem[..keep] : cleanStem;
 
             candidate = Compose(head + suffix, cleanExtension);
-            if (!taken.Contains(candidate)) return candidate;
+            if (!taken.Contains(candidate))
+            {
+                return candidate;
+            }
         }
 
         return null;
@@ -444,8 +504,14 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
 
         foreach (char c in part)
         {
-            if (c < 32 || c > 126) continue;
-            if (IllegalCharacters.Contains(c)) continue;
+            if (c < 32 || c > 126)
+            {
+                continue;
+            }
+            if (IllegalCharacters.Contains(c))
+            {
+                continue;
+            }
             builder.Append(char.ToUpperInvariant(c));
         }
 
@@ -457,7 +523,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
         var builder = new StringBuilder(11);
         foreach (char c in name.ToUpperInvariant())
         {
-            if (builder.Length == 11) break;
+            if (builder.Length == 11)
+            {
+                break;
+            }
             if (c is >= 'A' and <= 'Z' or >= '0' and <= '9' or '_' or '-')
                 builder.Append(c);
         }
@@ -467,8 +536,14 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     private RedirectedFileInfo Describe(FileInfo file, string? name = null)
     {
         var attributes = RedirectedFileAttributes.Archive;
-        if (IsReadOnly || file.IsReadOnly) attributes |= RedirectedFileAttributes.ReadOnly;
-        if (IsHiddenOnHost(file)) attributes |= RedirectedFileAttributes.Hidden;
+        if (IsReadOnly || file.IsReadOnly)
+        {
+            attributes |= RedirectedFileAttributes.ReadOnly;
+        }
+        if (IsHiddenOnHost(file))
+        {
+            attributes |= RedirectedFileAttributes.Hidden;
+        }
 
         return new RedirectedFileInfo
         {
@@ -482,7 +557,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     private RedirectedFileInfo Describe(DirectoryInfo directory, string? name = null)
     {
         var attributes = RedirectedFileAttributes.Directory;
-        if (IsHiddenOnHost(directory)) attributes |= RedirectedFileAttributes.Hidden;
+        if (IsHiddenOnHost(directory))
+        {
+            attributes |= RedirectedFileAttributes.Hidden;
+        }
 
         return new RedirectedFileInfo
         {
@@ -517,8 +595,14 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     /// </summary>
     private static DateTime ClampToFatEpoch(DateTime time)
     {
-        if (time.Year < 1980) return new DateTime(1980, 1, 1);
-        if (time.Year > 2107) return new DateTime(2107, 12, 31);
+        if (time.Year < 1980)
+        {
+            return new DateTime(1980, 1, 1);
+        }
+        if (time.Year > 2107)
+        {
+            return new DateTime(2107, 12, 31);
+        }
         return time;
     }
 }

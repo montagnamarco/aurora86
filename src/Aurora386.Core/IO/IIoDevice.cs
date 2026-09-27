@@ -58,7 +58,10 @@ public sealed class IoBus
     public void Unregister(ushort firstPort, int count, IIoDevice device)
     {
         for (int i = 0; i < count; i++)
-            if (ReferenceEquals(_devices[firstPort + i], device)) _devices[firstPort + i] = null;
+            if (ReferenceEquals(_devices[firstPort + i], device))
+            {
+                _devices[firstPort + i] = null;
+            }
     }
 
     /// <summary>
@@ -73,7 +76,10 @@ public sealed class IoBus
         for (int i = 0; i < count; i++)
         {
             IIoDevice? owner = _devices[firstPort + i];
-            if (owner is not null && !ReferenceEquals(owner, device)) return false;
+            if (owner is not null && !ReferenceEquals(owner, device))
+            {
+                return false;
+            }
         }
         return true;
     }

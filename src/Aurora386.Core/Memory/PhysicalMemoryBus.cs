@@ -95,7 +95,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         (uint Base, uint Length, IMemoryDevice Device)[] windows = _highWindows;
         foreach ((uint windowBase, uint windowLength, IMemoryDevice windowDevice) in windows)
         {
-            if (length > windowLength) continue;
+            if (length > windowLength)
+            {
+                continue;
+            }
             if (address >= windowBase && address - windowBase <= windowLength - length)
             {
                 device = windowDevice;
@@ -238,8 +241,14 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     public bool TryMapDevice(uint physicalBase, uint length, IMemoryDevice device)
     {
-        if (!FitsAddressableSpace(physicalBase, length)) return false;
-        if (!IsUnclaimed(physicalBase, length)) return false;
+        if (!FitsAddressableSpace(physicalBase, length))
+        {
+            return false;
+        }
+        if (!IsUnclaimed(physicalBase, length))
+        {
+            return false;
+        }
         MapDeviceUnchecked(physicalBase, length, device);
         return true;
     }
@@ -250,14 +259,20 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
     private bool IsUnclaimed(uint physicalBase, uint length)
     {
-        if (physicalBase < _ramSize) return false;   // RAM, even where a hole or ROM sits in the legacy window
+        if (physicalBase < _ramSize)
+        {
+            return false;   // RAM, even where a hole or ROM sits in the legacy window
+        }
 
         int first = (int)(physicalBase >> PageShift);
         int count = (int)(length >> PageShift);
         for (int page = first; page < first + count; page++)
         {
             bool claimed = _pageRam[page] is not null || _pageWatchedRam[page] is not null || _pageDevice[page] is not null;
-            if (claimed) return false;
+            if (claimed)
+            {
+                return false;
+            }
         }
         return true;
     }
@@ -343,7 +358,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
         for (int page = 0; page < _pageCount && ((uint)page << PageShift) < _ramSize; page++)
         {
-            if (_pageReadOnly[page]) continue;
+            if (_pageReadOnly[page])
+            {
+                continue;
+            }
             uint at = (uint)page << PageShift;
             content.Slice((int)at, PageSize).CopyTo(new Span<byte>(_ram + at, PageSize));
         }
@@ -469,7 +487,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     public byte ReadByte(uint address)
     {
         address = Translate(address);
-        if (address >= _addressableBytes) return ReadHighWindowByte(address);
+        if (address >= _addressableBytes)
+        {
+            return ReadHighWindowByte(address);
+        }
 
         byte* page = _pageRam[address >> PageShift];
         if (page is not null)
@@ -523,7 +544,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         byte* watched = _pageWatchedRam[index];
         if (watched is not null)
         {
-            if (IsReadWatched(address)) ReadWatched?.Invoke(address);
+            if (IsReadWatched(address))
+            {
+                ReadWatched?.Invoke(address);
+            }
             return watched[address & PageMask];
         }
 
@@ -538,10 +562,16 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     private byte ReadByteTranslated(uint address)
     {
-        if (address >= _addressableBytes) return ReadHighWindowByte(address);
+        if (address >= _addressableBytes)
+        {
+            return ReadHighWindowByte(address);
+        }
 
         byte* page = _pageRam[address >> PageShift];
-        if (page is not null) return page[address & PageMask];
+        if (page is not null)
+        {
+            return page[address & PageMask];
+        }
 
         return ReadByteSlow(address);
     }
@@ -570,7 +600,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         byte* page = _pageRam[index];
         if (page is not null)
         {
-            if (_pageReadOnly[index]) return;
+            if (_pageReadOnly[index])
+            {
+                return;
+            }
             page[address & PageMask] = value;
             return;
         }
@@ -649,7 +682,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     {
         (uint Start, uint Length)[] ranges = _watchRanges;
         for (int i = 0; i < ranges.Length; i++)
-            if (address - ranges[i].Start < ranges[i].Length) return true;
+            if (address - ranges[i].Start < ranges[i].Length)
+            {
+                return true;
+            }
         return false;
     }
 
@@ -692,7 +728,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         // Give every page back first, then take out the ones now covered.
         for (int i = 0; i < _pageCount; i++)
         {
-            if (_pageWatchedRam[i] is null) continue;
+            if (_pageWatchedRam[i] is null)
+            {
+                continue;
+            }
             _pageRam[i] = _pageWatchedRam[i];
             _pageWatchedRam[i] = null;
         }
@@ -705,7 +744,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
             long last = (start + length - 1) >> PageShift;
             for (long page = first; page <= last && page < _pageCount; page++)
             {
-                if (_pageRam[page] is null) continue;       // a device, or nothing: already slow
+                if (_pageRam[page] is null)
+                {
+                    continue;       // a device, or nothing: already slow
+                }
                 _pageWatchedRam[page] = _pageRam[page];
                 _pageRam[page] = null;
             }
@@ -729,14 +771,20 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     {
         (uint Start, uint Length)[] ranges = _readWatchRanges;
         for (int i = 0; i < ranges.Length; i++)
-            if (address - ranges[i].Start < ranges[i].Length) return true;
+            if (address - ranges[i].Start < ranges[i].Length)
+            {
+                return true;
+            }
         return false;
     }
 
     /// <summary>Every byte write beyond the dense per-page arrays goes through here; see <see cref="_highWindows"/>.</summary>
     private void WriteHighWindowByte(uint address, byte value)
     {
-        if (TryHighWindow(address, 1, out IMemoryDevice? device, out uint offset)) device!.WriteByte(offset, value);
+        if (TryHighWindow(address, 1, out IMemoryDevice? device, out uint offset))
+        {
+            device!.WriteByte(offset, value);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -749,13 +797,19 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
             return;
         }
 
-        if (IsWatched(address, 0)) Watched?.Invoke(address, value);
+        if (IsWatched(address, 0))
+        {
+            Watched?.Invoke(address, value);
+        }
 
         uint index = address >> PageShift;
         byte* page = _pageRam[index];
         if (page is not null)
         {
-            if (_pageReadOnly[index]) return;   // write to ROM: discarded
+            if (_pageReadOnly[index])
+            {
+                return;   // write to ROM: discarded
+            }
             page[address & PageMask] = value;
             return;
         }
@@ -795,7 +849,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
             byte* page = _pageRam[index];
             if (page is not null)
             {
-                if (_pageReadOnly[index]) return;
+                if (_pageReadOnly[index])
+                {
+                    return;
+                }
                 Unsafe.WriteUnaligned(page + (address & PageMask), value);
                 return;
             }
@@ -820,7 +877,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
             byte* page = _pageRam[index];
             if (page is not null)
             {
-                if (_pageReadOnly[index]) return;
+                if (_pageReadOnly[index])
+                {
+                    return;
+                }
                 Unsafe.WriteUnaligned(page + (address & PageMask), value);
                 return;
             }
@@ -838,7 +898,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         byte* watched = _pageWatchedRam[index];
         if (watched is not null)
         {
-            if (!_pageReadOnly[index]) watched[address & PageMask] = value;
+            if (!_pageReadOnly[index])
+            {
+                watched[address & PageMask] = value;
+            }
             return;
         }
 
@@ -922,7 +985,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
         _disposed = true;
         NativeMemory.Free(_ram);
     }

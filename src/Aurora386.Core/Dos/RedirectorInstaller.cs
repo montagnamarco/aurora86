@@ -128,8 +128,14 @@ public sealed class RedirectorInstaller(Machine machine)
     /// </summary>
     public bool TryInstall(RedirectorServices redirector, bool force = false)
     {
-        if (redirector.IsInstalled && !force) return true;
-        if (!_machine.Booted) return false;
+        if (redirector.IsInstalled && !force)
+        {
+            return true;
+        }
+        if (!_machine.Booted)
+        {
+            return false;
+        }
 
         // DOS is not reentrant, and this is the flag that says so.
         //
@@ -145,7 +151,10 @@ public sealed class RedirectorInstaller(Machine machine)
         // On the first attempt the SDA address is not known yet, so there is
         // nothing to check; that call happens from the run loop between
         // instructions, which is as safe a moment as any.
-        if (redirector.SwappableDataArea != 0 && IsDosBusy(redirector)) return false;
+        if (redirector.SwappableDataArea != 0 && IsDosBusy(redirector))
+        {
+            return false;
+        }
 
         // A halted CPU is waiting for an interrupt, and the guest expects to
         // resume at the instruction after the HLT once one arrives. Clearing
@@ -155,7 +164,10 @@ public sealed class RedirectorInstaller(Machine machine)
         // a call the guest knows nothing about. Waiting for a moment when the
         // guest is actually running costs nothing: it is running almost all
         // of the time.
-        if (_machine.Cpu.State.Halted) return false;
+        if (_machine.Cpu.State.Halted)
+        {
+            return false;
+        }
 
         // Do not go near DOS until it has finished starting.
         //
@@ -178,7 +190,10 @@ public sealed class RedirectorInstaller(Machine machine)
         // keyboard: DOS reads a key only from the command prompt, so the
         // moment the guest has asked for one, startup is over. The BIOS's own
         // buffer pointers are the evidence, and they cost nothing to read.
-        if (!_machine.Bda.WaitingAtPrompt) return false;
+        if (!_machine.Bda.WaitingAtPrompt)
+        {
+            return false;
+        }
 
         // Wait until DOS is not merely present but finished starting.
         //
@@ -210,7 +225,10 @@ public sealed class RedirectorInstaller(Machine machine)
         // whatever the guest has installed there, with a stack we do not
         // control. Windows in enhanced mode is the case that matters, and the
         // right time to install is long before it starts.
-        if (_machine.Cpu.State.ProtectedMode) return false;
+        if (_machine.Cpu.State.ProtectedMode)
+        {
+            return false;
+        }
 
         SavedContext saved = SaveContext();
         byte[] savedMemory = ReadRoutineArea();
@@ -219,10 +237,16 @@ public sealed class RedirectorInstaller(Machine machine)
         try
         {
             uint sda = CallForSwappableDataArea();
-            if (sda == 0) return false;
+            if (sda == 0)
+            {
+                return false;
+            }
 
             (uint cds, byte driveCount) = CallForCurrentDirectoryStructure();
-            if (cds == 0) return false;
+            if (cds == 0)
+            {
+                return false;
+            }
 
             if (sda == redirector.SwappableDataArea
                 && cds == redirector.CurrentDirectoryStructure
@@ -285,8 +309,14 @@ public sealed class RedirectorInstaller(Machine machine)
     /// </summary>
     public byte? QueryCompactDiscLetter(RedirectorServices redirector)
     {
-        if (_machine.Cpu.State.ProtectedMode) return null;
-        if (!redirector.IsInstalled || IsDosBusy(redirector)) return null;
+        if (_machine.Cpu.State.ProtectedMode)
+        {
+            return null;
+        }
+        if (!redirector.IsInstalled || IsDosBusy(redirector))
+        {
+            return null;
+        }
 
         SavedContext saved = SaveContext();
         byte[] savedMemory = ReadRoutineArea();
@@ -298,7 +328,10 @@ public sealed class RedirectorInstaller(Machine machine)
             //   F4          HLT
             RunRoutine([0xB8, 0x00, 0x15, 0xCD, 0x2F, 0xF4]);
             CpuNs.CpuState state = _machine.Cpu.State;
-            if (!state.Halted || state.Bx == 0) return null;
+            if (!state.Halted || state.Bx == 0)
+            {
+                return null;
+            }
             return (byte)state.Cx;
         }
         finally
@@ -340,7 +373,10 @@ public sealed class RedirectorInstaller(Machine machine)
 
         // Carry set means the call failed, and on a DOS too old to have the
         // function it will. The register pair is meaningless then.
-        if (_machine.Cpu.Flags.Carry) return 0;
+        if (_machine.Cpu.Flags.Carry)
+        {
+            return 0;
+        }
 
         uint address = ((uint)state.Ds.Selector << 4) + state.Si;
 
@@ -362,7 +398,10 @@ public sealed class RedirectorInstaller(Machine machine)
         RunRoutine([0xB4, 0x52, 0xCD, 0x21, 0xF4]);
 
         CpuNs.CpuState state = _machine.Cpu.State;
-        if (state.Es.Selector == 0 && state.Bx == 0) return (0, 0);
+        if (state.Es.Selector == 0 && state.Bx == 0)
+        {
+            return (0, 0);
+        }
 
         uint listOfLists = ((uint)state.Es.Selector << 4) + state.Bx;
         ListOfListsAddress = listOfLists;
@@ -373,15 +412,24 @@ public sealed class RedirectorInstaller(Machine machine)
         // DOS writes 0000:FFFF into the slot when there are no drives at all,
         // which happens if LASTDRIVE is somehow zero. Following it would give
         // us a CDS array in the middle of the interrupt vectors.
-        if (segment == 0 && offset == 0xFFFF) return (0, 0);
-        if (segment == 0) return (0, 0);
+        if (segment == 0 && offset == 0xFFFF)
+        {
+            return (0, 0);
+        }
+        if (segment == 0)
+        {
+            return (0, 0);
+        }
 
         byte driveCount = _machine.Memory.ReadByte(listOfLists + ListOfListsLastDriveOffset);
 
         // A count of zero or an absurd one means we are not looking at a list
         // of lists at all, and every entry we computed from it would be a
         // guess at an address in the middle of DOS.
-        if (driveCount is 0 or > 26) return (0, 0);
+        if (driveCount is 0 or > 26)
+        {
+            return (0, 0);
+        }
 
         // The list of lists belongs to the DOS kernel, which lives low in
         // memory -- in the first 64 KB when it loads normally, and in the
@@ -396,7 +444,10 @@ public sealed class RedirectorInstaller(Machine machine)
         // installed itself during the BIOS's own startup, twenty thousand
         // instructions in, against a byte that read 3.
         const uint HighestPlausibleKernel = 0x20000;
-        if (listOfLists >= HighestPlausibleKernel && listOfLists < 0xFFFF0) return (0, 0);
+        if (listOfLists >= HighestPlausibleKernel && listOfLists < 0xFFFF0)
+        {
+            return (0, 0);
+        }
 
         return (((uint)segment << 4) + offset, driveCount);
     }
@@ -428,7 +479,10 @@ public sealed class RedirectorInstaller(Machine machine)
         // right response is to give up rather than to run forever.
         for (int step = 0; step < 200_000; step++)
         {
-            if (cpu.State.Halted) return;
+            if (cpu.State.Halted)
+            {
+                return;
+            }
             cpu.Step();
         }
     }

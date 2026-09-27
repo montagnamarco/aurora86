@@ -47,7 +47,10 @@ public sealed class IsoFileSystem(IsoImage image) : IRedirectedFileSystem
     public IEnumerable<RedirectedFileInfo> Enumerate(string directoryPath)
     {
         (long sector, long length)? extent = ResolveDirectory(directoryPath);
-        if (extent is null) yield break;
+        if (extent is null)
+        {
+            yield break;
+        }
 
         foreach (RedirectedFileInfo info in ListDirectory(extent.Value.sector, extent.Value.length)
                      .Select(e => e.Info))
@@ -57,13 +60,22 @@ public sealed class IsoFileSystem(IsoImage image) : IRedirectedFileSystem
     public int Read(string path, long offset, Span<byte> destination)
     {
         Located? found = Locate(path);
-        if (found is null || found.Info.IsDirectory) return 0;
+        if (found is null || found.Info.IsDirectory)
+        {
+            return 0;
+        }
 
         long size = found.Info.Size;
-        if (offset < 0 || offset >= size) return 0;
+        if (offset < 0 || offset >= size)
+        {
+            return 0;
+        }
 
         int wanted = (int)Math.Min(destination.Length, size - offset);
-        if (wanted <= 0) return 0;
+        if (wanted <= 0)
+        {
+            return 0;
+        }
 
         // A file's data is a straight run of blocks -- ISO 9660 has no
         // fragmentation, because a disc is written once and in order. So a
@@ -125,7 +137,10 @@ public sealed class IsoFileSystem(IsoImage image) : IRedirectedFileSystem
     {
         string[] components = path.Replace('/', '\\')
                                   .Split('\\', StringSplitOptions.RemoveEmptyEntries);
-        if (components.Length == 0) return null;
+        if (components.Length == 0)
+        {
+            return null;
+        }
 
         long sector = _image.RootDirectorySector;
         long length = _image.RootDirectoryLength;
@@ -136,7 +151,10 @@ public sealed class IsoFileSystem(IsoImage image) : IRedirectedFileSystem
             current = ListDirectory(sector, length)
                 .FirstOrDefault(e => string.Equals(e.Info.Name, component,
                                                    StringComparison.OrdinalIgnoreCase));
-            if (current is null) return null;
+            if (current is null)
+            {
+                return null;
+            }
 
             sector = current.Sector;
             length = current.Length;
@@ -151,7 +169,10 @@ public sealed class IsoFileSystem(IsoImage image) : IRedirectedFileSystem
             return (_image.RootDirectorySector, _image.RootDirectoryLength);
 
         Located? found = Locate(path);
-        if (found is null || !found.Info.IsDirectory) return null;
+        if (found is null || !found.Info.IsDirectory)
+        {
+            return null;
+        }
 
         return (found.Sector, found.Length);
     }
@@ -175,16 +196,28 @@ public sealed class IsoFileSystem(IsoImage image) : IRedirectedFileSystem
             // inside a DOS name -- but relying on that would make the
             // behaviour an accident of a rule written for something else, and
             // it would break the moment the shortener grew a special case.
-            if (entry.IsSpecial) continue;
+            if (entry.IsSpecial)
+            {
+                continue;
+            }
 
             string? name = HostDirectoryFileSystem.ShortenName(entry.Name, taken);
-            if (name is null) continue;
+            if (name is null)
+            {
+                continue;
+            }
             taken.Add(name);
 
             var attributes = RedirectedFileAttributes.ReadOnly;
-            if (entry.IsDirectory) attributes |= RedirectedFileAttributes.Directory;
+            if (entry.IsDirectory)
+            {
+                attributes |= RedirectedFileAttributes.Directory;
+            }
             else attributes |= RedirectedFileAttributes.Archive;
-            if (entry.IsHidden) attributes |= RedirectedFileAttributes.Hidden;
+            if (entry.IsHidden)
+            {
+                attributes |= RedirectedFileAttributes.Hidden;
+            }
 
             var info = new RedirectedFileInfo
             {

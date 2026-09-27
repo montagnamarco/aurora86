@@ -156,7 +156,10 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     public bool Mount(byte drive, IRedirectedFileSystem fileSystem)
     {
-        if (drive >= 26) throw new ArgumentOutOfRangeException(nameof(drive), "Drive must be A through Z.");
+        if (drive >= 26)
+        {
+            throw new ArgumentOutOfRangeException(nameof(drive), "Drive must be A through Z.");
+        }
         _drives[drive] = fileSystem;
         MarkDriveRedirected(drive);
 
@@ -165,7 +168,10 @@ public sealed class RedirectorServices(Machine machine)
 
     public void Unmount(byte drive)
     {
-        if (!_drives.Remove(drive)) return;
+        if (!_drives.Remove(drive))
+        {
+            return;
+        }
 
         // Clearing the flag hands the letter back to DOS. Leaving it set with
         // nothing behind it would be worse than either state: DOS would keep
@@ -193,9 +199,18 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     public bool IsDriveAvailable(byte drive)
     {
-        if (drive >= 26 || _drives.ContainsKey(drive)) return false;
-        if (!IsInstalled) return true;
-        if (drive >= DriveCount) return false;
+        if (drive >= 26 || _drives.ContainsKey(drive))
+        {
+            return false;
+        }
+        if (!IsInstalled)
+        {
+            return true;
+        }
+        if (drive >= DriveCount)
+        {
+            return false;
+        }
         uint entry = CurrentDirectoryStructure + (uint)(drive * DosStructures.CdsEntrySize);
         return (ReadWordAt(entry + DosStructures.CdsFlags)
             & (DosStructures.CdsValidFlag | DosStructures.CdsRedirectedFlag)) == 0;
@@ -221,11 +236,17 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private void MarkDriveRedirected(byte drive)
     {
-        if (!IsInstalled) return;
+        if (!IsInstalled)
+        {
+            return;
+        }
 
         // Past the end of the array there is no entry to mark, only whatever
         // DOS put next in memory.
-        if (drive >= DriveCount) return;
+        if (drive >= DriveCount)
+        {
+            return;
+        }
 
         uint entry = CurrentDirectoryStructure + (uint)(drive * DosStructures.CdsEntrySize);
         ushort flags = ReadWordAt(entry + DosStructures.CdsFlags);
@@ -243,8 +264,14 @@ public sealed class RedirectorServices(Machine machine)
 
     private void ClearDriveRedirected(byte drive)
     {
-        if (!IsInstalled) return;
-        if (drive >= DriveCount) return;
+        if (!IsInstalled)
+        {
+            return;
+        }
+        if (drive >= DriveCount)
+        {
+            return;
+        }
 
         uint entry = CurrentDirectoryStructure + (uint)(drive * DosStructures.CdsEntrySize);
         ushort flags = ReadWordAt(entry + DosStructures.CdsFlags);
@@ -278,9 +305,15 @@ public sealed class RedirectorServices(Machine machine)
         // mounted: it says a redirector exists, not that a particular drive
         // does. A program that asks and gets no answer concludes the whole
         // interface is absent.
-        if (subfunction == 0x00) return ReportInstalled(cpu);
+        if (subfunction == 0x00)
+        {
+            return ReportInstalled(cpu);
+        }
 
-        if (!IsInstalled) return false;
+        if (!IsInstalled)
+        {
+            return false;
+        }
 
         bool handled = Dispatch(cpu, subfunction);
         TraceResult?.Invoke(subfunction, handled, cpu.State.Ax);
@@ -422,7 +455,10 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private bool ChangeDirectory(CpuNs.Cpu cpu)
     {
-        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
+        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path))
+        {
+            return false;
+        }
 
         RedirectedFileInfo? info = fs.GetInfo(path);
         if (info is null || !info.IsDirectory)
@@ -437,7 +473,10 @@ public sealed class RedirectorServices(Machine machine)
 
     private bool MakeDirectory(CpuNs.Cpu cpu)
     {
-        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
+        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path))
+        {
+            return false;
+        }
 
         if (fs.IsReadOnly) { Fail(cpu, DosStructures.ErrorAccessDenied); return true; }
         if (fs.GetInfo(path) is not null) { Fail(cpu, DosStructures.ErrorAccessDenied); return true; }
@@ -447,7 +486,10 @@ public sealed class RedirectorServices(Machine machine)
 
     private bool RemoveDirectory(CpuNs.Cpu cpu)
     {
-        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
+        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path))
+        {
+            return false;
+        }
 
         if (fs.IsReadOnly) { Fail(cpu, DosStructures.ErrorAccessDenied); return true; }
 
@@ -481,7 +523,10 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private bool FindFirst(CpuNs.Cpu cpu)
     {
-        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
+        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path))
+        {
+            return false;
+        }
 
         // The path is a directory plus a pattern. Splitting them is our job:
         // DOS resolved the directory part but left the pattern attached.
@@ -534,7 +579,10 @@ public sealed class RedirectorServices(Machine machine)
         }
 
         ushort searchId = _nextSearchId++;
-        if (_nextSearchId == 0) _nextSearchId = 1;
+        if (_nextSearchId == 0)
+        {
+            _nextSearchId = 1;
+        }
 
         _searches[searchId] = new ActiveSearch
         {
@@ -556,9 +604,15 @@ public sealed class RedirectorServices(Machine machine)
     private byte DriveNumberOf(CpuNs.Cpu cpu, IRedirectedFileSystem fs)
     {
         byte drive = CurrentDrive();
-        if (drive != 0xFF) return drive;
+        if (drive != 0xFF)
+        {
+            return drive;
+        }
         foreach ((byte number, IRedirectedFileSystem mounted) in _drives)
-            if (ReferenceEquals(mounted, fs)) return number;
+            if (ReferenceEquals(mounted, fs))
+            {
+                return number;
+            }
         return 0;
     }
 
@@ -635,7 +689,10 @@ public sealed class RedirectorServices(Machine machine)
             var builder = new StringBuilder(width);
             foreach (char c in part)
             {
-                if (builder.Length == width) break;
+                if (builder.Length == width)
+                {
+                    break;
+                }
                 if (c == '*')
                 {
                     while (builder.Length < width) builder.Append('?');
@@ -673,7 +730,10 @@ public sealed class RedirectorServices(Machine machine)
     private void PruneSearches(ushort keep)
     {
         const int limit = 32;
-        if (_searches.Count <= limit) return;
+        if (_searches.Count <= limit)
+        {
+            return;
+        }
 
         foreach (ushort id in _searches.Keys.Where(id => id != keep)
                                             .Take(_searches.Count - limit).ToList())
@@ -728,8 +788,14 @@ public sealed class RedirectorServices(Machine machine)
         string stem = dot >= 0 ? name[..dot] : name;
         string extension = dot >= 0 ? name[(dot + 1)..] : "";
 
-        if (stem.Length > 8) stem = stem[..8];
-        if (extension.Length > 3) extension = extension[..3];
+        if (stem.Length > 8)
+        {
+            stem = stem[..8];
+        }
+        if (extension.Length > 3)
+        {
+            extension = extension[..3];
+        }
 
         return (stem.PadRight(8) + extension.PadRight(3)).ToUpperInvariant();
     }
@@ -746,15 +812,24 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     internal static bool MatchesPattern(string name, string pattern)
     {
-        if (string.IsNullOrEmpty(pattern)) return true;
+        if (string.IsNullOrEmpty(pattern))
+        {
+            return true;
+        }
 
         string paddedName = PadToDirectoryEntry(name);
         string paddedPattern = ExpandWildcards(pattern);
 
         for (int i = 0; i < 11; i++)
         {
-            if (paddedPattern[i] == '?') continue;
-            if (paddedPattern[i] != paddedName[i]) return false;
+            if (paddedPattern[i] == '?')
+            {
+                continue;
+            }
+            if (paddedPattern[i] != paddedName[i])
+            {
+                return false;
+            }
         }
 
         return true;
@@ -785,7 +860,10 @@ public sealed class RedirectorServices(Machine machine)
 
         foreach (char c in field)
         {
-            if (builder.Length == width) break;
+            if (builder.Length == width)
+            {
+                break;
+            }
 
             if (c == '*')
             {
@@ -822,7 +900,10 @@ public sealed class RedirectorServices(Machine machine)
         // exception DOS has kept since 2.0: a mask of exactly the volume
         // label bit means "labels only". DIR relies on it: it asks with
         // that mask and prints the first name it gets as the label.
-        if (mask == (byte)RedirectedFileAttributes.VolumeLabel) return false;
+        if (mask == (byte)RedirectedFileAttributes.VolumeLabel)
+        {
+            return false;
+        }
 
         const byte selective = (byte)(RedirectedFileAttributes.Hidden
                                     | RedirectedFileAttributes.System
@@ -840,7 +921,10 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private bool OpenFileCall(CpuNs.Cpu cpu)
     {
-        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
+        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path))
+        {
+            return false;
+        }
 
         RedirectedFileInfo? info = fs.GetInfo(path);
         if (info is null || info.IsDirectory)
@@ -859,7 +943,10 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private bool CreateFileCall(CpuNs.Cpu cpu)
     {
-        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
+        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path))
+        {
+            return false;
+        }
 
         if (fs.IsReadOnly)
         {
@@ -907,7 +994,10 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private bool SpecialOpen(CpuNs.Cpu cpu)
     {
-        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
+        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path))
+        {
+            return false;
+        }
 
         // The action code: bits 0-3 say what to do when the file exists,
         // bits 4-7 when it does not. DOS keeps it in the SDA, not in DX;
@@ -1230,7 +1320,10 @@ public sealed class RedirectorServices(Machine machine)
 
     private bool DeleteFile(CpuNs.Cpu cpu)
     {
-        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
+        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path))
+        {
+            return false;
+        }
 
         if (fs.IsReadOnly) { Fail(cpu, DosStructures.ErrorAccessDenied); return true; }
 
@@ -1265,7 +1358,10 @@ public sealed class RedirectorServices(Machine machine)
 
     private bool RenameFile(CpuNs.Cpu cpu)
     {
-        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string fromPath)) return false;
+        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string fromPath))
+        {
+            return false;
+        }
 
         if (fs.IsReadOnly) { Fail(cpu, DosStructures.ErrorAccessDenied); return true; }
 
@@ -1293,7 +1389,10 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private bool GetFileAttributes(CpuNs.Cpu cpu)
     {
-        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
+        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path))
+        {
+            return false;
+        }
 
         RedirectedFileInfo? info = fs.GetInfo(path);
         if (info is null)
@@ -1321,7 +1420,10 @@ public sealed class RedirectorServices(Machine machine)
     /// </summary>
     private bool SetFileAttributes(CpuNs.Cpu cpu)
     {
-        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path)) return false;
+        if (!TryResolve(cpu, out IRedirectedFileSystem? fs, out string path))
+        {
+            return false;
+        }
 
         if (fs.IsReadOnly) { Fail(cpu, DosStructures.ErrorAccessDenied); return true; }
 
@@ -1349,7 +1451,10 @@ public sealed class RedirectorServices(Machine machine)
     private bool GetDiskSpace(CpuNs.Cpu cpu)
     {
         IRedirectedFileSystem? fs = DriveFromCds();
-        if (fs is null) return false;
+        if (fs is null)
+        {
+            return false;
+        }
 
         (long free, long total) = fs.GetDiskSpace();
 
@@ -1405,8 +1510,14 @@ public sealed class RedirectorServices(Machine machine)
         // of an entry, is not the same case: that call is not ours, or the
         // structures have moved, and the name must not be used to guess.
         IRedirectedFileSystem? found = DriveFromCds();
-        if (found is null && CdsPointerIsAbsent()) found = DriveFromName(qualified);
-        if (found is null) return false;
+        if (found is null && CdsPointerIsAbsent())
+        {
+            found = DriveFromName(qualified);
+        }
+        if (found is null)
+        {
+            return false;
+        }
 
         fileSystem = found;
         path = StripDriveLetter(qualified);
@@ -1418,7 +1529,10 @@ public sealed class RedirectorServices(Machine machine)
 
     private IRedirectedFileSystem? DriveFromName(string qualified)
     {
-        if (qualified.Length < 2 || qualified[1] != ':') return null;
+        if (qualified.Length < 2 || qualified[1] != ':')
+        {
+            return null;
+        }
         int drive = char.ToUpperInvariant(qualified[0]) - 'A';
         return drive is >= 0 and < 26 ? _drives.GetValueOrDefault((byte)drive) : null;
     }
@@ -1439,10 +1553,16 @@ public sealed class RedirectorServices(Machine machine)
         uint pointer = ReadDwordAt(SwappableDataArea + DosStructures.SdaCurrentCdsPointer);
         uint address = ((pointer >> 16) << 4) + (pointer & 0xFFFF);
 
-        if (address < CurrentDirectoryStructure) return 0xFF;
+        if (address < CurrentDirectoryStructure)
+        {
+            return 0xFF;
+        }
 
         uint distance = address - CurrentDirectoryStructure;
-        if (distance % DosStructures.CdsEntrySize != 0) return 0xFF;
+        if (distance % DosStructures.CdsEntrySize != 0)
+        {
+            return 0xFF;
+        }
 
         uint drive = distance / DosStructures.CdsEntrySize;
         return drive >= DriveCount ? (byte)0xFF : (byte)drive;
@@ -1473,7 +1593,10 @@ public sealed class RedirectorServices(Machine machine)
     internal static string StripDriveLetter(string qualified)
     {
         string path = qualified.Length >= 2 && qualified[1] == ':' ? qualified[2..] : qualified;
-        if (path.Length == 0) return "\\";
+        if (path.Length == 0)
+        {
+            return "\\";
+        }
         return path.StartsWith('\\') ? path : "\\" + path;
     }
 
@@ -1539,7 +1662,10 @@ public sealed class RedirectorServices(Machine machine)
         for (uint i = 0; i < 128; i++)
         {
             byte c = ReadByteAt(address + i);
-            if (c == 0) break;
+            if (c == 0)
+            {
+                break;
+            }
             builder.Append((char)c);
         }
 

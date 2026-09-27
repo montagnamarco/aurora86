@@ -332,9 +332,18 @@ public sealed class VmConfiguration
     {
         foreach (DiskEntry disk in Disks) disk.Path = map(disk.Path);
         for (int i = 0; i < Floppies.Count; i++) Floppies[i] = map(Floppies[i]);
-        if (CompactDisc is not null) CompactDisc = map(CompactDisc);
-        if (UsbStorage is not null) UsbStorage.Path = map(UsbStorage.Path);
-        if (Hardware.Usb?.Storage is not null) Hardware.Usb.Storage.Path = map(Hardware.Usb.Storage.Path);
+        if (CompactDisc is not null)
+        {
+            CompactDisc = map(CompactDisc);
+        }
+        if (UsbStorage is not null)
+        {
+            UsbStorage.Path = map(UsbStorage.Path);
+        }
+        if (Hardware.Usb?.Storage is not null)
+        {
+            Hardware.Usb.Storage.Path = map(Hardware.Usb.Storage.Path);
+        }
         foreach (SharedFolder shared in SharedFolders) shared.Path = map(shared.Path);
     }
 
