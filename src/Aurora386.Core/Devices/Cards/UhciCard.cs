@@ -54,6 +54,7 @@ public sealed class UhciCard : IExpansionCard
     private UsbHidDevice? _keyboard;
     private UsbHidDevice? _mouse;
     private UsbMassStorageDevice? _storage;
+    private UsbHubDevice? _hub;
 
     /// <summary>The controller carrying the keyboard and mouse, PCI device 0x10, I/O C100h.</summary>
     public UhciController Controller => _controller
@@ -73,6 +74,13 @@ public sealed class UhciCard : IExpansionCard
 
     /// <summary>Whatever mass storage device is inserted into <see cref="StorageController"/>'s port 0, or null with nothing plugged in.</summary>
     public UsbMassStorageDevice? Storage => _storage;
+
+    /// <summary>
+    /// The hub installed between <see cref="Controller"/>'s root ports and
+    /// <see cref="Keyboard"/>/<see cref="Mouse"/>, or null on a machine that
+    /// never asked for one -- see <see cref="InstallHub"/>.
+    /// </summary>
+    public UsbHubDevice? Hub => _hub;
 
     public void Attach(MachineBus bus)
     {
@@ -126,6 +134,33 @@ public sealed class UhciCard : IExpansionCard
         _storageController?.Attach(0, null);
         _storage?.Dispose();
         _storage = null;
+    }
+
+    /// <summary>
+    /// Rewires <see cref="Keyboard"/> and <see cref="Mouse"/> from
+    /// <see cref="Controller"/>'s own two root ports onto a hub plugged
+    /// into port 0, freeing port 1 for whatever a front end or a
+    /// <c>vm.json</c> "hardware.usb.hub" wants to attach behind it too -- a
+    /// tree, exactly as USB 1.1 chapter 11 describes one, in place of the
+    /// two flat root ports every machine had before this existed.
+    ///
+    /// Idempotent, like <see cref="EnableUsb"/>'s own card-level guard: a
+    /// second call returns the already-installed hub rather than building a
+    /// second one and losing the first hub's downstream devices.
+    /// </summary>
+    public UsbHubDevice InstallHub(int ports = UsbHubDevice.DefaultPortCount)
+    {
+        if (_hub is not null)
+        {
+            return _hub;
+        }
+
+        _hub = new UsbHubDevice(ports);
+        Controller.Attach(1, null);
+        Controller.Attach(0, _hub);
+        _hub.Attach(0, _keyboard);
+        _hub.Attach(1, _mouse);
+        return _hub;
     }
 
     public byte[] Capture()

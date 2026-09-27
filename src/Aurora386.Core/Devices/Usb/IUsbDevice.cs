@@ -41,4 +41,18 @@ public interface IUsbDevice
     byte[] Capture();
 
     void Restore(ReadOnlySpan<byte> data);
+
+    /// <summary>
+    /// The device that should answer a transaction addressed to
+    /// <paramref name="address"/>: this device itself when its own address
+    /// matches, or null otherwise. A hub overrides this to also search its
+    /// enabled downstream ports, which is how <see
+    /// cref="UhciController.ExecuteTd"/> reaches a device several tiers deep
+    /// without needing to know hubs exist at all -- it just calls this on
+    /// whatever sits on its own two root ports. <paramref name="depth"/> is
+    /// the number of hub tiers already crossed, so a hub can refuse to
+    /// recurse past USB 1.1's own five-tier limit instead of looping forever
+    /// on a cyclic or misconfigured tree.
+    /// </summary>
+    IUsbDevice? Find(byte address, int depth = 0) => Address == address ? this : null;
 }

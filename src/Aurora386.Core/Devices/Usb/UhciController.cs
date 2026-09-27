@@ -10,6 +10,12 @@ namespace Aurora386.Core.Devices.Usb;
 /// back to the same descriptor the guest driver submitted. Ports expose
 /// attach/reset/enable separately so address-zero enumeration is unambiguous.
 /// Register and bit names below follow the Intel UHCI 1.1 Design Guide.
+///
+/// Only these two root ports are wired to this controller directly; a
+/// <see cref="UsbHubDevice"/> plugged into either one extends the tree
+/// further down, and <see cref="ExecuteTd"/> reaches a device behind it
+/// through <see cref="IUsbDevice.Find"/> without needing to know a hub is
+/// there at all.
 /// </summary>
 public sealed class UhciController : IIoDwordDevice
 {
@@ -504,13 +510,26 @@ public sealed class UhciController : IIoDwordDevice
             }
         }
 
+        // A device several tiers behind a hub is found the same way one
+        // plugged directly into a root port is: IUsbDevice.Find walks the
+        // tree by address, one hop per hub, and a disabled/reset/suspended
+        // root port forwards nothing, exactly like a disabled downstream
+        // hub port. Real UHCI hardware precedes a low-speed transaction
+        // with a PRE PID so the preamble reaches a low-speed device behind
+        // a full-speed hub at the electrical level; this emulation has no
+        // wire to precondition, so honouring the TD's LS bit against
+        // whatever Find() returns -- at any depth -- has the same effect.
+        bool lowSpeed = (control & TdControlLowSpeed) != 0;
         IUsbDevice? device = null;
         for (int i = 0; i < PortCount; i++)
         {
-            if ((_ports[i] & PortActiveMask) == PortEnabled && _devices[i]?.Address == deviceAddress
-                && _devices[i]!.LowSpeed == ((control & TdControlLowSpeed) != 0))
+            if ((_ports[i] & PortActiveMask) != PortEnabled)
             {
-                device = _devices[i];
+                continue;
+            }
+            if (_devices[i]?.Find(deviceAddress) is { } found && found.LowSpeed == lowSpeed)
+            {
+                device = found;
             }
         }
 

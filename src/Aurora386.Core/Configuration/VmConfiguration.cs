@@ -224,8 +224,28 @@ public sealed class VmConfiguration
         /// <summary>The image inserted into the storage controller's port, or null with nothing inserted.</summary>
         public UsbDiskEntry? Storage { get; set; }
 
+        /// <summary>
+        /// A hub between the keyboard/mouse controller's root ports and the
+        /// keyboard and mouse, or null for the flat two-root-port machine
+        /// every <c>vm.json</c> before this described -- see <see
+        /// cref="Machine.InstallUsbHub"/>, which <see cref="BuildMachine"/>
+        /// calls when this is set.
+        /// </summary>
+        public UsbHubSettings? Hub { get; set; }
+
         /// <summary>The <see cref="Devices.Cards.CardSettings"/> the registry actually builds from.</summary>
         public Devices.Cards.CardSettings ToCardSettings() => new() { Card = Card };
+    }
+
+    /// <summary>
+    /// The USB 1.1 hub <see cref="HardwareSettings.Usb"/> may ask for, in
+    /// place of the keyboard and mouse sitting directly on the controller's
+    /// two root ports.
+    /// </summary>
+    public sealed class UsbHubSettings
+    {
+        /// <summary>Downstream ports the hub exposes; four is the common size for the period's add-on hubs.</summary>
+        public int Ports { get; set; } = Devices.Usb.UsbHubDevice.DefaultPortCount;
     }
 
     public enum NetworkMode
@@ -544,6 +564,9 @@ public sealed class VmConfiguration
         {
             if (Hardware.Usb?.Storage is { } storage)
                 machine.AttachUsbStorage(Devices.Usb.UsbMassStorageDevice.Open(storage.Path, storage.ReadOnly));
+
+            if (Hardware.Usb?.Hub is { } hub)
+                machine.InstallUsbHub(hub.Ports);
 
             for (int i = 0; i < Floppies.Count && i < 2; i++)
                 machine.AttachDisk(DiskImage.OpenFloppy(Floppies[i], (byte)i));

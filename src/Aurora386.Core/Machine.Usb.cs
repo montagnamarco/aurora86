@@ -24,6 +24,13 @@ public sealed partial class Machine
     public UsbMassStorageDevice? UsbStorage => _usbCard?.Storage;
 
     /// <summary>
+    /// The hub between <see cref="Usb"/>'s root ports and the keyboard and
+    /// mouse, or null on a machine that never asked for one -- see <see
+    /// cref="InstallUsbHub"/> and <c>vm.json</c>'s <c>hardware.usb.hub</c>.
+    /// </summary>
+    public UsbHubDevice? UsbHub => _usbCard?.Hub;
+
+    /// <summary>
     /// Fits the USB card (catalog name "uhci-piix") if the machine does not
     /// already have one, and connects USB input while retaining legacy input
     /// until configuration -- exactly what this method always did, now built
@@ -101,4 +108,17 @@ public sealed partial class Machine
     }
 
     public void EjectUsbStorage() => _usbCard?.EjectStorage();
+
+    /// <summary>
+    /// Puts a USB 1.1 hub between the keyboard/mouse controller's root ports
+    /// and the keyboard and mouse, fitting the USB card first if the machine
+    /// does not already have one -- the runtime counterpart of <c>vm.json</c>'s
+    /// <c>hardware.usb.hub</c>, and usable from a front end the same way
+    /// <see cref="AttachUsbStorage"/> is. See <see cref="UhciCard.InstallHub"/>.
+    /// </summary>
+    public UsbHubDevice InstallUsbHub(int ports = UsbHubDevice.DefaultPortCount)
+    {
+        EnableUsb();
+        return _usbCard!.InstallHub(ports);
+    }
 }
