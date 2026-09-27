@@ -22,10 +22,26 @@ internal static class MooReader
     // From LSB to MSB, the order of the 32-bit register file MOO defines.
     private static class Slot
     {
-        public const int Cr0 = 0, Cr3 = 1, Eax = 2, Ebx = 3, Ecx = 4, Edx = 5;
-        public const int Esi = 6, Edi = 7, Ebp = 8, Esp = 9, Cs = 10, Ds = 11;
-        public const int Es = 12, Fs = 13, Gs = 14, Ss = 15, Eip = 16, EFlags = 17;
-        public const int Dr6 = 18, Dr7 = 19;
+        public const int Cr0 = 0;
+        public const int Cr3 = 1;
+        public const int Eax = 2;
+        public const int Ebx = 3;
+        public const int Ecx = 4;
+        public const int Edx = 5;
+        public const int Esi = 6;
+        public const int Edi = 7;
+        public const int Ebp = 8;
+        public const int Esp = 9;
+        public const int Cs = 10;
+        public const int Ds = 11;
+        public const int Es = 12;
+        public const int Fs = 13;
+        public const int Gs = 14;
+        public const int Ss = 15;
+        public const int Eip = 16;
+        public const int EFlags = 17;
+        public const int Dr6 = 18;
+        public const int Dr7 = 19;
         public const int Count = 20;
     }
 
@@ -50,16 +66,33 @@ internal static class MooReader
     };
 
     public const int SlotCount = Slot.Count;
-    public const int Cr0Bit = Slot.Cr0, Cr3Bit = Slot.Cr3;
-    public const int EaxBit = Slot.Eax, EbxBit = Slot.Ebx, EcxBit = Slot.Ecx, EdxBit = Slot.Edx;
-    public const int EsiBit = Slot.Esi, EdiBit = Slot.Edi, EbpBit = Slot.Ebp, EspBit = Slot.Esp;
-    public const int CsBit = Slot.Cs, DsBit = Slot.Ds, EsBit = Slot.Es, FsBit = Slot.Fs, GsBit = Slot.Gs, SsBit = Slot.Ss;
-    public const int EipBit = Slot.Eip, EFlagsBit = Slot.EFlags, Dr6Bit = Slot.Dr6, Dr7Bit = Slot.Dr7;
+    public const int Cr0Bit = Slot.Cr0;
+    public const int Cr3Bit = Slot.Cr3;
+    public const int EaxBit = Slot.Eax;
+    public const int EbxBit = Slot.Ebx;
+    public const int EcxBit = Slot.Ecx;
+    public const int EdxBit = Slot.Edx;
+    public const int EsiBit = Slot.Esi;
+    public const int EdiBit = Slot.Edi;
+    public const int EbpBit = Slot.Ebp;
+    public const int EspBit = Slot.Esp;
+    public const int CsBit = Slot.Cs;
+    public const int DsBit = Slot.Ds;
+    public const int EsBit = Slot.Es;
+    public const int FsBit = Slot.Fs;
+    public const int GsBit = Slot.Gs;
+    public const int SsBit = Slot.Ss;
+    public const int EipBit = Slot.Eip;
+    public const int EFlagsBit = Slot.EFlags;
+    public const int Dr6Bit = Slot.Dr6;
+    public const int Dr7Bit = Slot.Dr7;
 
     public static MooFile Load(byte[] data)
     {
-        if (data.Length < 12 || Ascii(data, 0) != "MOO ")
+        if (data.Length < MinimumFileLength || Ascii(data, 0) != "MOO ")
+        {
             throw new InvalidDataException("not a MOO file (missing 'MOO ' header chunk)");
+        }
 
         uint headerLength = ReadU32(data, 4);
         int offset = 8 + (int)headerLength;
@@ -187,32 +220,76 @@ internal static class MooReader
 
         for (int bit = 0; bit < Slot.Count; bit++)
         {
-            if ((mask & (1u << bit)) == 0) continue;
+            if ((mask & (1u << bit)) == 0)
+            {
+                continue;
+            }
+
             uint value = ReadU32(data, p);
             p += 4;
 
             switch (bit)
             {
-                case Slot.Cr0: regs.Cr0 = value; break;
-                case Slot.Cr3: regs.Cr3 = value; break;
-                case Slot.Eax: regs.Eax = value; break;
-                case Slot.Ebx: regs.Ebx = value; break;
-                case Slot.Ecx: regs.Ecx = value; break;
-                case Slot.Edx: regs.Edx = value; break;
-                case Slot.Esi: regs.Esi = value; break;
-                case Slot.Edi: regs.Edi = value; break;
-                case Slot.Ebp: regs.Ebp = value; break;
-                case Slot.Esp: regs.Esp = value; break;
-                case Slot.Cs: regs.Cs = value; break;
-                case Slot.Ds: regs.Ds = value; break;
-                case Slot.Es: regs.Es = value; break;
-                case Slot.Fs: regs.Fs = value; break;
-                case Slot.Gs: regs.Gs = value; break;
-                case Slot.Ss: regs.Ss = value; break;
-                case Slot.Eip: regs.Eip = value; break;
-                case Slot.EFlags: regs.EFlags = value; break;
-                case Slot.Dr6: regs.Dr6 = value; break;
-                case Slot.Dr7: regs.Dr7 = value; break;
+                case Slot.Cr0:
+                    regs.Cr0 = value;
+                    break;
+                case Slot.Cr3:
+                    regs.Cr3 = value;
+                    break;
+                case Slot.Eax:
+                    regs.Eax = value;
+                    break;
+                case Slot.Ebx:
+                    regs.Ebx = value;
+                    break;
+                case Slot.Ecx:
+                    regs.Ecx = value;
+                    break;
+                case Slot.Edx:
+                    regs.Edx = value;
+                    break;
+                case Slot.Esi:
+                    regs.Esi = value;
+                    break;
+                case Slot.Edi:
+                    regs.Edi = value;
+                    break;
+                case Slot.Ebp:
+                    regs.Ebp = value;
+                    break;
+                case Slot.Esp:
+                    regs.Esp = value;
+                    break;
+                case Slot.Cs:
+                    regs.Cs = value;
+                    break;
+                case Slot.Ds:
+                    regs.Ds = value;
+                    break;
+                case Slot.Es:
+                    regs.Es = value;
+                    break;
+                case Slot.Fs:
+                    regs.Fs = value;
+                    break;
+                case Slot.Gs:
+                    regs.Gs = value;
+                    break;
+                case Slot.Ss:
+                    regs.Ss = value;
+                    break;
+                case Slot.Eip:
+                    regs.Eip = value;
+                    break;
+                case Slot.EFlags:
+                    regs.EFlags = value;
+                    break;
+                case Slot.Dr6:
+                    regs.Dr6 = value;
+                    break;
+                case Slot.Dr7:
+                    regs.Dr7 = value;
+                    break;
             }
         }
 
@@ -235,6 +312,9 @@ internal static class MooReader
         }
     }
 
+    /// <summary>The MOO header chunk alone: id, length and at least a version dword.</summary>
+    private const int MinimumFileLength = 12;
+
     private static string Ascii(byte[] data, int offset) => Encoding.ASCII.GetString(data, offset, 4);
 
     private static uint ReadU32(byte[] data, int offset)
@@ -247,8 +327,26 @@ internal static class MooReader
 internal struct MooRegisters
 {
     public uint Mask;
-    public uint Cr0, Cr3, Eax, Ebx, Ecx, Edx, Esi, Edi, Ebp, Esp;
-    public uint Cs, Ds, Es, Fs, Gs, Ss, Eip, EFlags, Dr6, Dr7;
+    public uint Cr0;
+    public uint Cr3;
+    public uint Eax;
+    public uint Ebx;
+    public uint Ecx;
+    public uint Edx;
+    public uint Esi;
+    public uint Edi;
+    public uint Ebp;
+    public uint Esp;
+    public uint Cs;
+    public uint Ds;
+    public uint Es;
+    public uint Fs;
+    public uint Gs;
+    public uint Ss;
+    public uint Eip;
+    public uint EFlags;
+    public uint Dr6;
+    public uint Dr7;
 
     public readonly bool Has(int bit) => (Mask & (1u << bit)) != 0;
 }
