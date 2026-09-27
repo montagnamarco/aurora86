@@ -105,20 +105,29 @@ public sealed class Ps2Mouse
     /// </summary>
     public bool TryBuildPacket()
     {
-        if (!Reporting) return false;
+        if (!Reporting)
+        {
+            return false;
+        }
 
         // Never build a packet on top of one still going out. The driver is
         // partway through reading three bytes; slipping a fresh packet in
         // between them is precisely the loss of sync the protocol cannot
         // recover from.
-        if (_output.Count > 0) return false;
+        if (_output.Count > 0)
+        {
+            return false;
+        }
 
         // In stream mode -- the mode every driver uses -- the mouse speaks
         // only when it has news: some movement, or a button that changed
         // since the last packet. A mouse that reported on every poll would
         // hold IRQ 12 busy for ever and drown the driver in empty packets.
         MouseButtons buttons = _state.Buttons;
-        if (!_state.HasPs2Motion && buttons == _lastReportedButtons) return false;
+        if (!_state.HasPs2Motion && buttons == _lastReportedButtons)
+        {
+            return false;
+        }
 
         (int x, int y) = _state.TakePs2Motion();
         _lastReportedButtons = buttons;
@@ -129,8 +138,14 @@ public sealed class Ps2Mouse
 
         byte header = (byte)((byte)buttons & 0x07);
         header |= 0x08;                                   // bit 3 always reads as one
-        if (x < 0) header |= 0x10;                        // X sign
-        if (packetY < 0) header |= 0x20;                  // Y sign
+        if (x < 0)
+        {
+            header |= 0x10;                        // X sign
+        }
+        if (packetY < 0)
+        {
+            header |= 0x20;                  // Y sign
+        }
 
         _output.Enqueue(header);
         _output.Enqueue((byte)x);
@@ -220,8 +235,14 @@ public sealed class Ps2Mouse
                 // they wrote actually took, so the values have to be the ones
                 // that were set rather than fixed constants.
                 byte status = (byte)((byte)_state.Buttons & 0x07);
-                if (Reporting) status |= 0x20;
-                if (_scaling) status |= 0x10;
+                if (Reporting)
+                {
+                    status |= 0x20;
+                }
+                if (_scaling)
+                {
+                    status |= 0x10;
+                }
 
                 _output.Enqueue(0xFA);
                 _output.Enqueue(status);
@@ -258,8 +279,14 @@ public sealed class Ps2Mouse
 
         byte header = (byte)((byte)_state.Buttons & 0x07);
         header |= 0x08;
-        if (x < 0) header |= 0x10;
-        if (packetY < 0) header |= 0x20;
+        if (x < 0)
+        {
+            header |= 0x10;
+        }
+        if (packetY < 0)
+        {
+            header |= 0x20;
+        }
 
         _output.Enqueue(header);
         _output.Enqueue((byte)x);

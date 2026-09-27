@@ -85,7 +85,10 @@ public sealed class PciFunction
     /// </summary>
     public uint BarAddressMask(int index)
     {
-        if ((uint)index >= 6) throw new ArgumentOutOfRangeException(nameof(index));
+        if ((uint)index >= 6)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index));
+        }
         int offset = 0x10 + index * 4;
         uint mask = 0;
         for (int i = 0; i < 4; i++) mask |= (uint)_writable[offset + i] << (8 * i);
@@ -111,13 +114,19 @@ public sealed class PciFunction
             changed |= next != _config[at];
             _config[at] = next;
         }
-        if (changed) ConfigurationChanged?.Invoke();
+        if (changed)
+        {
+            ConfigurationChanged?.Invoke();
+        }
     }
 
     internal byte[] Capture() => (byte[])_config.Clone();
     internal void Restore(ReadOnlySpan<byte> state)
     {
-        if (state.Length != 256) throw new InvalidDataException("Invalid PCI configuration block.");
+        if (state.Length != 256)
+        {
+            throw new InvalidDataException("Invalid PCI configuration block.");
+        }
         for (int i = 0; i < 256; i++)
             _config[i] = (byte)((_reset[i] & ~_writable[i]) | (state[i] & _writable[i]));
         ConfigurationChanged?.Invoke();

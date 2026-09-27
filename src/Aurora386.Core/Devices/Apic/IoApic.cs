@@ -166,12 +166,18 @@ public sealed class IoApic : IMemoryDevice
     public void PulseLine(int pin)
     {
         ulong entry = _entries[pin];
-        if ((entry & EntryMaskBit) != 0) return;
+        if ((entry & EntryMaskBit) != 0)
+        {
+            return;
+        }
 
         bool level = (entry & EntryTriggerLevelBit) != 0;
         if (level)
         {
-            if ((entry & EntryRemoteIrrBit) != 0) return;   // still waiting for EOI
+            if ((entry & EntryRemoteIrrBit) != 0)
+            {
+                return;   // still waiting for EOI
+            }
             entry |= EntryRemoteIrrBit;
             _entries[pin] = entry;
         }
@@ -197,20 +203,32 @@ public sealed class IoApic : IMemoryDevice
     {
         bool wasHigh = _lineHigh[pin];
         _lineHigh[pin] = asserted;
-        if (!asserted) return;
+        if (!asserted)
+        {
+            return;
+        }
 
         ulong entry = _entries[pin];
-        if ((entry & EntryMaskBit) != 0) return;
+        if ((entry & EntryMaskBit) != 0)
+        {
+            return;
+        }
 
         bool level = (entry & EntryTriggerLevelBit) != 0;
         if (!level)
         {
-            if (wasHigh) return;   // no new edge
+            if (wasHigh)
+            {
+                return;   // no new edge
+            }
             Deliver(entry);
             return;
         }
 
-        if ((entry & EntryRemoteIrrBit) != 0) return;   // still waiting for EOI
+        if ((entry & EntryRemoteIrrBit) != 0)
+        {
+            return;   // still waiting for EOI
+        }
 
         entry |= EntryRemoteIrrBit;
         _entries[pin] = entry;
@@ -227,7 +245,10 @@ public sealed class IoApic : IMemoryDevice
     private void Deliver(ulong entry)
     {
         ulong mode = entry & EntryDeliveryModeMask;
-        if (mode is not (EntryDeliveryModeFixed or EntryDeliveryModeLowPriority)) return;
+        if (mode is not (EntryDeliveryModeFixed or EntryDeliveryModeLowPriority))
+        {
+            return;
+        }
 
         bool level = (entry & EntryTriggerLevelBit) != 0;
         byte vector = (byte)(entry & EntryVectorMask);
@@ -242,7 +263,10 @@ public sealed class IoApic : IMemoryDevice
             ulong entry = _entries[pin];
             bool level = (entry & EntryTriggerLevelBit) != 0;
             bool matches = (byte)(entry & EntryVectorMask) == vector;
-            if (!level || !matches || (entry & EntryRemoteIrrBit) == 0) continue;
+            if (!level || !matches || (entry & EntryRemoteIrrBit) == 0)
+            {
+                continue;
+            }
 
             entry &= ~EntryRemoteIrrBit;
             _entries[pin] = entry;
@@ -271,8 +295,14 @@ public sealed class IoApic : IMemoryDevice
 
     public uint ReadDword(uint offset)
     {
-        if (offset == IoRegSelOffset) return _ioRegSel;
-        if (offset == IoWinOffset) return ReadIndirect(_ioRegSel);
+        if (offset == IoRegSelOffset)
+        {
+            return _ioRegSel;
+        }
+        if (offset == IoWinOffset)
+        {
+            return ReadIndirect(_ioRegSel);
+        }
         return 0;
     }
 
@@ -284,9 +314,18 @@ public sealed class IoApic : IMemoryDevice
 
     private uint ReadIndirect(uint index)
     {
-        if (index == IoApicIdRegister) return _id;
-        if (index == IoApicVersionRegister) return VersionRegisterValue;
-        if (index == IoApicArbitrationRegister) return _id;   // "loaded from ID" (plans/specs/apic.md §2)
+        if (index == IoApicIdRegister)
+        {
+            return _id;
+        }
+        if (index == IoApicVersionRegister)
+        {
+            return VersionRegisterValue;
+        }
+        if (index == IoApicArbitrationRegister)
+        {
+            return _id;   // "loaded from ID" (plans/specs/apic.md §2)
+        }
         if (index >= RedirectionTableBase && index <= RedirectionTableLast)
         {
             int pin = (int)(index - RedirectionTableBase) / 2;
@@ -301,9 +340,15 @@ public sealed class IoApic : IMemoryDevice
     private void WriteIndirect(uint index, uint value)
     {
         if (index == IoApicIdRegister) { _id = value & IdFieldMask; return; }
-        if (index == IoApicVersionRegister || index == IoApicArbitrationRegister) return;   // read-only
+        if (index == IoApicVersionRegister || index == IoApicArbitrationRegister)
+        {
+            return;   // read-only
+        }
 
-        if (index < RedirectionTableBase || index > RedirectionTableLast) return;
+        if (index < RedirectionTableBase || index > RedirectionTableLast)
+        {
+            return;
+        }
 
         int pin = (int)(index - RedirectionTableBase) / 2;
         bool high = ((index - RedirectionTableBase) & 1) != 0;
@@ -371,7 +416,10 @@ public sealed class IoApic : IMemoryDevice
         uint packed = 0;
         for (int pin = 0; pin < PinCount; pin++)
         {
-            if (_lineHigh[pin]) packed |= 1u << pin;
+            if (_lineHigh[pin])
+            {
+                packed |= 1u << pin;
+            }
         }
 
         return packed;

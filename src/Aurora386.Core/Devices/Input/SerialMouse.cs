@@ -83,14 +83,20 @@ public sealed class SerialMouse : IIoDevice
     /// </summary>
     public void Poll()
     {
-        if (!PoweredOn) return;
+        if (!PoweredOn)
+        {
+            return;
+        }
 
         // Never interleave: the framing bit only tells the driver where a
         // packet starts, so a packet begun must be finished before another
         // is queued behind it.
         if (_receiveQueue.Count > 0) { SignalIfEnabled(); return; }
 
-        if (!_state.HasSerialMotion && !ButtonsChanged()) return;
+        if (!_state.HasSerialMotion && !ButtonsChanged())
+        {
+            return;
+        }
 
         SendReport();
     }
@@ -117,8 +123,14 @@ public sealed class SerialMouse : IIoDevice
         byte dy = (byte)y;
 
         byte first = 0x40;                                    // the framing bit
-        if ((buttons & MouseButtons.Left) != 0) first |= 0x20;
-        if ((buttons & MouseButtons.Right) != 0) first |= 0x10;
+        if ((buttons & MouseButtons.Left) != 0)
+        {
+            first |= 0x20;
+        }
+        if ((buttons & MouseButtons.Right) != 0)
+        {
+            first |= 0x10;
+        }
         first |= (byte)((dy >> 4) & 0x0C);                    // Y bits 7 and 6
         first |= (byte)((dx >> 6) & 0x03);                    // X bits 7 and 6
 
@@ -134,15 +146,24 @@ public sealed class SerialMouse : IIoDevice
         switch (port - BasePort)
         {
             case 0:
-                if (DivisorLatch) return _divisorLow;
+                if (DivisorLatch)
+                {
+                    return _divisorLow;
+                }
 
                 // Receive buffer. Reading it consumes the byte and, once the
                 // queue empties, releases the interrupt: the UART asserts its
                 // line for as long as data is waiting, so a driver that reads
                 // one byte of a three-byte packet must still find the line
                 // asserted for the other two.
-                if (!_receiveQueue.TryDequeue(out byte value)) return 0;
-                if (_receiveQueue.Count == 0) _interrupts.LowerIrq(Irq);
+                if (!_receiveQueue.TryDequeue(out byte value))
+                {
+                    return 0;
+                }
+                if (_receiveQueue.Count == 0)
+                {
+                    _interrupts.LowerIrq(Irq);
+                }
                 return value;
 
             case 1:
@@ -166,7 +187,10 @@ public sealed class SerialMouse : IIoDevice
                 // transmitter that never reports itself empty hangs it
                 // forever.
                 byte status = 0x60;
-                if (_receiveQueue.Count > 0) status |= 0x01;
+                if (_receiveQueue.Count > 0)
+                {
+                    status |= 0x01;
+                }
                 return status;
             }
 
@@ -177,8 +201,14 @@ public sealed class SerialMouse : IIoDevice
                 // what a three-wire cable does anyway. CTS follows RTS, DSR
                 // and DCD follow DTR.
                 byte modem = 0;
-                if ((_modemControl & 0x02) != 0) modem |= 0x10;   // CTS
-                if ((_modemControl & 0x01) != 0) modem |= 0xA0;   // DSR and DCD
+                if ((_modemControl & 0x02) != 0)
+                {
+                    modem |= 0x10;   // CTS
+                }
+                if ((_modemControl & 0x01) != 0)
+                {
+                    modem |= 0xA0;   // DSR and DCD
+                }
                 return modem;
 
             default: return _scratch;
@@ -190,14 +220,20 @@ public sealed class SerialMouse : IIoDevice
         switch (port - BasePort)
         {
             case 0:
-                if (DivisorLatch) _divisorLow = value;
+                if (DivisorLatch)
+                {
+                    _divisorLow = value;
+                }
                 // Anything else written is transmitted, and a mouse is not
                 // listening. Dropping it is correct: the byte goes down a
                 // wire that ends at a device with no receiver.
                 return;
 
             case 1:
-                if (DivisorLatch) _divisorHigh = value;
+                if (DivisorLatch)
+                {
+                    _divisorHigh = value;
+                }
                 else _interruptEnable = value;
                 return;
 
@@ -212,7 +248,10 @@ public sealed class SerialMouse : IIoDevice
                 // has power.
                 PoweredOn = (value & 0x03) == 0x03;
 
-                if (PoweredOn && !wasPowered) AnnounceItself();
+                if (PoweredOn && !wasPowered)
+                {
+                    AnnounceItself();
+                }
                 else if (!PoweredOn)
                 {
                     // Power has been cut. Everything in flight is lost, which
@@ -248,7 +287,10 @@ public sealed class SerialMouse : IIoDevice
         // it tries the PS/2 port, and a port that answered 'M' with the mouse
         // plugged in elsewhere made it adopt a serial mouse that would never
         // move -- the pointer froze on the PS/2 setting for that reason.
-        if (_state.ConnectedInterface != MouseInterface.Serial) return;
+        if (_state.ConnectedInterface != MouseInterface.Serial)
+        {
+            return;
+        }
 
         _receiveQueue.Enqueue((byte)'M');
         SignalIfEnabled();

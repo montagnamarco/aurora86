@@ -63,14 +63,20 @@ public sealed class PciInterruptRouter
         }
 
         int device = (address & 255) >> 3;
-        if ((address >> 8) != 0 || device is < 2 or > 5 || pin is < 1 or > 4) return -1;
+        if ((address >> 8) != 0 || device is < 2 or > 5 || pin is < 1 or > 4)
+        {
+            return -1;
+        }
         return (device - 2 + pin - 1) & 3;
     }
 
     public bool Route(ushort address, byte pin, byte irq)
     {
         int link = Link(address, pin);
-        if (link < 0 || irq >= 16 || (AllowedIrqs & (1 << irq)) == 0) return false;
+        if (link < 0 || irq >= 16 || (AllowedIrqs & (1 << irq)) == 0)
+        {
+            return false;
+        }
         SetLevelTriggered(irq);
         _bridge.Write(0x60 + link, 1, irq);
         return true;
@@ -105,10 +111,16 @@ public sealed class PciInterruptRouter
         foreach (PciFunction function in functions)
         {
             byte pin = (byte)function.Read(0x3D, 1);
-            if (pin is < 1 or > 4) continue;
+            if (pin is < 1 or > 4)
+            {
+                continue;
+            }
 
             int link = Link(function.Address, pin);
-            if (link < 0) continue;
+            if (link < 0)
+            {
+                continue;
+            }
 
             byte irq = DefaultLinkIrqs[link];
             SetLevelTriggered(irq);
@@ -119,10 +131,16 @@ public sealed class PciInterruptRouter
 
     public void SetInterrupt(ushort address, byte pin, bool asserted)
     {
-        if (Link(address, pin) < 0) throw new ArgumentOutOfRangeException(nameof(address));
+        if (Link(address, pin) < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(address));
+        }
         uint source = ((uint)address << 2) | (uint)(pin - 1);
         bool changed = asserted ? _asserted.Add(source) : _asserted.Remove(source);
-        if (changed) Update();
+        if (changed)
+        {
+            Update();
+        }
     }
 
     /// <summary>
@@ -169,7 +187,10 @@ public sealed class PciInterruptRouter
     }
     public void Restore(ReadOnlySpan<byte> bytes)
     {
-        if (bytes.Length % 4 != 0) throw new InvalidDataException("Invalid PCI interrupt state.");
+        if (bytes.Length % 4 != 0)
+        {
+            throw new InvalidDataException("Invalid PCI interrupt state.");
+        }
         var restored = new HashSet<uint>();
         for (int offset = 0; offset < bytes.Length; offset += 4)
         {

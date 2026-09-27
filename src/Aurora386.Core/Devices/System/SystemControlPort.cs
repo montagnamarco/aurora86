@@ -42,6 +42,9 @@ public sealed class SystemControlPort : IIoDevice
         // Bit 0 is the fast reset, and note the inverted sense compared to
         // the keyboard controller's output port: here a 1 triggers it, there
         // it was a 0.
-        if ((value & 0x01) != 0) ResetRequested = true;
+        if ((value & 0x01) != 0)
+        {
+            ResetRequested = true;
+        }
     }
 }

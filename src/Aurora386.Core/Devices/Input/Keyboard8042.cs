@@ -114,7 +114,10 @@ public sealed class Keyboard8042 : IIoDevice
     /// <summary>Puts back what <see cref="Capture"/> took.</summary>
     public void Restore(ReadOnlySpan<byte> state)
     {
-        if (state.Length < 2) return;
+        if (state.Length < 2)
+        {
+            return;
+        }
         _commandByte = state[0];
         _memory.A20Enabled = state[1] != 0;
     }
@@ -154,9 +157,15 @@ public sealed class Keyboard8042 : IIoDevice
     /// </summary>
     public void PollMouse()
     {
-        if (Mouse is null) return;
+        if (Mouse is null)
+        {
+            return;
+        }
 
-        if (Mouse.PendingCount == 0) Mouse.TryBuildPacket();
+        if (Mouse.PendingCount == 0)
+        {
+            Mouse.TryBuildPacket();
+        }
         DeliverMouseByte();
     }
 
@@ -172,18 +181,30 @@ public sealed class Keyboard8042 : IIoDevice
     /// </summary>
     private void DeliverMouseByte()
     {
-        if (Mouse is null) return;
+        if (Mouse is null)
+        {
+            return;
+        }
 
         bool auxDisabled = (_commandByte & 0x20) != 0;
-        if (auxDisabled) return;
+        if (auxDisabled)
+        {
+            return;
+        }
 
         // Anything already in the register wins, whatever it is. A scancode
         // is owed to the software; a command response is being waited for;
         // and an earlier mouse byte is part of a packet that must not be
         // interleaved with anything.
-        if (_outputBuffer.Count > 0) return;
+        if (_outputBuffer.Count > 0)
+        {
+            return;
+        }
 
-        if (!Mouse.TryDequeue(out byte value)) return;
+        if (!Mouse.TryDequeue(out byte value))
+        {
+            return;
+        }
 
         _outputBuffer.Enqueue(value);
         _outputIsResponse = false;
@@ -193,7 +214,10 @@ public sealed class Keyboard8042 : IIoDevice
         // mouse's counterpart to bit 0. A driver that polls leaves it clear,
         // and an IRQ 12 it never asked for would send it into an interrupt
         // handler it has not installed.
-        if ((_commandByte & 0x02) != 0) _interrupts.RaiseIrq(12);
+        if ((_commandByte & 0x02) != 0)
+        {
+            _interrupts.RaiseIrq(12);
+        }
     }
 
     /// <summary>
@@ -205,7 +229,10 @@ public sealed class Keyboard8042 : IIoDevice
     public void PushScanCode(byte scanCode)
     {
         if (InputInterceptor?.Invoke(scanCode) == true) { ClearHeldKeys(); return; }
-        if (_pendingScanCodes.Count >= 16) return;       // buffer full, just like real hardware
+        if (_pendingScanCodes.Count >= 16)
+        {
+            return;       // buffer full, just like real hardware
+        }
         _pendingScanCodes.Enqueue(scanCode);
         DeliverScanCode();
 
@@ -228,7 +255,10 @@ public sealed class Keyboard8042 : IIoDevice
         {
             // Only the key that is actually repeating stops the repeat:
             // letting go of a modifier pressed afterwards must not cancel it.
-            if (_repeatingCode == code) _repeatingCode = 0;
+            if (_repeatingCode == code)
+            {
+                _repeatingCode = 0;
+            }
         }
         else if (!IsModifier(code))
         {
@@ -280,17 +310,26 @@ public sealed class Keyboard8042 : IIoDevice
     /// </summary>
     public void Advance(double milliseconds)
     {
-        if (_repeatingCode == 0) return;
+        if (_repeatingCode == 0)
+        {
+            return;
+        }
 
         _repeatCountdownMs -= milliseconds;
-        if (_repeatCountdownMs > 0) return;
+        if (_repeatCountdownMs > 0)
+        {
+            return;
+        }
 
         // Don't pile repeats onto a queue the guest has stopped draining: a
         // machine busy with something else should find one pending keystroke
         // when it looks again, not a hundred.
         if (_pendingScanCodes.Count == 0)
         {
-            if (_repeatingPrefix != 0) _pendingScanCodes.Enqueue(_repeatingPrefix);
+            if (_repeatingPrefix != 0)
+            {
+                _pendingScanCodes.Enqueue(_repeatingPrefix);
+            }
             _pendingScanCodes.Enqueue(_repeatingCode);
             DeliverScanCode();
         }
@@ -312,7 +351,10 @@ public sealed class Keyboard8042 : IIoDevice
     private void DeliverScanCode()
     {
         bool disabled = (_commandByte & 0x10) != 0;
-        if (disabled || _pendingScanCodes.Count == 0) return;
+        if (disabled || _pendingScanCodes.Count == 0)
+        {
+            return;
+        }
 
         // A response nobody bothered to read must not dam up the keyboard.
         // There is a single output register, so the newer byte simply takes
@@ -321,7 +363,10 @@ public sealed class Keyboard8042 : IIoDevice
         // and the machine would look like it had stopped accepting input.
         if (_outputBuffer.Count > 0)
         {
-            if (!_outputIsResponse) return;   // a keystroke is already queued: wait our turn
+            if (!_outputIsResponse)
+            {
+                return;   // a keystroke is already queued: wait our turn
+            }
             _outputBuffer.Clear();
         }
 
@@ -329,7 +374,10 @@ public sealed class Keyboard8042 : IIoDevice
         _outputIsResponse = false;
         _outputIsFromMouse = false;
         // Bit 0 of the command byte is the keyboard interrupt enable.
-        if ((_commandByte & 0x01) != 0) _interrupts.RaiseIrq(1);
+        if ((_commandByte & 0x01) != 0)
+        {
+            _interrupts.RaiseIrq(1);
+        }
     }
 
     public byte ReadByte(ushort port)
@@ -343,13 +391,19 @@ public sealed class Keyboard8042 : IIoDevice
             // combination DOSBox-X reports. Bit 0, "output buffer full", is
             // added only when there really is a byte waiting.
             byte status = 0x1C;
-            if (_outputBuffer.Count > 0) status |= 0x01;
+            if (_outputBuffer.Count > 0)
+            {
+                status |= 0x01;
+            }
 
             // Bit 5: the waiting byte came from the auxiliary port. On a real
             // AT this bit meant "transmit timeout"; the PS/2 redefined it,
             // and every mouse driver since has used it to decide whether the
             // byte it is about to read is a movement packet or a keystroke.
-            if (_outputBuffer.Count > 0 && _outputIsFromMouse) status |= 0x20;
+            if (_outputBuffer.Count > 0 && _outputIsFromMouse)
+            {
+                status |= 0x20;
+            }
 
             return status;
         }
@@ -367,7 +421,10 @@ public sealed class Keyboard8042 : IIoDevice
         // with 0xAE. Handing it a zero on that second read told it the key
         // had gone away, so it discarded the keystroke -- which is why no
         // key at all reached QBasic, not even Escape.
-        if (_outputBuffer.Count == 0) return _lastOutputByte;
+        if (_outputBuffer.Count == 0)
+        {
+            return _lastOutputByte;
+        }
 
         byte value = _outputBuffer.Dequeue();
         _lastOutputByte = value;
@@ -386,11 +443,17 @@ public sealed class Keyboard8042 : IIoDevice
         // be counted as one of the packet's own and the driver would be
         // permanently out of step -- reading buttons where the Y count should
         // be, for the rest of the session.
-        if (wasFromMouse && Mouse is { PendingCount: > 0 }) DeliverMouseByte();
+        if (wasFromMouse && Mouse is { PendingCount: > 0 })
+        {
+            DeliverMouseByte();
+        }
         else
         {
             DeliverScanCode();
-            if (_outputBuffer.Count == 0) DeliverMouseByte();
+            if (_outputBuffer.Count == 0)
+            {
+                DeliverMouseByte();
+            }
         }
 
         return value;
@@ -429,7 +492,10 @@ public sealed class Keyboard8042 : IIoDevice
                     // is to enable the auxiliary interrupt here, and anything
                     // the mouse queued beforehand would otherwise sit there
                     // unseen until the user happened to move it again.
-                    if (_outputBuffer.Count == 0) DeliverMouseByte();
+                    if (_outputBuffer.Count == 0)
+                    {
+                        DeliverMouseByte();
+                    }
                     break;
 
                 case 0xD4:
@@ -455,7 +521,10 @@ public sealed class Keyboard8042 : IIoDevice
                     // Write output port: bit 1 is the A20 line, and driving
                     // bit 0 low pulses the CPU's reset pin.
                     _memory.A20Enabled = (value & 0x02) != 0;
-                    if ((value & 0x01) == 0) ResetRequested = true;
+                    if ((value & 0x01) == 0)
+                    {
+                        ResetRequested = true;
+                    }
                     break;
             }
             return;
@@ -546,7 +615,10 @@ public sealed class Keyboard8042 : IIoDevice
     /// </summary>
     private void EnqueueMouseResponse()
     {
-        if (_outputBuffer.Count > 0) return;
+        if (_outputBuffer.Count > 0)
+        {
+            return;
+        }
         DeliverMouseByte();
     }
 
@@ -559,7 +631,10 @@ public sealed class Keyboard8042 : IIoDevice
     /// </summary>
     private void SignalIfEnabled()
     {
-        if ((_commandByte & 0x01) != 0) _interrupts.RaiseIrq(1);
+        if ((_commandByte & 0x01) != 0)
+        {
+            _interrupts.RaiseIrq(1);
+        }
     }
 
     private void HandleCommand(byte command)
@@ -610,7 +685,10 @@ public sealed class Keyboard8042 : IIoDevice
                 // Anything the mouse queued while the port was shut can go
                 // out now, the same way enabling the keyboard releases the
                 // scancodes it was holding.
-                if (_outputBuffer.Count == 0) DeliverMouseByte();
+                if (_outputBuffer.Count == 0)
+                {
+                    DeliverMouseByte();
+                }
                 break;
             case 0xAA:                                  // controller self-test
                 EnqueueResponse(0x55);            // passed

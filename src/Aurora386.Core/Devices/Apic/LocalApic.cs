@@ -219,7 +219,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
     public int GetPendingVector()
     {
         int own = DeliverOwnVector();
-        if (own >= 0) return own;
+        if (own >= 0)
+        {
+            return own;
+        }
 
         return LegacyPending() ? _pic.GetPendingVector() : -1;
     }
@@ -249,7 +252,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
     /// </summary>
     private bool LegacyPending()
     {
-        if (!ImcrApicMode || !ApicPresent || !_hardwareEnabled) return _pic.HasPendingInterrupt;
+        if (!ImcrApicMode || !ApicPresent || !_hardwareEnabled)
+        {
+            return _pic.HasPendingInterrupt;
+        }
 
         bool lint0ExtInt = (_lvt[LvtLint0Index] & LvtDeliveryModeMask) == LvtDeliveryModeExtInt
             && !IsLvtMasked(LvtLint0Index);
@@ -303,15 +309,24 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
         // simply is not mapped, so SVR could never have been written in
         // the first place; this check is what keeps that true for a bare
         // instance a test drives directly, without going through memory.
-        if (!ApicPresent || !_hardwareEnabled) return -1;
+        if (!ApicPresent || !_hardwareEnabled)
+        {
+            return -1;
+        }
 
         // Software-disabled (SVR bit 8 = 0): fixed and lowest-priority
         // interrupts stay latched in IRR but are never posted
         // (plans/specs/apic.md §1.3).
-        if ((_svr & SvrSoftwareEnableBit) == 0) return -1;
+        if ((_svr & SvrSoftwareEnableBit) == 0)
+        {
+            return -1;
+        }
 
         int candidate = HighestSetBit(_irr);
-        if (candidate < 0) return -1;
+        if (candidate < 0)
+        {
+            return -1;
+        }
 
         byte candidateClass = (byte)(candidate & 0xF0);
         byte pprClass = (byte)(ComputePpr() & 0xF0);
@@ -322,7 +337,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
     private int DeliverOwnVector()
     {
         int vector = PeekOwnVector();
-        if (vector < 0) return -1;
+        if (vector < 0)
+        {
+            return -1;
+        }
 
         ClearBit(_irr, vector);
         SetBit(_isr, vector);
@@ -368,25 +386,82 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
 
     public uint ReadDword(uint offset)
     {
-        if (offset == IdOffset) return _id;
-        if (offset == VersionOffset) return ComputeVersionRegister();
-        if (offset == TprOffset) return _tpr & 0xFF;
-        if (offset == AprOffset) return 0;
-        if (offset == PprOffset) return ComputePpr();
-        if (offset == RrdOffset) return 0;
-        if (offset == LdrOffset) return _ldr;
-        if (offset == DfrOffset) return _dfr;
-        if (offset == SvrOffset) return _svr;
-        if (offset == EsrOffset) return _esr;
-        if (offset == IcrLowOffset) return _icrLow & ~IcrDeliveryStatusBit;   // A6: always synchronous
-        if (offset == IcrHighOffset) return _icrHigh;
-        if (offset == InitialCountOffset) return _initialCount;
-        if (offset == CurrentCountOffset) return CurrentCount;
-        if (offset == DivideConfigOffset) return _dcr;
-        if (TryLvtIndex(offset, out int lvtIndex)) return ReadLvt(lvtIndex);
-        if (TryBitmapWord(offset, IsrBase, out int isrWord)) return _isr[isrWord];
-        if (TryBitmapWord(offset, TmrBase, out int tmrWord)) return _tmr[tmrWord];
-        if (TryBitmapWord(offset, IrrBase, out int irrWord)) return _irr[irrWord];
+        if (offset == IdOffset)
+        {
+            return _id;
+        }
+        if (offset == VersionOffset)
+        {
+            return ComputeVersionRegister();
+        }
+        if (offset == TprOffset)
+        {
+            return _tpr & 0xFF;
+        }
+        if (offset == AprOffset)
+        {
+            return 0;
+        }
+        if (offset == PprOffset)
+        {
+            return ComputePpr();
+        }
+        if (offset == RrdOffset)
+        {
+            return 0;
+        }
+        if (offset == LdrOffset)
+        {
+            return _ldr;
+        }
+        if (offset == DfrOffset)
+        {
+            return _dfr;
+        }
+        if (offset == SvrOffset)
+        {
+            return _svr;
+        }
+        if (offset == EsrOffset)
+        {
+            return _esr;
+        }
+        if (offset == IcrLowOffset)
+        {
+            return _icrLow & ~IcrDeliveryStatusBit;   // A6: always synchronous
+        }
+        if (offset == IcrHighOffset)
+        {
+            return _icrHigh;
+        }
+        if (offset == InitialCountOffset)
+        {
+            return _initialCount;
+        }
+        if (offset == CurrentCountOffset)
+        {
+            return CurrentCount;
+        }
+        if (offset == DivideConfigOffset)
+        {
+            return _dcr;
+        }
+        if (TryLvtIndex(offset, out int lvtIndex))
+        {
+            return ReadLvt(lvtIndex);
+        }
+        if (TryBitmapWord(offset, IsrBase, out int isrWord))
+        {
+            return _isr[isrWord];
+        }
+        if (TryBitmapWord(offset, TmrBase, out int tmrWord))
+        {
+            return _tmr[tmrWord];
+        }
+        if (TryBitmapWord(offset, IrrBase, out int irrWord))
+        {
+            return _irr[irrWord];
+        }
         return 0;
     }
 
@@ -491,7 +566,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
     private void HandleEoi()
     {
         int vector = HighestSetBit(_isr);
-        if (vector < 0) return;
+        if (vector < 0)
+        {
+            return;
+        }
 
         ClearBit(_isr, vector);
         if (GetBit(_tmr, vector))
@@ -514,7 +592,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
 
         uint shorthand = _icrLow & IcrShorthandMask;
         bool targetsThisCpu = shorthand is IcrShorthandSelf or IcrShorthandAllIncludingSelf;
-        if (!targetsThisCpu) return;
+        if (!targetsThisCpu)
+        {
+            return;
+        }
 
         uint mode = _icrLow & IcrDeliveryModeMask;
         byte vector = (byte)(_icrLow & IcrVectorMask);
@@ -546,7 +627,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
         uint remainingTicks = CurrentCount;
         bool wasActive = TimerActive;
         _dcr = value & 0xB;
-        if (wasActive) ArmTimerForTicks(remainingTicks);
+        if (wasActive)
+        {
+            ArmTimerForTicks(remainingTicks);
+        }
     }
 
     /// <summary>
@@ -567,7 +651,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
     {
         get
         {
-            if (!TimerActive) return 0;
+            if (!TimerActive)
+            {
+                return 0;
+            }
 
             int divide = DivideValueFromDcr(_dcr);
             long elapsedCycles = Math.Max(0, _cyclesNow() - _timerStartCycle);
@@ -588,11 +675,17 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
     /// </summary>
     private void ArmTimerForTicks(uint ticks)
     {
-        if (_timerEvent is { } pending) _scheduler.Cancel(pending);
+        if (_timerEvent is { } pending)
+        {
+            _scheduler.Cancel(pending);
+        }
         _timerEvent = null;
         _countAtArm = ticks;
 
-        if (ticks == 0) return;
+        if (ticks == 0)
+        {
+            return;
+        }
 
         int divide = DivideValueFromDcr(_dcr);
         _timerStartCycle = _cyclesNow();
@@ -666,7 +759,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
     {
         bool wasEnabled = _hardwareEnabled;
         UpdateMapping(apicBaseValue);
-        if (_hardwareEnabled && !wasEnabled) ResetRegisters();
+        if (_hardwareEnabled && !wasEnabled)
+        {
+            ResetRegisters();
+        }
     }
 
     /// <summary>
@@ -687,7 +783,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
         // mapped.
         if (_mappedBase is { } previousBase)
         {
-            if (previousBase < _memory.AddressableBytes) _memory.Unmap(previousBase, PageSize);
+            if (previousBase < _memory.AddressableBytes)
+            {
+                _memory.Unmap(previousBase, PageSize);
+            }
             else _memory.UnregisterHighWindow(this);
         }
 
@@ -714,7 +813,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
             // guest OS ever does, so it is documented rather than chased.
             if (newBase < _memory.AddressableBytes)
             {
-                if (_memory.TryMapDevice(newBase, PageSize, this)) _mappedBase = newBase;
+                if (_memory.TryMapDevice(newBase, PageSize, this))
+                {
+                    _mappedBase = newBase;
+                }
             }
             else
             {
@@ -752,7 +854,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
 
     private void StopTimer()
     {
-        if (_timerEvent is { } pending) _scheduler.Cancel(pending);
+        if (_timerEvent is { } pending)
+        {
+            _scheduler.Cancel(pending);
+        }
         _timerEvent = null;
         _countAtArm = 0;
     }
@@ -778,7 +883,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
     {
         for (int word = 7; word >= 0; word--)
         {
-            if (bitmap256[word] == 0) continue;
+            if (bitmap256[word] == 0)
+            {
+                continue;
+            }
             int bitInWord = 31 - BitOperations.LeadingZeroCount(bitmap256[word]);
             return word * 32 + bitInWord;
         }
@@ -862,7 +970,10 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
         // Rebased from the receiving machine's own clock, not the file's:
         // see the note on Capture's own write of this field.
         long now = _cyclesNow();
-        if (_timerEvent is { } pending) _scheduler.Cancel(pending);
+        if (_timerEvent is { } pending)
+        {
+            _scheduler.Cancel(pending);
+        }
         _timerEvent = remainingCycles < 0
             ? null
             : _scheduler.ScheduleAfter(now, remainingCycles, "lapic-timer", FireTimer);

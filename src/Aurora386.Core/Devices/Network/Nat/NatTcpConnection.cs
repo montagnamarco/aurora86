@@ -102,7 +102,10 @@ internal sealed class NatTcpConnection : IHostTcpSink
     {
         _receiveNext = guestSequence + 1;
         _guestWindow = guestWindow;
-        if (maximumSegment is > 0) _segmentSize = Math.Min(maximumSegment.Value, DefaultSegmentSize);
+        if (maximumSegment is > 0)
+        {
+            _segmentSize = Math.Min(maximumSegment.Value, DefaultSegmentSize);
+        }
         _stream = stream;
         stream.Start(this);
     }
@@ -123,14 +126,20 @@ internal sealed class NatTcpConnection : IHostTcpSink
 
     void IHostTcpSink.Connected() => _nat.Post(() =>
     {
-        if (Closed) return;
+        if (Closed)
+        {
+            return;
+        }
         Transmit(TcpFlags.Syn | TcpFlags.Ack, ReadOnlySpan<byte>.Empty, track: true, maximumSegment: DefaultSegmentSize);
         _established = true;
     });
 
     void IHostTcpSink.ConnectFailed() => _nat.Post(() =>
     {
-        if (Closed) return;
+        if (Closed)
+        {
+            return;
+        }
         // Refused: the guest sees a reset, just as it would from a port with
         // nothing listening. Anything subtler (unreachable, timed out) is
         // reported the same way, because the guest can do nothing different
@@ -140,21 +149,30 @@ internal sealed class NatTcpConnection : IHostTcpSink
 
     void IHostTcpSink.Received(byte[] data) => _nat.Post(() =>
     {
-        if (Closed) return;
+        if (Closed)
+        {
+            return;
+        }
         _outgoing.Enqueue(data);
         TrySend();
     });
 
     void IHostTcpSink.RemoteClosed() => _nat.Post(() =>
     {
-        if (Closed) return;
+        if (Closed)
+        {
+            return;
+        }
         _hostClosed = true;
         TrySend();
     });
 
     void IHostTcpSink.Failed() => _nat.Post(() =>
     {
-        if (Closed) return;
+        if (Closed)
+        {
+            return;
+        }
         Reset();
     });
 
@@ -194,7 +212,10 @@ internal sealed class NatTcpConnection : IHostTcpSink
             {
                 _sendUnacknowledged = acknowledgement;
                 _unacked.RemoveAll(s => Compare(s.Sequence + s.Length, acknowledgement) <= 0);
-                if (_finSent && acknowledgement == _sendNext) _finAcknowledged = true;
+                if (_finSent && acknowledgement == _sendNext)
+                {
+                    _finAcknowledged = true;
+                }
             }
             _guestWindow = window;
         }
@@ -246,13 +267,19 @@ internal sealed class NatTcpConnection : IHostTcpSink
 
     private void TrySend()
     {
-        if (!_established || Closed) return;
+        if (!_established || Closed)
+        {
+            return;
+        }
 
         while (_outgoing.Count > 0)
         {
             int inFlight = (int)(_sendNext - _sendUnacknowledged);
             int room = Math.Min(_guestWindow, MaxSegmentsInFlight * _segmentSize) - inFlight;
-            if (room <= 0) break;
+            if (room <= 0)
+            {
+                break;
+            }
 
             byte[] chunk = _outgoing.Peek();
             int take = Math.Min(Math.Min(_segmentSize, chunk.Length - _outgoingOffset), room);
@@ -275,10 +302,16 @@ internal sealed class NatTcpConnection : IHostTcpSink
     /// <summary>Retransmits whatever has waited too long, and gives up on a guest that never answers.</summary>
     public void Tick(long now)
     {
-        if (Closed || _unacked.Count == 0) return;
+        if (Closed || _unacked.Count == 0)
+        {
+            return;
+        }
 
         Segment oldest = _unacked[0];
-        if (now - oldest.SentAt < (RetransmitMilliseconds << oldest.Retries)) return;
+        if (now - oldest.SentAt < (RetransmitMilliseconds << oldest.Retries))
+        {
+            return;
+        }
 
         if (oldest.Retries >= MaxRetries)
         {
@@ -298,7 +331,10 @@ internal sealed class NatTcpConnection : IHostTcpSink
 
         var segment = new Segment { Sequence = sequence, Flags = flags, Data = data.ToArray(), SentAt = _nat.Now };
         _sendNext += segment.Length;
-        if (track && segment.Length > 0) _unacked.Add(segment);
+        if (track && segment.Length > 0)
+        {
+            _unacked.Add(segment);
+        }
     }
 
     private void Emit(uint sequence, byte flags, ReadOnlySpan<byte> data, int? maximumSegment)
@@ -323,12 +359,18 @@ internal sealed class NatTcpConnection : IHostTcpSink
 
     private void CheckFinished()
     {
-        if (_guestClosed && _finSent && _finAcknowledged) Close();
+        if (_guestClosed && _finSent && _finAcknowledged)
+        {
+            Close();
+        }
     }
 
     public void Close()
     {
-        if (Closed) return;
+        if (Closed)
+        {
+            return;
+        }
         Closed = true;
         _stream?.Close();
     }

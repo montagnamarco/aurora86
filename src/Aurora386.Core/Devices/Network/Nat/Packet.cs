@@ -64,7 +64,10 @@ internal static class Packet
         uint sum = initial;
         int i = 0;
         for (; i + 1 < data.Length; i += 2) sum += (uint)((data[i] << 8) | data[i + 1]);
-        if (i < data.Length) sum += (uint)(data[i] << 8);
+        if (i < data.Length)
+        {
+            sum += (uint)(data[i] << 8);
+        }
         while ((sum >> 16) != 0) sum = (sum & 0xFFFF) + (sum >> 16);
         return (ushort)~sum;
     }

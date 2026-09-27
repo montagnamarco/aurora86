@@ -37,7 +37,10 @@ public sealed class LoopbackBackend : INetworkBackend
     {
         byte[] copy = frame.ToArray();
         Sent.Add(copy);
-        if (LoopBack) _pending.Enqueue(copy);
+        if (LoopBack)
+        {
+            _pending.Enqueue(copy);
+        }
     }
 
     /// <summary>Injects a frame as though it had arrived from the network.</summary>

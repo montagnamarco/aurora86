@@ -30,7 +30,10 @@ public sealed class PciBus : IIoDwordDevice
             : width == 4 ? uint.MaxValue : (1u << (8 * width)) - 1;
     public void WriteConfiguration(ushort function, int offset, int width, uint value)
     {
-        if (_functions.TryGetValue(function, out var device)) device.Write(offset, width, value);
+        if (_functions.TryGetValue(function, out var device))
+        {
+            device.Write(offset, width, value);
+        }
     }
     private bool Selected(ushort port, int width) => (_address & 0x80000000) != 0 &&
         port >= 0xCFC && port <= 0xD00 - width && (port & (width - 1)) == 0;
@@ -49,7 +52,10 @@ public sealed class PciBus : IIoDwordDevice
     public void WriteWord(ushort port, ushort value) => WriteData(port, 2, value);
     public void WriteDword(ushort port, uint value)
     {
-        if (port == 0xCF8) _address = value & 0x80FFFFFC;
+        if (port == 0xCF8)
+        {
+            _address = value & 0x80FFFFFC;
+        }
         else WriteData(port, 4, value);
     }
     public void Reset()
@@ -94,7 +100,10 @@ public sealed class PciBus : IIoDwordDevice
     /// </summary>
     public static IReadOnlyList<ushort> ReadFunctionKeys(ReadOnlySpan<byte> data)
     {
-        if (data.IsEmpty) return [];
+        if (data.IsEmpty)
+        {
+            return [];
+        }
 
         using var reader = new BinaryReader(new MemoryStream(data.ToArray()));
         reader.ReadUInt32();   // the address latch; irrelevant to topology
@@ -114,7 +123,10 @@ public sealed class PciBus : IIoDwordDevice
         using var reader = new BinaryReader(new MemoryStream(data.ToArray()));
         uint address = reader.ReadUInt32();
         int count = reader.ReadInt32();
-        if (count != _functions.Count) throw new InvalidDataException("PCI snapshot topology differs from the machine.");
+        if (count != _functions.Count)
+        {
+            throw new InvalidDataException("PCI snapshot topology differs from the machine.");
+        }
         var blocks = new List<(PciFunction Function, byte[] Data)>();
         for (int i = 0; i < count; i++)
         {

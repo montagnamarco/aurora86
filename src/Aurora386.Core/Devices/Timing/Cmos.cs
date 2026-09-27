@@ -95,7 +95,10 @@ public sealed class Cmos : IIoDevice
     {
         // Port 0x70 is write-only: reading it is meaningless and returns
         // undefined values on real hardware.
-        if ((port & 1) == 0) return 0xFF;
+        if ((port & 1) == 0)
+        {
+            return 0xFF;
+        }
 
         return _selectedRegister switch
         {
@@ -129,7 +132,10 @@ public sealed class Cmos : IIoDevice
         // registers are accepted but discarded. Storing them would make the
         // guest believe it had changed the time when the next read would
         // silently contradict it.
-        if (_selectedRegister <= 0x09 || _selectedRegister == 0x32) return;
+        if (_selectedRegister <= 0x09 || _selectedRegister == 0x32)
+        {
+            return;
+        }
 
         _registers[_selectedRegister & 0x7F] = value;
     }

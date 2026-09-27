@@ -73,8 +73,14 @@ public sealed class IsaPnpBus : IIoDevice
 
     public void WriteByte(ushort port, byte value)
     {
-        if (port == AddressPort) WriteAddress(value);
-        else if (port == WriteDataPort) WriteData(value);
+        if (port == AddressPort)
+        {
+            WriteAddress(value);
+        }
+        else if (port == WriteDataPort)
+        {
+            WriteData(value);
+        }
     }
 
     private void WriteAddress(byte value)
@@ -89,7 +95,10 @@ public sealed class IsaPnpBus : IIoDevice
             {
                 _keyPosition = 0;
                 foreach (IsaPnpCard card in _cards)
-                    if (card.State == IsaPnpCard.CardState.WaitForKey) card.State = IsaPnpCard.CardState.Sleep;
+                    if (card.State == IsaPnpCard.CardState.WaitForKey)
+                    {
+                        card.State = IsaPnpCard.CardState.Sleep;
+                    }
             }
         }
         else
@@ -122,8 +131,14 @@ public sealed class IsaPnpBus : IIoDevice
                             device.Configured?.Invoke(device);
                         }
                     }
-                    if ((value & 0x01) != 0 || (value & 0x02) != 0) card.State = IsaPnpCard.CardState.WaitForKey;
-                    if ((value & 0x04) != 0) card.Csn = 0;
+                    if ((value & 0x01) != 0 || (value & 0x02) != 0)
+                    {
+                        card.State = IsaPnpCard.CardState.WaitForKey;
+                    }
+                    if ((value & 0x04) != 0)
+                    {
+                        card.Csn = 0;
+                    }
                 }
                 return;
 
@@ -134,7 +149,10 @@ public sealed class IsaPnpBus : IIoDevice
                 // into the identifier and the resource data start over.
                 foreach (IsaPnpCard card in _cards)
                 {
-                    if (card.State == IsaPnpCard.CardState.WaitForKey) continue;
+                    if (card.State == IsaPnpCard.CardState.WaitForKey)
+                    {
+                        continue;
+                    }
                     if (card.Csn == value)
                     {
                         card.State = value == 0 ? IsaPnpCard.CardState.Isolation : IsaPnpCard.CardState.Config;
@@ -155,7 +173,10 @@ public sealed class IsaPnpBus : IIoDevice
                 // isolation, which then moves on to being configured.
                 foreach (IsaPnpCard card in _cards)
                 {
-                    if (card.State != IsaPnpCard.CardState.Isolation) continue;
+                    if (card.State != IsaPnpCard.CardState.Isolation)
+                    {
+                        continue;
+                    }
                     card.Csn = value;
                     card.State = IsaPnpCard.CardState.Config;
                 }
@@ -164,14 +185,20 @@ public sealed class IsaPnpBus : IIoDevice
             case 0x07:
             {
                 IsaPnpCard? card = Configuring();
-                if (card is not null && value < card.LogicalDevices.Count) card.CurrentDevice = value;
+                if (card is not null && value < card.LogicalDevices.Count)
+                {
+                    card.CurrentDevice = value;
+                }
                 return;
             }
 
             case >= 0x30 and <= 0x7F:
             {
                 IsaPnpCard? card = Configuring();
-                if (card is null) return;
+                if (card is null)
+                {
+                    return;
+                }
                 IsaPnpLogicalDevice device = card.LogicalDevices[card.CurrentDevice];
                 bool wasActive = device.Active;
                 device.Registers[_address] = _address == 0x30 ? (byte)(value & 1) : value;
@@ -188,7 +215,10 @@ public sealed class IsaPnpBus : IIoDevice
 
     private void MoveReadDataPort(ushort port)
     {
-        if (port == _readDataPort) return;
+        if (port == _readDataPort)
+        {
+            return;
+        }
         _io?.Unregister(_readDataPort, 1, this);
         _readDataPort = port;
         _io?.Register(_readDataPort, this);
@@ -201,7 +231,10 @@ public sealed class IsaPnpBus : IIoDevice
 
     public byte ReadByte(ushort port)
     {
-        if (port != _readDataPort) return 0xFF;
+        if (port != _readDataPort)
+        {
+            return 0xFF;
+        }
 
         switch (_address)
         {
@@ -242,7 +275,10 @@ public sealed class IsaPnpBus : IIoDevice
     private byte ReadIsolation()
     {
         var isolating = _cards.Where(c => c.State == IsaPnpCard.CardState.Isolation).ToList();
-        if (isolating.Count == 0 || _isolationBit >= 72) return 0xFF;
+        if (isolating.Count == 0 || _isolationBit >= 72)
+        {
+            return 0xFF;
+        }
 
         if (_isolationPhase == 0)
         {
@@ -255,7 +291,10 @@ public sealed class IsaPnpBus : IIoDevice
         if (_isolationAnyOne)
         {
             foreach (IsaPnpCard card in isolating)
-                if (card.SerialBitAt(_isolationBit) == 0) card.State = IsaPnpCard.CardState.Sleep;
+                if (card.SerialBitAt(_isolationBit) == 0)
+                {
+                    card.State = IsaPnpCard.CardState.Sleep;
+                }
         }
         _isolationBit++;
         return _isolationAnyOne ? (byte)0xAA : (byte)0xFF;

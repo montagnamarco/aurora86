@@ -152,7 +152,10 @@ public sealed class Dma8237
     public byte? TransferByte(int channel)
     {
         Channel c = _channels[channel];
-        if (c.Masked || _memory is null) return null;
+        if (c.Masked || _memory is null)
+        {
+            return null;
+        }
 
         byte value = _memory.ReadByte(GetPhysicalAddress(channel));
         Step(c, channel);
@@ -167,7 +170,10 @@ public sealed class Dma8237
     public ushort? TransferWord(int channel)
     {
         Channel c = _channels[channel];
-        if (c.Masked || _memory is null) return null;
+        if (c.Masked || _memory is null)
+        {
+            return null;
+        }
 
         ushort value = _memory.ReadWord(GetPhysicalAddress(channel));
         Step(c, channel);
@@ -282,12 +288,18 @@ public sealed class Dma8237
 
         if (!flipFlop)
         {
-            if (isCount) c.BaseCount = (ushort)((c.BaseCount & 0xFF00) | value);
+            if (isCount)
+            {
+                c.BaseCount = (ushort)((c.BaseCount & 0xFF00) | value);
+            }
             else c.BaseAddress = (ushort)((c.BaseAddress & 0xFF00) | value);
         }
         else
         {
-            if (isCount) c.BaseCount = (ushort)((c.BaseCount & 0x00FF) | (value << 8));
+            if (isCount)
+            {
+                c.BaseCount = (ushort)((c.BaseCount & 0x00FF) | (value << 8));
+            }
             else c.BaseAddress = (ushort)((c.BaseAddress & 0x00FF) | (value << 8));
         }
 
@@ -295,7 +307,10 @@ public sealed class Dma8237
 
         // Writing either half updates the current register too: the base
         // registers exist only so auto-init has something to reload from.
-        if (isCount) c.CurrentCount = c.BaseCount;
+        if (isCount)
+        {
+            c.CurrentCount = c.BaseCount;
+        }
         else c.CurrentAddress = c.BaseAddress;
     }
 
@@ -365,8 +380,14 @@ public sealed class Dma8237
         for (int i = 0; i < 4; i++)
         {
             Channel c = _channels[firstChannel + i];
-            if (c.TerminalCount) status |= (byte)(1 << i);
-            if (!c.Masked) status |= (byte)(0x10 << i);
+            if (c.TerminalCount)
+            {
+                status |= (byte)(1 << i);
+            }
+            if (!c.Masked)
+            {
+                status |= (byte)(0x10 << i);
+            }
             c.TerminalCount = false;
         }
         return status;
@@ -380,7 +401,10 @@ public sealed class Dma8237
             int register = port & 0x0F;
             if (register < 8)
                 return owner.ReadChannelRegister(register >> 1, (register & 1) != 0, ref owner._highByte8);
-            if (register == 0x8) return owner.ReadStatusRegister(0);
+            if (register == 0x8)
+            {
+                return owner.ReadStatusRegister(0);
+            }
             return 0xFF;
         }
 
@@ -407,7 +431,10 @@ public sealed class Dma8237
             int register = (port - 0xC0) >> 1;
             if (register < 8)
                 return owner.ReadChannelRegister(4 + (register >> 1), (register & 1) != 0, ref owner._highByte16);
-            if (register == 0x8) return owner.ReadStatusRegister(4);
+            if (register == 0x8)
+            {
+                return owner.ReadStatusRegister(4);
+            }
             return 0xFF;
         }
 
@@ -444,7 +471,10 @@ public sealed class Dma8237
         public void WriteByte(ushort port, byte value)
         {
             int channel = ChannelForPort[port & 0x0F];
-            if (channel >= 0) owner._channels[channel].Page = value;
+            if (channel >= 0)
+            {
+                owner._channels[channel].Page = value;
+            }
         }
     }
 }

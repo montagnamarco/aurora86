@@ -120,9 +120,18 @@ public sealed class MouseState
 
     public void Move(int deltaX, int deltaY)
     {
-        if (MotionInterceptor?.Invoke(deltaX, deltaY) == true) return;
-        if (deltaX == 0 && deltaY == 0) return;
-        if (ConnectedInterface == MouseInterface.None) return;
+        if (MotionInterceptor?.Invoke(deltaX, deltaY) == true)
+        {
+            return;
+        }
+        if (deltaX == 0 && deltaY == 0)
+        {
+            return;
+        }
+        if (ConnectedInterface == MouseInterface.None)
+        {
+            return;
+        }
 
         // Only the port the mouse is actually plugged into accumulates. The
         // tempting simplification is to fill all three and let the unselected
@@ -170,7 +179,10 @@ public sealed class MouseState
     /// </summary>
     public (int Presses, int Releases) TakeButtonCounts(int button)
     {
-        if (button is < 0 or > 2) return (0, 0);
+        if (button is < 0 or > 2)
+        {
+            return (0, 0);
+        }
 
         int presses = _pressCount[button];
         int releases = _releaseCount[button];
@@ -189,16 +201,25 @@ public sealed class MouseState
     /// <summary>Presses or releases a button.</summary>
     public void SetButton(MouseButtons button, bool pressed)
     {
-        if (ButtonInterceptor?.Invoke(button, pressed) == true) return;
+        if (ButtonInterceptor?.Invoke(button, pressed) == true)
+        {
+            return;
+        }
         // A mouse that is not plugged in has no buttons to press. Letting
         // clicks through while blocking motion would give the guest a mouse
         // that cannot move but can still click, which is worse than no mouse
         // at all: a program would see the click at whatever stale position
         // it last knew about.
-        if (ConnectedInterface == MouseInterface.None) return;
+        if (ConnectedInterface == MouseInterface.None)
+        {
+            return;
+        }
 
         MouseButtons updated = pressed ? Buttons | button : Buttons & ~button;
-        if (updated == Buttons) return;
+        if (updated == Buttons)
+        {
+            return;
+        }
 
         Buttons = updated;
 
@@ -212,7 +233,10 @@ public sealed class MouseState
 
         if (index >= 0)
         {
-            if (pressed) _pressCount[index]++;
+            if (pressed)
+            {
+                _pressCount[index]++;
+            }
             else _releaseCount[index]++;
         }
 

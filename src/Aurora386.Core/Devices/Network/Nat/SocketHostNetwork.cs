@@ -73,15 +73,24 @@ public sealed class SocketHostNetwork : IHostNetwork
     {
         get
         {
-            if (_dnsServers is not null) return _dnsServers;
+            if (_dnsServers is not null)
+            {
+                return _dnsServers;
+            }
 
             var servers = new List<IPAddress>();
             try
             {
                 foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
                 {
-                    if (nic.OperationalStatus != OperationalStatus.Up) continue;
-                    if (nic.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                    if (nic.OperationalStatus != OperationalStatus.Up)
+                    {
+                        continue;
+                    }
+                    if (nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                    {
+                        continue;
+                    }
                     foreach (IPAddress server in nic.GetIPProperties().DnsAddresses)
                         if (server.AddressFamily == AddressFamily.InterNetwork && !servers.Contains(server))
                             servers.Add(server);
@@ -94,7 +103,10 @@ public sealed class SocketHostNetwork : IHostNetwork
 
             // A host with no configured resolver still deserves a working
             // guest, so a public one stands in.
-            if (servers.Count == 0) servers.Add(IPAddress.Parse("1.1.1.1"));
+            if (servers.Count == 0)
+            {
+                servers.Add(IPAddress.Parse("1.1.1.1"));
+            }
             return _dnsServers = servers;
         }
     }

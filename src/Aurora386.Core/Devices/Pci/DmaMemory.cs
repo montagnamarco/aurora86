@@ -60,13 +60,19 @@ public sealed class PhysicalDmaMemory(PhysicalMemoryBus memory) : IDmaMemory
 
     public ushort ReadWord(uint address)
     {
-        if (!InRam(address, 2)) return 0xFFFF;
+        if (!InRam(address, 2))
+        {
+            return 0xFFFF;
+        }
         return (ushort)ReadBytes(address, 2);
     }
 
     public uint ReadDword(uint address)
     {
-        if (!InRam(address, 4)) return uint.MaxValue;
+        if (!InRam(address, 4))
+        {
+            return uint.MaxValue;
+        }
         return ReadBytes(address, 4);
     }
 
@@ -88,7 +94,10 @@ public sealed class PhysicalDmaMemory(PhysicalMemoryBus memory) : IDmaMemory
 
     private void WriteBytes(uint address, uint value, uint length)
     {
-        if (!InRam(address, length)) return;
+        if (!InRam(address, length))
+        {
+            return;
+        }
         for (uint i = 0; i < length; i++)
         {
             memory.WriteByteFromBusMaster(address + i, (byte)(value >> (int)(8 * i)));

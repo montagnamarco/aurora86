@@ -53,7 +53,10 @@ public sealed class Pic8259 : IIoDevice
         for (int line = 0; line < 8; line++)
         {
             int bit = 1 << line;
-            if ((pending & bit) == 0) continue;
+            if ((pending & bit) == 0)
+            {
+                continue;
+            }
             // Lower numbered inputs have higher priority, including the
             // request already in service at this same priority.
             return (_serviceRegister & ((bit << 1) - 1)) == 0 ? line : -1;
@@ -86,7 +89,10 @@ public sealed class Pic8259 : IIoDevice
     public void RaiseIrq(int line)
     {
         _inputLevels |= (byte)(1 << line);
-        if ((LevelMask & (1 << line)) == 0) _requestRegister |= (byte)(1 << line);
+        if ((LevelMask & (1 << line)) == 0)
+        {
+            _requestRegister |= (byte)(1 << line);
+        }
     }
 
     public void LowerIrq(int line)
@@ -105,7 +111,10 @@ public sealed class Pic8259 : IIoDevice
     public int GetPendingVector()
     {
         int line = PendingLine();
-        if (line < 0) return -1;
+        if (line < 0)
+        {
+            return -1;
+        }
         byte bit = (byte)(1 << line);
 
         // The cascade: line 2 on the master is not a device at all, it is
@@ -115,7 +124,10 @@ public sealed class Pic8259 : IIoDevice
         if (_isMaster && line == 2 && _slave is not null)
         {
             int slaveVector = _slave.GetPendingVector();
-            if (slaveVector < 0) return -1;
+            if (slaveVector < 0)
+            {
+                return -1;
+            }
             _requestRegister &= (byte)~bit;
             _serviceRegister |= bit;
             return slaveVector;
@@ -155,7 +167,10 @@ public sealed class Pic8259 : IIoDevice
             {
                 // OCW3: chooses which of the two internal registers the even
                 // port will return on the next read.
-                if ((value & 0x02) != 0) _readIsr = (value & 0x01) != 0;
+                if ((value & 0x02) != 0)
+                {
+                    _readIsr = (value & 0x01) != 0;
+                }
                 return;
             }
 
@@ -260,7 +275,10 @@ public sealed class Pic8259 : IIoDevice
     /// <summary>Puts back what <see cref="Capture"/> took.</summary>
     public void Restore(ReadOnlySpan<byte> state)
     {
-        if (state.Length < 8) return;
+        if (state.Length < 8)
+        {
+            return;
+        }
 
         _requestRegister = state[0];
         _serviceRegister = state[1];
@@ -326,7 +344,10 @@ public sealed class InterruptController : IIoDevice, IInterruptSource
     public byte ReadByte(ushort port) => port == 0x4D0 ? Master.LevelMask : Slave.LevelMask;
     public void WriteByte(ushort port, byte value)
     {
-        if (port == 0x4D0) Master.LevelMask = (byte)(value & 0xF8);
+        if (port == 0x4D0)
+        {
+            Master.LevelMask = (byte)(value & 0xF8);
+        }
         else Slave.LevelMask = (byte)(value & 0xDE);
     }
 
@@ -349,7 +370,10 @@ public sealed class InterruptController : IIoDevice, IInterruptSource
     /// </summary>
     public void SetPirqLevels(byte levels)
     {
-        if (_ioApic is null) return;
+        if (_ioApic is null)
+        {
+            return;
+        }
         for (int link = 0; link < 4; link++)
         {
             _ioApic.SetLevel(16 + link, (levels & (1 << link)) != 0);
@@ -369,7 +393,10 @@ public sealed class InterruptController : IIoDevice, IInterruptSource
     /// </summary>
     public void RaiseIrq(int irq)
     {
-        if (irq < 8) Master.RaiseIrq(irq);
+        if (irq < 8)
+        {
+            Master.RaiseIrq(irq);
+        }
         else
         {
             Slave.RaiseIrq(irq - 8);
@@ -385,7 +412,10 @@ public sealed class InterruptController : IIoDevice, IInterruptSource
 
     public void LowerIrq(int irq)
     {
-        if (irq < 8) Master.LowerIrq(irq);
+        if (irq < 8)
+        {
+            Master.LowerIrq(irq);
+        }
         else Slave.LowerIrq(irq - 8);
     }
 
@@ -425,7 +455,10 @@ public sealed class InterruptController : IIoDevice, IInterruptSource
     /// <summary>Puts back what <see cref="Capture"/> took.</summary>
     public void Restore(ReadOnlySpan<byte> state)
     {
-        if (state.Length < 16) return;
+        if (state.Length < 16)
+        {
+            return;
+        }
         Master.Restore(state[..8]);
         Slave.Restore(state[8..16]);
         Master.LevelMask = state.Length >= 18 ? (byte)(state[16] & 0xF8) : (byte)0;

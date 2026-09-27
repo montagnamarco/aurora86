@@ -62,7 +62,10 @@ public sealed class Pit8253 : IIoDevice
         channel0.Accumulator += pitCycles;
 
         int whole = (int)channel0.Accumulator;
-        if (whole <= 0) return;
+        if (whole <= 0)
+        {
+            return;
+        }
         channel0.Accumulator -= whole;
 
         int reload = channel0.ReloadValue == 0 ? 65536 : channel0.ReloadValue;
@@ -91,7 +94,10 @@ public sealed class Pit8253 : IIoDevice
     public byte ReadByte(ushort port)
     {
         int index = port & 3;
-        if (index == 3) return 0;      // the control port is write-only
+        if (index == 3)
+        {
+            return 0;      // the control port is write-only
+        }
 
         Channel channel = _channels[index];
         ushort value = channel.Latched ? channel.LatchedValue : channel.Counter;
@@ -162,7 +168,10 @@ public sealed class Pit8253 : IIoDevice
     private void WriteControlWord(byte value)
     {
         int index = (value >> 6) & 3;
-        if (index == 3) return;        // read-back command, not emulated
+        if (index == 3)
+        {
+            return;        // read-back command, not emulated
+        }
 
         Channel channel = _channels[index];
         byte access = (byte)((value >> 4) & 3);
@@ -212,7 +221,10 @@ public sealed class Pit8253 : IIoDevice
         channel.Accumulator += pitCycles;
 
         int whole = (int)channel.Accumulator;
-        if (whole <= 0) return;
+        if (whole <= 0)
+        {
+            return;
+        }
         channel.Accumulator -= whole;
 
         int reload = channel.ReloadValue == 0 ? 65536 : channel.ReloadValue;
@@ -264,7 +276,10 @@ public sealed class Pit8253 : IIoDevice
     /// <summary>Puts back what <see cref="Capture"/> took.</summary>
     public void Restore(ReadOnlySpan<byte> state)
     {
-        if (state.Length < 3 * 16 + 8) return;
+        if (state.Length < 3 * 16 + 8)
+        {
+            return;
+        }
 
         var reader = new BinaryReader(new MemoryStream(state.ToArray()));
 
