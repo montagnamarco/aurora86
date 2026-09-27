@@ -5,6 +5,7 @@ using Aurora386.Core.Devices.Input;
 using Aurora386.Core.Devices.Network.Nat;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Dos;
+using Aurora386.Core.Host.Midi;
 
 namespace Aurora386.Core.Configuration;
 
@@ -48,6 +49,18 @@ public sealed class VmConfiguration
     public string Name { get; set; } = "PC";
     public CpuModel Cpu { get; set; } = CpuModel.Intel486;
     public uint RamMegabytes { get; set; } = 16;
+
+    /// <summary>Optional host output for an explicitly configured MPU-401 card.</summary>
+    public MidiOutputSettings? MidiOutput { get; set; }
+
+    /// <summary>
+    /// Selects one enumerated Windows MIDI endpoint. A missing ID is invalid:
+    /// enabling output must never silently select the host's default synthesizer.
+    /// </summary>
+    public sealed class MidiOutputSettings
+    {
+        public uint? DeviceId { get; set; }
+    }
 
     /// <summary>Hard disks by BIOS drive number: 0x80 is the first.</summary>
     public List<DiskEntry> Disks { get; set; } = new();
@@ -530,6 +543,23 @@ public sealed class VmConfiguration
 
             machine.MouseInterface = Mouse;
             machine.BootDrives = BootOrder;
+
+            // Open host output last, after every guest resource has been validated.
+            if (MidiOutput is not null)
+            {
+                if (machine.Midi is null)
+                {
+                    throw new InvalidDataException("MIDI output requires an MPU-401 sound card.");
+                }
+
+                if (MidiOutput.DeviceId is not uint deviceId)
+                {
+                    throw new InvalidDataException("MIDI output requires an explicit deviceId.");
+                }
+
+                machine.ConnectMidi(WinMmMidiSink.Open(deviceId));
+            }
+
             return machine;
         }
         catch

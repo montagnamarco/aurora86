@@ -7,9 +7,27 @@ using Aurora386.Core.Dos;
 using Aurora386.Core.Configuration;
 using Aurora386.Core.Devices.Input;
 using Aurora386.Sdl.Frontend;
+using Aurora386.Core.Host.Midi;
 
 // Emulator entry point. The command line says which disk images to attach and
 // how the machine should be configured.
+
+if (args.Length == 1 && args[0] == "--list-midi")
+{
+    try
+    {
+        foreach (MidiOutputDevice device in WinMmMidiSink.GetDevices())
+        {
+            Console.WriteLine($"{device.DeviceId}: {device.Name}");
+        }
+    }
+    catch (IOException exception)
+    {
+        return Fail(exception.Message);
+    }
+
+    return 0;
+}
 
 if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
 {
@@ -335,6 +353,7 @@ static void PrintUsage()
               --size <MB>          size of the disk to create (default 100)
               --ram <MB>           installed memory, 1 to 128 (default 16)
               --vm <folder>        a machine folder (vm.json); other options add to it
+              --list-midi          list Windows MIDI output IDs without opening them
               --hdd2 <file>        second hard disk (81h; DOS gives it the next letter)
               --cd <file>          CD-ROM image (ISO)
               --share [X:]<folder> a folder of this computer as a drive: the next free

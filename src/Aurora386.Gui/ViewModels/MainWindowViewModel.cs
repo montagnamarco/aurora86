@@ -18,6 +18,7 @@ using Aurora386.Core.Devices.Timing;
 using Aurora386.Core.Devices.System;
 using Aurora386.Core.Cpu;
 using Aurora386.Core.Dos;
+using Aurora386.Core.Host.Midi;
 using Aurora386.Gui.Emulation;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -224,6 +225,32 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         RefreshDriveLights();
         RefreshNetworkLight();
+        RefreshMidiStatus();
+    }
+
+    /// <summary>Surfaces asynchronous endpoint errors that cannot be thrown on the guest thread.</summary>
+    private void RefreshMidiStatus()
+    {
+        string? diagnostic = Session.WithMachine(machine =>
+        {
+            if (machine.Midi?.Sink is not WinMmMidiSink output)
+            {
+                return null;
+            }
+
+            if (output.LastError is string error)
+            {
+                return $"MIDI: {error}";
+            }
+
+            ulong dropped = output.DroppedSysExCount;
+            return dropped == 0 ? null : $"MIDI: {dropped} oversized SysEx messages discarded";
+        });
+
+        if (diagnostic is not null)
+        {
+            StatusText = diagnostic;
+        }
     }
 
     /// <summary>

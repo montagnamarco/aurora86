@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Aurora386.Core;
+using Aurora386.Core.Host.Midi;
 using Silk.NET.Maths;
 using Silk.NET.SDL;
 
@@ -32,6 +33,7 @@ public sealed unsafe class EmulatorWindow : IDisposable
 
     private bool _running;
     private bool _paused;
+    private string? _lastMidiDiagnostic;
 
     /// <summary>Statistics reported in the window title.</summary>
     private long _instructionsExecuted;
@@ -260,6 +262,8 @@ public sealed unsafe class EmulatorWindow : IDisposable
     {
         if (_statsTimer.ElapsedMilliseconds < 1000) return;
 
+        ReportMidiStatus();
+
         double seconds = _statsTimer.Elapsed.TotalSeconds;
         double mips = _instructionsExecuted / seconds / 1e6;
         int fps = (int)(_framesDrawn / seconds);
@@ -271,6 +275,27 @@ public sealed unsafe class EmulatorWindow : IDisposable
         _instructionsExecuted = 0;
         _framesDrawn = 0;
         _statsTimer.Restart();
+    }
+
+    /// <summary>Reports changes in worker diagnostics without repeatedly filling the console.</summary>
+    private void ReportMidiStatus()
+    {
+        string? diagnostic = null;
+        if (_machine.Midi?.Sink is WinMmMidiSink output)
+        {
+            diagnostic = output.LastError;
+            if (diagnostic is null && output.DroppedSysExCount != 0)
+            {
+                diagnostic = $"{output.DroppedSysExCount} oversized SysEx messages discarded";
+            }
+        }
+
+        if (diagnostic is not null && diagnostic != _lastMidiDiagnostic)
+        {
+            Console.Error.WriteLine($"MIDI: {diagnostic}");
+        }
+
+        _lastMidiDiagnostic = diagnostic;
     }
 
     public void Dispose()
