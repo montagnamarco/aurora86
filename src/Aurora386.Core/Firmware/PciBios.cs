@@ -60,12 +60,19 @@ public sealed class PciBios(PciBus bus)
                 break;
             }
             case 0x0F:
+            {
                 // CL is 0Ah..0Dh. Route programs ELCR; the caller owns PIC masks.
                 byte pin = state.GetReg8(1);
-                status = pin is >= 0x0A and <= 0x0D && bus.InterruptRouter is not null
-                    && bus.InterruptRouter.Route(state.Bx, (byte)(pin - 9), state.GetReg8(5))
-                    ? (byte)0 : (byte)0x88;
+                byte irq = state.GetReg8(5);
+                bool routed = pin is >= 0x0A and <= 0x0D && bus.InterruptRouter is not null
+                    && bus.InterruptRouter.Route(state.Bx, (byte)(pin - 9), irq);
+                status = routed ? (byte)0 : (byte)0x88;
+                // The Interrupt Line register is scratch for the OS, but a
+                // real BIOS still fills it in with what it just routed: many
+                // drivers trust 3Ch rather than repeating the PIRQ link math.
+                if (routed) bus.WriteConfiguration(state.Bx, 0x3C, 1, irq);
                 break;
+            }
             case >= 0x08 and <= 0x0D:
             {
                 int function = state.GetReg8(0);

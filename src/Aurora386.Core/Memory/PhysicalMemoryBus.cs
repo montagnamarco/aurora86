@@ -136,6 +136,31 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     public void MapDevice(uint physicalBase, uint length, IMemoryDevice device)
     {
         ValidateRange(physicalBase, length);
+        MapDeviceUnchecked(physicalBase, length, device);
+    }
+
+    /// <summary>
+    /// Maps a device the same way <see cref="MapDevice"/> does, but never
+    /// throws: it reports whether the range fits the addressable space and
+    /// leaves the bus untouched when it does not. This is what a PCI base
+    /// address register moving to wherever the guest last wrote uses --
+    /// the address came from software, not from a programmer who mistyped a
+    /// constant, so a bad one must decode nothing rather than raise an
+    /// exception the guest never sees and the emulator cannot recover from.
+    /// </summary>
+    public bool TryMapDevice(uint physicalBase, uint length, IMemoryDevice device)
+    {
+        if (!FitsAddressableSpace(physicalBase, length)) return false;
+        MapDeviceUnchecked(physicalBase, length, device);
+        return true;
+    }
+
+    private bool FitsAddressableSpace(uint physicalBase, uint length)
+        => (physicalBase & PageMask) == 0 && length != 0 && (length & PageMask) == 0
+        && length <= _addressableBytes && physicalBase <= _addressableBytes - length;
+
+    private void MapDeviceUnchecked(uint physicalBase, uint length, IMemoryDevice device)
+    {
         int first = (int)(physicalBase >> PageShift);
         int count = (int)(length >> PageShift);
 

@@ -11,6 +11,15 @@ namespace Aurora386.Core.Devices.Pci;
 public sealed class PciBus : IIoDwordDevice
 {
     public PciInterruptRouter? InterruptRouter { get; set; }
+
+    /// <summary>
+    /// What a bus-master PCI function reaches to move bytes without going
+    /// through the CPU. Null on a bus with no bus-master device fitted at
+    /// all -- nothing needs it, and constructing a machine with none stays
+    /// exactly as cheap as before this existed.
+    /// </summary>
+    public IDmaMemory? DmaMemory { get; set; }
+
     private uint _address;
     private readonly SortedDictionary<ushort, PciFunction> _functions = new();
     public IEnumerable<PciFunction> Functions => _functions.Values;
@@ -48,6 +57,13 @@ public sealed class PciBus : IIoDwordDevice
         InterruptRouter?.ResetSources();
         _address = 0;
         foreach (var function in Functions) function.Reset();
+
+        // The BIOS's own default PCI interrupt routing, applied fresh every
+        // POST: see PciInterruptRouter.RouteDefaults. Functions were just
+        // reset above, so this always starts from the same Interrupt Line
+        // reset value (unrouted, 0xFFh by PCI convention) rather than
+        // compounding whatever a previous boot, or the guest itself, wrote.
+        InterruptRouter?.RouteDefaults(Functions);
     }
     public byte[] Capture()
     {

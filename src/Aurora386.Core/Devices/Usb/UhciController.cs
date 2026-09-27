@@ -13,12 +13,11 @@ namespace Aurora386.Core.Devices.Usb;
 public sealed class UhciController : IIoDwordDevice
 {
     private readonly PhysicalMemoryBus _memory;
-    private readonly IoBus _io;
     private readonly PciInterruptRouter _router;
     public PciFunction Function { get; }
+    private readonly PciIoBarWindow _ioWindow;
     private readonly IUsbDevice?[] _devices = new IUsbDevice?[2];
     private readonly ushort[] _ports = [0x80, 0x80];
-    private ushort? _mapped;
     private ushort _command, _status = 0x20, _interruptEnable, _frame;
     private uint _frameBase;
     private byte _sof = 64;
@@ -28,7 +27,7 @@ public sealed class UhciController : IIoDwordDevice
 
     public UhciController(PhysicalMemoryBus memory, IoBus io, PciBus bus, ushort functionAddress = 0x10, ushort ioAddress = 0xC100)
     {
-        _memory = memory; _io = io;
+        _memory = memory;
         _router = bus.InterruptRouter ?? throw new ArgumentException("USB requires PCI routing.", nameof(bus));
         Function = new PciFunction(functionAddress, 0x8086, 0x7020, 0x0C0300, commandMask: 5);
         Function.DefineBar(4, 32, true, ioAddress);
@@ -36,21 +35,13 @@ public sealed class UhciController : IIoDwordDevice
         Function.Define(0x3C, 0xFF, 1, 0xFF);
         Function.Define(0x3D, 1, 1);
         Function.Define(0x60, 0x10, 1); // USB 1.0 serial bus release number
-        Function.ConfigurationChanged += MapPorts;
         bus.Add(Function);
-        MapPorts();
-    }
 
-    private void MapPorts()
-    {
-        if (_mapped is { } old) _io.Unregister(old, 32, this);
-        uint address = Function.Read(0x20, 4) & 0xFFFFFFE0;
-        _mapped = null;
-        if ((Function.Command & 1) != 0 && address <= 0xFFE0)
-        {
-            _mapped = (ushort)address;
-            _io.Register((ushort)address, 32, this);
-        }
+        // BAR4, the only one this function defines: 32 bytes of I/O space,
+        // moved and gated by command bit 0 exactly like any other PCI I/O
+        // BAR. See PciIoBarWindow for the shared relocation logic, including
+        // never decoding the transient all-ones sizing probe.
+        _ioWindow = new PciIoBarWindow(Function, 4, 32, io, this);
     }
 
     public void Attach(int port, IUsbDevice? device)
@@ -75,7 +66,7 @@ public sealed class UhciController : IIoDwordDevice
         UpdateInterrupt();
     }
 
-    private int Offset(ushort port) => _mapped is { } address ? port - address : -1;
+    private int Offset(ushort port) => _ioWindow.MappedBase is { } address ? port - address : -1;
     private ushort ReadRegister(int offset) => offset switch
     {
         0 => _command, 2 => _status, 4 => _interruptEnable, 6 => _frame,

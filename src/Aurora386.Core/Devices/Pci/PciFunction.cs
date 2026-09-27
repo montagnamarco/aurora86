@@ -16,6 +16,17 @@ public sealed class PciFunction
     public ushort DeviceId => (ushort)Read(2, 2);
     public uint ClassCode => Read(8, 4) >> 8;
     public ushort Command => (ushort)Read(4, 2);
+
+    /// <summary>
+    /// Command register bit 2: the function may act as a PCI bus master.
+    /// Clearing it must stop bus-master DMA at once -- BMICOM's start bit
+    /// ignored, a UHCI schedule not walked -- exactly as clearing bit 0 or 1
+    /// stops I/O or memory decode. Devices that move data on their own must
+    /// check this before touching physical memory, not only at the moment
+    /// the guest starts a transfer.
+    /// </summary>
+    public bool BusMasterEnabled => (Command & 0x4) != 0;
+
     public event Action? ConfigurationChanged;
 
     public PciFunction(ushort address, ushort vendor, ushort device, uint classCode,
@@ -49,6 +60,28 @@ public sealed class PciFunction
             throw new ArgumentOutOfRangeException(nameof(size));
         uint mask = ~(size - 1) & (io ? 0xFFFFFFFCu : 0xFFFFFFF0u);
         Define(0x10 + index * 4, (address & mask) | (io ? 1u : 0u), 4, mask);
+    }
+
+    /// <summary>
+    /// The address mask a base address register was defined with -- what
+    /// writing all ones and reading back reports for it, and what isolates
+    /// the base address from the low fixed bits (the I/O space indicator, or
+    /// the memory type and prefetchable bits). Zero for an index
+    /// <see cref="DefineBar"/> was never called for.
+    ///
+    /// A window bound to this BAR uses the same mask to recognise the
+    /// transient sizing probe: every address bit the mask allows reads back
+    /// set only right after software has written all ones, so a raw value
+    /// whose masked bits equal the mask itself is that probe, not a real
+    /// base, and must not decode.
+    /// </summary>
+    public uint BarAddressMask(int index)
+    {
+        if ((uint)index >= 6) throw new ArgumentOutOfRangeException(nameof(index));
+        int offset = 0x10 + index * 4;
+        uint mask = 0;
+        for (int i = 0; i < 4; i++) mask |= (uint)_writable[offset + i] << (8 * i);
+        return mask;
     }
 
     public uint Read(int offset, int width)

@@ -382,6 +382,21 @@ public sealed partial class Machine : IDisposable
         var pciVideo = new PciFunction(0x0020, 0x5333, 0x8811, 0x030000);
         pciVideo.Define(8, 0x03000000 | 0x54, 4);      // class, with revision 0x54
 
+        // Memory space is decoded unconditionally and the aperture never
+        // moves: the three physical windows behind it -- the linear
+        // framebuffer, the engine registers just above it, and the
+        // Trio64V+'s real MMIO location 16 MB further up -- are wired
+        // directly below, in Devices/Video/**, which this plan does not
+        // touch (F1.5 is chipset and PCI, not video). Command bit 1 is
+        // fixed at 1 (read-only) so a driver that actually checks it before
+        // touching the aperture sees the truth rather than a decode bit
+        // that says off while the memory answers anyway; the base address
+        // register itself stays writable so sizing continues to work, but a
+        // base other than the one fitted below is accepted into
+        // configuration space and simply not honoured -- fixed-and-honest,
+        // not movable.
+        pciVideo.Define(4, 2, 2, 0);
+
         // The base address register advertises the linear framebuffer:
         // prefetchable memory, at the address the aperture really answers.
         //
@@ -398,6 +413,12 @@ public sealed partial class Machine : IDisposable
 
         Pci.Register(Io);
         PciServices = new PciBios(Pci);
+
+        // What a PCI bus master (today none; the bus-master IDE engine and
+        // a NIC's descriptor rings are planned) reaches to move bytes
+        // without going through the CPU. See IDmaMemory's own summary for
+        // the RAM-only rule.
+        Pci.DmaMemory = new PhysicalDmaMemory(Memory);
 
         // Expansion cards: built from the configuration in a stable order,
         // which is what fixes their PCI device numbers and Plug and Play
