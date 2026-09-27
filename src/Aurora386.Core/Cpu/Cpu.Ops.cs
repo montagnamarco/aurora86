@@ -311,9 +311,17 @@ public sealed partial class Cpu
 
     private void Sahf()
     {
-        // SAHF loads AH into the low byte of EFLAGS, leaving the reserved bits
-        // as they were.
-        uint value = (Flags.Value & 0xFFFFFF00) | State.GetReg8(4);
+        // SAHF loads SF, ZF, AF, PF and CF from AH -- bits 7, 6, 4, 2 and 0.
+        // The three bits between them are not flags: bit 1 always reads as 1
+        // and bits 3 and 5 as 0, whatever AH holds. The 386EX vectors show it
+        // (AH = FE gives a low byte of D6), and so does the SDM's definition,
+        // EFLAGS(SF:ZF:0:AF:0:PF:1:CF) <- AH. Copying AH whole let a program
+        // plant 1s in bits 3 and 5 and read them back through PUSHF or LAHF.
+        const uint loadedFlags = 0xD5;
+        const uint alwaysOne = 0x02;
+
+        uint ah = State.GetReg8(4);
+        uint value = (Flags.Value & 0xFFFFFF00) | (ah & loadedFlags) | alwaysOne;
         Flags.SetValue(value);
     }
 
