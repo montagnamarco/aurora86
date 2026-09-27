@@ -56,6 +56,24 @@ public sealed partial class Machine
         {
             int steps = (int)Math.Min(chunk, count - executed);
 
+            // Stop the batch at the first instruction boundary at or after
+            // the next scheduled event, never past it: a batch that ran on
+            // through would let the event fire late by however many
+            // instructions were left in it, and the whole point of a
+            // cycle-accurate event is that it does not depend on where the
+            // batch boundary happens to fall. At least one instruction is
+            // always executed, even for an event that is already due --
+            // there is no such thing as a batch of zero here, on or off the
+            // scheduler -- so a callback that reschedules itself keeps making
+            // progress instead of spinning the loop without ever advancing
+            // Cpu.Cycles.
+            if (Scheduler.NextDueCycle is long due)
+            {
+                long untilDue = due - Cpu.Cycles;
+                long cap = untilDue <= 1 ? 1 : untilDue;
+                if (cap < steps) steps = (int)cap;
+            }
+
             for (int i = 0; i < steps; i++)
             {
                 if (Cpu.State.Halted && !Interrupts.HasPendingInterrupt)
@@ -81,6 +99,14 @@ public sealed partial class Machine
 
             executed += steps;
             AdvanceDevices(steps);
+
+            // Cpu.Cycles has just moved by exactly the batch above, whether
+            // every instruction in it ran or the tail was idle time credited
+            // by AccountIdleCycles: either way it is now at or past whatever
+            // was capped for above, so this is where that event actually
+            // fires.
+            Scheduler.RunDue(Cpu.Cycles);
+
             TryInstallRedirector();
             TryReclaimMouseVector();
             TryRefreshCompactDiscLetter();
@@ -97,6 +123,15 @@ public sealed partial class Machine
                 Keyboard.ResetRequested = false;
                 SystemControl.ResetRequested = false;
                 Cpu.Reset();
+
+                // Cpu.Cycles just went back to zero, so every due cycle still
+                // in the queue was measured against a clock that no longer
+                // exists. No device has migrated to the scheduler yet, so
+                // this drops an empty queue for now; the first one that does
+                // must re-arm its own events from its own Reset(), exactly as
+                // it already re-arms whatever state it keeps today -- see the
+                // reset note on Scheduler's summary.
+                Scheduler.Clear();
 
                 // The DOS that is about to boot is a new one: it has not
                 // started its command processor, and its INT 2Fh is not

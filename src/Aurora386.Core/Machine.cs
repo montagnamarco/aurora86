@@ -14,6 +14,7 @@ using Aurora386.Core.Devices.Video;
 using Aurora386.Core.Dos;
 using Aurora386.Core.IO;
 using Aurora386.Core.Memory;
+using Aurora386.Core.Timing;
 using CpuNs = Aurora386.Core.Cpu;
 
 namespace Aurora386.Core;
@@ -25,6 +26,17 @@ namespace Aurora386.Core;
 /// </summary>
 public sealed partial class Machine : IDisposable
 {
+    /// <summary>
+    /// The cycle-accurate event queue that sits alongside <see
+    /// cref="AdvanceDevices"/>: due cycles are the same count as <see
+    /// cref="CpuNs.Cpu.Cycles"/>. Nothing schedules on it yet -- the PIT and
+    /// the sound card still move with the batch advance -- but
+    /// <c>RunInstructions</c> already shortens a batch to stop exactly at the
+    /// next due event and fires it before the batch after. See <see
+    /// cref="Scheduler"/>'s summary for what a reset does to it.
+    /// </summary>
+    public Scheduler Scheduler { get; } = new();
+
     public PhysicalMemoryBus Memory { get; }
     public IoBus Io { get; }
     public PciBus Pci { get; }
@@ -141,6 +153,16 @@ public sealed partial class Machine : IDisposable
     /// its own hardware to be.
     /// </summary>
     public int CpuFrequencyHz { get; set; } = 25_000_000;   // a 25 MHz 386
+
+    /// <summary>
+    /// Converts a span of emulated wall-clock time into the number of CPU
+    /// cycles it takes at <see cref="CpuFrequencyHz"/> -- one cycle per
+    /// instruction today. For a device scheduling itself on <see
+    /// cref="Scheduler"/> from a datasheet timing given in microseconds,
+    /// rather than working out the ratio by hand each time.
+    /// </summary>
+    public long CyclesFromMicroseconds(double microseconds)
+        => (long)(microseconds * CpuFrequencyHz / 1_000_000.0);
 
     /// <summary>True once the boot sector has been loaded and given control.</summary>
     public bool Booted { get; private set; }
