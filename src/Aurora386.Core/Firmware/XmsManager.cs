@@ -19,6 +19,65 @@ namespace Aurora386.Core.Firmware;
 /// </summary>
 public sealed class XmsManager
 {
+    // XMS 3.0 function numbers, passed in AH.
+    private const byte FunctionGetVersion = 0x00;
+    private const byte FunctionRequestHma = 0x01;
+    private const byte FunctionReleaseHma = 0x02;
+    private const byte FunctionGlobalEnableA20 = 0x03;
+    private const byte FunctionGlobalDisableA20 = 0x04;
+    private const byte FunctionLocalEnableA20 = 0x05;
+    private const byte FunctionLocalDisableA20 = 0x06;
+    private const byte FunctionQueryA20 = 0x07;
+    private const byte FunctionQueryFreeMemory = 0x08;
+    private const byte FunctionAllocateBlock = 0x09;
+    private const byte FunctionFreeBlock = 0x0A;
+    private const byte FunctionMoveBlock = 0x0B;
+    private const byte FunctionLockBlock = 0x0C;
+    private const byte FunctionUnlockBlock = 0x0D;
+    private const byte FunctionGetHandleInformation = 0x0E;
+
+    // XMS 3.0 error codes, returned in BL.
+    private const byte NoError = 0x00;
+    private const byte ErrorNotImplemented = 0x80;
+    private const byte ErrorHmaInUse = 0x91;
+    private const byte ErrorHmaNotAllocated = 0x93;
+    private const byte ErrorA20StillEnabled = 0x94;
+    private const byte ErrorAllMemoryAllocated = 0xA0;
+    private const byte ErrorHmaTooSmall = 0xA1;
+    private const byte ErrorInvalidHandle = 0xA2;
+    private const byte ErrorInvalidSourceHandle = 0xA3;
+    private const byte ErrorInvalidDestinationHandle = 0xA5;
+    private const byte ErrorInvalidLength = 0xA7;
+    private const byte ErrorBlockNotLocked = 0xAA;
+    private const byte ErrorBlockLocked = 0xAB;
+
+    /// <summary>XMS 3.0, in BCD digits.</summary>
+    private const ushort SpecificationVersion = 0x0300;
+
+    /// <summary>The internal revision of this manager, reported by function 00h.</summary>
+    private const ushort DriverRevision = 0x0001;
+
+    /// <summary>What function 00h puts in DX when the HMA exists.</summary>
+    private const ushort HmaExists = 0x0001;
+
+    /// <summary>The DX value an operating system passes to take the whole HMA.</summary>
+    private const ushort HmaWholeAreaRequest = 0xFFFF;
+
+    /// <summary>Handle zero in a move request names conventional memory, addressed by segment:offset.</summary>
+    private const ushort ConventionalMemoryHandle = 0;
+
+    /// <summary>The number of handles function 0Eh counts free ones against.</summary>
+    private const int HandleCount = 0xFF;
+
+    // Offsets inside the move structure DS:SI points at.
+    private const uint MoveLengthOffset = 0;
+    private const uint MoveSourceHandleOffset = 4;
+    private const uint MoveSourceOffsetOffset = 6;
+    private const uint MoveDestinationHandleOffset = 10;
+    private const uint MoveDestinationOffsetOffset = 12;
+
+    private const uint BytesPerKb = 1024;
+
     private readonly PhysicalMemoryBus _memory;
 
     /// <summary>First address of the HMA: the 64 KB just above one megabyte.</summary>
@@ -56,11 +115,11 @@ public sealed class XmsManager
 
     /// <summary>Total manageable extended memory, in KB.</summary>
     private uint TotalExtendedKb =>
-        _memory.RamSize > ExtendedMemoryBase ? (_memory.RamSize - ExtendedMemoryBase) / 1024 : 0;
+        _memory.RamSize > ExtendedMemoryBase ? (_memory.RamSize - ExtendedMemoryBase) / BytesPerKb : 0;
 
     /// <summary>Extended memory still free, in KB.</summary>
     private uint FreeExtendedKb =>
-        _memory.RamSize > _allocationPointer ? (_memory.RamSize - _allocationPointer) / 1024 : 0;
+        _memory.RamSize > _allocationPointer ? (_memory.RamSize - _allocationPointer) / BytesPerKb : 0;
 
     /// <summary>
     /// XMS entry point. The requested function is in AH; the outcome comes back
@@ -68,37 +127,66 @@ public sealed class XmsManager
     /// </summary>
     public void Handle(CpuNs.Cpu cpu)
     {
-        byte function = cpu.State.GetReg8(4);   // AH
+        byte function = cpu.State.GetReg8((int)CpuNs.Reg8.Ah);
 
         switch (function)
         {
-            case 0x00: GetVersion(cpu); return;
-            case 0x01: RequestHma(cpu); return;
-            case 0x02: ReleaseHma(cpu); return;
-            case 0x03: GlobalEnableA20(cpu); return;
-            case 0x04: GlobalDisableA20(cpu); return;
-            case 0x05: LocalEnableA20(cpu); return;
-            case 0x06: LocalDisableA20(cpu); return;
-            case 0x07: QueryA20(cpu); return;
-            case 0x08: QueryFreeMemory(cpu); return;
-            case 0x09: AllocateBlock(cpu); return;
-            case 0x0A: FreeBlock(cpu); return;
-            case 0x0B: MoveBlock(cpu); return;
-            case 0x0C: LockBlock(cpu); return;
-            case 0x0D: UnlockBlock(cpu); return;
-            case 0x0E: GetHandleInformation(cpu); return;
-
+            case FunctionGetVersion:
+                GetVersion(cpu);
+                return;
+            case FunctionRequestHma:
+                RequestHma(cpu);
+                return;
+            case FunctionReleaseHma:
+                ReleaseHma(cpu);
+                return;
+            case FunctionGlobalEnableA20:
+                GlobalEnableA20(cpu);
+                return;
+            case FunctionGlobalDisableA20:
+                GlobalDisableA20(cpu);
+                return;
+            case FunctionLocalEnableA20:
+                LocalEnableA20(cpu);
+                return;
+            case FunctionLocalDisableA20:
+                LocalDisableA20(cpu);
+                return;
+            case FunctionQueryA20:
+                QueryA20(cpu);
+                return;
+            case FunctionQueryFreeMemory:
+                QueryFreeMemory(cpu);
+                return;
+            case FunctionAllocateBlock:
+                AllocateBlock(cpu);
+                return;
+            case FunctionFreeBlock:
+                FreeBlock(cpu);
+                return;
+            case FunctionMoveBlock:
+                MoveBlock(cpu);
+                return;
+            case FunctionLockBlock:
+                LockBlock(cpu);
+                return;
+            case FunctionUnlockBlock:
+                UnlockBlock(cpu);
+                return;
+            case FunctionGetHandleInformation:
+                GetHandleInformation(cpu);
+                return;
             default:
-                Fail(cpu, 0x80);   // function not implemented
+                Fail(cpu, ErrorNotImplemented);
                 return;
         }
     }
 
     private void GetVersion(CpuNs.Cpu cpu)
     {
-        cpu.State.Ax = 0x0300;    // XMS 3.0, in BCD digits
-        cpu.State.Bx = 0x0001;    // internal revision of this manager
-        cpu.State.Dx = 0x0001;    // the HMA exists
+        cpu.State.Ax = SpecificationVersion;
+        cpu.State.Bx = DriverRevision;
+        cpu.State.Dx = HmaExists;
     }
 
     /// <summary>
@@ -107,7 +195,11 @@ public sealed class XmsManager
     /// </summary>
     private void RequestHma(CpuNs.Cpu cpu)
     {
-        if (HmaAllocated) { Fail(cpu, 0x91); return; }   // already allocated
+        if (HmaAllocated)
+        {
+            Fail(cpu, ErrorHmaInUse);
+            return;
+        }
 
         // DX says how much space is needed. The HMA is 0xFFF0 bytes long, but
         // the value 0xFFFF carries a special meaning: it is what an operating
@@ -115,9 +207,14 @@ public sealed class XmsManager
         // DOS does with DOS=HIGH. Rejecting it would stop DOS from relocating
         // into high memory.
         ushort requestedBytes = cpu.State.Dx;
-        if (requestedBytes != 0xFFFF && requestedBytes > HmaSize) { Fail(cpu, 0xA1); return; }
+        if (requestedBytes != HmaWholeAreaRequest && requestedBytes > HmaSize)
+        {
+            Fail(cpu, ErrorHmaTooSmall);
+            return;
+        }
 
         HmaAllocated = true;
+
         // Whoever owns the HMA needs A20 to stay on in order to use it.
         _memory.A20Enabled = true;
         Succeed(cpu);
@@ -125,7 +222,12 @@ public sealed class XmsManager
 
     private void ReleaseHma(CpuNs.Cpu cpu)
     {
-        if (!HmaAllocated) { Fail(cpu, 0x93); return; }
+        if (!HmaAllocated)
+        {
+            Fail(cpu, ErrorHmaNotAllocated);
+            return;
+        }
+
         HmaAllocated = false;
         Succeed(cpu);
     }
@@ -144,7 +246,12 @@ public sealed class XmsManager
     {
         // Turning A20 off while the HMA is in use would make the code currently
         // executing unreachable, so the request has to be refused.
-        if (HmaAllocated) { Fail(cpu, 0x94); return; }
+        if (HmaAllocated)
+        {
+            Fail(cpu, ErrorA20StillEnabled);
+            return;
+        }
+
         _memory.A20Enabled = false;
         Succeed(cpu);
     }
@@ -157,7 +264,12 @@ public sealed class XmsManager
 
     private void LocalDisableA20(CpuNs.Cpu cpu)
     {
-        if (HmaAllocated) { Fail(cpu, 0x94); return; }
+        if (HmaAllocated)
+        {
+            Fail(cpu, ErrorA20StillEnabled);
+            return;
+        }
+
         _memory.A20Enabled = false;
         Succeed(cpu);
     }
@@ -165,7 +277,7 @@ public sealed class XmsManager
     private void QueryA20(CpuNs.Cpu cpu)
     {
         cpu.State.Ax = (ushort)(_memory.A20Enabled ? 1 : 0);
-        cpu.State.SetReg8(3, 0);   // BL: no error
+        cpu.State.SetReg8((int)CpuNs.Reg8.Bl, NoError);
     }
 
     /// <summary>
@@ -183,10 +295,10 @@ public sealed class XmsManager
     {
         // The registers are 16 bit wide, so anything past 64 MB saturates --
         // not a concern with 16 MB of RAM.
-        ushort free = (ushort)Math.Min(FreeExtendedKb, 0xFFFF);
+        ushort free = (ushort)Math.Min(FreeExtendedKb, ushort.MaxValue);
         cpu.State.Ax = free;      // largest free block
         cpu.State.Dx = free;      // total free
-        cpu.State.SetReg8(3, 0);
+        cpu.State.SetReg8((int)CpuNs.Reg8.Bl, NoError);
     }
 
     /// <summary>
@@ -198,9 +310,16 @@ public sealed class XmsManager
     private void AllocateBlock(CpuNs.Cpu cpu)
     {
         uint requestedKb = cpu.State.Dx;
-        if (requestedKb == 0) requestedKb = 1;
+        if (requestedKb == 0)
+        {
+            requestedKb = 1;
+        }
 
-        if (requestedKb > FreeExtendedKb) { Fail(cpu, 0xA0); return; }
+        if (requestedKb > FreeExtendedKb)
+        {
+            Fail(cpu, ErrorAllMemoryAllocated);
+            return;
+        }
 
         var block = new Block
         {
@@ -209,9 +328,10 @@ public sealed class XmsManager
             InUse = true,
         };
 
-        _allocationPointer += requestedKb * 1024;
+        _allocationPointer += requestedKb * BytesPerKb;
 
-        ushort handle = _nextHandle++;
+        ushort handle = _nextHandle;
+        _nextHandle++;
         _blocks[handle] = block;
 
         cpu.State.Ax = 1;
@@ -223,10 +343,15 @@ public sealed class XmsManager
         ushort handle = cpu.State.Dx;
         if (!_blocks.TryGetValue(handle, out Block? block) || !block.InUse)
         {
-            Fail(cpu, 0xA2);   // invalid handle
+            Fail(cpu, ErrorInvalidHandle);
             return;
         }
-        if (block.LockCount > 0) { Fail(cpu, 0xAB); return; }   // still locked
+
+        if (block.LockCount > 0)
+        {
+            Fail(cpu, ErrorBlockLocked);
+            return;
+        }
 
         block.InUse = false;
         _blocks.Remove(handle);
@@ -245,24 +370,34 @@ public sealed class XmsManager
     {
         uint parameters = cpu.State.Si;
 
-        uint length = ReadDwordFromDs(cpu, parameters);
-        ushort sourceHandle = cpu.ReadMemoryWord(CpuNs.SegReg.Ds, parameters + 4);
-        uint sourceOffset = ReadDwordFromDs(cpu, parameters + 6);
-        ushort destHandle = cpu.ReadMemoryWord(CpuNs.SegReg.Ds, parameters + 10);
-        uint destOffset = ReadDwordFromDs(cpu, parameters + 12);
+        uint length = ReadDwordFromDs(cpu, parameters + MoveLengthOffset);
+        ushort sourceHandle = cpu.ReadMemoryWord(CpuNs.SegReg.Ds, parameters + MoveSourceHandleOffset);
+        uint sourceOffset = ReadDwordFromDs(cpu, parameters + MoveSourceOffsetOffset);
+        ushort destHandle = cpu.ReadMemoryWord(CpuNs.SegReg.Ds, parameters + MoveDestinationHandleOffset);
+        uint destOffset = ReadDwordFromDs(cpu, parameters + MoveDestinationOffsetOffset);
 
         // The specification does not allow an odd length.
-        if ((length & 1) != 0) { Fail(cpu, 0xA7); return; }
-        if (length == 0) { Succeed(cpu); return; }
+        if ((length & 1) != 0)
+        {
+            Fail(cpu, ErrorInvalidLength);
+            return;
+        }
+
+        if (length == 0)
+        {
+            Succeed(cpu);
+            return;
+        }
 
         if (!TryResolve(sourceHandle, sourceOffset, length, out uint sourceAddress))
         {
-            Fail(cpu, (byte)(sourceHandle == 0 ? 0xA7 : 0xA3));
+            Fail(cpu, sourceHandle == ConventionalMemoryHandle ? ErrorInvalidLength : ErrorInvalidSourceHandle);
             return;
         }
+
         if (!TryResolve(destHandle, destOffset, length, out uint destAddress))
         {
-            Fail(cpu, (byte)(destHandle == 0 ? 0xA7 : 0xA5));
+            Fail(cpu, destHandle == ConventionalMemoryHandle ? ErrorInvalidLength : ErrorInvalidDestinationHandle);
             return;
         }
 
@@ -278,12 +413,16 @@ public sealed class XmsManager
         if (destAddress > sourceAddress && destAddress < sourceAddress + length)
         {
             for (uint i = length; i > 0; i--)
+            {
                 _memory.WriteByte(destAddress + i - 1, _memory.ReadByte(sourceAddress + i - 1));
+            }
         }
         else
         {
             for (uint i = 0; i < length; i++)
+            {
                 _memory.WriteByte(destAddress + i, _memory.ReadByte(sourceAddress + i));
+            }
         }
 
         _memory.A20Enabled = previousA20;
@@ -317,7 +456,7 @@ public sealed class XmsManager
     /// </summary>
     private bool TryResolve(ushort handle, uint offset, uint length, out uint address)
     {
-        if (handle == 0)
+        if (handle == ConventionalMemoryHandle)
         {
             // Real-mode pointer: segment in the high half, offset in the low half.
             ushort segment = (ushort)(offset >> 16);
@@ -332,7 +471,7 @@ public sealed class XmsManager
             return false;
         }
 
-        if (offset + length > block.SizeKb * 1024)
+        if (offset + length > block.SizeKb * BytesPerKb)
         {
             address = 0;
             return false;
@@ -347,12 +486,13 @@ public sealed class XmsManager
         ushort handle = cpu.State.Dx;
         if (!_blocks.TryGetValue(handle, out Block? block) || !block.InUse)
         {
-            Fail(cpu, 0xA2);
+            Fail(cpu, ErrorInvalidHandle);
             return;
         }
 
         block.LockCount++;
         cpu.State.Ax = 1;
+
         // The physical address of the block is returned in DX:BX.
         cpu.State.Dx = (ushort)(block.Base >> 16);
         cpu.State.Bx = (ushort)block.Base;
@@ -363,10 +503,15 @@ public sealed class XmsManager
         ushort handle = cpu.State.Dx;
         if (!_blocks.TryGetValue(handle, out Block? block) || !block.InUse)
         {
-            Fail(cpu, 0xA2);
+            Fail(cpu, ErrorInvalidHandle);
             return;
         }
-        if (block.LockCount == 0) { Fail(cpu, 0xAA); return; }
+
+        if (block.LockCount == 0)
+        {
+            Fail(cpu, ErrorBlockNotLocked);
+            return;
+        }
 
         block.LockCount--;
         Succeed(cpu);
@@ -377,29 +522,32 @@ public sealed class XmsManager
         ushort handle = cpu.State.Dx;
         if (!_blocks.TryGetValue(handle, out Block? block) || !block.InUse)
         {
-            Fail(cpu, 0xA2);
+            Fail(cpu, ErrorInvalidHandle);
             return;
         }
 
         cpu.State.Ax = 1;
         cpu.State.SetReg8((int)CpuNs.Reg8.Bh, (byte)block.LockCount);   // active locks
-        cpu.State.SetReg8(3, (byte)(0xFF - _blocks.Count));     // BL: free handles
+        cpu.State.SetReg8((int)CpuNs.Reg8.Bl, (byte)(HandleCount - _blocks.Count));   // free handles
         cpu.State.Dx = (ushort)block.SizeKb;
     }
 
     private uint ReadDwordFromDs(CpuNs.Cpu cpu, uint offset)
-        => (uint)(cpu.ReadMemoryWord(CpuNs.SegReg.Ds, offset)
-                | (cpu.ReadMemoryWord(CpuNs.SegReg.Ds, offset + 2) << 16));
+    {
+        uint low = cpu.ReadMemoryWord(CpuNs.SegReg.Ds, offset);
+        uint high = cpu.ReadMemoryWord(CpuNs.SegReg.Ds, offset + 2);
+        return low | (high << 16);
+    }
 
     private static void Succeed(CpuNs.Cpu cpu)
     {
         cpu.State.Ax = 1;
-        cpu.State.SetReg8(3, 0);   // BL: no error
+        cpu.State.SetReg8((int)CpuNs.Reg8.Bl, NoError);
     }
 
     private static void Fail(CpuNs.Cpu cpu, byte errorCode)
     {
         cpu.State.Ax = 0;
-        cpu.State.SetReg8(3, errorCode);   // BL
+        cpu.State.SetReg8((int)CpuNs.Reg8.Bl, errorCode);
     }
 }
