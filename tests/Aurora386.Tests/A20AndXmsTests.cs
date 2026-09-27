@@ -218,6 +218,22 @@ public class XmsTests
     }
 
     [Fact]
+    public void HandleInformationReportsTheLockCountInBhAndLeavesAxAtOne()
+    {
+        using Machine machine = CreateBootedMachine();
+        CallXms(machine, 0x09, c => c.State.Dx = 4);      // allocate 4 KB
+        ushort handle = machine.Cpu.State.Dx;
+        CallXms(machine, 0x0C, c => c.State.Dx = handle);  // lock it once
+        CallXms(machine, 0x0C, c => c.State.Dx = handle);  // and again
+
+        CallXms(machine, 0x0E, c => c.State.Dx = handle);
+
+        Assert.Equal(1, machine.Cpu.State.Ax);
+        Assert.Equal(2, machine.Cpu.State.GetReg8((int)Aurora386.Core.Cpu.Reg8.Bh));
+        Assert.Equal(4, machine.Cpu.State.Dx);
+    }
+
+    [Fact]
     public void RequestingTheHmaSucceedsAndEnablesA20()
     {
         using Machine machine = CreateBootedMachine();

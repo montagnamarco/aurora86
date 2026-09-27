@@ -382,7 +382,7 @@ public sealed class XmsManager
         }
 
         cpu.State.Ax = 1;
-        cpu.State.SetReg8(4, (byte)block.LockCount);            // BH: active locks
+        cpu.State.SetReg8((int)CpuNs.Reg8.Bh, (byte)block.LockCount);   // active locks
         cpu.State.SetReg8(3, (byte)(0xFF - _blocks.Count));     // BL: free handles
         cpu.State.Dx = (ushort)block.SizeKb;
     }
