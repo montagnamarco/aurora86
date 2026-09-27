@@ -1,6 +1,4 @@
 using Aurora386.Core;
-using Aurora386.Core.Firmware;
-using Aurora386.Core.Firmware.Fpu;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Diagnostics;
 using Aurora386.Core.Cpu;
@@ -17,24 +15,16 @@ namespace Aurora386.Tests;
 /// </summary>
 public class DiskWriteLogTests
 {
-    private static string TestImage =>
-        Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-                     "images", "hdd.img.prima-di-win386");
-
     /// <summary>
-    /// Writes one sector at the given place and returns what the log recorded.
+    /// Writes one absolute sector and returns what the log recorded.
     /// </summary>
-    private static string[] WriteAt(int cylinder, int head, int sector)
+    private static string[] WriteAt(SyntheticFatDisk fixture, long linear)
     {
         string logPath = Path.GetTempFileName();
-        string copy = Path.GetTempFileName();
-
         try
         {
-            File.Copy(TestImage, copy, overwrite: true);
-
             using var machine = new Machine();
-            machine.AttachDisk(DiskImage.OpenHardDisk(copy));
+            machine.AttachDisk(fixture.OpenImage());
             machine.RunInstructions(200);
 
             DiskImage disk = machine.DiskServices.GetDrive(0x80)!;
@@ -45,6 +35,7 @@ public class DiskWriteLogTests
                 machine.Cpu.State.Bx = 0x6000;
                 machine.Cpu.State.SetReg8(4, 0x03);            // AH: write
                 machine.Cpu.State.SetReg8(0, 1);               // AL: one sector
+                (int cylinder, int head, int sector) = fixture.ToChs(linear);
                 machine.Cpu.State.SetReg8(5, (byte)cylinder);  // CH
                 machine.Cpu.State.SetReg8(1, (byte)sector);    // CL
                 machine.Cpu.State.SetReg8(6, (byte)head);      // DH
@@ -53,24 +44,21 @@ public class DiskWriteLogTests
                 machine.DiskServices.Handle(machine.Cpu);
             }
 
-            return File.ReadAllLines(logPath).Where(l => !l.StartsWith('#')).ToArray();
+            return File.ReadAllLines(logPath).Where(line => !line.StartsWith('#')).ToArray();
         }
         finally
         {
             File.Delete(logPath);
-            File.Delete(copy);
         }
     }
 
     [Fact]
     public void AWriteIsReportedUnderTheNameOfTheFileThatOwnsThoseSectors()
     {
-        // The reference image is a build artefact rather than a checked-in
-        // fixture, so where none has been built there is nothing to test.
-        if (!File.Exists(TestImage)) return;
+        using var fixture = new SyntheticFatDisk();
 
-        // C:\COMMAND.COM starts at cylinder 0, head 10, sector 45.
-        Assert.Equal(new[] { @"C:\COMMAND.COM" }, WriteAt(0, 10, 45));
+        Assert.Equal(new[] { @"C:\COMMAND.COM" },
+                     WriteAt(fixture, fixture.ClusterToSector(2)));
     }
 
     /// <summary>
@@ -81,20 +69,21 @@ public class DiskWriteLogTests
     [Fact]
     public void AdjacentFilesAreToldApart()
     {
-        if (!File.Exists(TestImage)) return;
+        using var fixture = new SyntheticFatDisk();
 
-        Assert.Equal(new[] { @"C:\CONFIG.SYS" }, WriteAt(13, 0, 51));
-        Assert.Equal(new[] { @"C:\AUTOEXEC.BAT" }, WriteAt(13, 0, 59));
+        Assert.Equal(new[] { @"C:\CONFIG.SYS" }, WriteAt(fixture, fixture.ClusterToSector(6)));
+        Assert.Equal(new[] { @"C:\AUTOEXEC.BAT" }, WriteAt(fixture, fixture.ClusterToSector(7)));
     }
 
     [Fact]
     public void AWriteToTheVolumesOwnTablesIsNotReportedAsAFile()
     {
-        if (!File.Exists(TestImage)) return;
+        using var fixture = new SyntheticFatDisk();
 
-        // Sector 1 of the volume is inside the reserved area and belongs to no
+        // The first FAT sector belongs to the volume's metadata and to no
         // file; reporting a name for it would be an invention.
-        Assert.Empty(WriteAt(0, 0, 2));
+        Assert.Empty(WriteAt(fixture,
+            fixture.VolumeStart + fixture.BootParameters.FirstFatSector));
     }
 
     /// <summary>
@@ -106,33 +95,29 @@ public class DiskWriteLogTests
     [Fact]
     public void ALogWithoutAFileStillRaisesEveryLine()
     {
-        string copy = Path.GetTempFileName();
-        try
-        {
-            File.Copy(TestImage, copy, overwrite: true);
+        using var fixture = new SyntheticFatDisk();
 
-            using var machine = new Machine();
-            machine.AttachDisk(DiskImage.OpenHardDisk(copy));
-            machine.RunInstructions(200);
+        using var machine = new Machine();
+        machine.AttachDisk(fixture.OpenImage());
+        machine.RunInstructions(200);
 
-            DiskImage disk = machine.DiskServices.GetDrive(0x80)!;
-            var seen = new List<string>();
-            using DiskWriteLog log = DiskWriteLog.Attach(machine, disk);
-            log.LineWritten += seen.Add;
+        DiskImage disk = machine.DiskServices.GetDrive(0x80)!;
+        var seen = new List<string>();
+        using DiskWriteLog log = DiskWriteLog.Attach(machine, disk);
+        log.LineWritten += seen.Add;
 
-            machine.Cpu.State.Halted = false;
-            machine.Cpu.SetSegment(SegReg.Es, 0);
-            machine.Cpu.State.Bx = 0x6000;
-            machine.Cpu.State.SetReg8(4, 0x03);            // AH: write
-            machine.Cpu.State.SetReg8(0, 1);               // AL: one sector
-            machine.Cpu.State.SetReg8(5, 0);               // CH: cylinder 0
-            machine.Cpu.State.SetReg8(1, 45);              // CL: sector 45
-            machine.Cpu.State.SetReg8(6, 10);              // DH: head 10 -- COMMAND.COM lives here
-            machine.Cpu.State.SetReg8(2, 0x80);            // DL: first hard disk
-            machine.DiskServices.Handle(machine.Cpu);
+        machine.Cpu.State.Halted = false;
+        machine.Cpu.SetSegment(SegReg.Es, 0);
+        machine.Cpu.State.Bx = 0x6000;
+        machine.Cpu.State.SetReg8(4, 0x03);            // AH: write
+        machine.Cpu.State.SetReg8(0, 1);               // AL: one sector
+        (int cylinder, int head, int sector) = fixture.ToChs(fixture.ClusterToSector(2));
+        machine.Cpu.State.SetReg8(5, (byte)cylinder);  // CH
+        machine.Cpu.State.SetReg8(1, (byte)sector);    // CL
+        machine.Cpu.State.SetReg8(6, (byte)head);      // DH
+        machine.Cpu.State.SetReg8(2, 0x80);            // DL: first hard disk
+        machine.DiskServices.Handle(machine.Cpu);
 
-            Assert.Equal(@"C:\COMMAND.COM", Assert.Single(seen));
-        }
-        finally { File.Delete(copy); }
+        Assert.Equal(@"C:\COMMAND.COM", Assert.Single(seen));
     }
 }

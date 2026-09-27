@@ -5,15 +5,12 @@ namespace Aurora386.Tests;
 
 /// <summary>
 /// Going from a file's name to its sectors, which is the direction a person
-/// brings to a disk editor. The image is the installed DOS one the write-log
-/// tests already depend on, so the files asked for are known to be there.
+/// brings to a disk editor. A disposable FAT16 volume gives the tests known
+/// files and chains without relying on an installed DOS disk image.
 /// </summary>
 public class DiskInspectorFileTests
 {
-    private static string TestImage =>
-        Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-                     "images", "hdd.img.prima-di-win386");
-
+    /// <summary>Locates the fixture's partition before testing volume-relative file lookup.</summary>
     private static (DiskInspector Inspector, long Volume) Open(DiskImage image)
     {
         var inspector = new DiskInspector(image);
@@ -23,17 +20,18 @@ public class DiskInspectorFileTests
     [Fact]
     public void AFileIsFoundByItsPathAndReadInFull()
     {
-        using DiskImage image = DiskImage.OpenHardDisk(TestImage, readOnly: true);
+        using var disk = new SyntheticFatDisk();
+        using DiskImage image = disk.OpenImage();
         (DiskInspector inspector, long volume) = Open(image);
 
         DiskInspector.FileLocation? found = inspector.FindFile(volume, @"\COMMAND.COM");
         Assert.NotNull(found);
         Assert.False(found.Value.IsDirectory);
-        Assert.True(found.Value.Size > 0);
+        Assert.Equal((uint)disk.CommandContent.Length, found.Value.Size);
 
         byte[]? content = inspector.ReadFile(volume, @"\COMMAND.COM");
         Assert.NotNull(content);
-        Assert.Equal(found.Value.Size, (uint)content.Length);
+        Assert.Equal(disk.CommandContent, content);
 
         // The file begins where its first cluster begins.
         byte[] firstSector = inspector.ReadSector(
@@ -44,7 +42,8 @@ public class DiskInspectorFileTests
     [Fact]
     public void AFileInsideADirectoryIsFoundThroughIt()
     {
-        using DiskImage image = DiskImage.OpenHardDisk(TestImage, readOnly: true);
+        using var disk = new SyntheticFatDisk();
+        using DiskImage image = disk.OpenImage();
         (DiskInspector inspector, long volume) = Open(image);
 
         DiskInspector.FileLocation? directory = inspector.FindFile(volume, @"\DOS");
@@ -60,7 +59,8 @@ public class DiskInspectorFileTests
     [Fact]
     public void AMissingFileIsNullAndSoIsAFileBelowAFile()
     {
-        using DiskImage image = DiskImage.OpenHardDisk(TestImage, readOnly: true);
+        using var disk = new SyntheticFatDisk();
+        using DiskImage image = disk.OpenImage();
         (DiskInspector inspector, long volume) = Open(image);
 
         Assert.Null(inspector.FindFile(volume, @"\NOPE.TXT"));
