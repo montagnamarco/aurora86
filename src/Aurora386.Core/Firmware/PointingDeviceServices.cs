@@ -26,6 +26,86 @@ namespace Aurora386.Core.Firmware;
 /// </summary>
 public sealed class PointingDeviceServices
 {
+    // Subfunctions of INT 15h AH=C2h, passed in AL.
+    private const byte SubfunctionEnable = 0x00;
+    private const byte SubfunctionReset = 0x01;
+    private const byte SubfunctionSetSampleRate = 0x02;
+    private const byte SubfunctionSetResolution = 0x03;
+    private const byte SubfunctionGetDeviceType = 0x04;
+    private const byte SubfunctionInitialize = 0x05;
+    private const byte SubfunctionExtended = 0x06;
+    private const byte SubfunctionSetHandler = 0x07;
+
+    // Commands of subfunction 06h, passed in BH.
+    private const byte ExtendedGetStatus = 0x00;
+    private const byte ExtendedScalingOneToOne = 0x01;
+    private const byte ExtendedScalingTwoToOne = 0x02;
+
+    // Status codes returned in AH.
+    private const byte Success = 0x00;
+    private const byte InvalidFunction = 0x01;
+    private const byte InvalidInput = 0x02;
+    private const byte NoHandler = 0x05;
+
+    /// <summary>Sample rates, in reports per second, that BH values 0-6 select.</summary>
+    private static readonly byte[] SampleRates = [10, 20, 40, 60, 80, 100, 200];
+
+    private const byte DefaultSampleRate = 100;
+
+    /// <summary>Resolution 2 is four counts per millimetre, the mouse's power-up setting.</summary>
+    private const byte DefaultResolution = 2;
+
+    private const byte MaximumResolution = 3;
+    private const byte MinimumPackageSize = 1;
+    private const byte MaximumPackageSize = 8;
+
+    /// <summary>What reset returns in BX: device id 00h in BH, and the self-test pass code AAh in BL.</summary>
+    private const ushort ResetResult = 0x00AA;
+
+    /// <summary>The device id of a standard PS/2 mouse.</summary>
+    private const byte StandardMouseId = 0x00;
+
+    // Status flags that extended status returns in BL.
+    private const byte StatusScalingTwoToOne = 0x10;
+    private const byte StatusEnabled = 0x20;
+
+    // Where the PS/2 BIOS kept the handler pointer inside the EBDA.
+    private const uint EbdaHandlerOffset = 0x22;
+    private const uint EbdaHandlerSegment = 0x24;
+
+    // The 8042 keyboard controller: data and command/status ports, the
+    // commands used here, and the bits they touch.
+    private const ushort ControllerData = 0x60;
+    private const ushort ControllerCommand = 0x64;
+    private const byte CommandEnableAuxiliary = 0xA8;
+    private const byte CommandWriteCommandByte = 0x60;
+    private const byte CommandWriteToAuxiliary = 0xD4;
+    private const byte CommandByteAuxiliaryInterrupt = 0x02;
+    private const byte CommandByteAuxiliaryDisabled = 0x20;
+    private const byte StatusOutputFull = 0x01;
+    private const byte StatusAuxiliaryData = 0x20;
+
+    // Mouse commands sent through the auxiliary port.
+    private const byte MouseEnableReporting = 0xF4;
+    private const byte MouseDisableReporting = 0xF5;
+
+    /// <summary>How many reply bytes the acknowledgement drain may read before giving up.</summary>
+    private const int AcknowledgeAttempts = 16;
+
+    // The 8259 mask registers and the lines the mouse needs open.
+    private const ushort MasterMaskPort = 0x21;
+    private const ushort SlaveMaskPort = 0xA1;
+    private const byte SlaveIrq12Bit = 0x10;
+    private const byte MasterCascadeBit = 0x04;
+
+    private const int PacketLength = 3;
+
+    /// <summary>Bit 3 of a packet's first byte is always set; it is how a lost packet is resynchronised.</summary>
+    private const byte PacketHeaderMarker = 0x08;
+
+    /// <summary>The segment of the BIOS ROM, where the callback return stub lives.</summary>
+    private const ushort BiosSegment = 0xF000;
+
     private readonly Machine _machine;
 
     public PointingDeviceServices(Machine machine) => _machine = machine;
@@ -40,91 +120,155 @@ public sealed class PointingDeviceServices
     /// <summary>Whether C205h has run; enabling before it is refused.</summary>
     public bool Initialized { get; private set; }
 
-    public byte SampleRate { get; private set; } = 100;
-    public byte Resolution { get; private set; } = 2;
+    public byte SampleRate { get; private set; } = DefaultSampleRate;
+    public byte Resolution { get; private set; } = DefaultResolution;
     public bool Scaling2To1 { get; private set; }
 
-    private readonly byte[] _packet = new byte[3];
+    /// <summary>Bytes seen on IRQ 12 and packets handed to the guest, for diagnostics.</summary>
+    public long BytesReceived { get; private set; }
+    public long PacketsDelivered { get; private set; }
+    public long PacketsDropped { get; private set; }
+
+    private readonly byte[] _packet = new byte[PacketLength];
     private int _received;
 
-    private const byte Success = 0x00, InvalidFunction = 0x01, InvalidInput = 0x02, NoHandler = 0x05;
+    private bool HasHandler => (HandlerSegment | HandlerOffset) != 0;
 
     public void Handle(CpuNs.Cpu cpu)
     {
-        byte subFunction = cpu.State.GetReg8(0);   // AL
-        byte bh = cpu.State.GetReg8(7);
+        byte subFunction = cpu.State.GetReg8((int)CpuNs.Reg8.Al);
+        byte bh = cpu.State.GetReg8((int)CpuNs.Reg8.Bh);
 
         switch (subFunction)
         {
-            case 0x00:   // enable (BH=1) or disable (BH=0) the device
-                if (bh > 1) { Fail(cpu, InvalidInput); return; }
-                if (bh == 1 && (HandlerSegment | HandlerOffset) == 0) { Fail(cpu, NoHandler); return; }
+            case SubfunctionEnable:   // enable (BH=1) or disable (BH=0) the device
+                if (bh > 1)
+                {
+                    Fail(cpu, InvalidInput);
+                    return;
+                }
+
+                if (bh == 1 && !HasHandler)
+                {
+                    Fail(cpu, NoHandler);
+                    return;
+                }
+
                 SetEnabled(bh == 1);
                 Succeed(cpu);
                 return;
 
-            case 0x01:   // reset: BH = device id, BL = AAh
+            case SubfunctionReset:
                 SetEnabled(false);
                 _received = 0;
-                SampleRate = 100; Resolution = 2; Scaling2To1 = false;
-                cpu.State.Bx = 0x00AA;
+                SampleRate = DefaultSampleRate;
+                Resolution = DefaultResolution;
+                Scaling2To1 = false;
+                cpu.State.Bx = ResetResult;
                 Succeed(cpu);
                 return;
 
-            case 0x02:   // sample rate, BH = 0..6 for 10,20,40,60,80,100,200 per second
-                if (bh > 6) { Fail(cpu, InvalidInput); return; }
-                SampleRate = new byte[] { 10, 20, 40, 60, 80, 100, 200 }[bh];
+            case SubfunctionSetSampleRate:
+                if (bh >= SampleRates.Length)
+                {
+                    Fail(cpu, InvalidInput);
+                    return;
+                }
+
+                SampleRate = SampleRates[bh];
                 Succeed(cpu);
                 return;
 
-            case 0x03:   // resolution, BH = 0..3 for 1,2,4,8 counts per millimetre
-                if (bh > 3) { Fail(cpu, InvalidInput); return; }
+            case SubfunctionSetResolution:   // BH = 0..3 for 1, 2, 4, 8 counts per millimetre
+                if (bh > MaximumResolution)
+                {
+                    Fail(cpu, InvalidInput);
+                    return;
+                }
+
                 Resolution = bh;
                 Succeed(cpu);
                 return;
 
-            case 0x04:   // device type: BH = id, 00h for a standard mouse
-                cpu.State.SetReg8(7, 0x00);
+            case SubfunctionGetDeviceType:
+                cpu.State.SetReg8((int)CpuNs.Reg8.Bh, StandardMouseId);
                 Succeed(cpu);
                 return;
 
-            case 0x05:   // initialise: BH = data package size, 1..8 bytes
-                if (bh is < 1 or > 8) { Fail(cpu, InvalidInput); return; }
+            case SubfunctionInitialize:   // BH = data package size in bytes
+                if (bh is < MinimumPackageSize or > MaximumPackageSize)
+                {
+                    Fail(cpu, InvalidInput);
+                    return;
+                }
+
                 Initialized = true;
                 SetEnabled(false);
                 _received = 0;
                 Succeed(cpu);
                 return;
 
-            case 0x06:   // extended commands
-                switch (bh)
-                {
-                    case 0x00:   // status: BL flags, CL resolution, DL sample rate
-                        cpu.State.SetReg8(3, (byte)((Scaling2To1 ? 0x10 : 0) | (Enabled ? 0x20 : 0)));
-                        cpu.State.SetReg8(1, Resolution);
-                        cpu.State.SetReg8(2, SampleRate);
-                        Succeed(cpu);
-                        return;
-                    case 0x01: Scaling2To1 = false; Succeed(cpu); return;
-                    case 0x02: Scaling2To1 = true; Succeed(cpu); return;
-                    default: Fail(cpu, InvalidInput); return;
-                }
+            case SubfunctionExtended:
+                HandleExtended(cpu, bh);
+                return;
 
-            case 0x07:   // install the far handler at ES:BX; 0000:0000 removes it
+            case SubfunctionSetHandler:   // install the far handler at ES:BX; 0000:0000 removes it
                 HandlerSegment = cpu.State.Es.Selector;
                 HandlerOffset = cpu.State.Bx;
-                if ((HandlerSegment | HandlerOffset) == 0) SetEnabled(false);
+                if (!HasHandler)
+                {
+                    SetEnabled(false);
+                }
 
-                // Mirrored into the EBDA where the PS/2 BIOS kept it (offset
-                // 22h), for software that peeks there.
+                // Mirrored into the EBDA where the PS/2 BIOS kept it, for
+                // software that peeks there.
                 uint ebda = (uint)Machine.ExtendedBiosDataSegment << 4;
-                _machine.Memory.WriteWord(ebda + 0x22, HandlerOffset);
-                _machine.Memory.WriteWord(ebda + 0x24, HandlerSegment);
+                _machine.Memory.WriteWord(ebda + EbdaHandlerOffset, HandlerOffset);
+                _machine.Memory.WriteWord(ebda + EbdaHandlerSegment, HandlerSegment);
                 Succeed(cpu);
                 return;
 
             default:
                 Fail(cpu, InvalidFunction);
+                return;
+        }
+    }
+
+    /// <summary>Subfunction 06h: status (BL flags, CL resolution, DL sample rate) and the scaling commands.</summary>
+    private void HandleExtended(CpuNs.Cpu cpu, byte command)
+    {
+        switch (command)
+        {
+            case ExtendedGetStatus:
+                byte flags = 0;
+                if (Scaling2To1)
+                {
+                    flags |= StatusScalingTwoToOne;
+                }
+
+                if (Enabled)
+                {
+                    flags |= StatusEnabled;
+                }
+
+                cpu.State.SetReg8((int)CpuNs.Reg8.Bl, flags);
+                cpu.State.SetReg8((int)CpuNs.Reg8.Cl, Resolution);
+                cpu.State.SetReg8((int)CpuNs.Reg8.Dl, SampleRate);
+                Succeed(cpu);
+                return;
+
+            case ExtendedScalingOneToOne:
+                Scaling2To1 = false;
+                Succeed(cpu);
+                return;
+
+            case ExtendedScalingTwoToOne:
+                Scaling2To1 = true;
+                Succeed(cpu);
+                return;
+
+            default:
+                Fail(cpu, InvalidInput);
                 return;
         }
     }
@@ -145,13 +289,16 @@ public sealed class PointingDeviceServices
         // The auxiliary port is opened either way, so that the mouse's
         // acknowledgement can be read back here rather than turn up later as
         // a stray byte on IRQ 12.
-        io.WriteByte(0x64, 0xA8);
-        io.WriteByte(0x64, 0x60);
-        byte commandByte = (byte)(controller.CommandByte & ~0x20);
-        io.WriteByte(0x60, enabled ? (byte)(commandByte | 0x02) : (byte)(commandByte & ~0x02));
+        io.WriteByte(ControllerCommand, CommandEnableAuxiliary);
+        io.WriteByte(ControllerCommand, CommandWriteCommandByte);
+        byte commandByte = (byte)(controller.CommandByte & ~CommandByteAuxiliaryDisabled);
+        byte newCommandByte = enabled
+            ? (byte)(commandByte | CommandByteAuxiliaryInterrupt)
+            : (byte)(commandByte & ~CommandByteAuxiliaryInterrupt);
+        io.WriteByte(ControllerData, newCommandByte);
 
-        io.WriteByte(0x64, 0xD4);
-        io.WriteByte(0x60, enabled ? (byte)0xF4 : (byte)0xF5);           // mouse: reporting on / off
+        io.WriteByte(ControllerCommand, CommandWriteToAuxiliary);
+        io.WriteByte(ControllerData, enabled ? MouseEnableReporting : MouseDisableReporting);
         AwaitAcknowledge();
 
         // The interrupt itself, at the controllers, and only ever opened --
@@ -179,8 +326,8 @@ public sealed class PointingDeviceServices
     public static void OpenMouseInterrupt(Machine machine)
     {
         IO.IoBus io = machine.Io;
-        io.WriteByte(0xA1, (byte)(io.ReadByte(0xA1) & ~0x10));
-        io.WriteByte(0x21, (byte)(io.ReadByte(0x21) & ~0x04));
+        io.WriteByte(SlaveMaskPort, (byte)(io.ReadByte(SlaveMaskPort) & ~SlaveIrq12Bit));
+        io.WriteByte(MasterMaskPort, (byte)(io.ReadByte(MasterMaskPort) & ~MasterCascadeBit));
     }
 
     /// <summary>
@@ -192,16 +339,26 @@ public sealed class PointingDeviceServices
     private void AwaitAcknowledge()
     {
         IO.IoBus io = _machine.Io;
+        const byte AuxiliaryByteWaiting = StatusOutputFull | StatusAuxiliaryData;
 
         // Drain the whole reply, not just its first byte. A reset answers
         // FAh AAh 00h, and an acknowledgement byte left in the queue would
         // later surface on IRQ 12 and be mistaken for the header of a packet.
-        for (int attempt = 0; attempt < 16; attempt++)
+        for (int attempt = 0; attempt < AcknowledgeAttempts; attempt++)
         {
             _machine.Keyboard.PollMouse();
-            byte status = io.ReadByte(0x64);
-            if ((status & 0x21) == 0x21) { io.ReadByte(0x60); continue; }   // consume mouse data
-            if (_machine.Ps2Mouse.TryDequeue(out _)) continue;
+            byte status = io.ReadByte(ControllerCommand);
+            if ((status & AuxiliaryByteWaiting) == AuxiliaryByteWaiting)
+            {
+                io.ReadByte(ControllerData);   // consume the mouse byte
+                continue;
+            }
+
+            if (_machine.Ps2Mouse.TryDequeue(out _))
+            {
+                continue;
+            }
+
             break;
         }
     }
@@ -210,32 +367,42 @@ public sealed class PointingDeviceServices
     /// One byte has come in on IRQ 12; the ROM entry has read it into AH and
     /// sent the EOI. Three make a packet, and a packet goes to the handler.
     /// </summary>
-    /// <summary>Bytes seen on IRQ 12 and packets handed to the guest, for diagnostics.</summary>
-    public long BytesReceived { get; private set; }
-    public long PacketsDelivered { get; private set; }
-    public long PacketsDropped { get; private set; }
-
     public void OnInterrupt(CpuNs.Cpu cpu)
     {
-        byte value = cpu.State.GetReg8(4);   // AH
+        byte value = cpu.State.GetReg8((int)CpuNs.Reg8.Ah);
         BytesReceived++;
 
-        if (!Enabled || (HandlerSegment | HandlerOffset) == 0) return;
+        if (!Enabled || !HasHandler)
+        {
+            return;
+        }
 
         // The first byte of a packet always has bit 3 set; a byte without it
         // in first position is a leftover from a packet that lost sync, and
         // waiting for a proper header is how the real BIOS resynchronised.
-        if (_received == 0 && (value & 0x08) == 0) return;
+        if (_received == 0 && (value & PacketHeaderMarker) == 0)
+        {
+            return;
+        }
 
-        _packet[_received++] = value;
-        if (_received < 3) return;
+        _packet[_received] = value;
+        _received++;
+        if (_received < PacketLength)
+        {
+            return;
+        }
+
         _received = 0;
 
         // The handler address is a real-mode far pointer, and the ROM entry
         // that brought us here is real-mode code: from real mode proper, or
         // from a virtual 8086 task when a monitor such as WIN386 reflected
         // IRQ 12 into it. Anywhere else there is nothing sensible to call.
-        if (cpu.State.ProtectedMode && !cpu.State.Virtual8086Mode) { PacketsDropped++; return; }
+        if (cpu.State.ProtectedMode && !cpu.State.Virtual8086Mode)
+        {
+            PacketsDropped++;
+            return;
+        }
 
         PacketsDelivered++;
         CallHandler(cpu, _packet[0], _packet[1], _packet[2]);
@@ -255,7 +422,7 @@ public sealed class PointingDeviceServices
         Push(cpu, deltaX);
         Push(cpu, deltaY);
         Push(cpu, 0);                         // Z: no wheel on this mouse
-        Push(cpu, 0xF000);
+        Push(cpu, BiosSegment);
         Push(cpu, BiosRom.Entry.PointingCallbackReturn);
 
         cpu.SetSegment(CpuNs.SegReg.Cs, HandlerSegment);
@@ -271,13 +438,13 @@ public sealed class PointingDeviceServices
 
     private static void Succeed(CpuNs.Cpu cpu)
     {
-        cpu.State.SetReg8(4, Success);
+        cpu.State.SetReg8((int)CpuNs.Reg8.Ah, Success);
         cpu.SetCarryInStackedFlags(false);
     }
 
     private static void Fail(CpuNs.Cpu cpu, byte code)
     {
-        cpu.State.SetReg8(4, code);
+        cpu.State.SetReg8((int)CpuNs.Reg8.Ah, code);
         cpu.SetCarryInStackedFlags(true);
     }
 }
