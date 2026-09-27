@@ -1,6 +1,6 @@
+using Aurora386.Core.Devices.Interrupts;
 using Aurora386.Core.IO;
 
-using Aurora386.Core.Devices.Interrupts;
 namespace Aurora386.Core.Devices.Network;
 
 /// <summary>
@@ -81,6 +81,22 @@ public sealed class Ne2000 : IIoDevice
     private const byte CmdStop = 0x01;
     private const byte CmdStart = 0x02;
     private const byte CmdTransmit = 0x04;
+    private const byte CommandPageMask = 0xC0;
+    private const byte DataConfigurationWordMode = 0x01;
+    private const byte ReceiveConfigurationAcceptBroadcast = 0x04;
+    private const byte ReceiveConfigurationAcceptMulticast = 0x08;
+    private const byte ReceiveConfigurationPromiscuous = 0x10;
+    private const byte TransmitStatusSuccess = 0x01;
+    private const byte ReceiveStatusPacketReceived = 0x01;
+    private const int EthernetMinimumFrameLength = 14;
+    private const int EthernetMaximumFrameLength = 1514;
+    private const int RegisterPageLength = 16;
+    private const int RegisterPageCount = 4;
+    private const int PortWindowLength = 0x20;
+    private const int PromLength = 32;
+    private const int PromMacBytesLength = 12;
+    private const int PromSignatureOffset = 28;
+    private const byte PromSignatureByte = 0x57;
 
     /// <summary>
     /// The card's private memory. A real NE2000 has 16 KB fitted, which the
@@ -102,7 +118,7 @@ public sealed class Ne2000 : IIoDevice
     private const int FrameHeaderSize = 4;
 
     private readonly byte[] _memory = new byte[MemorySize];
-    private readonly byte[] _registers = new byte[4 * 16];
+    private readonly byte[] _registers = new byte[RegisterPageCount * RegisterPageLength];
     private readonly byte[] _macAddress = new byte[6];
     private readonly InterruptController _interrupts;
     private ushort _basePort;
@@ -143,8 +159,14 @@ public sealed class Ne2000 : IIoDevice
         // A locally administered address: bit 1 of the first byte marks it as
         // assigned by the network's owner rather than by a manufacturer, which
         // is exactly what an emulated card is.
-        if (macAddress.Length == 6) macAddress.CopyTo(_macAddress);
-        else _macAddress = [0x02, 0x00, 0x41, 0x55, 0x52, 0x41];
+        if (macAddress.Length == 6)
+        {
+            macAddress.CopyTo(_macAddress);
+        }
+        else
+        {
+            _macAddress = [0x02, 0x00, 0x41, 0x55, 0x52, 0x41];
+        }
 
         Reset();
     }
@@ -154,17 +176,26 @@ public sealed class Ne2000 : IIoDevice
     public void Register(IoBus io)
     {
         _io = io;
-        if (Enabled) io.Register(_basePort, 0x20, this);
+        if (Enabled)
+        {
+            io.Register(_basePort, PortWindowLength, this);
+        }
     }
 
     /// <summary>Moves the card to the address and interrupt Plug and Play configuration gave it.</summary>
     public void Relocate(ushort basePort, int irqLine, bool enabled)
     {
-        if (Enabled) _io?.Unregister(_basePort, 0x20, this);
+        if (Enabled)
+        {
+            _io?.Unregister(_basePort, PortWindowLength, this);
+        }
         _basePort = basePort;
         _irqLine = irqLine;
         Enabled = enabled;
-        if (Enabled) _io?.Register(_basePort, 0x20, this);
+        if (Enabled)
+        {
+            _io?.Register(_basePort, PortWindowLength, this);
+        }
     }
 
     /// <summary>
@@ -191,8 +222,10 @@ public sealed class Ne2000 : IIoDevice
         // The reset bit tells a polling driver the card has finished coming up.
         SetRegister(0, InterruptStatus, IsrReset);
 
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < _macAddress.Length; i++)
+        {
             SetRegister(1, PhysicalAddress0 + i, _macAddress[i]);
+        }
     }
 
     // --- register file access ------------------------------------------------
@@ -205,15 +238,15 @@ public sealed class Ne2000 : IIoDevice
     /// the working set, page 1 holds the addresses, page 2 mirrors the
     /// configuration for diagnostics.
     /// </summary>
-    private int CurrentPage => (_commandRegister >> 6) & 3;
+    private int CurrentPage => (_commandRegister & CommandPageMask) >> 6;
 
-    private byte GetRegister(int page, int offset) => _registers[page * 16 + offset];
+    private byte GetRegister(int page, int offset) => _registers[page * RegisterPageLength + offset];
 
     /// <summary>Bit 0 of the data configuration register: remote DMA moves words, not bytes.</summary>
-    private bool WordMode => (GetRegister(0, DataConfiguration) & 0x01) != 0;
+    private bool WordMode => (GetRegister(0, DataConfiguration) & DataConfigurationWordMode) != 0;
 
     private void SetRegister(int page, int offset, byte value)
-        => _registers[page * 16 + offset] = value;
+        => _registers[page * RegisterPageLength + offset] = value;
 
     public byte ReadByte(ushort port)
     {
@@ -234,13 +267,22 @@ public sealed class Ne2000 : IIoDevice
             // half is gone. The Crynwr driver reads its station address
             // exactly this way -- word mode, byte reads -- and expects the
             // doubled PROM to come out as one copy.
-            if (!WordMode) return ReadRemoteDma();
+            if (!WordMode)
+            {
+                return ReadRemoteDma();
+            }
             byte low = ReadRemoteDma();
             ReadRemoteDma();
             return low;
         }
-        if (offset == Command) return _commandRegister;
-        if (offset is < 0 or > 0x0F) return 0xFF;
+        if (offset == Command)
+        {
+            return _commandRegister;
+        }
+        if (offset is < 0 or > 0x0F)
+        {
+            return 0xFF;
+        }
 
         // Page 2 is a read-only mirror of the configuration the driver wrote,
         // provided so it can verify the card accepted its settings.
@@ -286,15 +328,29 @@ public sealed class Ne2000 : IIoDevice
     {
         int offset = port - _basePort;
 
-        if (offset == ResetPort) { Reset(); return; }
+        if (offset == ResetPort)
+        {
+            Reset();
+            return;
+        }
         if (offset is >= DataPort and < DataPort + 8)
         {
             WriteRemoteDma(value);
-            if (WordMode) WriteRemoteDma(0);
+            if (WordMode)
+            {
+                WriteRemoteDma(0);
+            }
             return;
         }
-        if (offset == Command) { WriteCommand(value); return; }
-        if (offset is < 0 or > 0x0F) return;
+        if (offset == Command)
+        {
+            WriteCommand(value);
+            return;
+        }
+        if (offset is < 0 or > 0x0F)
+        {
+            return;
+        }
 
         int page = CurrentPage;
 
@@ -309,8 +365,10 @@ public sealed class Ne2000 : IIoDevice
                 // Keep our copy of the MAC in step: the driver writes it here
                 // during initialisation, usually copying it out of the card's
                 // own serial EEPROM.
-                if (offset is >= PhysicalAddress0 and < PhysicalAddress0 + 6)
+                if (offset >= PhysicalAddress0 && offset < PhysicalAddress0 + _macAddress.Length)
+                {
                     _macAddress[offset - PhysicalAddress0] = value;
+                }
                 return;
 
             default:
@@ -367,7 +425,10 @@ public sealed class Ne2000 : IIoDevice
             return;
         }
 
-        if ((value & CmdTransmit) != 0) Transmit();
+        if ((value & CmdTransmit) != 0)
+        {
+            Transmit();
+        }
 
         // Remote DMA direction lives in bits 3-5. Command 4 ("abort/complete")
         // ends a transfer early, and the card reports it like a finished one.
@@ -392,25 +453,37 @@ public sealed class Ne2000 : IIoDevice
     /// </summary>
     private byte ReadRemoteDma()
     {
-        if (_remoteCount <= 0) return 0;
+        if (_remoteCount <= 0)
+        {
+            return 0;
+        }
 
         byte value = ReadCardMemory(_remoteAddress);
         _remoteAddress++;
         _remoteCount--;
 
-        if (_remoteCount == 0) RaiseInterrupt(IsrRemoteDmaComplete);
+        if (_remoteCount == 0)
+        {
+            RaiseInterrupt(IsrRemoteDmaComplete);
+        }
         return value;
     }
 
     private void WriteRemoteDma(byte value)
     {
-        if (_remoteCount <= 0) return;
+        if (_remoteCount <= 0)
+        {
+            return;
+        }
 
         WriteCardMemory(_remoteAddress, value);
         _remoteAddress++;
         _remoteCount--;
 
-        if (_remoteCount == 0) RaiseInterrupt(IsrRemoteDmaComplete);
+        if (_remoteCount == 0)
+        {
+            RaiseInterrupt(IsrRemoteDmaComplete);
+        }
     }
 
     /// <summary>
@@ -425,10 +498,14 @@ public sealed class Ne2000 : IIoDevice
         // appears twice because the PROM is 8 bits wide on a 16-bit bus, and
         // 0x57 0x57 at the end is the mark drivers look for to tell an
         // NE2000 from an NE1000 ("WW" against "BB").
-        if ((uint)address < 32)
+        if ((uint)address < PromLength)
         {
-            if (address < 12) return _macAddress[address >> 1];
-            return address >= 28 ? (byte)0x57 : (byte)0;
+            if (address < PromMacBytesLength)
+            {
+                return _macAddress[address >> 1];
+            }
+
+            return address >= PromSignatureOffset ? PromSignatureByte : (byte)0;
         }
 
         int index = address - MemoryBase;
@@ -438,7 +515,10 @@ public sealed class Ne2000 : IIoDevice
     public void WriteCardMemory(int address, byte value)
     {
         int index = address - MemoryBase;
-        if ((uint)index < MemorySize) _memory[index] = value;
+        if ((uint)index < MemorySize)
+        {
+            _memory[index] = value;
+        }
     }
 
     // --- transmit ------------------------------------------------------------
@@ -454,7 +534,7 @@ public sealed class Ne2000 : IIoDevice
         int length = GetRegister(0, TransmitByteCount0)
                    | (GetRegister(0, TransmitByteCount1) << 8);
 
-        if (length <= 0 || length > 1514)
+        if (length <= 0 || length > EthernetMaximumFrameLength)
         {
             SetRegister(0, TransmitStatus, 0x00);
             RaiseInterrupt(IsrTransmitError);
@@ -470,7 +550,7 @@ public sealed class Ne2000 : IIoDevice
 
         // Bit 0 of TSR is "transmitted without error", which is what a driver
         // checks before reusing the buffer.
-        SetRegister(0, TransmitStatus, 0x01);
+        SetRegister(0, TransmitStatus, TransmitStatusSuccess);
 
         // The transmit command bit clears itself once the frame is away.
         _commandRegister &= unchecked((byte)~CmdTransmit);
@@ -489,12 +569,19 @@ public sealed class Ne2000 : IIoDevice
     {
         // A stopped card is deaf: the driver stops it precisely so it can
         // reconfigure the ring without frames landing underneath it.
-        if ((_commandRegister & CmdStop) != 0) return;
+        if ((_commandRegister & CmdStop) != 0)
+        {
+            return;
+        }
 
         Span<byte> buffer = stackalloc byte[1600];
         while (Backend.TryReceive(buffer, out int length))
         {
-            if (length is < 14 or > 1514) continue;
+            if (length is < EthernetMinimumFrameLength or > EthernetMaximumFrameLength)
+            {
+                continue;
+            }
+
             DeliverFrame(buffer[..length]);
         }
     }
@@ -509,7 +596,10 @@ public sealed class Ne2000 : IIoDevice
     /// </summary>
     public void DeliverFrame(ReadOnlySpan<byte> frame)
     {
-        if (!ShouldAccept(frame)) return;
+        if (!ShouldAccept(frame))
+        {
+            return;
+        }
 
         int start = GetRegister(0, PageStart);
         int stop = GetRegister(0, PageStop);
@@ -537,13 +627,16 @@ public sealed class Ne2000 : IIoDevice
         }
 
         int nextPage = current + pagesNeeded;
-        if (nextPage >= stop) nextPage -= stop - start;
+        if (nextPage >= stop)
+        {
+            nextPage -= stop - start;
+        }
 
         int address = current * PageSize;
 
         // Header: status (bit 0 = received intact), the page the next frame
         // will start on, then the length including this header.
-        WriteRingByte(ref address, start, stop, 0x01);
+        WriteRingByte(ref address, start, stop, ReceiveStatusPacketReceived);
         WriteRingByte(ref address, start, stop, (byte)nextPage);
         WriteRingByte(ref address, start, stop, (byte)(total & 0xFF));
         WriteRingByte(ref address, start, stop, (byte)(total >> 8));
@@ -564,7 +657,10 @@ public sealed class Ne2000 : IIoDevice
     /// </summary>
     private void WriteRingByte(ref int address, int start, int stop, byte value)
     {
-        if (address >= stop * PageSize) address = start * PageSize;
+        if (address >= stop * PageSize)
+        {
+            address = start * PageSize;
+        }
         WriteCardMemory(address, value);
         address++;
     }
@@ -579,25 +675,48 @@ public sealed class Ne2000 : IIoDevice
     /// </summary>
     private bool ShouldAccept(ReadOnlySpan<byte> frame)
     {
-        if (frame.Length < 6) return false;
+        if (frame.Length < _macAddress.Length)
+        {
+            return false;
+        }
 
         byte config = GetRegister(0, ReceiveConfiguration);
 
         // Bit 4: promiscuous -- accept every frame regardless of address.
-        if ((config & 0x10) != 0) return true;
+        if ((config & ReceiveConfigurationPromiscuous) != 0)
+        {
+            return true;
+        }
 
         // Broadcast: all six address bytes 0xFF. Accepted when bit 2 is set,
         // which every driver does because ARP depends on it.
         bool broadcast = true;
-        for (int i = 0; i < 6; i++)
-            if (frame[i] != 0xFF) { broadcast = false; break; }
-        if (broadcast) return (config & 0x04) != 0;
+        for (int i = 0; i < _macAddress.Length; i++)
+        {
+            if (frame[i] != 0xFF)
+            {
+                broadcast = false;
+                break;
+            }
+        }
+        if (broadcast)
+        {
+            return (config & ReceiveConfigurationAcceptBroadcast) != 0;
+        }
 
         // Multicast frames have the low bit of the first byte set.
-        if ((frame[0] & 0x01) != 0) return (config & 0x08) != 0;
+        if ((frame[0] & 0x01) != 0)
+        {
+            return (config & ReceiveConfigurationAcceptMulticast) != 0;
+        }
 
-        for (int i = 0; i < 6; i++)
-            if (frame[i] != _macAddress[i]) return false;
+        for (int i = 0; i < _macAddress.Length; i++)
+        {
+            if (frame[i] != _macAddress[i])
+            {
+                return false;
+            }
+        }
 
         return true;
     }
@@ -624,8 +743,14 @@ public sealed class Ne2000 : IIoDevice
         byte status = GetRegister(0, InterruptStatus);
         byte mask = GetRegister(0, InterruptMask);
 
-        if ((status & mask & 0x7F) != 0) _interrupts.RaiseIrq(_irqLine);
-        else _interrupts.LowerIrq(_irqLine);
+        if ((status & mask & 0x7F) != 0)
+        {
+            _interrupts.RaiseIrq(_irqLine);
+        }
+        else
+        {
+            _interrupts.LowerIrq(_irqLine);
+        }
     }
 
     // --- snapshot --------------------------------------------------------
@@ -640,7 +765,7 @@ public sealed class Ne2000 : IIoDevice
     /// </summary>
     public const int SnapshotLength =
         sizeof(ushort) + sizeof(int) + sizeof(bool)
-        + 4 * 16
+        + RegisterPageCount * RegisterPageLength
         + sizeof(byte)
         + sizeof(int) * 2
         + 6
