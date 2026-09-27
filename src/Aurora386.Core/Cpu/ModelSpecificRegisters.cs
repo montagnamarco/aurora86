@@ -115,7 +115,7 @@ public sealed class ModelSpecificRegisters
     /// (bit 8) and the APIC global-enable bit (bit 11) both set, the default
     /// power-on state of the first processor in the system.
     ///
-    /// Coordinator ruling (independent review, item 13): this MSR exists
+    /// Coordinator decision A11 (independent review): this MSR exists
     /// from the P6 family on, never on the P5 set -- a Pentium MMX's on-die
     /// APIC is real (the catalog's silicon still carries <see
     /// cref="CpuFeature.Apic"/>) but fixed at FEE00000h and always

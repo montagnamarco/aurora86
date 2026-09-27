@@ -252,11 +252,15 @@ public sealed partial class Machine : IDisposable
     /// <summary>
     /// The local APIC wrapper in front of <see cref="Interrupts"/> (work
     /// package P4.4): always present, on either chipset, because the local
-    /// APIC is part of the CPU package rather than the motherboard. It
-    /// forwards the 8259 pair completely unchanged unless the current
-    /// model's silicon has an APIC, the unit is hardware-enabled, and
-    /// <see cref="Imcr"/> (when fitted) has switched the IMCR to 1 -- see
-    /// its own summary for coordinator decision A1.
+    /// APIC is part of the CPU package rather than the motherboard. Its own
+    /// interrupts (timer, I/O APIC Fixed deliveries) are posted whenever the
+    /// current model's silicon has an APIC and the unit is hardware- and
+    /// software-enabled, regardless of the IMCR; the legacy 8259 pair
+    /// reaches the CPU directly unless all three of those hold *and*
+    /// <see cref="Imcr"/> (when fitted) has switched the IMCR to 1, in which
+    /// case it needs an ExtINT-programmed path (LINT0 or an I/O APIC entry)
+    /// -- see <c>LocalApic</c>'s own summary for the full rule (coordinator
+    /// decision A1, as revised by independent review).
     /// </summary>
     public LocalApic Apic { get; }
 
@@ -456,7 +460,7 @@ public sealed partial class Machine : IDisposable
             // address this machine answers, and the fixed window mechanism
             // exists precisely so that reaching it costs nothing on any
             // address below it (see PhysicalMemoryBus's own summary).
-            IoApic = new IoApic(Apic, Interrupts);
+            IoApic = new IoApic(Apic);
             Memory.RegisterHighWindow(IoApicPhysicalBase, Aurora386.Core.Devices.Apic.IoApic.PageSize, IoApic);
             Interrupts.AttachIoApic(IoApic);
 
@@ -753,6 +757,13 @@ public sealed partial class Machine : IDisposable
             if (Cpu.State.Model == value) return;
             Cpu.State.SelectModel(value);
             Cpu.State.Reset();
+
+            // CpuState.Reset() is not the full Cpu.Reset(): it never reaches
+            // Cpu.Interrupts.ResetOnCpuReset(), so a model switch has to call
+            // it itself (independent review, item N4) -- consistently with
+            // an actual reboot's own Cpu.Reset(), a stale timer vector or
+            // register value must not survive pretending to swap the chip.
+            Apic.ResetOnCpuReset();
 
             // Neither SelectModel nor CpuState.Reset touches APIC_BASE, so
             // switching models never raises Cpu.Msrs.ApicBaseChanged on its

@@ -1,4 +1,3 @@
-using Aurora386.Core.Devices.Interrupts;
 using Aurora386.Core.Memory;
 
 namespace Aurora386.Core.Devices.Apic;
@@ -34,16 +33,28 @@ namespace Aurora386.Core.Devices.Apic;
 ///
 /// Delivery is a direct call into the target <see cref="LocalApic"/>'s IRR
 /// (<see cref="LocalApic.DeliverFixed"/>): there is no serial APIC bus to
-/// model with only one logical CPU in this package (decision A10). An entry
-/// programmed for ExtINT delivery asks the wrapped 8259 pair for its own
-/// vector, exactly as the local APIC's own LVT LINT0 does for "virtual wire
-/// via the local APIC" -- the "virtual wire via the I/O APIC" case
-/// (plans/specs/apic.md §1.4). NMI, SMI and INIT delivery modes are stored
-/// and read back but never delivered as a maskable vector (independent
-/// review, "Low" item): none of them belongs on <see
-/// cref="LocalApic.DeliverFixed"/>'s IRR/ISR path, and neither the CPU nor
-/// this package has anywhere else to send them yet -- the same documented
-/// gap <c>LocalApic</c>'s own LINT1/ICR-NMI note describes.
+/// model with only one logical CPU in this package (decision A10).
+///
+/// <b>Coordinator ruling (second independent review, item N2):</b> an entry
+/// programmed for ExtINT delivery -- "virtual wire via the I/O APIC"
+/// (plans/specs/apic.md §1.4) -- is never delivered through <see
+/// cref="LocalApic.DeliverFixed"/> at all: its own vector field is
+/// meaningless (the 8259 supplies the real one), and going through this
+/// unit's IRR would wrongly subject it to TPR/PPR and require a LAPIC-side
+/// EOI neither real hardware nor <see cref="LocalApic"/>'s own LINT0 ExtINT
+/// path needs. Instead, whenever the redirection table has at least one
+/// unmasked ExtINT entry, this class simply tells <see cref="LocalApic"/> so
+/// (<see cref="LocalApic.SetIoApicExtIntActive"/>); the 8259 is asked for
+/// its own vector lazily, in <c>LocalApic.GetPendingVector</c>, only at the
+/// moment the CPU actually accepts an interrupt from this source -- never at
+/// the edge/level event itself, and never when the unit has nothing to
+/// accept it with.
+///
+/// NMI, SMI and INIT delivery modes are stored and read back but never
+/// delivered at all: none of them belongs on <see
+/// cref="LocalApic.DeliverFixed"/>'s IRR/ISR path either, and neither the
+/// CPU nor this package has anywhere else to send them yet -- the same
+/// documented gap <c>LocalApic</c>'s own LINT1/ICR-NMI note describes.
 /// </summary>
 public sealed class IoApic : IMemoryDevice
 {
@@ -83,14 +94,6 @@ public sealed class IoApic : IMemoryDevice
 
     private readonly LocalApic _target;
 
-    /// <summary>
-    /// The legacy 8259 pair, asked for its own vector when a redirection
-    /// entry is programmed for ExtINT delivery (item "Low"). Never asked
-    /// for anything else -- this is not a second passthrough path, only
-    /// the one INTA-style hand-off ExtINT itself describes.
-    /// </summary>
-    private readonly IInterruptSource? _legacyPic;
-
     private readonly ulong[] _entries = new ulong[PinCount];
 
     /// <summary>
@@ -104,10 +107,9 @@ public sealed class IoApic : IMemoryDevice
     private uint _id;
     private uint _ioRegSel;
 
-    public IoApic(LocalApic target, IInterruptSource? legacyPic = null)
+    public IoApic(LocalApic target)
     {
         _target = target;
-        _legacyPic = legacyPic;
         Reset();
     }
 
@@ -117,6 +119,36 @@ public sealed class IoApic : IMemoryDevice
         Array.Clear(_lineHigh);
         _id = 0;
         _ioRegSel = 0;
+
+        // Every entry resets masked (decision A9), so there is nothing
+        // ExtINT-active left after a reset either.
+        RecomputeExtIntActive();
+    }
+
+    /// <summary>
+    /// Tells the target LAPIC whether at least one redirection entry is
+    /// currently unmasked and programmed for ExtINT delivery (item N2's
+    /// "virtual wire via the I/O APIC" gate). Called after every
+    /// redirection-table write and after <see cref="Reset"/>, rather than
+    /// asked for on demand, so <see cref="LocalApic"/> never needs a
+    /// reference back to this class.
+    /// </summary>
+    private void RecomputeExtIntActive()
+    {
+        bool active = false;
+        for (int pin = 0; pin < PinCount; pin++)
+        {
+            ulong entry = _entries[pin];
+            bool unmasked = (entry & EntryMaskBit) == 0;
+            bool extInt = (entry & EntryDeliveryModeMask) == EntryDeliveryModeExtInt;
+            if (unmasked && extInt)
+            {
+                active = true;
+                break;
+            }
+        }
+
+        _target.SetIoApicExtIntActive(active);
     }
 
     // ---- pin wiring, driven by Machine alongside the legacy 8259 ----------
@@ -149,19 +181,35 @@ public sealed class IoApic : IMemoryDevice
 
     /// <summary>
     /// A level input (the four PIRQ pins on this board): true while the
-    /// source keeps asserting it. Delivers once when it goes high and
-    /// Remote IRR is clear; a masked entry drops it with no pending state,
-    /// same as <see cref="PulseLine"/> (test case 13). Deasserting only
-    /// updates the tracked level -- Remote IRR clears from an EOI, never
-    /// from here (item 4).
+    /// source keeps asserting it. Deasserting only updates the tracked
+    /// level -- Remote IRR clears from an EOI, never from here (item 4).
+    ///
+    /// An <b>edge</b>-triggered entry reached through this method (an
+    /// unusual thing to configure a PIRQ pin as, but not forbidden) delivers
+    /// on the rising edge exactly like <see cref="PulseLine"/> -- without
+    /// ever touching Remote IRR, which is meaningless for edge mode
+    /// (independent review, second round, item N3) -- and is de-duplicated
+    /// against repeated same-state calls, since <c>PciInterruptRouter</c>
+    /// recomputes and re-asserts every still-held link on every change to
+    /// any of them, not only the one that actually moved.
     /// </summary>
     public void SetLevel(int pin, bool asserted)
     {
+        bool wasHigh = _lineHigh[pin];
         _lineHigh[pin] = asserted;
         if (!asserted) return;
 
         ulong entry = _entries[pin];
         if ((entry & EntryMaskBit) != 0) return;
+
+        bool level = (entry & EntryTriggerLevelBit) != 0;
+        if (!level)
+        {
+            if (wasHigh) return;   // no new edge
+            Deliver(entry);
+            return;
+        }
+
         if ((entry & EntryRemoteIrrBit) != 0) return;   // still waiting for EOI
 
         entry |= EntryRemoteIrrBit;
@@ -169,33 +217,21 @@ public sealed class IoApic : IMemoryDevice
         Deliver(entry);
     }
 
-    /// <summary>Delivers one entry's vector, by its own delivery mode; see the type summary for which modes do anything.</summary>
+    /// <summary>
+    /// Delivers one Fixed/LowPriority entry's vector into the target
+    /// LAPIC's own IRR; every other delivery mode does nothing here --
+    /// ExtINT is handled entirely through <see
+    /// cref="LocalApic.SetIoApicExtIntActive"/> (item N2, see the type
+    /// summary), and NMI/SMI/INIT have nowhere to go at all yet.
+    /// </summary>
     private void Deliver(ulong entry)
     {
         ulong mode = entry & EntryDeliveryModeMask;
+        if (mode is not (EntryDeliveryModeFixed or EntryDeliveryModeLowPriority)) return;
+
         bool level = (entry & EntryTriggerLevelBit) != 0;
         byte vector = (byte)(entry & EntryVectorMask);
-
-        if (mode is EntryDeliveryModeFixed or EntryDeliveryModeLowPriority)
-        {
-            _target.DeliverFixed(vector, level);
-            return;
-        }
-
-        if (mode == EntryDeliveryModeExtInt)
-        {
-            // "Virtual wire via the I/O APIC" (plans/specs/apic.md §1.4):
-            // the entry's own vector field is irrelevant, the 8259 supplies
-            // one through what amounts to an INTA cycle.
-            if (_legacyPic is not null && _legacyPic.HasPendingInterrupt)
-            {
-                _target.DeliverFixed((byte)_legacyPic.GetPendingVector(), levelTriggered: false);
-            }
-
-            return;
-        }
-
-        // NMI/SMI/INIT: no CPU-side entry point yet (see the type summary).
+        _target.DeliverFixed(vector, level);
     }
 
     /// <summary>Called from <see cref="LocalApic.LevelTriggeredEoi"/>: clears Remote IRR on every level entry whose vector matches (test case 7), and re-delivers at once if the line is still held high (item 4).</summary>
@@ -300,6 +336,8 @@ public sealed class IoApic : IMemoryDevice
             _entries[pin] = updated;
             Deliver(updated);
         }
+
+        RecomputeExtIntActive();
     }
 
     // ---- snapshot -----------------------------------------------------------
@@ -325,6 +363,7 @@ public sealed class IoApic : IMemoryDevice
         _ioRegSel = reader.ReadUInt32();
         for (int i = 0; i < _entries.Length; i++) _entries[i] = reader.ReadUInt64();
         UnpackLineHigh(reader.ReadUInt32());
+        RecomputeExtIntActive();
     }
 
     private uint PackLineHigh()

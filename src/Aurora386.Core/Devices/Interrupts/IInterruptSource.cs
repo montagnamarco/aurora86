@@ -7,13 +7,18 @@ namespace Aurora386.Core.Devices.Interrupts;
 /// Before work package P4.4 <c>Cpu.Interrupts</c> was the concrete 8259 pair
 /// (<see cref="InterruptController"/>) and nothing else ever stood in for it.
 /// The local APIC (<c>Devices.Apic.LocalApic</c>) now sits in front of that
-/// same pair on a machine whose processor has an on-die APIC: while the IMCR
-/// is 0, or the APIC is hardware-disabled or the model has none, it forwards
-/// the 8259 completely unchanged, so every machine without an engaged APIC
-/// -- which today is every machine, since nothing yet switches the IMCR --
-/// sees exactly the interrupts it always did. This interface is the seam
-/// that lets the CPU ask either one the same two questions without knowing
-/// which is behind <c>Cpu.Interrupts</c>.
+/// same pair on a machine whose processor has an on-die APIC: its own
+/// interrupts (its timer, an I/O APIC's Fixed-mode deliveries) are posted
+/// whenever it is present, hardware- and software-enabled, whatever the
+/// chipset's IMCR holds, while the 8259 pair reaches the CPU either
+/// directly (IMCR=0, or the unit absent/hardware-disabled -- the "PIC mode"
+/// wiring) or only through an ExtINT-programmed path (IMCR=1, LINT0 or an
+/// I/O APIC entry) -- see <c>LocalApic</c>'s own summary for the full rule.
+/// A machine whose APIC never gets past its power-on state (every existing
+/// machine before this package, and every model with no on-die APIC) sees
+/// exactly the interrupts it always did. This interface is the seam that
+/// lets the CPU ask either one the same two questions without knowing which
+/// is behind <c>Cpu.Interrupts</c>.
 /// </summary>
 public interface IInterruptSource
 {

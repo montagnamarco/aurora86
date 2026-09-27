@@ -172,11 +172,15 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
     /// <summary>
     /// Set by the chipset's IMCR (ports 22h/23h, i430TX/PIIX4 only): true
     /// once the guest has written 1, meaning the legacy 8259 pair no longer
-    /// drives the CPU directly. A board with no IMCR at all (i430FX) never
-    /// touches this, so it stays false for the machine's whole life and <see
-    /// cref="HasPendingInterrupt"/>/<see cref="GetPendingVector"/> always
-    /// take the 8259 passthrough branch -- exactly the byte-identical
-    /// behaviour coordinator decision A1 asks for.
+    /// drives the CPU directly by default -- see <see cref="LegacyPending"/>
+    /// for the full rule, which also has to consult whether this unit is
+    /// itself present and enabled (independent review, item N7) before it
+    /// can rely on this flag at all. A board with no IMCR at all (i430FX)
+    /// never touches this, so it stays false for the machine's whole life
+    /// and the legacy pair always reaches the CPU directly -- the
+    /// byte-identical behaviour coordinator decision A1 asks for. This unit's
+    /// own interrupts (its timer, an I/O APIC's Fixed-mode deliveries) are
+    /// entirely independent of this flag either way.
     /// </summary>
     public bool ImcrApicMode { get; set; }
 
@@ -222,22 +226,55 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
 
     /// <summary>
     /// Whether the legacy 8259 pair currently has a path to the CPU at all,
-    /// and whether it has something pending on it. IMCR=0 wires it straight
-    /// to the CPU, bypassing this unit's LVTs entirely -- the "PIC mode"
-    /// board wiring, and the branch that keeps every existing machine
-    /// byte-identical, since IMCR starts at 0 and nothing before this
-    /// package ever changed it. IMCR=1 instead routes it through LINT0,
-    /// which only carries it when unmasked and programmed for ExtINT
-    /// delivery (and, per item 12, LINT0 can only ever have been unmasked
-    /// while SVR was software-enabled -- see <see cref="IsLvtMasked"/>).
+    /// and whether it has something pending on it.
+    ///
+    /// IMCR=0 wires it straight to the CPU, bypassing this unit's LVTs
+    /// entirely -- the "PIC mode" board wiring, and the branch that keeps
+    /// every existing machine byte-identical, since IMCR starts at 0 and
+    /// nothing before this package ever changed it. A hardware-disabled (or
+    /// absent) unit gets the same direct wiring regardless of what the IMCR
+    /// holds (independent review, item N7): with the whole local APIC
+    /// powered off there is no LINT0 logic left to route through, so LINT0
+    /// reverts to being a plain INTR pin exactly as it is in PIC mode -- a
+    /// guest that hardware-disables its own APIC after switching to
+    /// symmetric mode is not a sequence any cited source describes, but it
+    /// must not lose the timer tick either.
+    ///
+    /// Otherwise (IMCR=1, unit present and enabled) the legacy pair reaches
+    /// the CPU only through an ExtINT-programmed, unmasked path: LINT0 (the
+    /// "virtual wire via the local APIC") or an I/O APIC redirection entry
+    /// (<see cref="SetIoApicExtIntActive"/>, "virtual wire via the I/O
+    /// APIC") -- and per item 12, LINT0 can only ever have been unmasked
+    /// while SVR was software-enabled (see <see cref="IsLvtMasked"/>).
     /// </summary>
     private bool LegacyPending()
     {
-        if (!ImcrApicMode) return _pic.HasPendingInterrupt;
+        if (!ImcrApicMode || !ApicPresent || !_hardwareEnabled) return _pic.HasPendingInterrupt;
 
-        bool lint0ExtInt = (_lvt[LvtLint0Index] & LvtDeliveryModeMask) == LvtDeliveryModeExtInt;
-        return lint0ExtInt && !IsLvtMasked(LvtLint0Index) && _pic.HasPendingInterrupt;
+        bool lint0ExtInt = (_lvt[LvtLint0Index] & LvtDeliveryModeMask) == LvtDeliveryModeExtInt
+            && !IsLvtMasked(LvtLint0Index);
+        return (lint0ExtInt || _ioApicExtIntActive) && _pic.HasPendingInterrupt;
     }
+
+    /// <summary>
+    /// Whether an I/O APIC redirection entry is currently unmasked and
+    /// programmed for ExtINT delivery -- "virtual wire via the I/O APIC"
+    /// (plans/specs/apic.md §1.4; independent review, item N2). Pushed by
+    /// <c>IoApic</c> whenever its own redirection table changes, rather than
+    /// asked for on demand, so this class does not need a reference back to
+    /// every I/O APIC that might exist.
+    ///
+    /// Deliberately kept out of this unit's own IRR/ISR/PPR machinery: an
+    /// ExtINT entry's own vector field is meaningless (the 8259 supplies the
+    /// real one at acceptance, in <see cref="GetPendingVector"/>, through
+    /// <see cref="LegacyPending"/> above -- never at the edge that sets this
+    /// flag, and never when this unit itself has nothing to accept it with),
+    /// so it is exempt from TPR/PPR and needs no LAPIC-side EOI, only the
+    /// 8259's own -- exactly like LINT0's own ExtINT path.
+    /// </summary>
+    private bool _ioApicExtIntActive;
+
+    public void SetIoApicExtIntActive(bool active) => _ioApicExtIntActive = active;
 
     private bool ApicPresent => _cpu.State.Features.Has(CpuFeature.Apic);
 
@@ -360,7 +397,7 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
         if (offset == EoiOffset) { HandleEoi(); return; }
         if (offset == LdrOffset) { _ldr = value; return; }
         if (offset == DfrOffset) { _dfr = value; return; }
-        if (offset == SvrOffset) { _svr = (value & ~SvrHardwiredLowNibble) | SvrHardwiredLowNibble; return; }
+        if (offset == SvrOffset) { WriteSvr(value); return; }
         if (offset == EsrOffset) { _esr = 0; return; }   // write-then-read: nothing here ever latches a real error
         if (offset == IcrLowOffset) { WriteIcrLow(value); return; }
         if (offset == IcrHighOffset) { _icrHigh = value; return; }
@@ -368,6 +405,28 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
         if (offset == DivideConfigOffset) { WriteDivideConfig(value); return; }
         if (TryLvtIndex(offset, out int lvtIndex)) { WriteLvt(lvtIndex, value); return; }
         // ISR/TMR/IRR and every other offset are read-only or unimplemented.
+    }
+
+    /// <summary>
+    /// Independent review, item N6: on a 1-to-0 transition of SVR's own
+    /// software-enable bit, every stored LVT gets its mask bit OR'd in on
+    /// the spot (SDM: software-disabling the unit masks every LVT entry).
+    /// Without this, an LVT that was unmasked before the disable would still
+    /// read that way the instant SVR is re-enabled, even though nothing
+    /// could have delivered through it in between -- <see cref="ReadLvt"/>/
+    /// <see cref="WriteLvt"/> only force the bit while still disabled, which
+    /// is not the same guarantee as this one-time latch at the transition.
+    /// </summary>
+    private void WriteSvr(uint value)
+    {
+        bool wasEnabled = (_svr & SvrSoftwareEnableBit) != 0;
+        _svr = (value & ~SvrHardwiredLowNibble) | SvrHardwiredLowNibble;
+        bool nowEnabled = (_svr & SvrSoftwareEnableBit) != 0;
+
+        if (wasEnabled && !nowEnabled)
+        {
+            for (int i = 0; i < _lvt.Length; i++) _lvt[i] |= LvtMaskBit;
+        }
     }
 
     /// <summary>Item 12: while software-disabled, an LVT reads with its mask bit forced to 1, live, regardless of what was last written.</summary>
@@ -621,20 +680,47 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
     {
         _hardwareEnabled = (apicBaseValue & ApicBaseEnableBit) != 0;
 
-        // A high window (PhysicalMemoryBus.RegisterHighWindow), not
-        // MapDevice/Unmap: the page belongs up near FEE00000h, far above the
-        // ordinary mapped devices, and re-registering is exactly what a
-        // relocation or a disable needs -- unregister whatever this device
-        // last held (a no-op the first time, before it has ever been
-        // mapped), then register the new address if the unit is live.
-        _memory.UnregisterHighWindow(this);
+        // Whichever mechanism last held the page is released first: the
+        // dense per-page path (Unmap) if a previous relocation landed below
+        // the addressable ceiling, the high-window one otherwise. Both are
+        // harmless no-ops the first time, before anything has ever been
+        // mapped.
+        if (_mappedBase is { } previousBase)
+        {
+            if (previousBase < _memory.AddressableBytes) _memory.Unmap(previousBase, PageSize);
+            else _memory.UnregisterHighWindow(this);
+        }
+
         _mappedBase = null;
 
         if (_hardwareEnabled && ApicPresent)
         {
             uint newBase = (uint)(apicBaseValue & ApicBaseAddressMask);
-            _memory.RegisterHighWindow(newBase, PageSize, this);
-            _mappedBase = newBase;
+
+            // Independent review, item N8a: APIC_BASE's own reset value
+            // (FEE00000h) and every relocation a real guest actually makes
+            // land above the addressable ceiling, where a high window
+            // (PhysicalMemoryBus.RegisterHighWindow) is what answers for it.
+            // A relocation below the ceiling instead goes through the
+            // ordinary per-page path (TryMapDevice), with that method's own
+            // "never over RAM, ROM or another device" rule -- exactly the
+            // same refusal a PCI BAR programmed over memory it does not own
+            // already gets elsewhere in this codebase, not a new one invented
+            // here. One placement this does not reach at all: inside the top
+            // megabyte's high alias (0xFFFF0000 and up), Translate() rewrites
+            // the address to the BIOS ROM before either mapping mechanism
+            // ever sees it, so a guest relocating its LAPIC there finds ROM
+            // instead -- a real gap, and not one any cited source suggests a
+            // guest OS ever does, so it is documented rather than chased.
+            if (newBase < _memory.AddressableBytes)
+            {
+                if (_memory.TryMapDevice(newBase, PageSize, this)) _mappedBase = newBase;
+            }
+            else
+            {
+                _memory.RegisterHighWindow(newBase, PageSize, this);
+                _mappedBase = newBase;
+            }
         }
     }
 

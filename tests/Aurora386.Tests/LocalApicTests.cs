@@ -198,20 +198,10 @@ public class LocalApicTests
     [Fact]
     public void HardwareDisabledApicAlsoForwardsThe8259InPicMode()
     {
-        // Family six (PentiumII), not PentiumMmx: coordinator ruling, item
-        // 13 -- APIC_BASE exists as an MSR from the P6 family on only, and
+        // Family six (PentiumII), not PentiumMmx: coordinator decision A11
+        // -- APIC_BASE exists as an MSR from the P6 family on only, and
         // a P5's own on-die APIC has no MSR to hardware-disable it with at
         // all (see ApicIsAlwaysFixedAndHardwareEnabledOnThePentiumMmxsP5Set).
-        //
-        // IMCR=0 here, not 1: the ruling's direct-bypass path (item 7)
-        // applies "when IMCR=0" without qualifying it on the unit's own
-        // hardware-enable state, matching a hardware-disabled unit being
-        // exactly as absent from the CPU's point of view as one whose
-        // silicon never had an APIC at all. IMCR=1 with the unit hardware-
-        // disabled is a guest sequence no real BIOS or OS performs (nothing
-        // would first switch to symmetric mode and then disable its own
-        // local APIC), and is deliberately left unresolved here rather than
-        // asserted without a citation.
         var (apic, pic, cpu, _) = Build(CpuModel.PentiumII);
 
         const uint ApicBaseIndex = 0x1B;
@@ -224,6 +214,28 @@ public class LocalApicTests
         int vector = apic.GetPendingVector();
         Assert.Equal(0x08, vector);
         Assert.True(pic.HasInterruptInService);
+    }
+
+    /// <summary>
+    /// Coordinator ruling, second independent review, item N7: with the
+    /// unit hardware-disabled, LINT0 reverts to a plain INTR pin regardless
+    /// of what the IMCR holds -- there is no local APIC logic left running
+    /// to route LINT0 through, so IMCR=1 does not strand the interrupt the
+    /// way it would if the unit were merely software-disabled instead.
+    /// </summary>
+    [Fact]
+    public void HardwareDisabledApicForwardsThe8259EvenWithImcrSetToOne()
+    {
+        var (apic, pic, cpu, _) = Build(CpuModel.PentiumII);
+        apic.ImcrApicMode = true;
+
+        const uint ApicBaseIndex = 0x1B;
+        const uint DisabledApicBase = 0xFEE00000u;
+        Assert.True(cpu.Msrs.TryWrite(ApicBaseIndex, DisabledApicBase));
+
+        pic.RaiseIrq(0);
+        Assert.True(apic.HasPendingInterrupt);
+        Assert.Equal(0x08, apic.GetPendingVector());
     }
 
     // ---- virtual wire: LINT0 ExtINT + SVR enable + IMCR = 1 -----------------
@@ -689,5 +701,54 @@ public class LocalApicTests
 
         Assert.True(machine.Apic.HasPendingInterrupt);
         Assert.Equal(0x33, machine.Apic.GetPendingVector());
+    }
+
+    // ---- second independent review, item N4: CpuModel resets the LAPIC ------
+
+    /// <summary>
+    /// Switching <c>Machine.CpuModel</c> is not a full reboot, but it must
+    /// still reset the local APIC exactly as one would: a stale timer LVT
+    /// or a stale pending vector must not survive pretending to swap chips.
+    /// </summary>
+    [Fact]
+    public void ChangingCpuModelResetsTheLapicSoNoStaleTimerVectorSurvives()
+    {
+        using var machine = new Machine(chipset: Chipset.I430Tx, initialCpuModel: CpuModel.PentiumMmx);
+        machine.Apic.WriteDword(SvrOffset, machine.Apic.ReadDword(SvrOffset) | SvrSoftwareEnableBit);
+        machine.Apic.WriteDword(LvtTimerOffset, 0x44 | LvtPeriodicBit);
+        machine.Apic.WriteDword(DivideConfigOffset, 0x0B);
+        machine.Apic.WriteDword(InitialCountOffset, 10);
+        machine.Apic.DeliverFixed(0x55, levelTriggered: false);   // an own-IRR vector already latched
+
+        machine.CpuModel = CpuModel.PentiumII;
+
+        // Every register is back at its power-on value: no stale timer LVT,
+        // no stale IRR bit, nothing pending from before the switch.
+        Assert.Equal(0x00010000u, machine.Apic.ReadDword(LvtTimerOffset));
+        Assert.Equal(0u, machine.Apic.ReadDword(InitialCountOffset));
+        Assert.Equal(0u, machine.Apic.ReadDword(CurrentCountOffset));
+        Assert.False(machine.Apic.HasPendingInterrupt);
+    }
+
+    // ---- second independent review, item N6: SVR 1-to-0 masks every LVT -----
+
+    [Fact]
+    public void SvrSoftwareDisableMasksEveryStoredLvtSoReEnablingDoesNotReviveThem()
+    {
+        var (apic, _, _, _) = Build(CpuModel.PentiumMmx);
+        apic.WriteDword(SvrOffset, apic.ReadDword(SvrOffset) | SvrSoftwareEnableBit);
+        apic.WriteDword(LvtLint0Offset, LvtDeliveryModeExtInt);   // unmasked while enabled
+        apic.WriteDword(LvtTimerOffset, 0x22);                    // unmasked while enabled
+
+        // The 1-to-0 transition itself must OR the mask bit into storage,
+        // not merely change how reads/writes are displayed from now on.
+        apic.WriteDword(SvrOffset, apic.ReadDword(SvrOffset) & ~SvrSoftwareEnableBit);
+
+        // Re-enabling SVR does not reveal LINT0 or the timer LVT as unmasked
+        // again: the transition already latched them masked in storage.
+        apic.WriteDword(SvrOffset, apic.ReadDword(SvrOffset) | SvrSoftwareEnableBit);
+
+        Assert.Equal(LvtMaskBit, apic.ReadDword(LvtLint0Offset) & LvtMaskBit);
+        Assert.Equal(LvtMaskBit, apic.ReadDword(LvtTimerOffset) & LvtMaskBit);
     }
 }

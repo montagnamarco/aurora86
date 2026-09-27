@@ -262,6 +262,21 @@ public static partial class BiosRom
 
         /// <summary>The PCMP configuration table the floating pointer's table-address field points at.</summary>
         public const ushort MpConfigurationTable = 0x1E10;
+
+        /// <summary>
+        /// The whole region <see cref="MpFloatingPointer"/> and everything
+        /// <c>BiosRom.Mp.cs</c>'s <c>WriteMpTables</c> writes after it can
+        /// ever occupy: the floating pointer (16 bytes) plus the PCMP
+        /// header (44) and the largest possible entry list this board can
+        /// produce (one processor, two buses, one I/O APIC, fifteen wired
+        /// ISA lines, sixteen PCI slot entries plus PIIX4's USB, and the two
+        /// local entries -- 360 bytes), rounded up generously. <see
+        /// cref="Machine.RefreshBiosMpTables"/> patches exactly this many
+        /// bytes in place after a CPU model switch, rather than re-mapping
+        /// the whole ROM image and losing whatever else was patched into it
+        /// at runtime (independent review, item N5).
+        /// </summary>
+        public const int MpRegionLength = 0x200;
     }
 
     /// <summary>

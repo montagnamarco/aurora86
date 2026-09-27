@@ -43,20 +43,30 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// A handful of devices mapped above <see cref="_addressableBytes"/>: the
     /// local APIC's MMIO page (IA32_APIC_BASE can move it anywhere in the
     /// 36-bit physical space) and the I/O APIC's fixed window (work package
-    /// P4.4). Kept as a short list checked only on the existing slow branch
+    /// P4.4). Kept as a short array checked only on the existing slow branch
     /// -- the one already reached for every address the dense per-page
     /// arrays do not cover -- rather than growing those arrays to span 4 GB:
     /// a machine's addressable space stays sized to its RAM and its legacy
     /// devices, and every access below it keeps the same fast path it always
     /// had. There are at most two entries in practice, so a linear scan
     /// costs nothing on a path already this rare.
+    ///
+    /// Replaced wholesale, never mutated in place (independent review, item
+    /// N8b): a reference to an array is read and written atomically in .NET,
+    /// so <see cref="TryHighWindow"/> capturing this field once and reading
+    /// only its own local copy is safe against another thread calling <see
+    /// cref="RegisterHighWindow"/>/<see cref="UnregisterHighWindow"/>
+    /// concurrently -- it sees either the whole old array or the whole new
+    /// one, never a torn, partially updated one. This matters because a
+    /// front end's UI thread can read memory (a screen capture, a debugger
+    /// watch) while the emulation thread moves the local APIC's page.
     /// </summary>
-    private readonly List<(uint Base, uint Length, IMemoryDevice Device)> _highWindows = new();
+    private (uint Base, uint Length, IMemoryDevice Device)[] _highWindows = [];
 
     /// <summary>Maps a device at a physical address at or above the addressable space, such as the local APIC's MMIO page.</summary>
     public void RegisterHighWindow(uint physicalBase, uint length, IMemoryDevice device)
     {
-        _highWindows.Add((physicalBase, length, device));
+        _highWindows = [.. _highWindows, (physicalBase, length, device)];
     }
 
     /// <summary>
@@ -66,7 +76,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     public void UnregisterHighWindow(IMemoryDevice device)
     {
-        _highWindows.RemoveAll(window => ReferenceEquals(window.Device, device));
+        _highWindows = _highWindows.Where(window => !ReferenceEquals(window.Device, device)).ToArray();
     }
 
     /// <summary>
@@ -79,7 +89,11 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     private bool TryHighWindow(uint address, uint length, out IMemoryDevice? device, out uint offset)
     {
-        foreach ((uint windowBase, uint windowLength, IMemoryDevice windowDevice) in _highWindows)
+        // One read of the field: see _highWindows's own summary for why this
+        // is what makes a concurrent Register/Unregister call safe to race
+        // against.
+        (uint Base, uint Length, IMemoryDevice Device)[] windows = _highWindows;
+        foreach ((uint windowBase, uint windowLength, IMemoryDevice windowDevice) in windows)
         {
             if (length > windowLength) continue;
             if (address >= windowBase && address - windowBase <= windowLength - length)
@@ -155,6 +169,17 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     }
 
     public uint RamSize => _ramSize;
+
+    /// <summary>
+    /// The top of the space the dense per-page arrays cover. A device
+    /// deciding whether its own address belongs on the ordinary page path
+    /// (<see cref="TryMapDevice"/>) or a high window (<see
+    /// cref="RegisterHighWindow"/>) reads this rather than guessing --
+    /// <c>Devices.Apic.LocalApic</c> is the one example today, since
+    /// IA32_APIC_BASE can relocate its page anywhere in the 36-bit physical
+    /// space (independent review, item N8a).
+    /// </summary>
+    public uint AddressableBytes => _addressableBytes;
 
     public PhysicalMemoryBus(uint ramSize = 16 * 1024 * 1024, uint addressableBytes = 16 * 1024 * 1024)
     {
@@ -367,6 +392,22 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
         _ram[address] = (byte)value;
         _ram[address + 1] = (byte)(value >> 8);
+    }
+
+    /// <summary>
+    /// The same bypass as <see cref="WriteRomWord"/>, for a whole span
+    /// rather than one word: what <c>Machine.RefreshBiosMpTables</c>
+    /// (independent review, item N5) uses to patch only the MP 1.4 tables'
+    /// own byte range in place after a CPU model switch, leaving every other
+    /// runtime patch already written into the ROM -- the redirector's own
+    /// saved INT 2Fh vector among them -- untouched.
+    /// </summary>
+    public void WriteRomBytes(uint address, ReadOnlySpan<byte> content)
+    {
+        if (address + (uint)content.Length > _ramSize)
+            throw new ArgumentOutOfRangeException(nameof(address));
+
+        content.CopyTo(new Span<byte>(_ram + address, content.Length));
     }
 
     /// <summary>
@@ -728,6 +769,19 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
         // Inside a watched range the write goes byte by byte, so that it is
         // reported like any other.
+        //
+        // This pre-dates the local APIC and applies equally to it: a debugger
+        // watch covering a device register -- any device, a high window
+        // (independent review, item N8c) included -- turns one word or dword
+        // write into two or four separate device accesses, which is wrong
+        // for a register whose write has a side effect independent of the
+        // value (the local APIC's own EOI register, at offset 0B0h, is
+        // exactly this). Setting a watch there is a deliberate debugging
+        // action, never something a guest does on its own, so this is
+        // documented rather than restructured: fixing it would mean routing
+        // every watched write through the same device-dispatch the
+        // unwatched path already has, for every device this bus has ever
+        // served, not only the ones this package added.
         if (IsWatched(address, 1))
         {
             WriteByte(address, (byte)value);

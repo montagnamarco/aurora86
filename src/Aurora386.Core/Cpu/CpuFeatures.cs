@@ -185,10 +185,13 @@ public readonly struct CpuFeatures : IEquatable<CpuFeatures>
     /// the catalog's Northwood Pentium 4 does not advertise Prescott's bit.
     /// Work package P4.4 adds <see cref="CpuFeature.Apic"/>: every model
     /// whose silicon carries an on-die local APIC (PentiumMmx onward, per
-    /// the catalog in Cpu.Identification.cs) now shows leaf 1 EDX bit 9,
-    /// answers RDMSR/WRMSR on IA32_APIC_BASE (MSR 1Bh, both the P5 and the
-    /// family-six set -- <see cref="ModelSpecificRegisters"/>), and has a
-    /// working LAPIC device (<c>Devices.Apic.LocalApic</c>) behind that MSR.
+    /// the catalog in Cpu.Identification.cs) now shows leaf 1 EDX bit 9 and
+    /// has a working LAPIC device (<c>Devices.Apic.LocalApic</c>) behind it.
+    /// IA32_APIC_BASE (MSR 1Bh) itself answers RDMSR/WRMSR only on the
+    /// family-six set, never the P5 one (coordinator ruling A11): a Pentium
+    /// MMX's own on-die APIC is real, but fixed at FEE00000h and always
+    /// hardware-enabled, since the P5 architecture never defined this MSR --
+    /// <see cref="ModelSpecificRegisters"/> is where that split lives.
     /// A model without this bit in its silicon (386, 486, plain Pentium)
     /// is unaffected: its <c>Devices.Apic.LocalApic</c> wrapper always finds
     /// the APIC "absent" and forwards the 8259 unchanged (coordinator

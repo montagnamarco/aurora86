@@ -42,19 +42,35 @@ public sealed partial class Machine
     }
 
     /// <summary>
-    /// Rebuilds and re-maps the whole BIOS ROM image from the CPU's current
-    /// identity, without touching anything else about the machine. Called
-    /// from <see cref="CpuModel"/>'s setter (independent review, item 6):
+    /// Patches only the MP 1.4 tables' own byte range (<see
+    /// cref="BiosRom.Entry.MpFloatingPointer"/>, <see
+    /// cref="BiosRom.Entry.MpRegionLength"/> bytes) from the CPU's current
+    /// identity, without touching anything else in the ROM. Called from
+    /// <see cref="CpuModel"/>'s setter (independent review, items 6 and N5):
     /// the MP tables describe a specific CPU's signature, feature flags and
     /// local APIC version, and <see cref="VmConfiguration.BuildMachine"/>
     /// selects the configured model only after the machine (and its BIOS
     /// image) already exists, by which point <see cref="InstallBios"/>
-    /// itself is long past. Rebuilding the whole 64 KB image is simpler and
-    /// safe -- <see cref="BiosRom.Build"/> is a pure function of what it is
-    /// given, and nothing else about this ROM ever changes once the guest
-    /// is running -- rather than patching only the MP table bytes in place.
+    /// itself is long past.
+    ///
+    /// This builds a whole fresh image (cheap: a byte array, not a mapping
+    /// operation) purely to get <see cref="BiosRom.Build"/>'s own correctly
+    /// computed MP bytes, then writes only that slice into the live ROM
+    /// with <see cref="PhysicalMemoryBus.WriteRomBytes"/> -- re-mapping the
+    /// whole image with <see cref="PhysicalMemoryBus.MapRom"/> instead would
+    /// silently erase every runtime patch written elsewhere in the same ROM
+    /// (the redirector's own saved INT 2Fh vector, <see
+    /// cref="BiosRom.Entry.PreviousMultiplexVector"/>, is the one this
+    /// codebase currently makes; grepping for <c>WriteRomWord</c> callers is
+    /// how a later one gets noticed before it silently breaks the same way).
     /// </summary>
-    internal void RefreshBiosMpTables() => Memory.MapRom(BiosRom.Base, BuildBiosImage());
+    internal void RefreshBiosMpTables()
+    {
+        byte[] freshImage = BuildBiosImage();
+        Memory.WriteRomBytes(
+            BiosRom.Base + BiosRom.Entry.MpFloatingPointer,
+            freshImage.AsSpan(BiosRom.Entry.MpFloatingPointer, BiosRom.Entry.MpRegionLength));
+    }
 
     /// <summary>
     /// The whole BIOS ROM image for the machine's current identity: the PCI

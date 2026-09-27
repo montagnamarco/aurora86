@@ -114,7 +114,7 @@ internal static class CpuModelCatalog
         // APIC (Devices.Apic.LocalApic) is now a real device behind this
         // bit, fixed at FEE00000h and always hardware-enabled on this
         // model (there is no APIC_BASE MSR on the P5 set to move or
-        // disable it -- coordinator ruling, plans/specs/apic.md item 13).
+        // disable it -- plans/specs/apic.md, coordinator decision A11).
         [CpuModel.PentiumMmx] = new CpuModelIdentity
         {
             Signature = 0x0543,
@@ -419,7 +419,7 @@ public sealed partial class Cpu
     /// cref="FeatureRegister"/> already answers 0 for it); on the P5 set,
     /// where APIC_BASE is not a real MSR at all, this MSR-backed storage
     /// stays at its power-on value with the enable bit set forever -- the
-    /// unit is always hardware-enabled there (coordinator ruling, item 13)
+    /// unit is always hardware-enabled there (coordinator decision A11)
     /// -- so this check is a no-op for that family and only ever clears the
     /// bit on a family-six model that has actually disabled its APIC.
     /// </summary>

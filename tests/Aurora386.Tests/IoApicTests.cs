@@ -25,8 +25,11 @@ public class IoApicTests
 
     private const uint EntryMaskBit = 1u << 16;
     private const uint EntryTriggerLevelBit = 1u << 15;
+    private const uint EntryDeliveryModeMask = 0x700;
+    private const uint EntryDeliveryModeExtInt = 0x700;   // bits 10:8 = 111
     private const uint LocalApicSvrOffset = 0x0F0;
     private const uint LocalApicEoiOffset = 0x0B0;
+    private const uint LocalApicIsrBase = 0x100;
     private const uint LocalApicSvrSoftwareEnableBit = 1u << 8;
     private const uint EntryRemoteIrrBit = 1u << 14;
 
@@ -163,6 +166,41 @@ public class IoApicTests
         Assert.Equal(0u, ReadIndirect(ioApic, RedirTableBase + 16 * 2) & EntryRemoteIrrBit);
     }
 
+    /// <summary>
+    /// Second independent review, item N3: an edge-triggered entry reached
+    /// through <see cref="IoApic.SetLevel"/> (an unusual way to configure a
+    /// PIRQ pin, but not forbidden) delivers on the rising edge exactly like
+    /// <see cref="IoApic.PulseLine"/> -- Remote IRR is meaningless for edge
+    /// mode and must never be set by this path either.
+    /// </summary>
+    [Fact]
+    public void SetLevelOnAnEdgeTriggeredEntryDeliversWithoutSettingRemoteIrr()
+    {
+        var (ioApic, apic, _) = Build();
+        apic.WriteDword(LocalApicSvrOffset, apic.ReadDword(LocalApicSvrOffset) | LocalApicSvrSoftwareEnableBit);
+        WriteIndirect(ioApic, RedirTableBase + 16 * 2, 0x40);   // pin 16, edge (bit 15 clear), unmasked
+
+        ioApic.SetLevel(16, true);
+
+        Assert.True(apic.HasPendingInterrupt);
+        Assert.Equal(0x40, apic.GetPendingVector());
+        Assert.Equal(0u, ReadIndirect(ioApic, RedirTableBase + 16 * 2) & EntryRemoteIrrBit);
+
+        // A repeated call with the same asserted state (PciInterruptRouter
+        // re-asserts every still-held link on every change to any of them)
+        // is not a new edge and delivers nothing further.
+        ioApic.SetLevel(16, true);
+        Assert.False(apic.HasPendingInterrupt);
+
+        // But a genuine deassert-then-reassert cycle is a fresh edge --
+        // ended first with an EOI, since the earlier delivery of the same
+        // vector is still in service and would otherwise mask its own class.
+        apic.WriteDword(LocalApicEoiOffset, 0);
+        ioApic.SetLevel(16, false);
+        ioApic.SetLevel(16, true);
+        Assert.True(apic.HasPendingInterrupt);
+    }
+
     /// <summary>Test case 7: EOI of a level vector clears Remote IRR.</summary>
     [Fact]
     public void EoiOfALevelVectorClearsRemoteIrr()
@@ -244,6 +282,66 @@ public class IoApicTests
         var (ioApic, _, _) = Build();
         WriteIndirect(ioApic, RedirTableBase, 0xFFFFFFFF);
         Assert.Equal(0u, ReadIndirect(ioApic, RedirTableBase) & (1u << 12));
+    }
+
+    // ---- ExtINT via the I/O APIC: "virtual wire via the I/O APIC" -----------
+
+    /// <summary>
+    /// Second independent review, item N2: an entry programmed for ExtINT
+    /// delivery -- the Linux <c>check_timer()</c> fallback some real BIOSes
+    /// need, where INTIN2 (the PIT's own override pin) is left in ExtINT
+    /// mode instead of Fixed -- never touches this unit's own IRR/ISR/PPR at
+    /// all. The 8259 is asked for its own vector only at acceptance
+    /// (<c>LocalApic.GetPendingVector</c>), never at the edge itself, and
+    /// several ticks in a row are each served with nothing but an ordinary
+    /// 8259 EOI: the LAPIC's own ISR stays empty throughout.
+    /// </summary>
+    [Fact]
+    public void ExtIntEntryAsksThe8259OnlyAtAcceptanceAndNeedsOnlyItsOwnEoi()
+    {
+        var (ioApic, apic, pic) = Build();
+        WriteIndirect(ioApic, RedirTableBase + 2 * 2, EntryDeliveryModeExtInt);   // INTIN2, unmasked
+
+        // The BIOS's own ICW sequence, so RaiseIrq(0) answers a known vector.
+        pic.Master.WriteByte(0x20, 0x11);
+        pic.Master.WriteByte(0x21, 0x08);
+        pic.Master.WriteByte(0x21, 0x04);
+        pic.Master.WriteByte(0x21, 0x01);
+        pic.Master.WriteByte(0x21, 0x00);
+
+        for (int tick = 0; tick < 3; tick++)
+        {
+            // The same two calls Interrupts.RaiseIrq(0) makes on a real
+            // machine: the 8259 sees the edge directly, and so does INTIN2.
+            pic.RaiseIrq(0);
+            ioApic.PulseLine(2);
+
+            // Not acknowledged at edge time.
+            Assert.False(pic.HasInterruptInService);
+
+            Assert.True(apic.HasPendingInterrupt);
+            int vector = apic.GetPendingVector();
+            Assert.Equal(0x08, vector);          // the 8259's own vector, not the entry's (irrelevant) field
+            Assert.True(pic.HasInterruptInService);   // acknowledged only now, at acceptance
+
+            pic.Master.WriteByte(0x20, 0x20);    // an ordinary, non-specific 8259 EOI -- nothing else
+        }
+
+        // The LAPIC's own in-service register was never touched by any of it.
+        Assert.Equal(0u, apic.ReadDword(LocalApicIsrBase));
+    }
+
+    /// <summary>ExtINT via the I/O APIC delivers nothing at all while the 8259 itself has nothing pending -- "when the LAPIC can't accept" (item N2).</summary>
+    [Fact]
+    public void ExtIntEntryDeliversNothingWhileThe8259HasNoPendingLine()
+    {
+        var (ioApic, apic, _) = Build();
+        WriteIndirect(ioApic, RedirTableBase + 2 * 2, EntryDeliveryModeExtInt);
+
+        ioApic.PulseLine(2);   // the pin pulses, but nothing ever raised it on the 8259 itself
+
+        Assert.False(apic.HasPendingInterrupt);
+        Assert.Equal(-1, apic.GetPendingVector());
     }
 
     // ---- Machine-level wiring: both the 8259 and the I/O APIC see every edge/level ----
