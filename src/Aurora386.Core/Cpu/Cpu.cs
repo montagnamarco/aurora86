@@ -119,6 +119,9 @@ public sealed partial class Cpu
         // (SDM vol. 3, table 9-1); only INIT would have kept them.
         Msrs.Reset();
 
+        // And the SSE state: XMM0-7 zero and MXCSR 1F80h, its power-on value.
+        Sse.Reset();
+
         // The four PAE PDPT registers are as much a part of RESET's initial
         // state as CR3 itself (State.Reset() already zeroes that): a stale
         // qword surviving a reset would translate through whatever the

@@ -331,10 +331,15 @@ public sealed partial class Cpu
                 return;
             }
 
-            // --- FXSAVE / FXRSTOR (Cpu.P6.cs) ----------------------------------
-            // Group 15. Only /0 and /1 exist on these models, both gated by
-            // CPUID.FXSR; the rest of the group (LDMXCSR, STMXCSR, SFENCE)
-            // arrives with SSE.
+            // --- FXSAVE / FXRSTOR (Cpu.P6.cs), LDMXCSR / STMXCSR / SFENCE
+            // (Cpu.Sse.cs) ----------------------------------------------------
+            // Group 15. The ModRM byte is decoded once, here, and each reg
+            // field checks its own gating feature: /0 and /1 need CPUID.FXSR,
+            // /2/3/7 need CPUID.SSE (STMXCSR/LDMXCSR/SFENCE) -- two
+            // independent bits on real silicon, even though every model this
+            // emulator carries that has either has both. /7 with a memory
+            // operand would be CLFLUSH (SSE2), not implemented; every other
+            // reg field is undefined.
             case 0xAE:
             {
                 var m = DecodeModRm();
@@ -342,31 +347,51 @@ public sealed partial class Cpu
                 {
                     case 0: RequireFeature(CpuFeature.Fxsr); ExecuteFxsave(m); return;
                     case 1: RequireFeature(CpuFeature.Fxsr); ExecuteFxrstor(m); return;
+                    case 2: ExecuteLdmxcsr(m); return;
+                    case 3: ExecuteStmxcsr(m); return;
+                    case 7: ExecuteSfence(m); return;
                     default: throw new CpuException(6);
                 }
             }
 
-            // --- MMX (Pentium MMX): Cpu.Mmx.cs ------------------------------
+            // --- MMX (Pentium MMX) and the SSE-gated MMX-register
+            // instructions (Katmai New Instructions): Cpu.Mmx.cs -------------
             // Every opcode below is dispatched to ExecuteMmx, which decodes
-            // its own ModRM/immediate bytes -- the feature check, the CR0.EM/TS
-            // checks and the 66/F2/F3-prefix rejection all live there, ahead
-            // of any operand decoding, exactly like the 486 opcodes above check
-            // RequireFeature before touching ModRM.
+            // its own ModRM/immediate bytes -- the feature check (Mmx for the
+            // first group, Sse for the second -- plans/specs/sse.md §2), the
+            // CR0.EM/TS checks and the 66/F2/F3-prefix rejection all live
+            // there, ahead of any operand decoding, exactly like the 486
+            // opcodes above check RequireFeature before touching ModRM.
             case 0x60: case 0x61: case 0x62: case 0x63:
             case 0x64: case 0x65: case 0x66: case 0x67:
             case 0x68: case 0x69: case 0x6A: case 0x6B:
-            case 0x6E: case 0x6F:
+            case 0x6E: case 0x6F: case 0x70:
             case 0x71: case 0x72: case 0x73:
             case 0x74: case 0x75: case 0x76: case 0x77:
             case 0x7E: case 0x7F:
-            case 0xD1: case 0xD2: case 0xD3: case 0xD5:
-            case 0xD8: case 0xD9: case 0xDB: case 0xDC: case 0xDD: case 0xDF:
-            case 0xE1: case 0xE2: case 0xE5:
-            case 0xE8: case 0xE9:
-            case 0xEB: case 0xEC: case 0xED: case 0xEF:
-            case 0xF1: case 0xF2: case 0xF3: case 0xF5:
+            case 0xC4: case 0xC5:
+            case 0xD1: case 0xD2: case 0xD3: case 0xD5: case 0xD7:
+            case 0xD8: case 0xD9: case 0xDA: case 0xDB: case 0xDC: case 0xDD: case 0xDE: case 0xDF:
+            case 0xE0: case 0xE1: case 0xE2: case 0xE3: case 0xE4: case 0xE5:
+            case 0xE7: case 0xE8: case 0xE9:
+            case 0xEA: case 0xEB: case 0xEC: case 0xED: case 0xEE: case 0xEF:
+            case 0xF1: case 0xF2: case 0xF3: case 0xF5: case 0xF6: case 0xF7:
             case 0xF8: case 0xF9: case 0xFA: case 0xFC: case 0xFD: case 0xFE:
                 ExecuteMmx(opcode);
+                return;
+
+            // --- SSE (Pentium III): Cpu.Sse.cs / Cpu.Sse.Arithmetic.cs --------
+            // Every opcode below is dispatched to ExecuteSse, which checks
+            // CPUID.SSE/CR0.EM/CR4.OSFXSR (#UD), CR0.TS (#NM), the mandatory
+            // 66/F2 prefixes (#UD -- SSE2, not implemented) and decodes its
+            // own ModRM, exactly like the MMX opcodes above.
+            case 0x10: case 0x11: case 0x12: case 0x13:
+            case 0x14: case 0x15: case 0x16: case 0x17:
+            case 0x28: case 0x29: case 0x2A: case 0x2B: case 0x2C: case 0x2D: case 0x2E: case 0x2F:
+            case 0x50: case 0x51: case 0x52: case 0x53: case 0x54: case 0x55: case 0x56: case 0x57:
+            case 0x58: case 0x59: case 0x5C: case 0x5D: case 0x5E: case 0x5F:
+            case 0xC2: case 0xC6:
+                ExecuteSse(opcode);
                 return;
 
             // --- bit instructions -------------------------------------------

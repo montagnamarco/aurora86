@@ -51,6 +51,39 @@ public sealed partial class Cpu
         };
     }
 
+    /// <summary>
+    /// Whether <paramref name="opcode"/>'s r/m operand shape is invalid at
+    /// decode time, for the four SSE-gated instructions whose valid shape
+    /// is fixed by the opcode alone: PEXTRW, PMOVMSKB and MASKMOVQ are
+    /// register-register only (no memory form exists at all), and MOVNTQ
+    /// is memory only (a register operand is undefined). Called ahead of
+    /// the CR0.TS check in <see cref="ExecuteMmx"/> -- see that call site's
+    /// own remark.
+    /// </summary>
+    private static bool IsInvalidRmShapeForOpcode(byte opcode, in ModRm m) => opcode switch
+    {
+        0xC5 or 0xD7 or 0xF7 => !m.IsRegister,
+        0xE7 => m.IsRegister,
+        _ => false,
+    };
+
+    /// <summary>
+    /// Whether <paramref name="opcode"/> is one of the eight MMX-register
+    /// instructions SSE itself introduced (plans/specs/sse.md §2: PSHUFW,
+    /// PINSRW, PEXTRW, PMOVMSKB, PAVGB/W, PMULHUW, PMINSW/PMAXSW, PMINUB/
+    /// PMAXUB, PSADBW, MOVNTQ, MASKMOVQ) -- gated on CPUID.SSE rather than
+    /// CPUID.MMX, even though every one of them still works on the ordinary
+    /// MM register file and follows the ordinary MMX EM/TS rules. Test case
+    /// 19 (plans/specs/sse.md) is exactly this: PSHUFW on a Pentium II,
+    /// which has MMX but not SSE, is <c>#UD</c>.
+    /// </summary>
+    private static bool IsSseGatedMmxOpcode(byte opcode) => opcode switch
+    {
+        0x70 or 0xC4 or 0xC5 or 0xD7 or 0xDA or 0xDE
+            or 0xE0 or 0xE3 or 0xE4 or 0xE7 or 0xEA or 0xEE or 0xF6 or 0xF7 => true,
+        _ => false,
+    };
+
     private void ExecuteMmx(byte opcode)
     {
         // Absent silicon, or a CR0.EM ("no coprocessor at all") processor:
@@ -60,7 +93,7 @@ public sealed partial class Cpu
         // there is no register file behind them to alias. (Every MMX
         // instruction's SDM Vol.2B reference page lists CPUID.MMX and
         // CR0.EM together under #UD, and CR0.TS alone under #NM.)
-        RequireFeature(CpuFeature.Mmx);
+        RequireFeature(IsSseGatedMmxOpcode(opcode) ? CpuFeature.Sse : CpuFeature.Mmx);
         if ((State.Cr0 & CpuState.Cr0Emulation) != 0) throw new CpuException(6);
 
         // With a 66/F2/F3 prefix these same bytes are SSE2's packed-integer
@@ -88,8 +121,20 @@ public sealed partial class Cpu
 
         // An invalid encoding of the immediate shift group is #UD, and #UD
         // outranks #NM (SDM vol. 3, exception priorities): it is checked
-        // before TS, not inside the shift itself.
+        // before TS, not inside the shift itself. The same ordering applies
+        // to the four SSE-gated instructions below whose r/m operand shape
+        // is fixed by the opcode alone (PEXTRW/PMOVMSKB/MASKMOVQ have no
+        // memory form; MOVNTQ has no register form) -- a P4.1 review
+        // finding: these checks used to live inside each instruction's own
+        // handler, reached only after the TS check below had already
+        // passed, so CR0.TS = 1 wrongly won the race and turned what should
+        // be #UD into #NM.
         if (opcode is 0x71 or 0x72 or 0x73 && !IsValidShiftImmediateEncoding(opcode, m))
+        {
+            throw new CpuException(6);
+        }
+
+        if (IsInvalidRmShapeForOpcode(opcode, m))
         {
             throw new CpuException(6);
         }
@@ -125,8 +170,145 @@ public sealed partial class Cpu
             case 0xE1: ExecuteShiftRegister(m, ShiftWidth.Word, left: false, arithmetic: true); return;
             case 0xE2: ExecuteShiftRegister(m, ShiftWidth.Dword, left: false, arithmetic: true); return;
 
+            // --- the SSE-gated MMX-register instructions (plans/specs/sse.md
+            // §2): PAVGB/W, PMULHUW, PMINSW/PMAXSW, PMINUB/PMAXUB and PSADBW
+            // are two-operand forms exactly like the ordinary MMX ALU above
+            // and simply fall to the default case's ExecuteMmxAlu; the other
+            // five need their own operand shapes.
+            case 0x70: ExecutePshufw(m); return;
+            case 0xC4: ExecutePinsrw(m); return;
+            case 0xC5: ExecutePextrw(m); return;
+            case 0xD7: ExecutePmovmskb(m); return;
+            case 0xE7: ExecuteMovntq(m); return;
+            case 0xF7: ExecuteMaskmovq(m); return;
+
             default: ExecuteMmxAlu(opcode, m); return;
         }
+    }
+
+    // --- the SSE-gated MMX-register instructions --------------------------------
+
+    /// <summary>0F 70: PSHUFW mm1, mm2/m64, imm8 -- each of the four destination words is one of the source's four words, selected by a 2-bit field of the immediate.</summary>
+    private void ExecutePshufw(in ModRm m)
+    {
+        ulong source = ReadMmxSource(m);
+        byte imm8 = FetchByte();
+
+        ulong result = 0;
+        for (int lane = 0; lane < 4; lane++)
+        {
+            int selector = (imm8 >> (lane * 2)) & 3;
+            result |= (ulong)GetWordLane(source, selector) << (lane * 16);
+        }
+
+        Fpu.WriteMmx(m.Reg, result);
+        Fpu.EnterMmxState();
+    }
+
+    /// <summary>0F C4: PINSRW mm, r32/m16, imm8 -- the low word of the source (a GPR, not another MM register, or a 16-bit memory operand) replaces one of the four words of the destination, named by the low two bits of the immediate.</summary>
+    private void ExecutePinsrw(in ModRm m)
+    {
+        ushort value = m.IsRegister ? (ushort)State.GetReg32(m.Register) : ReadMem16(m.Segment, m.Offset);
+        byte imm8 = FetchByte();
+        int lane = imm8 & 3;
+
+        ulong destination = Fpu.ReadMmx(m.Reg);
+        destination = (destination & ~((ulong)0xFFFF << (lane * 16))) | ((ulong)value << (lane * 16));
+        Fpu.WriteMmx(m.Reg, destination);
+        Fpu.EnterMmxState();
+    }
+
+    /// <summary>0F C5: PEXTRW r32, mm, imm8 -- register-register only (no memory form exists, already rejected with #UD by <see cref="IsInvalidRmShapeForOpcode"/> in <see cref="ExecuteMmx"/>): one of the source MM register's four words, zero-extended into a GPR.</summary>
+    private void ExecutePextrw(in ModRm m)
+    {
+        byte imm8 = FetchByte();
+        int lane = imm8 & 3;
+        ushort value = GetWordLane(Fpu.ReadMmx(m.Register), lane);
+        State.SetReg32(m.Reg, value);
+        Fpu.EnterMmxState();
+    }
+
+    /// <summary>0F D7: PMOVMSKB r32, mm -- register-register only (see <see cref="ExecutePextrw"/>'s own remark): a GPR gets the sign (high) bit of each of the source's eight bytes.</summary>
+    private void ExecutePmovmskb(in ModRm m)
+    {
+        ulong value = Fpu.ReadMmx(m.Register);
+        uint mask = 0;
+        for (int lane = 0; lane < 8; lane++)
+        {
+            if ((GetByteLane(value, lane) & 0x80) != 0) mask |= 1u << lane;
+        }
+
+        State.SetReg32(m.Reg, mask);
+        Fpu.EnterMmxState();
+    }
+
+    /// <summary>0F E7: MOVNTQ mm, m64 -- memory only (a register operand is undefined, already rejected with #UD by <see cref="IsInvalidRmShapeForOpcode"/> in <see cref="ExecuteMmx"/>): a non-temporal hint with nothing behind it to cache, so an ordinary quadword store.</summary>
+    private void ExecuteMovntq(in ModRm m)
+    {
+        WriteMemQword(m.Segment, m.Offset, Fpu.ReadMmx(m.Reg));
+        Fpu.EnterMmxState();
+    }
+
+    /// <summary>
+    /// 0F F7: MASKMOVQ mm, mm -- register-register only (no memory form
+    /// exists, already rejected with #UD by <see cref="IsInvalidRmShapeForOpcode"/>
+    /// in <see cref="ExecuteMmx"/>). The reg-field register supplies the
+    /// data, the rm-field register the mask: each byte whose mask byte has
+    /// bit 7 set is stored to DS:(E)DI (the segment overridable, the
+    /// address at the current address size, like every other string-style
+    /// implicit memory operand). <see cref="ValidateMaskmovqDestination"/>
+    /// checks the whole 8-byte destination before any byte is actually
+    /// stored (a P4.1 review finding, that method's own remark).
+    /// </summary>
+    private void ExecuteMaskmovq(in ModRm m)
+    {
+        ulong data = Fpu.ReadMmx(m.Reg);
+        ulong mask = Fpu.ReadMmx(m.Register);
+        SegReg segment = EffectiveSegment(SegReg.Ds);
+        uint baseOffset = AddressSize32 ? State.Edi : State.Di;
+
+        ValidateMaskmovqDestination(segment, baseOffset);
+
+        for (int lane = 0; lane < 8; lane++)
+        {
+            if ((GetByteLane(mask, lane) & 0x80) == 0) continue;
+
+            uint offset = AddressSize32 ? baseOffset + (uint)lane : (ushort)(baseOffset + lane);
+            WriteMem8(segment, offset, GetByteLane(data, lane));
+        }
+
+        Fpu.EnterMmxState();
+    }
+
+    /// <summary>
+    /// MASKMOVQ's destination is one 8-byte unit, checked as a whole before
+    /// any byte is actually stored (a P4.1 review finding): 16-bit
+    /// addressing raises <c>#GP(0)</c> when the range would wrap past
+    /// FFFFh -- an instruction-specific rule MASKMOVQ alone needs, since it
+    /// is the only MMX memory operand addressed through DS:(E)DI rather
+    /// than a ModRM byte, and so the only one whose address never goes
+    /// through <see cref="CheckLimit"/>'s own 32-bit-terms wraparound
+    /// handling by construction; the segment limit is then checked once
+    /// for the whole 8 bytes, and both pages it can touch are translated
+    /// for writing -- exactly the "validate the whole access, then write"
+    /// discipline <see cref="ValidateFxsaveArea"/> (Cpu.P6.cs) already
+    /// applies to its own 512-byte operand.
+    /// </summary>
+    private void ValidateMaskmovqDestination(SegReg segment, uint baseOffset)
+    {
+        const uint operandSize = 8;
+
+        if (!AddressSize32 && baseOffset + operandSize - 1 > 0xFFFFu)
+        {
+            throw new CpuException(13, 0);
+        }
+
+        CheckLimit(segment, baseOffset, operandSize);
+
+        uint linear = LinearAddress(segment, baseOffset);
+        uint lastLinear = linear + operandSize - 1;
+        TranslateLinear(linear, true);
+        TranslateLinear(lastLinear, true);
     }
 
     // --- MOVD / MOVQ -----------------------------------------------------------
@@ -225,6 +407,17 @@ public sealed partial class Cpu
             0xDF => ~destination & source,         // PANDN: NOT(DEST) AND SRC
             0xEB => destination | source,          // POR
             0xEF => destination ^ source,          // PXOR
+
+            // --- the SSE-gated MMX-register instructions (plans/specs/sse.md
+            // §2) that share this instruction's two-operand shape.
+            0xE0 => PerByte(destination, source, (a, b) => (byte)(((uint)a + b + 1) >> 1)),                  // PAVGB
+            0xE3 => PerWord(destination, source, (a, b) => (ushort)(((uint)a + b + 1) >> 1)),                // PAVGW
+            0xE4 => PerWord(destination, source, (a, b) => (ushort)(((uint)a * b) >> 16)),                   // PMULHUW: high 16 bits of the *unsigned* product
+            0xEA => PerWord(destination, source, (a, b) => (ushort)Math.Min((short)a, (short)b)),            // PMINSW
+            0xEE => PerWord(destination, source, (a, b) => (ushort)Math.Max((short)a, (short)b)),            // PMAXSW
+            0xDA => PerByte(destination, source, Math.Min),                                                  // PMINUB
+            0xDE => PerByte(destination, source, Math.Max),                                                  // PMAXUB
+            0xF6 => SumOfAbsoluteDifferences(destination, source),                                           // PSADBW
 
             _ => throw new CpuException(6),
         };
@@ -462,6 +655,24 @@ public sealed partial class Cpu
         }
 
         return LowDwordOfPair(0) | ((ulong)LowDwordOfPair(1) << 32);
+    }
+
+    /// <summary>
+    /// PSADBW: the absolute difference of each of the eight unsigned-byte
+    /// pairs, summed into a single 16-bit total in bits 15:0 -- unlike
+    /// SSE2's 128-bit PSADBW, this 64-bit MMX-register form has only one
+    /// lane, not two, so the whole quadword's difference collapses into one
+    /// word and bits 63:16 of the result are zero.
+    /// </summary>
+    private static ulong SumOfAbsoluteDifferences(ulong destination, ulong source)
+    {
+        uint sum = 0;
+        for (int lane = 0; lane < 8; lane++)
+        {
+            sum += (uint)Math.Abs(GetByteLane(destination, lane) - GetByteLane(source, lane));
+        }
+
+        return (ushort)sum;
     }
 
     // --- saturation ----------------------------------------------------------

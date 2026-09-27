@@ -219,6 +219,29 @@ public class CpuFeatureTests
         Assert.Equal(0u, edx & (1u << 17));        // PSE-36: still out of scope
     }
 
+    /// <summary>
+    /// Work package P4.1: SSE is real on the Pentium III's silicon and, since
+    /// Cpu.Sse.cs now executes its instructions, in CpuFeatures.Implemented
+    /// too -- so leaf 1 EDX bit 25 appears for that model, on top of the
+    /// PAE/PGE/PAT/MTRR/... set PentiumII already shows.
+    ///
+    /// PentiumII's own edx (0x0181F9FF, see
+    /// <see cref="PentiumIiLeafOneAddsPaeAndPgeAlongsideTheP3_1FeaturesButNotApicOrPse36"/>)
+    /// plus 33554432 (1&lt;&lt;25, SSE) = 0x0381F9FF.
+    /// </summary>
+    [Fact]
+    public void PentiumIiiLeafOneAddsSseOnTopOfThePentiumIiSet()
+    {
+        var (eax, _, ecx, edx) = Cpuid(CpuModel.PentiumIII, 1);
+
+        Assert.Equal(0x0683u, eax);
+        Assert.Equal(0x0381F9FFu, edx);
+        Assert.Equal(0u, ecx);
+
+        Assert.Equal(1u << 25, edx & (1u << 25));   // SSE: Cpu.Sse.cs now executes it.
+        Assert.Equal(0u, edx & (1u << 26));         // SSE2: still not implemented.
+    }
+
     [Fact]
     public void ACustomFeatureSetAdvertisingCx8ShowsEdxBitEight()
     {

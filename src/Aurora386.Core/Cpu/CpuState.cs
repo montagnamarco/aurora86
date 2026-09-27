@@ -160,6 +160,17 @@ public sealed class CpuState
     public const uint Cr4OsFxsr = 1u << 9;
 
     /// <summary>
+    /// Operating System support for Unmasked SIMD Floating-Point Exceptions:
+    /// software sets this to say it can handle vector 19 (#XM), the fault an
+    /// SSE instruction raises when an unmasked MXCSR exception fires. With
+    /// this bit clear, the same condition is <c>#UD</c> instead (Cpu.Sse.cs's
+    /// <c>RaiseIfUnmasked</c>) -- exactly the FXSR/OSFXSR relationship above,
+    /// one bit later. Writable wherever <see cref="CpuFeature.Sse"/> is
+    /// implemented (plans/specs/sse.md §7).
+    /// </summary>
+    public const uint Cr4Osxmmexcpt = 1u << 10;
+
+    /// <summary>
     /// Every CR4 bit this processor may hold, derived from
     /// <see cref="Features"/> rather than from the model directly: a bit is
     /// writable exactly when the subsystem behind it exists, the same rule
@@ -181,6 +192,7 @@ public sealed class CpuState
             if (Features.Has(CpuFeature.Pge)) bits |= Cr4Pge;
             if (Features.Has(CpuFeature.Pmc)) bits |= Cr4Pce;
             if (Features.Has(CpuFeature.Fxsr)) bits |= Cr4OsFxsr;
+            if (Features.Has(CpuFeature.Sse)) bits |= Cr4Osxmmexcpt;
             return bits;
         }
     }

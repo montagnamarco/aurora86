@@ -11,6 +11,7 @@
 // finding SYSENTER's own comment cites).
 
 using Aurora386.Core.Cpu.Fpu;
+using Aurora386.Core.Cpu.Sse;
 
 namespace Aurora386.Core.Cpu;
 
@@ -262,11 +263,16 @@ public sealed partial class Cpu
         WriteMem32(segment, address + FxsaveDataPointerOffset, 0);
         WriteMem32(segment, address + FxsaveDataSelectorOffset, 0);
 
-        // MXCSR/MXCSR_MASK: the fixed values a part without SSE shows (see
-        // the type summary on MxcsrPowerOnDefault). MXCSR_MASK 0 is the
-        // documented "assume nothing beyond the default" signal.
-        WriteMem32(segment, address + FxsaveMxcsrOffset, MxcsrPowerOnDefault);
-        WriteMem32(segment, address + FxsaveMxcsrMaskOffset, 0);
+        // MXCSR/MXCSR_MASK: real state once SSE is behind this silicon
+        // (P4.1, plans/specs/sse.md §6 -- FXSAVE carries XMM/MXCSR whatever
+        // CR4.OSFXSR says, the coordinator's own decision), and otherwise
+        // the fixed values a part without SSE shows (see the type summary
+        // on MxcsrPowerOnDefault). MXCSR_MASK 0 is the documented "assume
+        // nothing beyond the default" signal a part without SSE gives;
+        // Sse.SseUnit.MxcsrMask is the real one once SSE exists.
+        bool hasSse = State.Features.Has(CpuFeature.Sse);
+        WriteMem32(segment, address + FxsaveMxcsrOffset, hasSse ? Sse.Mxcsr : MxcsrPowerOnDefault);
+        WriteMem32(segment, address + FxsaveMxcsrMaskOffset, hasSse ? SseUnit.MxcsrMask : 0);
 
         // ST/MM0-7, in stack order (ST(0) first) exactly like FSAVE's own
         // register area -- ten bytes used out of each sixteen-byte slot.
@@ -278,15 +284,17 @@ public sealed partial class Cpu
             WriteMem16(segment, registerAddress + 14, 0);
         }
 
-        // XMM0-7: no SSE state exists behind this silicon, so the area is
-        // simply zero (plans/specs/p6.md's coordinator decision).
+        // XMM0-7: real state once SSE exists; otherwise zero, since no SSE
+        // state exists behind this silicon at all (plans/specs/p6.md's
+        // coordinator decision, still true for a model without CPUID.SSE).
         for (int i = 0; i < FxsaveXmmCount; i++)
         {
             uint xmmAddress = address + FxsaveXmmAreaOffset + (uint)(i * FxsaveRegisterStride);
-            WriteMem32(segment, xmmAddress, 0);
-            WriteMem32(segment, xmmAddress + 4, 0);
-            WriteMem32(segment, xmmAddress + 8, 0);
-            WriteMem32(segment, xmmAddress + 12, 0);
+            XmmValue value = hasSse ? Sse.Xmm(i) : default;
+            WriteMem32(segment, xmmAddress, value.D0);
+            WriteMem32(segment, xmmAddress + 4, value.D1);
+            WriteMem32(segment, xmmAddress + 8, value.D2);
+            WriteMem32(segment, xmmAddress + 12, value.D3);
         }
 
         // The reserved tail up to byte 463 is written zero for determinism.
@@ -323,8 +331,13 @@ public sealed partial class Cpu
     /// re-derive the real tag from the register's own bits the next time
     /// anything asks, exactly as it already does for ordinary FRSTOR
     /// (plans/specs/p6.md item 9: "FXRSTOR rebuilds the 2-bit tags from the
-    /// register contents"). MXCSR/MXCSR_MASK are read and discarded: there
-    /// is no SSE state here for them to govern yet.
+    /// register contents"). Once SSE exists (P4.1), the image's MXCSR is
+    /// read and checked against <see cref="SseUnit.MxcsrMask"/> before
+    /// anything else in the image is loaded -- a reserved bit set there is
+    /// <c>#GP(0)</c> with every piece of state (FPU/MMX included) left
+    /// exactly as it was (plans/specs/sse.md §6). Without SSE, MXCSR/
+    /// MXCSR_MASK are read and discarded, as before: there is no SSE state
+    /// here for them to govern.
     /// </summary>
     private void ExecuteFxrstor(in ModRm m)
     {
@@ -354,6 +367,16 @@ public sealed partial class Cpu
 
         ValidateFxsaveArea(segment, address, write: false);
 
+        // The MXCSR reserved-bit check comes before any state is loaded --
+        // reading the field is a plain memory read, not a commit, so nothing
+        // has changed yet if this faults (plans/specs/sse.md §6).
+        bool hasSse = State.Features.Has(CpuFeature.Sse);
+        uint mxcsrValue = ReadMem32(segment, address + FxsaveMxcsrOffset);
+        if (hasSse && (mxcsrValue & ~SseUnit.MxcsrMask) != 0)
+        {
+            throw new CpuException(13, 0);
+        }
+
         ushort control = ReadMem16(segment, address + FxsaveControlWordOffset);
         ushort status = ReadMem16(segment, address + FxsaveStatusWordOffset);
         byte abridgedTag = (byte)ReadMem16(segment, address + FxsaveAbridgedTagOffset);
@@ -378,5 +401,21 @@ public sealed partial class Cpu
         }
 
         Fpu.RestoreState(control, status, tags, registers);
+
+        if (hasSse)
+        {
+            Sse.Mxcsr = mxcsrValue;
+            for (int i = 0; i < FxsaveXmmCount; i++)
+            {
+                uint xmmAddress = address + FxsaveXmmAreaOffset + (uint)(i * FxsaveRegisterStride);
+                Sse.Xmm(i) = new XmmValue
+                {
+                    D0 = ReadMem32(segment, xmmAddress),
+                    D1 = ReadMem32(segment, xmmAddress + 4),
+                    D2 = ReadMem32(segment, xmmAddress + 8),
+                    D3 = ReadMem32(segment, xmmAddress + 12),
+                };
+            }
+        }
     }
 }

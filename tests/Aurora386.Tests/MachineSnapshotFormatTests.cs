@@ -179,6 +179,34 @@ public class MachineSnapshotFormatTests
     }
 
     /// <summary>
+    /// XMM7 and MXCSR come back from a file ("SSE " section); a RESET of the
+    /// processor returns them to zero and 1F80h.
+    /// </summary>
+    [Fact]
+    public void TheSseRegistersSurviveAFileAndResetClearsThem()
+    {
+        using Machine machine = Build();
+        machine.Cpu.State.SelectModel(CpuModel.PentiumIII);
+
+        machine.Cpu.Sse.Xmm(7) = Aurora386.Core.Cpu.Sse.XmmValue.FromHalves(0x0123456789ABCDEF, 0xFEDCBA9876543210);
+        machine.Cpu.Sse.Mxcsr = 0x1FA0;
+
+        MachineSnapshot snapshot = ThroughAFile(MachineSnapshot.Capture(machine));
+
+        machine.Cpu.Sse.Reset();
+        snapshot.RestoreTo(machine);
+
+        Assert.Equal(0x0123456789ABCDEFul, machine.Cpu.Sse.Xmm(7).Low);
+        Assert.Equal(0xFEDCBA9876543210ul, machine.Cpu.Sse.Xmm(7).High);
+        Assert.Equal(0x1FA0u, machine.Cpu.Sse.Mxcsr);
+
+        machine.Cpu.Reset();
+
+        Assert.Equal(0ul, machine.Cpu.Sse.Xmm(7).Low);
+        Assert.Equal(0x1F80u, machine.Cpu.Sse.Mxcsr);
+    }
+
+    /// <summary>
     /// An MTRR does not accept UC- (type 7), which only a PAT entry may hold:
     /// WRMSR 200h with type 7 is refused (#GP), while PAT accepts it.
     /// </summary>

@@ -163,6 +163,13 @@ public readonly struct CpuFeatures : IEquatable<CpuFeatures>
     /// model whose silicon carries them -- PentiumII and later, per the
     /// catalog (Cpu.Identification.cs). PSE-36 stays off: nothing here acts
     /// on a 4 MB PDE's own bits 20:13 as an address extension.
+    /// Work package P4.1 (SSE) added <see cref="CpuFeature.Sse"/>: XMM0-7 and
+    /// MXCSR are now real architectural state (Cpu/Sse/SseUnit.cs), the
+    /// whole SSE instruction set executes (Cpu.Sse.cs), FXSAVE/FXRSTOR carry
+    /// that state for real (Cpu.P6.cs) instead of the placeholder a part
+    /// without SSE still shows, and CR4.OSXMMEXCPT is writable
+    /// (<see cref="CpuState.Cr4Osxmmexcpt"/>) -- so PentiumIII and later now show SSE
+    /// to a guest exactly as their silicon does.
     /// </remarks>
     public static readonly CpuFeatures Implemented =
         None.With(CpuFeature.Fpu, CpuFeature.Isa486, CpuFeature.Identification,
@@ -170,7 +177,7 @@ public readonly struct CpuFeatures : IEquatable<CpuFeatures>
             CpuFeature.ControlRegister4, CpuFeature.Pse, CpuFeature.Vme, CpuFeature.TestRegisters,
             CpuFeature.Mmx, CpuFeature.Cmov, CpuFeature.Sep, CpuFeature.Fxsr, CpuFeature.Mtrr,
             CpuFeature.Pat, CpuFeature.Mca, CpuFeature.Pmc, CpuFeature.HintNops,
-            CpuFeature.Pae, CpuFeature.Pge);
+            CpuFeature.Pae, CpuFeature.Pge, CpuFeature.Sse);
 
     /// <summary>
     /// What Aurora implements for one model. Before work package P3.1 this

@@ -44,6 +44,12 @@ public sealed class MachineSnapshot
     private const string MsrSection = "MSR ";
 
     /// <summary>
+    /// The SSE registers: XMM0-7 and MXCSR (version 1). A file without it
+    /// restores them at their power-on values.
+    /// </summary>
+    private const string SseSection = "SSE ";
+
+    /// <summary>
     /// The A20 gate. It belongs in a snapshot even though it is a chipset
     /// latch rather than processor state: with it closed every address above
     /// the first megabyte silently wraps, so a snapshot restored with the
@@ -152,6 +158,7 @@ public sealed class MachineSnapshot
         Add(CpuSection, Cpu.Cpu.SnapshotVersion, Serialise(machine.Cpu.WriteSnapshot));
         Add(FpuSection, Cpu.Fpu.X87Unit.SnapshotVersion, Serialise(machine.Cpu.Fpu.WriteSnapshot));
         Add(MsrSection, machine.Cpu.Msrs.SnapshotVersion, Serialise(machine.Cpu.Msrs.WriteSnapshot));
+        Add(SseSection, Cpu.Sse.SseUnit.SnapshotVersion, Serialise(machine.Cpu.Sse.WriteSnapshot));
         Add(A20Section, 0, [machine.Memory.A20Enabled ? (byte)1 : (byte)0]);
 
         Add(VideoMemorySection, 0, machine.VideoMemory.CaptureMemory());
@@ -202,6 +209,15 @@ public sealed class MachineSnapshot
 
         // After the processor section, which for an older file has already
         // restored or reset the MSRs itself.
+        if (_sections.TryGetValue(SseSection, out Section streamingSimd))
+        {
+            Deserialise(streamingSimd, machine.Cpu.Sse.ReadSnapshot);
+        }
+        else
+        {
+            machine.Cpu.Sse.Reset();
+        }
+
         if (_sections.TryGetValue(MsrSection, out Section modelSpecificRegisters))
         {
             Deserialise(modelSpecificRegisters, machine.Cpu.Msrs.ReadSnapshot);
@@ -344,6 +360,7 @@ public sealed class MachineSnapshot
         [CpuSection] = Cpu.Cpu.SnapshotVersion,
         [FpuSection] = Cpu.Fpu.X87Unit.SnapshotVersion,
         [MsrSection] = 2,
+        [SseSection] = Cpu.Sse.SseUnit.SnapshotVersion,
         [A20Section] = 0,
         [VideoMemorySection] = 0,
         [VideoRegistersSection] = 0,
@@ -371,6 +388,7 @@ public sealed class MachineSnapshot
                            + 4 + 8 + 4 * 8,
         (MsrSection, 1) => Cpu.ModelSpecificRegisters.SnapshotLength,
         (MsrSection, 2) => Cpu.ModelSpecificRegisters.FamilySixSnapshotLength,
+        (SseSection, 1) => Cpu.Sse.SseUnit.SnapshotLength,
         (FpuSection, 1) => 2 + 2 + 1 + 8 * (1 + 8 + 4 + 1 + 1 + 1),
         (FpuSection, 2) => Cpu.Fpu.X87Unit.SnapshotLength,
         (A20Section, _) => 1,
