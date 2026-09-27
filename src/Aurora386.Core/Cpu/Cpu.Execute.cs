@@ -326,6 +326,12 @@ public sealed partial class Cpu
         {
             0xAB or 0xB3 or 0xBB => memory,          // BTS, BTR, BTC
             0xBA => memory && reg >= 5,              // the group, minus BT (4)
+            // CMPXCHG and XADD, the 486's two read-modify-write instructions.
+            // They exist to be locked: LOCK CMPXCHG is the spinlock and the
+            // lock-free list of every multiprocessor kernel, LOCK XADD its
+            // reference count. Leaving them out of this list made both fault
+            // with #UD. On a 386 the instructions themselves are #UD anyway.
+            0xB0 or 0xB1 or 0xC0 or 0xC1 => memory,
             _ => false,
         };
     }

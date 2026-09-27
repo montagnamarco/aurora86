@@ -65,6 +65,51 @@ public class RealModeVectorFindingsTests
     }
 
     /// <summary>
+    /// LOCK CMPXCHG and LOCK XADD on memory are legal on a 486: they are the
+    /// instructions a spinlock and a reference count are built from. With
+    /// [0x3000] = 5 and EAX = 5, LOCK CMPXCHG [0x3000],CX stores CX; then
+    /// LOCK XADD [0x3000],BX adds BX and returns the old value in BX.
+    /// </summary>
+    [Fact]
+    public void LockedCmpxchgAndXaddOnMemoryRunInsteadOfFaulting()
+    {
+        // MOV AX,5 ; MOV CX,9 ; MOV BX,2 ; LOCK CMPXCHG [3000],CX ; LOCK XADD [3000],BX
+        byte[] program =
+        [
+            0xB8, 0x05, 0x00,
+            0xB9, 0x09, 0x00,
+            0xBB, 0x02, 0x00,
+            0xF0, 0x0F, 0xB1, 0x0E, 0x00, 0x30,
+            0xF0, 0x0F, 0xC1, 0x1E, 0x00, 0x30,
+        ];
+
+        var bus = new PhysicalMemoryBus();
+        var cpu = new Cpu(bus);
+
+        foreach (SegReg segment in Enum.GetValues<SegReg>())
+        {
+            cpu.State.LoadSegmentRealMode(segment, 0);
+        }
+
+        cpu.State.Esp = 0x8000;
+        cpu.State.Eip = CodeBase;
+        program.CopyTo(bus.GetRamSpan(CodeBase, program.Length));
+        bus.WriteWord(0x3000, 5);
+
+        byte vector = 0xFF;
+        cpu.ProcessorException += (number, _, _, _) => vector = number;
+
+        for (int i = 0; i < 5; i++)
+        {
+            cpu.Step();
+        }
+
+        Assert.Equal(0xFF, vector);
+        Assert.Equal(11, bus.ReadWord(0x3000));
+        Assert.Equal(9, cpu.State.Bx);
+    }
+
+    /// <summary>
     /// SHRD by one likewise: CX = BB7A shifted right with a zero from BP gives
     /// 5DBD, the sign changed, so OF = 1; the bit shifted out was 0.
     /// </summary>
