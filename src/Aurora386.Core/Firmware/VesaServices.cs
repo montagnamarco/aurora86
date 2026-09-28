@@ -30,7 +30,17 @@ public sealed class VesaServices
 
     private bool IsVirge => _machine.VideoModel == VmVideoModel.S3Virge325;
 
-    public VesaServices(Machine machine) => _machine = machine;
+    /// <summary>The Aurora Display Adapter's own VBE, which replaces this one entirely on that card.</summary>
+    private readonly AuroraGpuVesaServices? _auroraGpu;
+
+    public VesaServices(Machine machine)
+    {
+        _machine = machine;
+        if (machine.AuroraGpu is { } card)
+        {
+            _auroraGpu = new AuroraGpuVesaServices(machine, card);
+        }
+    }
 
     /// <summary>Video memory available to the SVGA modes.</summary>
     private static int VideoMemory => VgaMemory.TotalSize;
@@ -48,6 +58,12 @@ public sealed class VesaServices
 
     public bool Handle(CpuNs.Cpu cpu)
     {
+        if (_auroraGpu is not null)
+        {
+            _auroraGpu.Handle(cpu);
+            return true;
+        }
+
         byte function = cpu.State.GetReg8(0);   // AL
 
         // The ViRGE ROM supplies one measured mode and hardware banking.

@@ -522,9 +522,12 @@ public static partial class BiosRom
         // keep the pointer and read them later, long after the call that
         // handed it over has returned.
         {
-            string name = videoModel == VmVideoModel.S3Virge325
-                ? "Aurora386 S3 ViRGE"
-                : "Aurora386 SVGA";
+            string name = videoModel switch
+            {
+                VmVideoModel.S3Virge325 => "Aurora386 S3 ViRGE",
+                VmVideoModel.AuroraGpu => "Aurora386 Display Adapter",
+                _ => "Aurora386 SVGA",
+            };
             for (int i = 0; i < name.Length; i++)
                 rom[Entry.VesaOemName + i] = (byte)name[i];
             rom[Entry.VesaOemName + name.Length] = 0;
@@ -535,10 +538,13 @@ public static partial class BiosRom
                     ? Devices.Video.VesaModes.Available(Devices.Video.VgaMemory.TotalSize)
                         .Where(mode => mode.Number is 0x101 or 0x110)
                     : Devices.Video.VesaModes.Available(Devices.Video.VgaMemory.TotalSize);
-            foreach (Devices.Video.VesaModes.VesaModeInfo mode in publishedModes)
+            IEnumerable<ushort> publishedNumbers = videoModel == VmVideoModel.AuroraGpu
+                ? AuroraGpuVesaServices.Modes.Select(mode => mode.Number)
+                : publishedModes.Select(mode => mode.Number);
+            foreach (ushort number in publishedNumbers)
             {
-                rom[at++] = (byte)mode.Number;
-                rom[at++] = (byte)(mode.Number >> 8);
+                rom[at++] = (byte)number;
+                rom[at++] = (byte)(number >> 8);
             }
 
             // 0xFFFF ends the list. A program walks it until it sees this,

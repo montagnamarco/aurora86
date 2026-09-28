@@ -632,7 +632,7 @@ public sealed class VmConfiguration
     {
         // The shared enum converter accepts integers as well as names. Reject
         // undefined values before allocating a machine or opening its disks.
-        if (Video is not (VmVideoModel.S3Trio64VPlus or VmVideoModel.S3Virge325))
+        if (Video is not (VmVideoModel.S3Trio64VPlus or VmVideoModel.S3Virge325 or VmVideoModel.AuroraGpu))
         {
             throw new InvalidDataException($"Unknown video model: {Video}.");
         }

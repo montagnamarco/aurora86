@@ -40,7 +40,12 @@ public sealed partial class Machine
         {
             case BiosRom.Handler.Post: RunPost(); return;
             case BiosRom.Handler.Video: VideoServices.Handle(cpu); return;
-            case BiosRom.Handler.VideoModeCompletion: VideoServices.CompleteRomVideoModeSet(cpu.State.GetReg8(0)); return;
+            case BiosRom.Handler.VideoModeCompletion:
+                // INT 10h AH=00h sets a VGA mode, and on a card with its own
+                // scanout that gives the screen back to the VGA.
+                AuroraGpu?.ReturnToVga();
+                VideoServices.CompleteRomVideoModeSet(cpu.State.GetReg8(0));
+                return;
             case BiosRom.Handler.Disk:
                 if (!DiskServices.TryRouteIdeRead(cpu))
                 {
@@ -572,7 +577,17 @@ public sealed partial class Machine
         map.Add((ebda, 0xA0000 - ebda, 2));
         map.Add((0xF0000, 0x10000, 2));
         if (Memory.RamSize > 0x100000) map.Add((0x100000, Memory.RamSize - 0x100000, 1));
-        map.Add((LinearFrameBufferBase, (ulong)VgaMemory.TotalSize + 0x10000, 2));
+        if (AuroraGpu is { } auroraGpu)
+        {
+            // The Aurora Display Adapter's two BARs: all of video memory and
+            // the register window.
+            map.Add((auroraGpu.FrameBufferBase, AuroraGpuInterface.VideoMemorySize, 2));
+            map.Add((auroraGpu.RegisterBase, AuroraGpuInterface.RegisterWindowSize, 2));
+        }
+        else
+        {
+            map.Add((LinearFrameBufferBase, (ulong)VgaMemory.TotalSize + 0x10000, 2));
+        }
 
         // The I/O APIC's fixed window and the local APIC's default page
         // (work package P4.4, independent review's own "Low" item): a real
