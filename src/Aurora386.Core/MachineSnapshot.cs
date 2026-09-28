@@ -99,6 +99,14 @@ public sealed class MachineSnapshot
     private const string TrioAcceleratorSection = "TRIO";
 
     /// <summary>
+    /// The Aurora Display Adapter's registers, command ring, surfaces, cursor
+    /// and its 32 MB of video memory; present only on a machine with that
+    /// card (docs/AURORA-GPU.md). A file without it restores the card at its
+    /// power-on state.
+    /// </summary>
+    private const string AuroraGpuSection = "AGPU";
+
+    /// <summary>
     /// The serial mouse's UART on COM1 and the input it had not yet sent. A
     /// file without it leaves the UART as the receiving machine has it.
     /// </summary>
@@ -243,6 +251,11 @@ public sealed class MachineSnapshot
         if (machine.TrioAccelerator is { } trio)
         {
             Add(TrioAcceleratorSection, 0, trio.Capture());
+        }
+
+        if (machine.AuroraGpu is { } auroraGpu)
+        {
+            Add(AuroraGpuSection, AuroraGpuCard.SnapshotVersion, auroraGpu.Capture());
         }
 
         Add(InterruptControllersSection, 0, machine.Interrupts.Capture());
@@ -579,6 +592,7 @@ public sealed class MachineSnapshot
         [VideoModelSection] = 0,
         [VirgeEngineSection] = 0,
         [TrioAcceleratorSection] = 0,
+        [AuroraGpuSection] = AuroraGpuCard.SnapshotVersion,
         [SerialMouseSection] = 0,
         [IsaPnpSection] = 0,
         [InterruptControllersSection] = 0,
@@ -620,6 +634,7 @@ public sealed class MachineSnapshot
         (DmaSection, 1) => Devices.System.Dma8237.LegacySnapshotLength,
         (DmaSection, 2) => Devices.System.Dma8237.SnapshotLength,
         (VideoModelSection, _) => sizeof(ushort),
+        (AuroraGpuSection, AuroraGpuCard.SnapshotVersion) => AuroraGpuCard.SnapshotLength,
         (LocalApicSection, 1) => Devices.Apic.LocalApic.SnapshotLength,
         (IoApicSection, 1) => Devices.Apic.IoApic.SnapshotLength,
         (ImcrSection, _) => Devices.Chipset.Imcr.SnapshotLength,
@@ -1036,7 +1051,9 @@ public sealed class MachineSnapshot
         }
 
         ushort model = BinaryPrimitives.ReadUInt16LittleEndian(payload);
-        if (model is not ((ushort)VmVideoModel.S3Trio64VPlus or (ushort)VmVideoModel.S3Virge325))
+        if (model is not ((ushort)VmVideoModel.S3Trio64VPlus
+            or (ushort)VmVideoModel.S3Virge325
+            or (ushort)VmVideoModel.AuroraGpu))
         {
             throw new InvalidDataException("The video topology snapshot model is invalid.");
         }
@@ -1080,6 +1097,34 @@ public sealed class MachineSnapshot
         if (!virge && virgeEngine.Length != 0)
         {
             throw new InvalidDataException("Trio snapshot contains ViRGE engine state.");
+        }
+
+        bool auroraGpu = snapshotModel == VmVideoModel.AuroraGpu;
+        if (!auroraGpu && _sections.ContainsKey(AuroraGpuSection))
+        {
+            throw new InvalidDataException("Snapshot holds Aurora Display Adapter state for another video model.");
+        }
+
+        if (auroraGpu && _sections.ContainsKey(TrioAcceleratorSection))
+        {
+            throw new InvalidDataException("Aurora Display Adapter snapshot contains Trio accelerator state.");
+        }
+
+        if (auroraGpu)
+        {
+            // The card's BARs decide where video memory and the registers
+            // answer; a file without that configuration cannot restore them.
+            PciBus.SnapshotState auroraPci = machine.Pci.ValidateSnapshot(Payload(PciSection) ?? []);
+            ReadOnlySpan<byte> function = auroraPci.IsLegacyReset
+                ? default
+                : auroraPci.FunctionState(machine.VideoFunctionAddress);
+            bool identityValid = function.Length == PciFunctionStateLength
+                && BinaryPrimitives.ReadUInt16LittleEndian(function) == AuroraGpuInterface.VendorId
+                && BinaryPrimitives.ReadUInt16LittleEndian(function[2..]) == AuroraGpuInterface.DeviceId;
+            if (!identityValid)
+            {
+                throw new InvalidDataException("Aurora Display Adapter PCI identity is missing or invalid.");
+            }
         }
 
         ValidateVideoBlockLength(videoMemory.Length, VgaMemory.TotalSize, virge, "memory");
@@ -1172,6 +1217,18 @@ public sealed class MachineSnapshot
             machine.VideoRegisters.RestoreRegisters(videoRegisters);
         }
 
+        if (machine.AuroraGpu is { } auroraGpu)
+        {
+            if (Payload(AuroraGpuSection) is { Length: > 0 } auroraGpuState)
+            {
+                auroraGpu.Restore(auroraGpuState);
+            }
+            else
+            {
+                auroraGpu.Reset();
+            }
+        }
+
         if (machine.TrioAccelerator is { } trio)
         {
             if (Payload(TrioAcceleratorSection) is { Length: > 0 } accelerator)
@@ -1197,6 +1254,10 @@ public sealed class MachineSnapshot
         {
             case TrioAcceleratorSection:
                 S3Accelerator.ValidateSnapshot(section.Payload);
+                break;
+
+            case AuroraGpuSection:
+                AuroraGpuCard.ValidateSnapshot(section.Payload);
                 break;
 
             case VirgeEngineSection:

@@ -113,15 +113,30 @@ public sealed partial class Machine
         // Trio's frame buffer and the engine registers 16 MB above it, or the
         // ViRGE's whole 64 MB BAR. A window that does not contain a BAR tells
         // an ACPI operating system the device sits outside its bridge.
-        uint pci0MemoryLength = Virge is not null
-            ? S3VirgeCard.ApertureSize
-            : TrioMmioOffset + 0x10000;
+        //
+        // The Aurora Display Adapter's two BARs, video memory and registers,
+        // sit one after the other from their reset bases; the window spans
+        // both.
+        uint pci0MemoryBase = LinearFrameBufferBase;
+        uint pci0MemoryLength = TrioMmioOffset + 0x10000;
+        if (Virge is not null)
+        {
+            pci0MemoryLength = S3VirgeCard.ApertureSize;
+        }
+        else if (AuroraGpu is { } auroraGpu)
+        {
+            pci0MemoryBase = Math.Min(auroraGpu.FrameBufferBase, auroraGpu.RegisterBase);
+            uint videoMemoryEnd = auroraGpu.FrameBufferBase + AuroraGpuInterface.VideoMemorySize;
+            uint registersEnd = auroraGpu.RegisterBase + AuroraGpuInterface.RegisterWindowSize;
+            pci0MemoryLength = Math.Max(videoMemoryEnd, registersEnd) - pci0MemoryBase;
+        }
+
         AcpiSystemInfo? acpiTables = Piix4Power is not null
             ? new AcpiSystemInfo(
                 HasMadt: mpTables is not null,
                 CenturyRegister: CenturyCmosRegister,
                 PmBase: Devices.Chipset.Piix4PowerManagement.DefaultPmBase,
-                Pci0MemoryBase: LinearFrameBufferBase,
+                Pci0MemoryBase: pci0MemoryBase,
                 Pci0MemoryLength: pci0MemoryLength)
             : null;
 
@@ -195,6 +210,7 @@ public sealed partial class Machine
         // their IRQs level-triggered, which a later reset would undo.
         Interrupts.ResetTriggerModes();
         Pci.Reset();
+        AuroraGpu?.Reset();
 
         // A system BIOS enables the VGA device's I/O and memory decoders during
         // POST. The ViRGE gates standard VGA behind these bits, so they must be

@@ -17,7 +17,7 @@ public abstract class VgaCard : IDisposable
     public VgaRegisters Registers { get; }
     public VgaMemory VideoMemory { get; }
     public abstract VgaRenderer Renderer { get; }
-    public IVideoOutput Display => Renderer;
+    public virtual IVideoOutput Display => Renderer;
 
     /// <summary>Releases card-owned resources before the containing buses are disposed.</summary>
     public virtual void Dispose()

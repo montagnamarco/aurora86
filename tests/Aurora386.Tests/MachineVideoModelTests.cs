@@ -20,9 +20,10 @@ public sealed class MachineVideoModelTests
     {
         Assert.Equal(0, (int)VmVideoModel.S3Trio64VPlus);
         Assert.Equal(1, (int)VmVideoModel.S3Virge325);
+        Assert.Equal(2, (int)VmVideoModel.AuroraGpu);
 
         ArgumentOutOfRangeException error = Assert.Throws<ArgumentOutOfRangeException>(
-            () => new Machine(videoModel: (VmVideoModel)2));
+            () => new Machine(videoModel: (VmVideoModel)3));
 
         Assert.Equal("videoModel", error.ParamName);
     }

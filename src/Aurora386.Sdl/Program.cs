@@ -50,6 +50,7 @@ string? dosLogPath = null;
 string? writeLogPath = null;
 string? mouse = null;
 string? cpuModel = null;
+VmVideoModel? videoModel = null;
 string? vmFolder = null;
 string? network = null;
 var forwards = new List<VmConfiguration.PortForward>();
@@ -157,6 +158,20 @@ for (int i = 0; i < args.Length; i++)
             cpuModel = args[i];
             break;
 
+        // The display adapter, which is built with the machine and so has to
+        // be known before it: unlike the processor it cannot be swapped once
+        // the machine exists.
+        case "--video":
+            if (++i >= args.Length || args[i] is not ("trio" or "virge" or "aurora"))
+                return Fail("--video needs trio, virge or aurora");
+            videoModel = args[i] switch
+            {
+                "virge" => VmVideoModel.S3Virge325,
+                "aurora" => VmVideoModel.AuroraGpu,
+                _ => VmVideoModel.S3Trio64VPlus,
+            };
+            break;
+
         case "--net":
             if (++i >= args.Length || args[i] is not ("nat" or "none"))
                 return Fail("--net needs nat or none");
@@ -243,8 +258,8 @@ if (vmFolder is not null && !File.Exists(Path.Combine(vmFolder, VmConfiguration.
     return Fail($"{vmFolder} has no {VmConfiguration.FileName} in it");
 
 using var machine = vmFolder is null
-    ? new Machine(ramMegabytes * 1024 * 1024)
-    : VmConfiguration.Load(vmFolder).BuildMachine();
+    ? new Machine(ramMegabytes * 1024 * 1024, videoModel: videoModel ?? VmVideoModel.S3Trio64VPlus)
+    : LoadConfiguredMachine(vmFolder, videoModel);
 if (vmFolder is not null) Console.WriteLine($"machine: {vmFolder}");
 
 // Floppies take BIOS drive numbers 0x00 and 0x01; the hard disk takes 0x80,
@@ -436,6 +451,8 @@ static void PrintUsage()
                                    letter after the disks, or X:; repeatable
               --boot <list>        boot order, like A,C or CD,C (default: every drive by number)
               --mouse ps2|serial   which port the mouse is on
+              --video <adapter>    trio (default), virge, or aurora: the Aurora Display
+                                   Adapter, VBE up to 1920x1080x32 and a 2D engine
               --cpu <model>        386, 486, pentium, pentium-mmx, pentium2, pentium3 or
                                    pentium4 (default 486; a current ISO needs pentium2 or later)
               --net nat|none       put the NE2000 on a NAT network (guest 10.0.2.15)
@@ -459,4 +476,16 @@ static void PrintUsage()
           Cmd+Q  quit        Cmd+P  pause
           Cmd+R  reset       Cmd+F  full screen
         """);
+}
+
+// A machine folder with its adapter replaced by --video, when given.
+static Machine LoadConfiguredMachine(string folder, VmVideoModel? videoModel)
+{
+    VmConfiguration configuration = VmConfiguration.Load(folder);
+    if (videoModel is { } requested)
+    {
+        configuration.Video = requested;
+    }
+
+    return configuration.BuildMachine();
 }

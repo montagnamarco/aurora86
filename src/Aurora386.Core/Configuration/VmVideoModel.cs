@@ -8,5 +8,8 @@ namespace Aurora386.Core.Configuration;
 public enum VmVideoModel
 {
     S3Trio64VPlus = 0,
-    S3Virge325 = 1
+    S3Virge325 = 1,
+
+    /// <summary>The Aurora Display Adapter, designed for Aurora386 (docs/AURORA-GPU.md).</summary>
+    AuroraGpu = 2
 }

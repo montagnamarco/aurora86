@@ -92,6 +92,9 @@ public sealed partial class Machine : IDisposable
     /// <summary>The ViRGE card when that primary adapter is installed.</summary>
     public S3VirgeCard? Virge { get; }
 
+    /// <summary>The Aurora Display Adapter when that primary adapter is installed (docs/AURORA-GPU.md).</summary>
+    public AuroraGpuCard? AuroraGpu { get; }
+
     /// <summary>The S3's 2D drawing engine: fills, copies and lines.</summary>
     public S3Accelerator Accelerator => _trioAccelerator
         ?? throw new InvalidOperationException("The S3 Trio64V+ accelerator is unavailable on a ViRGE machine.");
@@ -274,16 +277,18 @@ public sealed partial class Machine : IDisposable
     /// whole of video memory as one flat array, which is what a display
     /// driver in protected mode uses instead of moving a 64 KB window about.
     /// </summary>
-    public uint LinearFrameBufferBase => Virge?.Registers.VirgeAperture!.PciBase
+    public uint LinearFrameBufferBase => AuroraGpu?.FrameBufferBase
+        ?? Virge?.Registers.VirgeAperture!.PciBase
         ?? _trioLinearFrameBufferBase;
 
     /// <summary>
     /// Where the selected drawing engine's 64 KB register window appears in
     /// physical memory. Trio retains its legacy mapping; ViRGE uses new MMIO.
     /// </summary>
-    public uint MmioBase => Virge is not null
-        ? Virge.Registers.VirgeAperture!.PciBase + VirgeMmioOffset
-        : _trioMmioBase;
+    public uint MmioBase => AuroraGpu?.RegisterBase
+        ?? (Virge is not null
+            ? Virge.Registers.VirgeAperture!.PciBase + VirgeMmioOffset
+            : _trioMmioBase);
 
     /// <summary>The Trio64V+ memory-mapped registers sit this far above the linear frame buffer.</summary>
     public const uint TrioMmioOffset = 0x1000000;
@@ -339,7 +344,7 @@ public sealed partial class Machine : IDisposable
         CpuNs.CpuModel? initialCpuModel = null,
         VmVideoModel videoModel = VmVideoModel.S3Trio64VPlus)
     {
-        if (videoModel is not (VmVideoModel.S3Trio64VPlus or VmVideoModel.S3Virge325))
+        if (videoModel is not (VmVideoModel.S3Trio64VPlus or VmVideoModel.S3Virge325 or VmVideoModel.AuroraGpu))
         {
             throw new ArgumentOutOfRangeException(nameof(videoModel), videoModel, "Unknown VM video model.");
         }
@@ -375,9 +380,11 @@ public sealed partial class Machine : IDisposable
         // are registered as high windows (see PhysicalMemoryBus.RegisterHighWindow)
         // once the local APIC and, on the i430TX board, the I/O APIC exist.
         //
-        // The ViRGE is the exception: its 64 MB PCI aperture may be placed
-        // anywhere in the 32-bit space, so its machine decodes all of it.
-        ulong addressableBytes = videoModel == VmVideoModel.S3Virge325
+        // The ViRGE and the Aurora Display Adapter are the exception: their
+        // PCI BARs may be placed anywhere in the 32-bit space, so their
+        // machines decode all of it.
+        bool relocatableAdapter = videoModel is VmVideoModel.S3Virge325 or VmVideoModel.AuroraGpu;
+        ulong addressableBytes = relocatableAdapter
             ? 1UL << 32
             : frameBufferBase + TrioMmioOffset + 0x10000;
         Memory = new PhysicalMemoryBus(ramSize, addressableBytes);
@@ -427,11 +434,17 @@ public sealed partial class Machine : IDisposable
             _trioMmioBase = trio.MmioBase;
             _pciVideoFunction = trio.Function;
         }
-        else
+        else if (videoModel == VmVideoModel.S3Virge325)
         {
             Virge = new S3VirgeCard(Memory, Io, Pci);
             VideoCard = Virge;
             _pciVideoFunction = Virge.Function;
+        }
+        else
+        {
+            AuroraGpu = new AuroraGpuCard(Memory, Io, Pci);
+            VideoCard = AuroraGpu;
+            _pciVideoFunction = AuroraGpu.Function;
         }
         VideoMemory = VideoCard.VideoMemory;
         Video = VideoCard.Renderer;
@@ -506,6 +519,15 @@ public sealed partial class Machine : IDisposable
         var pciIsa = new PciFunction(0x0008, 0x8086, isaBridgeId, 0x060100, headerType: 0x80);
         Pci.Add(pciIsa);
         Pci.InterruptRouter = new PciInterruptRouter(Interrupts, pciIsa);
+
+        // The display adapter was fitted before the router existed; its INTA
+        // reaches the router from here on.
+        if (AuroraGpu is { } auroraGpu)
+        {
+            PciInterruptRouter router = Pci.InterruptRouter;
+            ushort videoFunction = auroraGpu.Function.Address;
+            auroraGpu.InterruptSink = asserted => router.SetInterrupt(videoFunction, 1, asserted);
+        }
 
         if (hasPiix4)
         {
