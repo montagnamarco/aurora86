@@ -34,22 +34,28 @@ namespace Aurora386.Core.Devices.Audio;
 /// bits -- is the traditional one for proving a data bus is really being
 /// driven rather than floating.
 /// </summary>
-public sealed class SoundBlaster16 : IIoDevice, IAudioSource
+public sealed partial class SoundBlaster16 : IIoDevice, IAudioSource
 {
     /// <summary>The DSP version reported by command 0xE1. 4.05 identifies an SB16.</summary>
     public const byte VersionMajor = 4;
     public const byte VersionMinor = 5;
 
     /// <summary>
-    /// The version of the payload <see cref="Capture"/> produces today.
-    /// Version 2 added the OPL3's timer accumulators to the end of the FM
-    /// section (see <see cref="Opl3.Capture"/>); a version-1 payload is still
-    /// read, simply without them, by <see cref="Restore"/>.
+    /// The version of the card's snapshot section that <see cref="Capture"/>
+    /// produces today. Versions 1 and 2 were a field-by-field stream without
+    /// the rendered PCM ring or the OPL3's oscillator state (version 2 added
+    /// the OPL3's timer accumulators); version 3 is the self-describing "DSP1"
+    /// payload of SoundBlaster16.Snapshot.cs, which carries both. All three
+    /// are still read by <see cref="Restore(byte[], int)"/>.
     /// </summary>
-    public const int SnapshotVersion = 2;
+    public const int SnapshotVersion = 3;
+
+    /// <summary>The last section version written in the field-by-field layout.</summary>
+    private const int LastStreamSnapshotVersion = 2;
 
     private readonly InterruptController? _interrupts;
     private readonly Dma8237? _dma;
+    private readonly ushort _constructedBasePort;
 
     public SbMixer Mixer { get; }
     public Opl3 Fm { get; }
@@ -187,6 +193,7 @@ public sealed class SoundBlaster16 : IIoDevice, IAudioSource
     {
         _interrupts = interrupts;
         _dma = dma;
+        _constructedBasePort = basePort;
         BasePort = basePort;
         SampleRate = outputSampleRate;
 
@@ -933,66 +940,12 @@ public sealed class SoundBlaster16 : IIoDevice, IAudioSource
     // --- snapshot ---------------------------------------------------------
 
     /// <summary>
-    /// Captures enough of the card to carry on playing after a restore: the
-    /// DSP's command state, the programmed transfer, the mixer and the OPL3.
-    ///
-    /// Left out: the ring buffer of already-rendered samples waiting for the
-    /// host to collect (presentation state, not guest-visible -- the guest
-    /// only ever learns about a block through the interrupt it has already
-    /// raised by the time this runs), and the OPL3's per-operator oscillator
-    /// phase and envelope level (see <see cref="Opl3.Capture"/>). Both are a
-    /// few milliseconds of audio at most, not a difference a restored guest
-    /// can observe through a register.
+    /// Restores a card section of any version this build knows, then moves
+    /// the card onto the ports, interrupt and DMA channels the payload names,
+    /// through the same <see cref="Relocate"/> Plug and Play configuration
+    /// uses -- so the I/O registration follows the restored fields rather
+    /// than lagging behind them.
     /// </summary>
-    public byte[] Capture()
-    {
-        using var stream = new MemoryStream();
-        using var writer = new BinaryWriter(stream);
-
-        writer.Write(BasePort);
-        writer.Write(Irq);
-        writer.Write(Dma8);
-        writer.Write(Dma16);
-        writer.Write(Enabled);
-
-        writer.Write(_lastResetWrite);
-        writer.Write(_pendingCommand);
-        writer.Write(_pendingArgumentCount);
-        writer.Write(_arguments);
-        writer.Write(_argumentsReceived);
-
-        writer.Write(SpeakerEnabled);
-        writer.Write(_identificationValue);
-        writer.Write(_testRegister);
-        writer.Write(_lastOutputByte);
-
-        writer.Write(_timeConstant);
-        writer.Write(_sampleRate);
-        writer.Write(_blockLength);
-        writer.Write(_blockRemaining);
-        writer.Write(_autoInit);
-        writer.Write(_is16Bit);
-        writer.Write(_isStereo);
-        writer.Write(_isSigned);
-        writer.Write(_paused);
-        writer.Write(_playing);
-
-        writer.Write(_sampleAccumulator);
-        writer.Write(_resampleAccumulator);
-        writer.Write(_fmAccumulator);
-        writer.Write(InterruptCount);
-
-        writer.Write(_outputFifo.Count);
-        foreach (byte value in _outputFifo) writer.Write(value);
-
-        Mixer.Capture(writer);
-        Fm.Capture(writer);
-
-        writer.Flush();
-        return stream.ToArray();
-    }
-
-    /// <summary>Restores what <see cref="Capture"/> wrote. See its summary for what is left out.</summary>
     public void Restore(byte[] payload, int version)
     {
         if (version > SnapshotVersion)
@@ -1001,6 +954,34 @@ public sealed class SoundBlaster16 : IIoDevice, IAudioSource
                 $"Sound Blaster snapshot is version {version}; this build reads up to version {SnapshotVersion}.");
         }
 
+        if (version <= LastStreamSnapshotVersion)
+        {
+            RestoreStreamPayload(payload, version);
+            return;
+        }
+
+        // The DSP1 payload overwrites BasePort and Enabled directly, so the
+        // registration the card holds now is released first and the one the
+        // payload describes is claimed afterwards.
+        ushort registeredPort = BasePort;
+        bool registered = Enabled;
+        Restore(payload);
+
+        ushort restoredPort = BasePort;
+        bool restoredEnabled = Enabled;
+        BasePort = registeredPort;
+        Enabled = registered;
+        Relocate(restoredPort, Irq, Dma8, Dma16, restoredEnabled);
+    }
+
+    /// <summary>
+    /// Reads the field-by-field layout of section versions 1 and 2. It left
+    /// out the ring of already rendered samples and the OPL3's per-operator
+    /// oscillator phase and envelope level: a few milliseconds of audio, not
+    /// something a restored guest can observe through a register.
+    /// </summary>
+    private void RestoreStreamPayload(byte[] payload, int version)
+    {
         using var reader = new BinaryReader(new MemoryStream(payload));
 
         // Read here, applied through Relocate once every other field below

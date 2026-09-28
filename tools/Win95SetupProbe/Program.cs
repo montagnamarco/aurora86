@@ -4,6 +4,7 @@ using Aurora386.Core.Cpu;
 using Aurora386.Core.Configuration;
 using Aurora386.Core.Devices.Storage;
 using Aurora386.Core.Devices.Input;
+using Aurora386.Core.Devices.Video;
 using Aurora386.Core.Diagnostics;
 
 // Mini-Windows loads and discards segments while preparing Windows 95 Setup.
@@ -122,19 +123,31 @@ machine.Cpu.SoftwareInterruptIssued += interrupt =>
         videoLog.WriteLine($"INT10 {state.Cs.Selector:X4}:{state.Eip:X8} AX={state.Ax:X4} BX={state.Bx:X4} CX={state.Cx:X4} DX={state.Dx:X4}");
     }
 };
-machine.Accelerator.CommandTrace = (command, x, y, width, height, colour, mix, control) =>
+if (machine.TrioAccelerator is { } trioAccelerator)
 {
-    if (traceVideo)
+    trioAccelerator.CommandTrace = (command, x, y, width, height, colour, mix, control) =>
     {
-        videoLog.WriteLine($"S3 {command:X4} src={x},{y} size={width},{height} fg={colour:X4} mix={mix:X4} pc={control:X4}");
-    }
-};
+        if (traceVideo)
+        {
+            videoLog.WriteLine($"S3 {command:X4} src={x},{y} size={width},{height} fg={colour:X4} mix={mix:X4} pc={control:X4}");
+        }
+    };
+}
 machine.Io.PortAccessed += (port, write, value) =>
 {
-    if (!traceVideo || port < 0x3B0 || port > 0x3DF || videoAccesses++ >= 100_000)
+    if (!traceVideo || port < 0x3B0 || port > 0x3DF)
     {
         return;
     }
+    if (!write && port is 0x3DA or 0x3BA)
+    {
+        return;
+    }
+    if (videoAccesses >= 100_000)
+    {
+        return;
+    }
+    videoAccesses++;
     string direction = write ? "W" : "R";
     videoLog.WriteLine($"{machine.Cpu.State.Cs.Selector:X4}:{machine.Cpu.State.Eip:X8} {direction} {port:X4}={value:X2}");
 };
@@ -237,35 +250,59 @@ void PressKey(byte scanCode, bool shift = false)
     Run(500_000);
 }
 
-void TypeText(string command)
+bool TypeText(string command)
 {
     const string letters = "qwertyuiopasdfghjklzxcvbnm";
-    byte[] scanCodes = [0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1E,0x1F,0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x2C,0x2D,0x2E,0x2F,0x30,0x31,0x32];
+    byte[] scanCodes =
+    [
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+        0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
+        0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32
+    ];
+    // Preserve the reference DOS disk's KEYB IT punctuation by default.
+    // Windows guests with a US layout can select it without changing the disk.
+    bool usKeyboard = string.Equals(Environment.GetEnvironmentVariable("AURORA_KEYBOARD_LAYOUT"),
+        "us", StringComparison.OrdinalIgnoreCase);
+    var keys = new List<(byte ScanCode, bool Shift)>();
     foreach (char character in command.ToLowerInvariant())
     {
         int letterIndex = letters.IndexOf(character);
         if (letterIndex >= 0)
         {
-            PressKey(scanCodes[letterIndex]);
+            keys.Add((scanCodes[letterIndex], false));
         }
         else if (character is >= '1' and <= '9')
         {
-            PressKey((byte)(2 + character - '1'));
+            keys.Add(((byte)(2 + character - '1'), false));
         }
         else
         {
-            // The reference DOS disk uses KEYB IT, including its punctuation.
-            switch (character)
+            (byte ScanCode, bool Shift)? key = character switch
             {
-                case '0': PressKey(0x0B); break;
-                case ' ': PressKey(0x39); break;
-                case ':': PressKey(0x34, shift: true); break;
-                case '.': PressKey(0x34); break;
-                case '/': PressKey(0x08, shift: true); break;
-                default: throw new ArgumentException($"Unsupported character: {character}");
+                '0' => (0x0B, false),
+                ' ' => (0x39, false),
+                ':' => ((byte)(usKeyboard ? 0x27 : 0x34), true),
+                '.' => (0x34, false),
+                '\\' => ((byte)(usKeyboard ? 0x2B : 0x29), false),
+                '/' => ((byte)(usKeyboard ? 0x35 : 0x08), !usKeyboard),
+                _ => null
+            };
+            if (key is null)
+            {
+                Console.Error.WriteLine($"Unsupported character: {character}. Text was not sent to the guest.");
+                return false;
             }
+            keys.Add(key.Value);
         }
     }
+
+    // Validate the complete string before injecting any key. A typo must
+    // leave the running guest and its unsaved checkpoint available.
+    foreach ((byte scanCode, bool shift) in keys)
+    {
+        PressKey(scanCode, shift);
+    }
+    return true;
 }
 
 string OutputPath(string name, string extension)
@@ -283,7 +320,7 @@ void SaveScreenshot(string name)
     uint[] incremental = machine.Video.Framebuffer.ToArray();
     machine.Video.Render(true);
     int differences = incremental.Zip(machine.Video.Framebuffer.ToArray()).Count(pair => pair.First != pair.Second);
-    Console.WriteLine($"Video: {machine.Video.Width}x{machine.Video.Height}, mode={machine.VideoRegisters.EffectiveMode}, S3 operations={machine.Accelerator.OperationsPerformed}, incremental differences={differences}");
+    Console.WriteLine($"Video: {machine.Video.Width}x{machine.Video.Height}, mode={machine.VideoRegisters.EffectiveMode}, Trio operations={machine.TrioAccelerator?.OperationsPerformed.ToString() ?? "n/a"}, incremental differences={differences}");
     using var screenshot = File.Create(OutputPath(name, ".ppm"));
     screenshot.Write(Encoding.ASCII.GetBytes($"P6\n{machine.Video.Width} {machine.Video.Height}\n255\n"));
     foreach (uint pixel in machine.Video.Framebuffer)
@@ -315,7 +352,37 @@ void SaveCheckpoint(string name)
     File.Copy(workingDiskPath, OutputPath(name, ".img"), overwrite: false);
 }
 
-Console.WriteLine("Commands: run <instructions>, type <DOS command>, text <text without Enter>, key <hex scan>, move <dx> <dy>, click <left|right>, trace <on|off>, shot <name>, save <name>, quit");
+void PrintVgaState()
+{
+    S3VgaRegisters registers = machine.S3Registers;
+    string mode = registers.VesaMode?.Number.ToString("X4") ?? "none";
+    Console.WriteLine($"VGA: mode={mode}, bank={registers.VesaWindowBank}, "
+        + $"cpu-window={registers.CpuWindowOffset:X8}, "
+        + $"cursor-pattern={registers.CursorPatternAddress:X8}, "
+        + $"trio-operations={machine.TrioAccelerator?.OperationsPerformed.ToString() ?? "n/a"}");
+    // A CR45 hardware read resets the colour stacks' shared pointer. Read
+    // that one byte from the snapshot record so diagnostics preserve state.
+    const int hardwareCursorModeRegister = 0x45;
+    byte hardwareCursorMode = registers.CaptureRegisters()[hardwareCursorModeRegister];
+    for (int registerIndex = 0x30; registerIndex <= 0x6F; registerIndex++)
+    {
+        byte value = registerIndex == hardwareCursorModeRegister
+            ? hardwareCursorMode
+            : registers.Crtc(registerIndex);
+        Console.WriteLine($"CRTC[{registerIndex:X2}]={value:X2}");
+    }
+
+    uint cursorPatternAddress = registers.CursorPatternAddress;
+    var cursorPattern = new byte[32];
+    for (int index = 0; index < cursorPattern.Length; index++)
+    {
+        cursorPattern[index] = machine.VideoMemory.ReadLinear(cursorPatternAddress + (uint)index);
+    }
+    Console.WriteLine($"cursor-pattern-bytes={Convert.ToHexString(cursorPattern)}");
+}
+
+Console.WriteLine("Commands: run, type, text, key, move, drag, click, "
+    + "video on/off, watch, dump, vram, vga state, trace, shot, save, quit");
 string? input;
 while ((input = Console.ReadLine()) is not null)
 {
@@ -370,9 +437,25 @@ while ((input = Console.ReadLine()) is not null)
             File.WriteAllBytes(OutputPath("memory-" + values[0], ".bin"), Convert.FromHexString(ReadBytes(address, length)));
             break;
         }
+        case "vram":
+        {
+            string[] values = parts[1].Split(' ');
+            uint address = Convert.ToUInt32(values[0], 16);
+            int length = Convert.ToInt32(values[1], 16);
+            var bytes = new byte[length];
+            for (int index = 0; index < bytes.Length; index++)
+            {
+                bytes[index] = machine.VideoMemory.ReadLinear(address + (uint)index);
+            }
+            File.WriteAllBytes(OutputPath("vram-" + values[0], ".bin"), bytes);
+            break;
+        }
         case "video":
             traceVideo = parts[1] == "on";
             videoAccesses = 0;
+            break;
+        case "vga" when parts[1] == "state":
+            PrintVgaState();
             break;
         case "trace":
             machine.Cpu.Trace.Enabled = parts[1] switch
@@ -383,8 +466,10 @@ while ((input = Console.ReadLine()) is not null)
             };
             break;
         case "type":
-            TypeText(parts[1]);
-            PressKey(0x1C);
+            if (TypeText(parts[1]))
+            {
+                PressKey(0x1C);
+            }
             break;
         case "text": TypeText(parts[1]); break;
         case "key": PressKey(Convert.ToByte(parts[1], 16)); break;
@@ -397,6 +482,21 @@ while ((input = Console.ReadLine()) is not null)
             }
             machine.MoveMouse(int.Parse(coordinates[0]), int.Parse(coordinates[1]));
             Run(700_000);
+            break;
+        }
+        case "drag":
+        {
+            string[] coordinates = parts[1].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (coordinates.Length != 2)
+            {
+                throw new ArgumentException("Use drag <dx> <dy> in mouse units.");
+            }
+            machine.SetMouseButton(MouseButtons.Left, true);
+            Run(200_000);
+            machine.MoveMouse(int.Parse(coordinates[0]), int.Parse(coordinates[1]));
+            Run(700_000);
+            machine.SetMouseButton(MouseButtons.Left, false);
+            Run(500_000);
             break;
         }
         case "click":

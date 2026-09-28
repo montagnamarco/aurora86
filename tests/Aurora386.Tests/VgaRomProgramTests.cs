@@ -26,7 +26,7 @@ public class VgaRomProgramTests
         return spy;
     }
 
-    private static void RunInt10(Machine machine, ushort ax)
+    private static void RunInt10(Machine machine, ushort ax, ushort? bx = null)
     {
         // A little real-mode program at 2000:0100: MOV AX,imm / INT 10h / HLT.
         uint code = 0x20100;
@@ -39,6 +39,10 @@ public class VgaRomProgramTests
         machine.Cpu.State.Eip = 0x0100;
         machine.Cpu.SetSegment(Aurora386.Core.Cpu.SegReg.Ss, 0x3000);
         machine.Cpu.State.Esp = 0xFFFE;
+        if (bx is { } requestedMode)
+        {
+            machine.Cpu.State.Bx = requestedMode;
+        }
         machine.Cpu.State.Halted = false;   // the POST halts when there is nothing to boot
         for (int i = 0; i < 5000 && !machine.Cpu.State.Halted; i++) machine.RunInstructions(1);
         Assert.True(machine.Cpu.State.Halted, "the program did not run to its HLT");
@@ -55,10 +59,11 @@ public class VgaRomProgramTests
         RunInt10(machine, 0x0003);
 
         Assert.Equal(0x67, misc.Writes.Single().value);
-        // 25 CRTC values behind their indices, after the unlock of register 11h.
+        // 25 CRTC values behind their indices, the unlock of register 11h,
+        // and the cursor address written by the ROM text completion.
         var indices = crtc.Writes.Where(w => w.port == 0x3D4).Select(w => w.value).ToList();
         var data = crtc.Writes.Where(w => w.port == 0x3D5).Select(w => w.value).ToList();
-        Assert.Equal(26, indices.Count);
+        Assert.Equal(28, indices.Count);
         Assert.Equal(0x11, indices[0]);
         Assert.Equal(0x5F, data[1]);          // horizontal total, first table value
         Assert.Equal(0x28, data[0x13 + 1]);
@@ -80,6 +85,91 @@ public class VgaRomProgramTests
         Assert.Equal(0xE3, misc.Writes.Single().value);
         Assert.Equal(0x12, machine.VideoRegisters.VideoMode);
         Assert.Equal(0xE3, machine.Io.ReadByte(0x3CC));
+    }
+
+    [Theory]
+    [InlineData(0x101, 640)]
+    [InlineData(0x103, 800)]
+    [InlineData(0x105, 1024)]
+    [InlineData(0x111, 1280)]
+    [InlineData(0x112, 1920)]
+    [InlineData(0x117, 2048)]
+    [InlineData(0x115, 2400)]
+    [InlineData(0x220, 2560)]
+    [InlineData(0x221, 3200)]
+    public void VesaModeProgramsThePitchThatTheS3DriverReads(int mode, int expectedBytes)
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+        Spy crtc = Watch(machine, 0x3D4);
+        machine.Cpu.State.Bx = (ushort)(mode | 0x8000);
+
+        RunInt10(machine, 0x4F02);
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        machine.Io.WriteByte(0x3D4, 0x13);
+        int offset = machine.Io.ReadByte(0x3D5);
+        machine.Io.WriteByte(0x3D4, 0x51);
+        offset |= (machine.Io.ReadByte(0x3D5) & 0x30) << 4;
+        Assert.Equal(expectedBytes, offset * 8);
+        Assert.Contains(crtc.Writes, write => write.port == 0x3D5 && write.value == (byte)(expectedBytes / 8));
+    }
+
+    [Theory]
+    [InlineData(0x8220, 0x220, 0x40, 2560)]
+    [InlineData(0x8221, 0x221, 0x90, 3200)]
+    public void S3OemModeRequestsPreserveVideoMemoryAndReportTheSelectedMode(
+        ushort request,
+        ushort expectedMode,
+        byte expectedCrtc13,
+        int expectedPitch)
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+
+        // Bit 15 is the driver's request to preserve its existing surface.
+        machine.VideoMemory.WriteLinear(0, 0x5A);
+
+        RunInt10(machine, 0x4F02, request);
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.Equal(expectedMode, machine.VideoRegisters.VesaMode!.Value.Number);
+        Assert.Equal(0x5A, machine.VideoMemory.ReadLinear(0));
+
+        // Read the three S3 CRTC registers just as the Windows driver does.
+        machine.Io.WriteByte(0x3D4, 0x13);
+        byte lowPitch = machine.Io.ReadByte(0x3D5);
+        machine.Io.WriteByte(0x3D4, 0x51);
+        byte highPitch = machine.Io.ReadByte(0x3D5);
+        machine.Io.WriteByte(0x3D4, 0x43);
+        byte alternatePitch = machine.Io.ReadByte(0x3D5);
+
+        int pitchOffset = lowPitch | ((highPitch & 0x30) << 4);
+        Assert.Equal(expectedCrtc13, lowPitch);
+        Assert.Equal(0x10, highPitch);
+        Assert.Equal(0, alternatePitch & 0x04);
+        Assert.Equal(expectedPitch, pitchOffset * 8);
+
+        RunInt10(machine, 0x4F03);
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.Equal(expectedMode, machine.Cpu.State.Bx);
+    }
+
+    [Fact]
+    public void VesaModeSetClearsDirectionForItsTableScanAndRestoresTheCallersFlag()
+    {
+        using var machine = new Machine();
+        machine.RunInstructions(3000);
+        machine.Cpu.State.Bx = 0x8101;
+        machine.Cpu.Flags.Direction = true;
+
+        RunInt10(machine, 0x4F02);
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        machine.Io.WriteByte(0x3D4, 0x13);
+        Assert.Equal(80, machine.Io.ReadByte(0x3D5));
+        Assert.True(machine.Cpu.Flags.Direction);
     }
 
     [Fact]

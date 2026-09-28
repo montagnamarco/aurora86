@@ -59,7 +59,7 @@ try
     {
         for (int attempt = 0; attempt < 80; attempt++)
         {
-            var position = machine.VideoRegisters.CursorPosition;
+            var position = machine.S3Registers.CursorPosition;
             int dx = x - position.X, dy = y - position.Y;
             if (Math.Abs(dx) < 2 && Math.Abs(dy) < 2) return;
             machine.Mouse.Move(Math.Clamp(dx / 2, -10, 10), Math.Clamp(dy / 2, -10, 10));
@@ -70,7 +70,7 @@ try
     Run(400_000_000);
     foreach (byte code in new byte[] { 0x11, 0x17, 0x31, 0x1C }) Key(code); // win + Enter
     Run(500_000_000);
-    if (!machine.VideoRegisters.CursorEnabled || machine.Video.Width < 800)
+    if (!machine.S3Registers.CursorEnabled || machine.Video.Width < 800)
         throw new InvalidOperationException("Windows did not enable the expected S3 mode and hardware cursor.");
     Shot("before");
     using var log = new StreamWriter(Path.Combine(output, "commands.log"));

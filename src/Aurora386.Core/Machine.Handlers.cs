@@ -40,6 +40,7 @@ public sealed partial class Machine
         {
             case BiosRom.Handler.Post: RunPost(); return;
             case BiosRom.Handler.Video: VideoServices.Handle(cpu); return;
+            case BiosRom.Handler.VideoModeCompletion: VideoServices.CompleteRomVideoModeSet(cpu.State.GetReg8(0)); return;
             case BiosRom.Handler.Disk:
                 if (!DiskServices.TryRouteIdeRead(cpu))
                 {

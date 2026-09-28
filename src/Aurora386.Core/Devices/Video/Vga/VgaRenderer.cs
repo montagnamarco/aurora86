@@ -1,7 +1,8 @@
 namespace Aurora386.Core.Devices.Video;
 
 /// <summary>
-/// Converts video memory into an RGBA framebuffer ready to be uploaded as a
+/// Presents the 1987 IBM VGA raster programmed by DOS BIOS calls and indexed
+/// display-driver I/O. Converts video memory into an RGBA framebuffer ready for a
 /// texture.
 ///
 /// Rendering works a row at a time, and only on rows the VGA memory has
@@ -28,10 +29,19 @@ namespace Aurora386.Core.Devices.Video;
 /// to a 4:3 aspect rather than blitting it pixel-for-pixel. The same is true
 /// of modes 0Dh, 0Eh and 13h, whose 200 scanlines a real VGA doubles to 400.
 /// </summary>
-public sealed class VgaRenderer
+public class VgaRenderer : IVideoOutput
 {
     private readonly VgaMemory _memory;
     private readonly VgaRegisters _registers;
+
+    /// <summary>The shared VRAM read by standard and card-specific scanout.</summary>
+    protected VgaMemory Memory => _memory;
+
+    /// <summary>The standard register interface, including card-neutral scanout properties.</summary>
+    protected VgaRegisters Registers => _registers;
+
+    /// <summary>The current writable raster; reacquire after a mode resize.</summary>
+    protected uint[] Pixels => _framebuffer;
 
     /// <summary>Pixels in RGBA order, four bytes each.</summary>
     private uint[] _framebuffer;
@@ -47,9 +57,6 @@ public sealed class VgaRenderer
 
     /// <summary>The blink phase the last drawn frame was drawn in.</summary>
     private bool _lastBlinkPhase = true;
-
-    /// <summary>Where the hardware pointer was in the last drawn frame.</summary>
-    private int _lastCursorX = -1, _lastCursorY = -1;
 
     public VgaRenderer(VgaMemory memory, VgaRegisters registers)
     {
@@ -111,6 +118,9 @@ public sealed class VgaRenderer
     /// </summary>
     public bool Render(bool force = false)
     {
+        // Evaluate the extension hook even when the caller already forces a frame.
+        force |= RequiresFullScanout();
+
         InvalidatePointerRows();
         var textCursor = (_registers.CursorColumn, _registers.CursorRow,
             !_registers.EffectiveMode.IsGraphics && _registers.CursorVisible);
@@ -131,23 +141,7 @@ public sealed class VgaRenderer
         bool phaseChanged = CursorBlinkOn != _lastBlinkPhase;
         _lastBlinkPhase = CursorBlinkOn;
 
-        // The hardware pointer moves with nothing written to video memory
-        // either -- that is the whole point of it -- so a move is its own
-        // reason to redraw. The rows it used to cover have to be repainted
-        // as well, or it leaves a trail behind it.
-        bool cursorMoved = false;
-        if (_registers.CursorEnabled)
-        {
-            (int cursorX, int cursorY) = _registers.CursorPosition;
-            cursorMoved = cursorX != _lastCursorX || cursorY != _lastCursorY;
-
-            if (cursorMoved)
-            {
-                _memory.MarkRowsDirty(Math.Min(_lastCursorY, cursorY) - 1, 66 + Math.Abs(cursorY - _lastCursorY));
-                _lastCursorX = cursorX;
-                _lastCursorY = cursorY;
-            }
-        }
+        bool cursorMoved = InvalidateCardCursorRows();
 
         if (!force && !phaseChanged && !cursorMoved && !_memory.HasChanges) return false;
 
@@ -161,29 +155,18 @@ public sealed class VgaRenderer
             force = true;
         }
 
-        // Composition can XOR the background. Even a stationary pointer
-        // needs fresh pixels underneath whenever another dirty row causes
-        // a frame; otherwise we XOR the already composed pointer again.
-        if (_registers.CursorEnabled)
-        {
-            int first = _registers.CursorPosition.Y;
-            int last = first + 63;
-            if (!_registers.EffectiveMode.IsGraphics)
-            {
-                int heightOfCell = Math.Max(1, _registers.CharacterHeight);
-                first /= heightOfCell;
-                last /= heightOfCell;
-            }
-            _memory.MarkRowsDirty(first, last - first + 1);
-        }
+        InvalidateCompositionRows();
 
-        switch (_registers.EffectiveMode.Layout)
+        if (!RenderCardScanout(force))
         {
-            case VgaMemoryLayout.Planar4: RenderPlanar(force); break;
-            case VgaMemoryLayout.Linear8: RenderLinear(force); break;
-            case VgaMemoryLayout.Cga: RenderCga(force); break;
-            case VgaMemoryLayout.HighColour: RenderHighColour(force); break;
-            default: RenderText(force); break;
+            switch (_registers.EffectiveMode.Layout)
+            {
+                case VgaMemoryLayout.Planar4: RenderPlanar(force); break;
+                case VgaMemoryLayout.Linear8: RenderLinear(force); break;
+                case VgaMemoryLayout.Cga: RenderCga(force); break;
+                case VgaMemoryLayout.HighColour: RenderHighColour(force); break;
+                default: RenderText(force); break;
+            }
         }
 
         DrawPointer();
@@ -192,6 +175,20 @@ public sealed class VgaRenderer
         FramesRendered++;
         return true;
     }
+
+    /// <summary>Updates card scanout latches and requests complete repaint when needed.</summary>
+    protected virtual bool RequiresFullScanout() => false;
+
+    /// <summary>Invalidates rows affected by a card cursor move before deciding whether to render.</summary>
+    protected virtual bool InvalidateCardCursorRows() => false;
+
+    /// <summary>Repaints the background required by card composition after raster size reconciliation.</summary>
+    protected virtual void InvalidateCompositionRows()
+    {
+    }
+
+    /// <summary>Returns true when a card-specific raster replaces standard VGA scanout.</summary>
+    protected virtual bool RenderCardScanout(bool force) => false;
 
     /// <summary>
     /// The rows under the pointer's last position have to be repainted from
@@ -226,86 +223,13 @@ public sealed class VgaRenderer
         return (pointer.Y / 8, 1);
     }
 
-    private void DrawPointer()
+    protected virtual void DrawPointer()
     {
-        // The card's own pointer takes precedence. When a driver has enabled
-        // it, the pointer on screen is the card's and the emulator must not
-        // draw a second one over it -- which is what the guest's own driver
-        // is asking for by enabling it in the first place.
-        if (_registers.CursorEnabled) { DrawHardwareCursor(); return; }
-
         MousePointer? pointer = Pointer;
         if (pointer is not { Visible: true }) return;
 
         if (_registers.EffectiveMode.IsGraphics) DrawGraphicsPointer(pointer);
         else if (!pointer.UsesHardwareTextCursor) DrawTextPointer(pointer);
-    }
-
-    /// <summary>
-    /// The S3's own 64x64 pointer, drawn over the picture as the beam passes.
-    ///
-    /// It costs nothing to move: writing two registers is the whole
-    /// operation. Doing the same in software means saving what is under the
-    /// pointer, drawing it, and putting the background back before the next
-    /// move -- three times the work, and it has to happen between frames or
-    /// the pointer flickers. At 1024x768 that was the difference between a
-    /// pointer that kept up with the hand and one that lagged behind it.
-    ///
-    /// The pattern is two bits per pixel, and the pair is not a colour index
-    /// but an instruction. AND clear with XOR clear paints the background
-    /// colour, AND clear with XOR set paints the foreground, and AND set
-    /// leaves the screen showing through -- either unchanged, or inverted
-    /// when XOR is also set. That last combination is what makes a pointer
-    /// visible over any background without knowing what is behind it.
-    /// </summary>
-    private void DrawHardwareCursor()
-    {
-        (int originX, int originY) = _registers.CursorPosition;
-        (int offsetX, int offsetY) = _registers.CursorOffset;
-        (byte foreground, byte background) = _registers.CursorColours;
-
-        uint pattern = _registers.CursorPatternAddress;
-
-        uint foregroundColour = ToRgba(_registers.GetPaletteColor(foreground));
-        uint backgroundColour = ToRgba(_registers.GetPaletteColor(background));
-
-        for (int row = offsetY; row < 64; row++)
-        {
-            int y = originY + row - offsetY;
-            if (y < 0 || y >= Height) continue;
-
-            for (int column = offsetX; column < 64; column++)
-            {
-                int x = originX + column - offsetX;
-                if (x < 0 || x >= Width) continue;
-
-                // Sixteen bytes per row: eight of AND bits and eight of XOR
-                // bits, interleaved in pairs of two bytes. The interleaving
-                // is what lets the card fetch both planes for sixteen pixels
-                // in one memory access.
-                uint at = pattern + (uint)(row * 16) + (uint)(column / 16) * 4;
-                int bit = 15 - (column % 16);
-
-                int and = (_memory.ReadLinear(at) << 8) | _memory.ReadLinear(at + 1);
-                int xor = (_memory.ReadLinear(at + 2) << 8) | _memory.ReadLinear(at + 3);
-
-                bool andBit = ((and >> bit) & 1) != 0;
-                bool xorBit = ((xor >> bit) & 1) != 0;
-
-                int destination = y * Width + x;
-
-                if (!andBit)
-                {
-                    _framebuffer[destination] = xorBit ? foregroundColour : backgroundColour;
-                }
-                else if (xorBit)
-                {
-                    // Screen through, inverted: the trick that keeps a pointer
-                    // visible over a background of any colour.
-                    _framebuffer[destination] ^= 0x00FFFFFF;
-                }
-            }
-        }
     }
 
     /// <summary>
@@ -784,7 +708,7 @@ public sealed class VgaRenderer
         // extended registers, which is where a driver programming the
         // hardware directly puts it; then the mode's natural width.
         //
-        // The middle one matters more than it looks: an S3 driver does not
+        // The middle one matters more than it looks: a display driver does not
         // call 4F06, it writes the CRTC. Reading only the VBE value would
         // leave such a driver's picture drawn at the wrong stride.
         // The card's own value counts only when a driver has actually
@@ -800,7 +724,7 @@ public sealed class VgaRenderer
 
         // And the same for the origin. The VGA's own start address is
         // sixteen bits, enough for 64 KB; at 800x600 a screen is 480000
-        // bytes, so an S3 puts the missing bits in extended registers. A
+        // bytes, so a card puts the missing bits in extended registers. A
         // renderer that reads only the sixteen shows the top 81 rows of the
         // picture and black below -- which is exactly what it looks like.
         uint origin = _registers.VesaDisplayStart > 0
@@ -831,7 +755,7 @@ public sealed class VgaRenderer
     }
 
     /// <summary>Five bits per channel, the sixteenth bit unused.</summary>
-    private static uint From15(int pixel)
+    protected static uint From15(int pixel)
         => FromBytes(Expand5((pixel >> 10) & 0x1F),
                      Expand5((pixel >> 5) & 0x1F),
                      Expand5(pixel & 0x1F));
@@ -840,16 +764,16 @@ public sealed class VgaRenderer
     /// Five bits of red and blue, six of green. The spare bit goes to green
     /// because the eye resolves it far better than the other two.
     /// </summary>
-    private static uint From16(int pixel)
+    protected static uint From16(int pixel)
         => FromBytes(Expand5((pixel >> 11) & 0x1F),
                      (byte)(((pixel >> 5) & 0x3F) << 2 | ((pixel >> 5) & 0x3F) >> 4),
                      Expand5(pixel & 0x1F));
 
     private static byte Expand5(int value) => (byte)((value << 3) | (value >> 2));
 
-    private static uint FromBytes(byte r, byte g, byte b)
+    protected static uint FromBytes(byte r, byte g, byte b)
         => 0xFF000000u | ((uint)b << 16) | ((uint)g << 8) | r;
 
-    private static uint ToRgba((byte R, byte G, byte B) color)
+    protected static uint ToRgba((byte R, byte G, byte B) color)
         => (uint)(color.R | (color.G << 8) | (color.B << 16) | (0xFF << 24));
 }

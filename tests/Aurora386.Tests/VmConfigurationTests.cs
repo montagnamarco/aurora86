@@ -21,6 +21,102 @@ public class VmConfigurationTests
     }
 
     [Fact]
+    public void LegacyJsonSelectsTrio()
+    {
+        string folder = TempFolder();
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, VmConfiguration.FileName), "{}");
+            VmConfiguration configuration = VmConfiguration.Load(folder);
+            using Machine machine = configuration.BuildMachine();
+
+            Assert.Equal(VmVideoModel.S3Trio64VPlus, configuration.Video);
+            Assert.Equal(VmVideoModel.S3Trio64VPlus, machine.VideoModel);
+            Assert.Equal(0x8811u, machine.Pci.ReadConfiguration(0x20, 2, 2));
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [Fact]
+    public void VirgeRoundTripsAndBuildsMatchingPci()
+    {
+        string folder = TempFolder();
+        try
+        {
+            new VmConfiguration { Video = VmVideoModel.S3Virge325 }.Save(folder);
+            using var json = System.Text.Json.JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(folder, VmConfiguration.FileName)));
+            Assert.Equal("S3Virge325", json.RootElement.GetProperty("video").GetString());
+
+            VmConfiguration configuration = VmConfiguration.Load(folder);
+            using Machine machine = configuration.BuildMachine();
+            Assert.Equal(VmVideoModel.S3Virge325, configuration.Video);
+            Assert.Equal(VmVideoModel.S3Virge325, machine.VideoModel);
+            Assert.Equal(0x5631u, machine.Pci.ReadConfiguration(0x20, 2, 2));
+            Assert.NotNull(machine.Virge);
+            Assert.Null(machine.TrioAccelerator);
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [Theory]
+    [InlineData("\"UnknownGpu\"")]
+    [InlineData("99")]
+    public void UnknownVideoModelIsRejectedDuringLoad(string videoJson)
+    {
+        string folder = TempFolder();
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, VmConfiguration.FileName),
+                "{\"video\":" + videoJson + "}");
+            if (videoJson == "99")
+            {
+                Assert.Throws<InvalidDataException>(() => VmConfiguration.Load(folder));
+            }
+            else
+            {
+                Assert.Throws<System.Text.Json.JsonException>(() => VmConfiguration.Load(folder));
+            }
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [Fact]
+    public void UnknownModelIsRejectedBeforeBuildingOrSaving()
+    {
+        string folder = TempFolder();
+        try
+        {
+            string path = Path.Combine(folder, VmConfiguration.FileName);
+            File.WriteAllText(path, "{}");
+            var configuration = new VmConfiguration
+            {
+                Video = (VmVideoModel)99,
+                Disks = { new() { Path = Path.Combine(folder, "missing.img") } }
+            };
+
+            InvalidDataException error = Assert.Throws<InvalidDataException>(
+                () => configuration.BuildMachine());
+            Assert.Contains("video model", error.Message);
+            Assert.Throws<InvalidDataException>(() => configuration.Save(folder));
+            Assert.Equal("{}", File.ReadAllText(path));
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [Fact]
     public void ARoundTripKeepsEverything()
     {
         string folder = TempFolder();

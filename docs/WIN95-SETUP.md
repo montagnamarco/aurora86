@@ -260,11 +260,14 @@ Its paired checkpoint is `/tmp/win95-spool32/regsvr-error.snapshot`.
 A snapshot of the user's exact failure has been requested.
 
 The diagnostic probe now accepts `move <dx> <dy>` and `click left|right`.
-However, the current machine snapshot omits the serial mouse UART state.
-A fresh machine restoring the error checkpoint therefore does not retain
-the guest's serial-port initialization, so that path cannot establish
-whether the user's live mouse buttons are delivered correctly. No mouse
-or spooler correction is claimed from these observations.
+As of September 12, 2026, new machine snapshots preserve the serial mouse
+UART registers, queued receive bytes, pending serial movement, and both
+current and last-reported button states. Tests restore these into a fresh
+machine and verify the remaining packet bytes, IRQ state, and subsequent
+reports. Older snapshots remain readable but cannot reconstruct serial-port
+state they never captured; restoring those files therefore cannot validate
+live mouse input. This change does not establish a new guest or spooler
+result.
 
 
 ## REGSVR32: a retried PUSH corrupts the return stack
@@ -311,14 +314,43 @@ The paired checkpoint is `/tmp/win95-push-fixed/setup-complete.snapshot`.
 After the requested guest restart, the serial mouse is initialized again.
 Sending movement to the login dialog's OK button and a left-button press
 and release successfully completes login. No serial-button protocol change
-was required. This verifies the guest input path after boot, while the
-snapshot omission of UART state remains open.
+was required. This verifies the guest input path after boot. The earlier
+snapshot omission of UART state is covered by the serial snapshot change
+documented above.
 
 The restarted guest subsequently reaches the desktop with icons and taskbar.
 `/tmp/win95-push-fixed/desktop-verified.snapshot` and its paired image retain
 that result. The optional network file copy was cancelled earlier on this
 disposable disk; this is not validation of networking or every installed
 component. The original user disk remains untouched.
+
+## DOS text services and return to Windows 95
+
+The BIOS now completes AH=00 text-mode changes through guest-visible ROM
+instructions when the display is virtualized. AH=00 respects the requested
+text mode and updates the guest BDA, text page, palette, cursor, and metadata
+without writing the physical display in the intercepted path. The other
+observed text services, AH=02, AH=03, AH=08, AH=0E, and AH=0F, now use the
+guest BDA, paging, and VGA ports as the guest sees them. Mode 07 and other
+BIOS functions retain their existing paths.
+
+The final Windows 95 run reached the desktop after `EXIT`, including the
+Start bar and CD contents. The fresh restore remained in mode 0101 for the
+entire run, with no native handler override or alternate Enter path; the
+trace records 18 ATAPI packet commands and the termination path through
+INT 21h AH=4Ch in both VM86 and protected mode. Earlier startup input was
+intermittently ignored, but the final run settled without a workaround, so
+this does not establish a keyboard defect or its absence.
+
+An earlier diagnostic run rendered only part of the DOS text. The final
+normal and restored runs rendered `ver`, `dir d:`, the copy command, and
+`EXIT` successfully before returning to the desktop. This does not claim
+complete DOS text compatibility, a new ATAPI fix, or a result for the
+separate user-reported black-screen case.
+
+The focused BIOS text tests pass 71/71, the final non-slow suite passes
+1,486/1,486, and the Release solution build completes with zero errors and
+zero warnings.
 
 ## CD ownership across snapshots (11 September)
 
@@ -335,6 +367,22 @@ previous format. The two ownership regressions failed before the fix;
 59 CD, IDE, snapshot and PCI tests pass afterwards. Old snapshots remain
 readable but cannot supply ownership information they never recorded.
 This does not yet establish the cause of the user's missing CD after boot.
+
+On September 12, 2026, a fresh boot with the current Windows 95
+configuration shows `Win95_OSR25` on `D:` in My Computer and lists 11 items
+at the CD root. A 3,728-byte
+`README.TXT` copied before the snapshot matches the ISO byte-for-byte with
+SHA-256 `43b018a2ace818fb9fabb2bb41311de1d9670edfffda8295f538e8eba73258e2`.
+After restoring the paired snapshot into a fresh machine, a distinct
+3,664-byte `SETUP.EXE` copied from the CD to `CDAFTER.EXE` also matches the
+ISO with SHA-256
+`8028cacc62cf84ebc47546e0784f363b09f54485c5ae97b2e71816f84c9a46a8`.
+The trace records an ATAPI packet at port `01F7` from `0028:C101B4B9`.
+An earlier diagnostic run remained in text mode after `EXIT` and rendered
+only part of the DOS text. The final normal and restored runs returned to the
+desktop; the graphical directory listing was verified after restore. These
+results verify CD reads and copies across restore without claiming a new
+ATAPI fix or complete guest compatibility.
 
 ## Empty diskette drive type (11 September)
 

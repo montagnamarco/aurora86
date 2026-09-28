@@ -23,7 +23,7 @@ namespace Aurora386.Core.Devices.Audio;
 /// possible sources -- 8-bit DMA, 16-bit DMA or MIDI -- actually fired, which
 /// is essential once one IRQ line serves all three.
 /// </summary>
-public sealed class SbMixer : IIoDevice
+public sealed partial class SbMixer : IIoDevice
 {
     private readonly byte[] _registers = new byte[256];
     private byte _index;

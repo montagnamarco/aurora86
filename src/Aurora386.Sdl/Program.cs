@@ -1,4 +1,5 @@
 using Aurora386.Core;
+using Aurora386.Core.Cpu;
 using Aurora386.Core.Firmware;
 using Aurora386.Core.Firmware.Fpu;
 using Aurora386.Core.Devices.Storage;
@@ -48,6 +49,7 @@ string? snapshot = null;
 string? dosLogPath = null;
 string? writeLogPath = null;
 string? mouse = null;
+string? cpuModel = null;
 string? vmFolder = null;
 string? network = null;
 var forwards = new List<VmConfiguration.PortForward>();
@@ -146,6 +148,13 @@ for (int i = 0; i < args.Length; i++)
             if (++i >= args.Length || args[i] is not ("ps2" or "serial"))
                 return Fail("--mouse needs ps2 or serial");
             mouse = args[i];
+            break;
+
+        case "--cpu":
+            if (++i >= args.Length || args[i] is not ("386" or "486" or "pentium" or "pentium-mmx"
+                    or "pentium2" or "pentium3" or "pentium4"))
+                return Fail("--cpu needs 386, 486, pentium, pentium-mmx, pentium2, pentium3 or pentium4");
+            cpuModel = args[i];
             break;
 
         case "--net":
@@ -333,6 +342,28 @@ if (bootOrder is not null)
     Console.WriteLine($"boot order: {bootOrder.ToUpperInvariant()}");
 }
 
+// The processor, which must be chosen before the guest runs its first
+// instruction. A bootloader written after the middle nineties assumes RDTSC,
+// and a current assembler pads loops with the multi-byte NOP and a compiler
+// emits CMOVcc -- both Pentium Pro instructions. On an older model those
+// raise an invalid opcode with no handler installed yet: a triple fault, and
+// a machine that appears to restart for ever. Anything booting a current ISO
+// wants pentium2 or later.
+if (cpuModel is not null)
+{
+    machine.CpuModel = cpuModel switch
+    {
+        "386" => CpuModel.Intel386,
+        "pentium" => CpuModel.Pentium,
+        "pentium-mmx" => CpuModel.PentiumMmx,
+        "pentium2" => CpuModel.PentiumII,
+        "pentium3" => CpuModel.PentiumIII,
+        "pentium4" => CpuModel.Pentium4,
+        _ => CpuModel.Intel486,
+    };
+    Console.WriteLine($"cpu: {cpuModel}");
+}
+
 if (mouse is not null)
 {
     machine.MouseInterface = mouse == "ps2" ? MouseInterface.Ps2 : MouseInterface.Serial;
@@ -405,6 +436,8 @@ static void PrintUsage()
                                    letter after the disks, or X:; repeatable
               --boot <list>        boot order, like A,C or CD,C (default: every drive by number)
               --mouse ps2|serial   which port the mouse is on
+              --cpu <model>        386, 486, pentium, pentium-mmx, pentium2, pentium3 or
+                                   pentium4 (default 486; a current ISO needs pentium2 or later)
               --net nat|none       put the NE2000 on a NAT network (guest 10.0.2.15)
               --forward p:h:g      reach guest port g from host port h (p is tcp or udp)
               --snapshot <file>    restore a saved state after attaching everything

@@ -21,7 +21,7 @@ namespace Aurora386.Core.Devices.IsaPnp;
 /// isolation trivial: it can see every card's bit and decide who drops
 /// out, where real cards have to infer it from what the wire does.
 /// </summary>
-public sealed class IsaPnpBus : IIoDevice
+public sealed partial class IsaPnpBus : IIoDevice
 {
     public const ushort AddressPort = 0x279;
     public const ushort WriteDataPort = 0xA79;
@@ -37,6 +37,7 @@ public sealed class IsaPnpBus : IIoDevice
     private int _isolationPhase;
     private int _isolationBit;
     private bool _isolationAnyOne;
+    private bool _snapshotPortMappingDetached;
 
     public IReadOnlyList<IsaPnpCard> Cards => _cards;
     public ushort ReadDataPort => _readDataPort;
@@ -128,7 +129,7 @@ public sealed class IsaPnpBus : IIoDevice
                         foreach (IsaPnpLogicalDevice device in card.LogicalDevices)
                         {
                             device.Reset();
-                            device.Configured?.Invoke(device);
+                            device.NotifyConfigured();
                         }
                     }
                     if ((value & 0x01) != 0 || (value & 0x02) != 0)
@@ -207,7 +208,7 @@ public sealed class IsaPnpBus : IIoDevice
                 // address changes while it is on. Writing registers to a
                 // sleeping device is just bookkeeping until it is activated.
                 if (_address == 0x30 ? wasActive != device.Active : device.Active)
-                    device.Configured?.Invoke(device);
+                    device.NotifyConfigured();
                 return;
             }
         }
@@ -217,11 +218,17 @@ public sealed class IsaPnpBus : IIoDevice
     {
         if (port == _readDataPort)
         {
+            if (_snapshotPortMappingDetached)
+            {
+                RebuildSnapshotPortMapping();
+            }
+
             return;
         }
         _io?.Unregister(_readDataPort, 1, this);
         _readDataPort = port;
         _io?.Register(_readDataPort, this);
+        _snapshotPortMappingDetached = false;
     }
 
     /// <summary>The card in the Config state, if any: the one that answers reads and takes register writes.</summary>

@@ -59,5 +59,13 @@ public sealed class SystemPort61 : IIoDevice
     {
         // Only the low four bits are writable; the rest are status inputs.
         _outputBits = (byte)(value & 0x0F);
+
+        // Bit 0 is not merely a speaker switch: it is timer channel 2's GATE
+        // input, and with it low the channel does not count at all. Every
+        // routine that measures an interval closes the gate, loads a count,
+        // opens it, and watches bit 5 -- so a gate that was ignored would let
+        // the counter run before the measurement began, and the measurement
+        // would be of nothing.
+        _timer.Channel2Gate = (value & 0x01) != 0;
     }
 }

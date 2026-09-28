@@ -186,6 +186,58 @@ public sealed partial class Cpu
     }
 
     /// <summary>
+    /// Translate a linear address for an access the PROCESSOR makes on its own
+    /// behalf, rather than one the running program asked for.
+    ///
+    /// Reading a descriptor out of the GDT or LDT, reading a gate out of the
+    /// IDT, reading the kernel stack pointer out of the task state segment:
+    /// all of these are the processor consulting its own tables, and they are
+    /// supervisor accesses however privileged the code that triggered them
+    /// happens to be. The architecture is explicit about it, and the reason is
+    /// plain once stated -- an operating system maps those tables
+    /// kernel-only, exactly so that ring 3 cannot read them, and a processor
+    /// that applied the running privilege to its own table walks could never
+    /// reach them while user code was running.
+    ///
+    /// Getting this wrong produces a defect that only appears with a REALISTIC
+    /// page layout, which is why it survived: a test that maps everything
+    /// user-accessible, as our first ring 3 tests did, never triggers it. The
+    /// guest that found it was an operating system mapping its own memory the
+    /// way operating systems do.
+    ///
+    /// THE AUTHORITY IS PASSED DOWN, NOT BORROWED, and the distinction is the
+    /// whole of a second defect found the same way.
+    ///
+    /// This method used to write ring 0 into State.Cpl for the duration of the
+    /// walk and put the old value back afterwards. That reads as though it
+    /// works, and in ordinary protected mode it does. It is a NO-OP in virtual
+    /// 8086 mode: Cpl is a computed property whose getter returns 3 whenever
+    /// the mode is on, without consulting the field the setter writes --
+    /// because in that mode ring 3 is a consequence of the mode rather than a
+    /// stored number, which is exactly why the property is computed.
+    ///
+    /// So the borrow silently failed in the one mode where every interrupt
+    /// delivery needs it. A V86 task takes hardware interrupts like anything
+    /// else, and every delivery reads a gate out of the IDT; on a guest that
+    /// maps the IDT supervisor-only, that read faulted, the page fault's own
+    /// delivery faulted the same way, and the machine reset before the task
+    /// executed a single instruction.
+    ///
+    /// Passing the authority as an argument cannot fail that way: there is no
+    /// state to write, nothing to restore, and no property in between that can
+    /// disagree with what was asked for.
+    /// </summary>
+    private uint TranslateSupervisor(uint linear, bool write)
+    {
+        if (!State.PagingEnabled) return linear;
+
+        // Through the same PAE-or-legacy choice every other access makes:
+        // with CR4.PAE set, CR3 names a page-directory-pointer table, and a
+        // two-level walk of it would read a wrong frame and cache it.
+        return TranslateWhenPaging(linear, write, asSupervisor: true);
+    }
+
+    /// <summary>
     /// Reads one byte the way the processor would, from a linear address --
     /// through the page tables when paging is on, and without raising a fault
     /// when the page is absent.

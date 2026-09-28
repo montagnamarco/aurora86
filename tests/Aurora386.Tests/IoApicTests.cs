@@ -64,6 +64,32 @@ public class IoApicTests
         ioApic.WriteDword(IoWinOffset, value);
     }
 
+    // ---- the fixed window through the physical bus ------------------------------
+
+    /// <summary>
+    /// The I/O APIC answers at FEC00000h through the machine's own memory bus
+    /// on both display adapters. A Trio machine decodes far less than 4 GB,
+    /// so the window is a high window above the per-page arrays; a ViRGE
+    /// machine decodes the whole 4 GB for its relocatable aperture, so there
+    /// the same page is an ordinary device mapping -- a high window inside
+    /// the decoded space would never be consulted.
+    /// </summary>
+    [Theory]
+    [InlineData(Aurora386.Core.Configuration.VmVideoModel.S3Trio64VPlus)]
+    [InlineData(Aurora386.Core.Configuration.VmVideoModel.S3Virge325)]
+    public void TheVersionRegisterAnswersAtItsFixedAddressOnEitherAdapter(
+        Aurora386.Core.Configuration.VmVideoModel videoModel)
+    {
+        using var machine = new Machine(
+            chipset: Chipset.I430Tx,
+            initialCpuModel: CpuModel.PentiumMmx,
+            videoModel: videoModel);
+
+        machine.Memory.WriteDword(Machine.IoApicPhysicalBase + IoRegSelOffset, IoApicVerIndex);
+
+        Assert.Equal(0x00170011u, machine.Memory.ReadDword(Machine.IoApicPhysicalBase + IoWinOffset));
+    }
+
     // ---- test cases 4-6: reset values ----------------------------------------
 
     [Fact]

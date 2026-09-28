@@ -106,6 +106,8 @@ public class VesaTests
     [Theory]
     [InlineData(0x140, 640, 480)]
     [InlineData(0x141, 800, 600)]
+    [InlineData(0x220, 640, 480)]
+    [InlineData(0x221, 800, 600)]
     public void ThirtyTwoBitModesAreDiscoverableAndDescribeXrgb(ushort mode, int width, int height)
     {
         using Machine machine = Started();
@@ -137,6 +139,38 @@ public class VesaTests
             Assert.Equal(layout[i], machine.Memory.ReadByte(info + 31 + i));
         Assert.Equal(0, machine.Memory.ReadByte(info + 39)); // reserved bits not usable as colour
         for (uint i = 50; i < 256; i++) Assert.Equal(0, machine.Memory.ReadByte(info + i));
+    }
+
+    [Theory]
+    [InlineData(0x112, 640, 480, 1920)]
+    [InlineData(0x115, 800, 600, 2400)]
+    public void StandardTrueColourModesRemainPacked24(
+        ushort mode,
+        int expectedWidth,
+        int expectedHeight,
+        int expectedPitch)
+    {
+        using Machine machine = Started();
+
+        Int10(machine, 0x4F01, cx: mode, es: 0x5100);
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        const uint info = 0x51000;
+        Assert.Equal(expectedWidth, machine.Memory.ReadWord(info + 18));
+        Assert.Equal(expectedHeight, machine.Memory.ReadWord(info + 20));
+        Assert.Equal(expectedPitch, machine.Memory.ReadWord(info + 16));
+        Assert.Equal(24, machine.Memory.ReadByte(info + 25));
+    }
+
+    [Fact]
+    public void S3OemTrueColourModesRequireMoreThanOneMegabyte()
+    {
+        const int oneMegabyte = 1024 * 1024;
+
+        VesaModes.VesaModeInfo[] offered = VesaModes.Available(oneMegabyte).ToArray();
+
+        Assert.DoesNotContain(offered, mode => mode.Number == 0x220);
+        Assert.DoesNotContain(offered, mode => mode.Number == 0x221);
     }
 
     [Theory]

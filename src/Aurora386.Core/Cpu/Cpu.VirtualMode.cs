@@ -239,13 +239,19 @@ public sealed partial class Cpu
         if (((descriptor >> 55) & 1) != 0) tssLimit = (tssLimit << 12) | 0xFFF;
 
         if (tssLimit < 0x67) return true;
-        uint mapBase = _memory.ReadWord(TranslateLinear(tssBase + 0x66, false));
+
+        // The processor consulting its own task state segment: a supervisor
+        // access even though the task runs at CPL 3, exactly like the I/O
+        // permission bitmap beside it (see TranslateSupervisor). An OS maps
+        // its TSS without the user bit, and reading it with the task's own
+        // privilege would page-fault on every software interrupt.
+        uint mapBase = _memory.ReadWord(TranslateSupervisor(tssBase + 0x66, false));
 
         if (mapBase < 32) return true;   // no room for the 32 bytes below it
         uint byteOffset = mapBase - 32 + (uint)(vector >> 3);
         if (byteOffset > tssLimit) return true;
 
-        int bits = _memory.ReadByte(TranslateLinear(tssBase + byteOffset, false));
+        int bits = _memory.ReadByte(TranslateSupervisor(tssBase + byteOffset, false));
         return (bits & (1 << (vector & 7))) != 0;
     }
 

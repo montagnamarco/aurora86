@@ -61,17 +61,12 @@ public sealed class VgaMemory : IMemoryDevice
     public const int PlaneSize = 64 * 1024;
 
     /// <summary>
-    /// The whole of video memory, which on this card is two megabytes.
-    ///
-    /// A VGA has 256 KB and cannot address more; the rest exists for the SVGA
-    /// modes, where the card is not four planes but one flat array of pixels.
-    ///
-    /// Two megabytes is what an S3 Trio64 shipped with, and the figure is not
-    /// arbitrary: it is what the card's own top mode needs. 1024x768 at 256
-    /// colours takes 786 KB, but at 16-bit colour it takes 1.5 MB, and a card
-    /// that offered the resolution without the depth would have been a poor
-    /// showing against its competitors. The remainder is the off-screen
-    /// scratch a 2D accelerator blits from.
+    /// The established two-megabyte VRAM allocation shared by the currently
+    /// implemented adapters and their snapshot format. Standard VGA addresses
+    /// only four 64 KB planes; additional capacity is reached through banking
+    /// or a linear frame buffer and also holds off-screen drawing surfaces.
+    /// Capacity selection for future adapters requires a separate snapshot
+    /// compatibility change, rather than changing this legacy constant.
     /// </summary>
     public const int TotalSize = 2 * 1024 * 1024;
 
@@ -113,14 +108,24 @@ public sealed class VgaMemory : IMemoryDevice
     public VgaMemory(VgaRegisters registers) => Registers = registers;
 
     /// <summary>
-    /// The graphics engine's memory-mapped registers, which take over the
-    /// upper half of the window at A0000h while CR53 bit 4 is set. Null
-    /// on a plain VGA.
+    /// The graphics engine's memory-mapped registers, which share the window
+    /// at A0000h with video memory while CR53 bit 4 is set. Null on a plain
+    /// VGA. The engine says which offsets it answers: its register addresses
+    /// in the upper half, and the lower half only while a command is waiting
+    /// for pixel data from the processor. Everything else stays the banked
+    /// video-memory window, which is how the Windows 95 S3 driver uploads
+    /// its hardware-cursor pattern and icon bitmaps with MMIO enabled.
     /// </summary>
-    public IMemoryDevice? Engine { get; set; }
+    public IMappedEngine? Engine { get; set; }
 
     /// <summary>Whether this offset in the window belongs to the engine right now.</summary>
-    private bool EngineOwns(uint offset) => offset < 0x10000 && Engine is not null && Registers.MemoryMappedEngine;
+    private bool EngineOwns(uint offset)
+    {
+        return offset < 0x10000
+            && Engine is not null
+            && Registers.MemoryMappedEngine
+            && Engine.ClaimsWindowOffset(offset);
+    }
 
     /// <summary>The latch contents, for tests and for the debugger.</summary>
     public ReadOnlySpan<byte> Latches => _latches;
@@ -275,7 +280,7 @@ public sealed class VgaMemory : IMemoryDevice
         // modes expects them to be -- so those fall through to the planar
         // code below.
         if (Registers.VesaMode is { IsPlanar: false } && offset < 0x10000)
-            return ReadLinear((uint)(Registers.VesaWindowBank * 0x10000) + offset);
+            return ReadLinear(Registers.CpuWindowOffset + offset);
 
         if (!InWindow(offset)) return 0xFF;
 
@@ -348,8 +353,9 @@ public sealed class VgaMemory : IMemoryDevice
     {
         if (offset >= Size) return;
 
-        // With the engine mapped in, the upper 32 KB are its registers and
-        // the lower 32 KB the image transfer area, not the screen.
+        // With the engine mapped in, its registers in the upper 32 KB and,
+        // while it waits for processor data, the image transfer area in the
+        // lower 32 KB are not the screen.
         if (EngineOwns(offset))
         {
             Engine!.WriteByte(offset, value);
@@ -358,7 +364,7 @@ public sealed class VgaMemory : IMemoryDevice
 
         if (Registers.VesaMode is { IsPlanar: false } && offset < 0x10000)
         {
-            WriteLinear((uint)(Registers.VesaWindowBank * 0x10000) + offset, value);
+            WriteLinear(Registers.CpuWindowOffset + offset, value);
             return;
         }
 
@@ -564,7 +570,7 @@ public sealed class VgaMemory : IMemoryDevice
                 // outside that window belongs to no visible row at all.
                 // The same three sources the renderer uses, in the same
                 // order, and the middle one is the reason this is not just
-                // the VBE value: an S3 driver does not call 4F06, it writes
+                // the VBE value: a display driver does not call 4F06, it writes
                 // the CRTC. Reading only the VBE value gave a stride of zero
                 // there, so rows were attributed by the mode's natural width
                 // while the picture was drawn at the card's -- and the rows
@@ -689,4 +695,15 @@ public sealed class VgaMemory : IMemoryDevice
             MarkDirty(offset);
         }
     }
+}
+
+/// <summary>
+/// A drawing engine that can share the VGA window at A0000h with video
+/// memory: the card maps its registers there while the rest of the window
+/// keeps addressing video memory.
+/// </summary>
+public interface IMappedEngine : IMemoryDevice
+{
+    /// <summary>Whether the engine, rather than video memory, answers this window offset now.</summary>
+    bool ClaimsWindowOffset(uint offset);
 }

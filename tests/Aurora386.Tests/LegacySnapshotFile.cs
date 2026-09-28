@@ -13,6 +13,9 @@ public enum LegacySnapshotEnd
     AfterDos,
     AfterUsb,
     AfterCompactDisc,
+    AfterIdeTiming,
+    AfterSerialMouse,
+    AfterVideoTopology,
     Complete,
 }
 
@@ -64,6 +67,124 @@ public static class LegacySnapshotFile
 
         // The flag that said IDETIM had been recorded as it really was.
         file.Write(true);
+
+        if (end == LegacySnapshotEnd.AfterIdeTiming)
+        {
+            return;
+        }
+
+        byte[] serialMouse = machine.SerialMouse.Capture();
+        file.Write(serialMouse.Length);
+        file.Write(serialMouse);
+
+        if (end == LegacySnapshotEnd.AfterSerialMouse)
+        {
+            return;
+        }
+
+        WriteVideoTopology(file, machine);
+
+        if (end == LegacySnapshotEnd.AfterVideoTopology)
+        {
+            return;
+        }
+
+        WriteDeviceStateTrailer(file, machine);
+    }
+
+    /// <summary>
+    /// Returns the "VID1" record the last unsectioned builds wrote after the
+    /// serial mouse state: its own length, the magic word, a version, the
+    /// video model, and the ViRGE engine block (empty on a Trio). Exposed so
+    /// a test can corrupt one field of a legacy file's video tail without
+    /// reaching into the emulator, which no longer writes this format.
+    /// </summary>
+    public static byte[] VideoTopology(Machine machine)
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        WriteVideoTopology(writer, machine);
+        return stream.ToArray();
+    }
+
+    /// <summary>
+    /// Returns the "DVS1" trailer the last unsectioned builds wrote after the
+    /// video topology: a header naming how many records follow, then each
+    /// record's kind, model, schema version, reserved flags and payload.
+    /// Exposed for the same reason as <see cref="VideoTopology"/>.
+    /// </summary>
+    public static byte[] DeviceStateTrailer(Machine machine)
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        WriteDeviceStateTrailer(writer, machine);
+        return stream.ToArray();
+    }
+
+    /// <summary>"VID1": magic 0x31444956, header length 12 (magic, version, model, engine length).</summary>
+    private static void WriteVideoTopology(BinaryWriter file, Machine machine)
+    {
+        const int headerLength = 12;
+        byte[] engine = machine.Virge?.CaptureEngines() ?? [];
+
+        file.Write(headerLength + engine.Length);
+        file.Write(0x31444956u);
+        file.Write((ushort)1);
+        file.Write((ushort)machine.VideoModel);
+        file.Write(engine.Length);
+        file.Write(engine);
+    }
+
+    /// <summary>
+    /// "DVS1": magic 0x31535644, header length 8 (magic, version, record
+    /// count). Each record is kind (Trio 1, DMA 2, Sound Blaster 3, ISA PnP
+    /// 4), a device model (always 0), a record schema version (always 1),
+    /// reserved flags (always 0) and a length-prefixed payload. A record
+    /// whose payload is empty -- the Trio accelerator on a ViRGE machine --
+    /// is omitted entirely, exactly as the last unsectioned builds wrote it.
+    /// </summary>
+    private static void WriteDeviceStateTrailer(BinaryWriter file, Machine machine)
+    {
+        const int headerLength = 8;
+        const int recordHeaderLength = 12;
+
+        byte[] trioAccelerator = machine.TrioAccelerator?.Capture() ?? [];
+        byte[] dma = machine.Dma.Capture();
+        byte[] soundBlaster = machine.SoundBlaster?.Capture() ?? [];
+        byte[] isaPnp = machine.IsaPlugAndPlay.Capture();
+        byte[][] payloadsByKind = [trioAccelerator, dma, soundBlaster, isaPnp];
+
+        int length = headerLength;
+        ushort count = 0;
+        foreach (byte[] payload in payloadsByKind)
+        {
+            if (payload.Length != 0)
+            {
+                length += recordHeaderLength + payload.Length;
+                count++;
+            }
+        }
+
+        file.Write(length);
+        file.Write(0x31535644u);
+        file.Write((ushort)1);
+        file.Write(count);
+
+        for (int kindIndex = 0; kindIndex < payloadsByKind.Length; kindIndex++)
+        {
+            byte[] payload = payloadsByKind[kindIndex];
+            if (payload.Length == 0)
+            {
+                continue;
+            }
+
+            file.Write((ushort)(kindIndex + 1));
+            file.Write((ushort)0);
+            file.Write((ushort)1);
+            file.Write((ushort)0);
+            file.Write(payload.Length);
+            file.Write(payload);
+        }
     }
 
     /// <summary>RAM with its length, the processor fields, then A20.</summary>

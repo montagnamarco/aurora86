@@ -59,7 +59,16 @@ public sealed partial class Cpu
     /// reached at all: see <see cref="TranslatePae"/> and
     /// <see cref="TranslateWhenPaging"/>.
     /// </summary>
-    private uint TranslatePaged(uint linear, bool write)
+    /// <param name="asSupervisor">
+    /// True when the PROCESSOR is making this access on its own behalf -- a
+    /// descriptor, an interrupt gate, a task state segment field, the I/O
+    /// permission bitmap. Those are supervisor accesses whatever ring the
+    /// running code is in, and saying so as an ARGUMENT is deliberate: the
+    /// alternative, temporarily writing ring 0 into the processor's state,
+    /// cannot express it in virtual 8086 mode, where the privilege is not a
+    /// stored field but a consequence of the mode. See TranslateSupervisor.
+    /// </param>
+    private uint TranslatePaged(uint linear, bool write, bool asSupervisor = false)
     {
         uint page = linear & 0xFFFFF000;
         uint offset = linear & 0xFFF;
@@ -74,7 +83,7 @@ public sealed partial class Cpu
         ref TlbEntry entry = ref _tlb[(page >> 12) & (TlbSize - 1)];
         if (entry.Valid && entry.Page == page)
         {
-            CheckPagePermissions(linear, write, entry.Writable, entry.User);
+            CheckPagePermissions(linear, write, entry.Writable, entry.User, asSupervisor);
 
             // The dirty bit is not cached: a page that has only been read may
             // be written next, and the operating system has to be told.
@@ -93,25 +102,27 @@ public sealed partial class Cpu
         uint directoryAddress = (State.Cr3 & 0xFFFFF000) + directoryIndex * 4;
         uint directoryEntry = _memory.ReadDword(directoryAddress);
         if ((directoryEntry & PagePresent) == 0)
-            throw new PageFaultException(linear, write, present: false, user: State.Cpl == 3);
+            throw new PageFaultException(linear, write, present: false,
+                                         user: !asSupervisor && State.Cpl == 3);
 
         // PS is only a page-size bit when CR4.PSE says the processor honours
         // it at all; with PSE off it is simply an ordinary reserved/ignored
         // bit of a 4 KB PDE, and ordinary 4 KB pages are what every directory
         // entry describes (test case 1 of plans/specs/pse-vme.md).
         if ((State.Cr4 & CpuState.Cr4Pse) != 0 && (directoryEntry & PageSize) != 0)
-            return TranslateLargePage(linear, write, page, offset, directoryAddress, directoryEntry, ref entry);
+            return TranslateLargePage(linear, write, page, offset, directoryAddress, directoryEntry, ref entry, asSupervisor);
 
         uint tableEntryAddress = (directoryEntry & 0xFFFFF000) + tableIndex * 4;
         uint tableEntry = _memory.ReadDword(tableEntryAddress);
         if ((tableEntry & PagePresent) == 0)
-            throw new PageFaultException(linear, write, present: false, user: State.Cpl == 3);
+            throw new PageFaultException(linear, write, present: false,
+                                         user: !asSupervisor && State.Cpl == 3);
 
         // Permissions are the AND of the two levels, not just the page's own.
         bool writable = (directoryEntry & PageWritable) != 0 && (tableEntry & PageWritable) != 0;
         bool user = (directoryEntry & PageUser) != 0 && (tableEntry & PageUser) != 0;
 
-        CheckPagePermissions(linear, write, writable, user);
+        CheckPagePermissions(linear, write, writable, user, asSupervisor);
 
         // The accessed bit is set on both levels, because the processor
         // walked both. Operating systems read it to work out which pages are
@@ -161,7 +172,8 @@ public sealed partial class Cpu
     /// can find every other slot the same 4 MB page may have filled.
     /// </summary>
     private uint TranslateLargePage(uint linear, bool write, uint page, uint offset,
-                                     uint directoryAddress, uint directoryEntry, ref TlbEntry entry)
+                                     uint directoryAddress, uint directoryEntry, ref TlbEntry entry,
+                                     bool asSupervisor)
     {
         // PDE[21:13]: on a 4 KB PDE these nine bits are the low bits of the
         // page-table frame number; a 4 MB PDE has no page table, so they are
@@ -177,12 +189,12 @@ public sealed partial class Cpu
         // reported as P=1, since the entry was found -- it was merely
         // malformed) and the usual W/R and U/S bits.
         if ((directoryEntry & LargePageReservedMask) != 0)
-            throw new PageFaultException(linear, write, present: true, user: State.Cpl == 3, reserved: true);
+            throw new PageFaultException(linear, write, present: true, user: !asSupervisor && State.Cpl == 3, reserved: true);
 
         bool writable = (directoryEntry & PageWritable) != 0;
         bool user = (directoryEntry & PageUser) != 0;
 
-        CheckPagePermissions(linear, write, writable, user);
+        CheckPagePermissions(linear, write, writable, user, asSupervisor);
 
         uint updated = directoryEntry | PageAccessed | (write ? PageDirty : 0);
         if (updated != directoryEntry)
@@ -210,10 +222,16 @@ public sealed partial class Cpu
     /// <summary>
     /// Raises a page fault when the access is not allowed by the page's own
     /// permission bits, as opposed to the page simply not being there.
+    ///
+    /// WHO IS ASKING is the argument rather than a reading of the processor's
+    /// state, because the two differ for the accesses the processor makes on
+    /// its own behalf. See TranslateSupervisor for why that distinction
+    /// cannot be expressed by writing ring 0 into the state in V86 mode.
     /// </summary>
-    private void CheckPagePermissions(uint linear, bool write, bool writable, bool user)
+    private void CheckPagePermissions(uint linear, bool write, bool writable, bool user,
+                                      bool asSupervisor = false)
     {
-        bool userMode = State.Cpl == 3;
+        bool userMode = !asSupervisor && State.Cpl == 3;
 
         // Supervisor-only pages are invisible to ring 3. This is the whole
         // basis of keeping the kernel safe from applications.
@@ -682,7 +700,7 @@ public sealed partial class Cpu
     /// lives in bit 6 of the low dword in both formats, so the lazy dirty
     /// write on a cache hit needs no PAE-specific version at all).
     /// </summary>
-    private uint TranslatePae(uint linear, bool write)
+    private uint TranslatePae(uint linear, bool write, bool asSupervisor = false)
     {
         uint page = linear & 0xFFFFF000;
         uint offset = linear & 0xFFF;
@@ -690,7 +708,7 @@ public sealed partial class Cpu
         ref TlbEntry entry = ref _tlb[(page >> 12) & (TlbSize - 1)];
         if (entry.Valid && entry.Page == page)
         {
-            CheckPagePermissions(linear, write, entry.Writable, entry.User);
+            CheckPagePermissions(linear, write, entry.Writable, entry.User, asSupervisor);
 
             if (write && !entry.Dirty)
             {
@@ -708,27 +726,27 @@ public sealed partial class Cpu
         // loaded; only presence is checked on every translation.
         ulong pdpte = Pdpte[(linear >> 30) & 0x3];
         if ((pdpte & PaePresent) == 0)
-            throw new PageFaultException(linear, write, present: false, user: State.Cpl == 3);
+            throw new PageFaultException(linear, write, present: false, user: !asSupervisor && State.Cpl == 3);
 
         uint directoryIndex = (linear >> 21) & 0x1FF;
         ulong pdeAddress64 = (pdpte & PaeAddressMask4K) + directoryIndex * 8;
         ulong pde = ReadPagingStructureEntry(pdeAddress64);
         if ((pde & PaePresent) == 0)
-            throw new PageFaultException(linear, write, present: false, user: State.Cpl == 3);
+            throw new PageFaultException(linear, write, present: false, user: !asSupervisor && State.Cpl == 3);
 
         if ((pde & PaePageSize) != 0)
-            return TranslatePae2MbPage(linear, write, page, offset, (uint)pdeAddress64, pde, ref entry);
+            return TranslatePae2MbPage(linear, write, page, offset, (uint)pdeAddress64, pde, ref entry, asSupervisor);
 
         if ((pde & PaeReservedHighMask) != 0)
-            throw new PageFaultException(linear, write, present: true, user: State.Cpl == 3, reserved: true);
+            throw new PageFaultException(linear, write, present: true, user: !asSupervisor && State.Cpl == 3, reserved: true);
 
         uint tableIndex = (linear >> 12) & 0x1FF;
         ulong pteAddress64 = (pde & PaeAddressMask4K) + tableIndex * 8;
         ulong pte = ReadPagingStructureEntry(pteAddress64);
         if ((pte & PaePresent) == 0)
-            throw new PageFaultException(linear, write, present: false, user: State.Cpl == 3);
+            throw new PageFaultException(linear, write, present: false, user: !asSupervisor && State.Cpl == 3);
         if ((pte & PaePteReservedMask) != 0)
-            throw new PageFaultException(linear, write, present: true, user: State.Cpl == 3, reserved: true);
+            throw new PageFaultException(linear, write, present: true, user: !asSupervisor && State.Cpl == 3, reserved: true);
 
         // Reaching here means PS was clear, so pde is not the open-bus
         // sentinel (that reads back with every bit, PS included, set) --
@@ -743,7 +761,7 @@ public sealed partial class Cpu
         bool writable = (pde & PaeReadWrite) != 0 && (pte & PaeReadWrite) != 0;
         bool user = (pde & PaeUserSupervisor) != 0 && (pte & PaeUserSupervisor) != 0;
 
-        CheckPagePermissions(linear, write, writable, user);
+        CheckPagePermissions(linear, write, writable, user, asSupervisor);
 
         // The PDE's own A bit records that the walk reached it, exactly as
         // the legacy directory entry's does.
@@ -791,19 +809,20 @@ public sealed partial class Cpu
     /// low bits of a page-table frame number) at bit 12.
     /// </summary>
     private uint TranslatePae2MbPage(uint linear, bool write, uint page, uint offset,
-                                      uint pdeAddress, ulong pde, ref TlbEntry entry)
+                                      uint pdeAddress, ulong pde, ref TlbEntry entry,
+                                      bool asSupervisor)
     {
         // PDE[20:13]: no page-table frame number to hold once PS says there
         // is no second level, so reserved-must-be-zero, folded into the same
         // #PF-with-RSVD as bits 63:36 -- and, on a processor without PAT,
         // bit 12 too (plans/specs/p6.md item 6; coordinator decision U3).
         if ((pde & Pae2MbPdeReservedMask) != 0)
-            throw new PageFaultException(linear, write, present: true, user: State.Cpl == 3, reserved: true);
+            throw new PageFaultException(linear, write, present: true, user: !asSupervisor && State.Cpl == 3, reserved: true);
 
         bool writable = (pde & PaeReadWrite) != 0;
         bool user = (pde & PaeUserSupervisor) != 0;
 
-        CheckPagePermissions(linear, write, writable, user);
+        CheckPagePermissions(linear, write, writable, user, asSupervisor);
 
         ulong updated = pde | PaeAccessed | (write ? PaeDirty : 0);
         if (updated != pde)
@@ -883,8 +902,10 @@ public sealed partial class Cpu
     /// the two walks disagreeing about an already-cached slot.
     /// </summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    private uint TranslateWhenPaging(uint linear, bool write) =>
-        (State.Cr4 & CpuState.Cr4Pae) != 0 ? TranslatePae(linear, write) : TranslatePaged(linear, write);
+    private uint TranslateWhenPaging(uint linear, bool write, bool asSupervisor = false) =>
+        (State.Cr4 & CpuState.Cr4Pae) != 0
+            ? TranslatePae(linear, write, asSupervisor)
+            : TranslatePaged(linear, write, asSupervisor);
 }
 
 /// <summary>

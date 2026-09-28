@@ -388,7 +388,7 @@ public sealed class RedirectorInstaller(Machine machine)
 
     /// <summary>
     /// Runs INT 21h AH=52h and follows the list of lists to the CDS array,
-    /// returning its address and how many entries it holds.
+    /// returning its address and the count of usable drive letters, capped at Z.
     /// </summary>
     private (uint address, byte driveCount) CallForCurrentDirectoryStructure()
     {
@@ -423,10 +423,15 @@ public sealed class RedirectorInstaller(Machine machine)
 
         byte driveCount = _machine.Memory.ReadByte(listOfLists + ListOfListsLastDriveOffset);
 
+        // Windows 95's DOS 7 kernel reports a 32-entry internal CDS table.
+        // Only the first 26 entries name DOS drive letters, but rejecting the
+        // kernel table would prevent those usable entries from being mounted.
+        const byte Dos7InternalDriveLimit = 32;
+
         // A count of zero or an absurd one means we are not looking at a list
         // of lists at all, and every entry we computed from it would be a
         // guess at an address in the middle of DOS.
-        if (driveCount is 0 or > 26)
+        if (driveCount is 0 or > Dos7InternalDriveLimit)
         {
             return (0, 0);
         }
@@ -449,7 +454,9 @@ public sealed class RedirectorInstaller(Machine machine)
             return (0, 0);
         }
 
-        return (((uint)segment << 4) + offset, driveCount);
+        const byte UsableDriveLetterCount = 26;
+        byte usableCount = Math.Min(driveCount, UsableDriveLetterCount);
+        return (((uint)segment << 4) + offset, usableCount);
     }
 
     /// <summary>

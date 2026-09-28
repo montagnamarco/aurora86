@@ -127,6 +127,22 @@ public class S3ExtendedRegisterTests
     }
 
     [Fact]
+    public void TheCardReportsThePciBusInItsConfigurationRegister()
+    {
+        // Bits 1-0 of register 0x36 are the system bus strapping: 10 is
+        // PCI. The Windows 95 S3 driver reads them to decide whether a
+        // linear frame buffer exists; the reserved 00 made it an ISA card
+        // that had to draw through the banked window. The bits are read-only.
+        using Machine machine = Started();
+
+        Assert.Equal(2, Read(machine, 0x36) & 3);
+        Write(machine, 0x39, 0xA5);
+        Write(machine, 0x36, 0x81);
+        Assert.Equal(2, Read(machine, 0x36) & 3);
+        Assert.Equal(4, (Read(machine, 0x36) >> 5) & 7);
+    }
+
+    [Fact]
     public void AModeSetDoesNotRelockTheExtensions()
     {
         // A BIOS mode set programs the standard controller and leaves the

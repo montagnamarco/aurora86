@@ -3,7 +3,8 @@ using Aurora386.Core.IO;
 namespace Aurora386.Core.Devices.Video;
 
 /// <summary>
-/// VGA register file.
+/// The 1987 IBM VGA register file, driven by BIOS mode sets and indexed
+/// I/O from DOS and Windows display software.
 ///
 /// The VGA does not give each function its own port. It exposes a handful of
 /// port addresses and hides dozens of internal registers behind them, each
@@ -19,20 +20,23 @@ namespace Aurora386.Core.Devices.Video;
 /// of up to four bit planes at once; see <see cref="VgaMemory"/> for how
 /// those two groups cooperate.
 /// </summary>
-public sealed class VgaRegisters : IIoDevice
+public class VgaRegisters : IIoDevice
 {
+    internal const int SnapshotLength = 1136;
+    private const int SnapshotTailLength = 32;
+    private const byte LastStandardCrtcRegister = 0x18; // VGA Line Compare register.
+
+    /// <summary>
+    /// CRTC 0x09, Maximum Scan Line. Its low five bits are the character cell
+    /// height minus one, which is where a text mode's row count comes from.
+    /// </summary>
+    private const byte CrtcMaximumScanLine = 0x09;
+
+
     // --- CRTC ----------------------------------------------------------------
     /// <summary>
-    /// The CRTC registers. A VGA has 25 of them, ending at 0x18; the array is
-    /// 256 because an S3 puts its own extensions above 0x30, and those are
-    /// how a driver finds the card at all.
-    ///
-    /// The extended registers are locked at power-on and stay locked until
-    /// software writes the right values to 0x38 and 0x39. That is not
-    /// security -- the values are published -- but a guard against software
-    /// written for a plain VGA stumbling into registers it has no idea
-    /// exist, which on a real card could reprogram the pixel clock and take
-    /// the monitor out of range.
+    /// Standard CRTC storage plus reserved indices for concrete card extensions.
+    /// The 256-byte bank preserves the established register snapshot offsets.
     /// </summary>
     private readonly byte[] _crtc = new byte[256];
 
@@ -50,12 +54,7 @@ public sealed class VgaRegisters : IIoDevice
     private byte _crtcIndex;
 
     // --- sequencer, graphics controller, attribute controller -----------------
-    /// <summary>
-    /// The sequencer registers. A VGA has five, ending at 0x04; the array is
-    /// 32 because an S3 puts its own above 0x08 -- the clock synthesiser
-    /// among them, which is how a card reaches resolutions the VGA's fixed
-    /// crystals cannot produce.
-    /// </summary>
+    /// <summary>Five standard sequencer registers plus reserved card extension indices.</summary>
     private readonly byte[] _sequencer = new byte[32];
     private byte _sequencerIndex;
 
@@ -75,6 +74,15 @@ public sealed class VgaRegisters : IIoDevice
 
     private byte _miscOutput = 0x67;
     private byte _featureControl;
+
+    /// <summary>CRTC storage shared with a concrete card's indexed-register extension.</summary>
+    protected byte[] CrtcRegisters => _crtc;
+
+    /// <summary>Sequencer storage shared with a concrete card's indexed-register extension.</summary>
+    protected byte[] SequencerRegisters => _sequencer;
+
+    /// <summary>Graphics storage shared with a concrete card's indexed-register extension.</summary>
+    protected byte[] GraphicsRegisters => _graphics;
 
     // --- named register indices ----------------------------------------------
     // Naming these is not decoration: the whole planar write path is four
@@ -191,7 +199,7 @@ public sealed class VgaRegisters : IIoDevice
     private int _registersVersion;
 
     /// <summary>Called by every write that can change what the mode looks like.</summary>
-    private void RegistersChanged() => _registersVersion++;
+    protected void RegistersChanged() => _registersVersion++;
 
     private VgaModeInfo ComputeEffectiveMode()
     {
@@ -319,6 +327,9 @@ public sealed class VgaRegisters : IIoDevice
     /// </summary>
     public int VesaWindowBank { get; set; }
 
+    /// <summary>The CPU window offset selected by generic VBE banking.</summary>
+    public virtual uint CpuWindowOffset => (uint)(VesaWindowBank * 0x10000);
+
     /// <summary>
     /// Whether the mode was set with the linear frame buffer requested, in
     /// which case the window at 0xA0000 is not used at all and the whole of
@@ -342,6 +353,52 @@ public sealed class VgaRegisters : IIoDevice
         VesaScanLineBytes = 0;
         VesaDisplayStart = 0;
         ModeChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Adopts a standard text mode after the BIOS ROM has programmed it.
+    ///
+    /// A virtual display driver can consume the ROM's OUT instructions and
+    /// leave this physical register file in its graphical desktop mode.  The
+    /// metadata must follow only when the physical CRTC and graphics
+    /// controller really describe the requested text raster; calling the
+    /// normal <see cref="VideoMode"/> setter here would overwrite that
+    /// virtualised hardware state.
+    /// </summary>
+    public bool TryAdoptTextModeMetadata(byte mode)
+    {
+        if (!VgaModes.TryGet(mode, out VgaModeInfo info) || info.IsGraphics)
+        {
+            return false;
+        }
+
+        int verticalEnd = Crtc(0x12)
+            | ((Crtc(0x07) & 0x02) << 7)
+            | ((Crtc(0x07) & 0x40) << 3);
+
+        bool isText = (Graphics(GcMiscellaneous) & 0x01) == 0;
+        bool columnsMatch = Crtc(0x01) + 1 == info.TextColumns;
+        bool characterHeightMatches = (Crtc(0x09) & 0x1F) + 1 == info.CharHeight;
+        bool verticalGeometryMatches = verticalEnd + 1 == info.TextRows * info.CharHeight;
+
+        if (!isText || !columnsMatch || !characterHeightMatches || !verticalGeometryMatches)
+        {
+            return false;
+        }
+
+        _videoMode = mode;
+        ModeInfo = info;
+        _textColumns = info.TextColumns;
+        _textRows = info.TextRows;
+        _characterHeight = info.CharHeight;
+        VesaMode = null;
+        VesaLinearFrameBuffer = false;
+        VesaWindowBank = 0;
+        VesaScanLineBytes = 0;
+        VesaDisplayStart = 0;
+        RegistersChanged();
+        NotifyModeChanged();
+        return true;
     }
 
     public int TextColumns { get => _textColumns; set { _textColumns = value; RegistersChanged(); } }
@@ -436,13 +493,12 @@ public sealed class VgaRegisters : IIoDevice
     /// <summary>Raised on a mode change, so the renderer can resize and redraw everything.</summary>
     public event Action? ModeChanged;
 
+    /// <summary>Creates the standard VGA register banks and power-on text palette.</summary>
     public VgaRegisters()
     {
-        // Default palette: the 16 CGA colours in the first sixteen slots,
-        // which is what text mode draws with.
+        // Both operations write storage directly, avoiding virtual dispatch
+        // before a concrete card has initialized its extension state.
         LoadDefaultPalette();
-
-        // The full register set for 80x25 text, which is how a PC comes up.
         LoadStandardRegisters(0x03);
     }
 
@@ -512,294 +568,128 @@ public sealed class VgaRegisters : IIoDevice
 
     public byte Crtc(int index) => ReadCrtc((byte)index);
 
-    // --- the S3 extended registers --------------------------------------------
-    //
-    // Everything above 0x30 belongs to the card rather than to the VGA
-    // standard, and reaching it takes two specific writes first. The values
-    // are not secret -- every S3 driver has them -- but the lock stops
-    // software written for a plain VGA from stumbling into registers it does
-    // not know exist. On a real card that could reprogram the pixel clock and
-    // leave the monitor showing nothing.
+    /// <summary>The fixed host aperture address supplied by a concrete card.</summary>
+    public virtual uint ApertureBase { get; set; }
 
-    /// <summary>0x4838 unlocks registers 0x30-0x3F; anything else locks them.</summary>
-    private bool _systemUnlocked;
-
-    /// <summary>0xA0 or higher in 0x39 unlocks 0x40 and above.</summary>
-    private bool _extendedUnlocked;
-
-    /// <summary>
-    /// The chip identifier in register 0x30, which names the family: 0xE1 is
-    /// the Trio series. Which member it is comes from 0x2D and 0x2E.
-    /// </summary>
-    public const byte S3DeviceId = 0xE1;
-
-    /// <summary>
-    /// Where the linear aperture is, as the machine actually mapped it. Set
-    /// by the machine at construction; a driver reads it back through the
-    /// extended registers 0x59 and 0x5A.
-    /// </summary>
-    public uint ApertureBase { get; set; }
-
-    /// <summary>
-    /// Where the drawing engine's registers appear as memory: a 64 KB window
-    /// directly above the frame buffer. A driver finds it there by
-    /// convention, which is why nothing reports it separately.
-    /// </summary>
+    /// <summary>The graphics engine aperture address supplied by a concrete card.</summary>
     public uint MmioBase { get; set; }
 
-    /// <summary>
-    /// Bit 4 of CR53: the engine's registers appear in the window at
-    /// A8000h-AFFFFh, and the 32 KB below become the image transfer area,
-    /// in place of video memory. The S3 Windows driver switches this on
-    /// around every drawing operation and off again for the processor's
-    /// own writes to the screen.
-    /// </summary>
-    public bool MemoryMappedEngine => (_crtc[0x53] & 0x10) != 0;
+    /// <summary>Whether a card extension currently overlays the legacy window with its engine.</summary>
+    public virtual bool MemoryMappedEngine => false;
 
-    // --- the hardware cursor --------------------------------------------------
-    //
-    // Registers 0x45 to 0x4E. The card draws a 64x64 pointer over the picture
-    // as the beam passes, which means the pointer costs nothing at all to
-    // move: writing two registers is the whole operation.
-    //
-    // Doing it in software means saving what is under the pointer, drawing
-    // it, and putting the background back before the next move -- three
-    // times the work, and it has to happen between frames or the pointer
-    // flickers. At 1024x768 that was the difference between a pointer that
-    // kept up with the hand and one that lagged behind it.
-
-    /// <summary>Whether the hardware pointer is being drawn (register 0x45 bit 0).</summary>
-    public bool CursorEnabled => (_crtc[0x45] & 0x01) != 0;
-
-    /// <summary>Where the pointer's top left corner is, in pixels.</summary>
-    public (int X, int Y) CursorPosition =>
-        ((_crtc[0x46] << 8) | _crtc[0x47], (_crtc[0x48] << 8) | _crtc[0x49]);
-
-    /// <summary>
-    /// How far into the 64x64 pattern the top left of the pointer starts.
-    ///
-    /// This is what lets a pointer walk off the top or left of the screen
-    /// rather than stopping at the edge: the position stays at zero and the
-    /// offset moves instead, so the visible part shrinks as it goes.
-    /// </summary>
-    public (int X, int Y) CursorOffset => (_crtc[0x4E] & 0x3F, _crtc[0x4F] & 0x3F);
-
-    /// <summary>
-    /// Where the cursor's pattern lives in video memory, as a multiple of
-    /// 1024 bytes -- which is exactly what a 64x64 two-bit pattern occupies.
-    /// </summary>
-    public uint CursorPatternAddress => (uint)(((_crtc[0x4C] << 8) | _crtc[0x4D]) * 1024);
-
-    /// <summary>The colours the pointer is drawn in, from registers 0x4A and 0x4B.</summary>
-    public (byte Foreground, byte Background) CursorColours => (_crtc[0x4A], _crtc[0x4B]);
-
-    // --- Paradise/Western Digital compatibility -------------------------------
-    //
-    // A VGA's graphics controller ends at register 0x08. Paradise put its own
-    // register at 0x0F, and Windows 3.1's Super VGA driver identifies the
-    // card by testing it -- it makes no VESA call at all, so a card that does
-    // not answer here is one the driver refuses outright.
-    //
-    // The test, disassembled from the driver itself, is cleverer than looking
-    // for a signature. It reads the register, saves the top five bits
-    // unchanged, then writes back those five bits *inverted* with 101 in the
-    // low three. It reads again and cancels out the five it saved. What
-    // should be left is exactly the 5 it wrote.
-    //
-    // Work through what that demands. For the top five to cancel, they must
-    // come back as they were -- so the write to them has to be *ignored*. For
-    // the low three to survive, they must be real storage. The driver is not
-    // asking "are you a Paradise" but "does register 0x0F have three writable
-    // bits under five read-only ones", which is a thing no plain VGA does and
-    // no other card of the period did by accident.
-    //
-    // It is a good test, and it is why a register that simply kept everything
-    // written to it failed: the top five bits came back inverted and the
-    // cancellation left rubbish.
-
-    /// <summary>
-    /// Reads a graphics controller register. Everything below 0x09 is the
-    /// VGA's own; 0x0F is Paradise's, where the top five bits read back as
-    /// the card's configuration rather than as what was written.
-    /// </summary>
-    private byte ReadGraphics(byte index)
+    /// <summary>Reads the standard graphics controller; unimplemented indices do not respond.</summary>
+    protected virtual byte ReadGraphics(byte index)
     {
         byte at = (byte)(index & 0x0F);
-        if (at != 0x0F) return _graphics[at];
-
-        // The top five bits report the card, not the last write: zero here
-        // says a plain member of the family, which is what this emulator is
-        // pretending to be. The low three are whatever software put there.
-        return (byte)(_graphics[0x0F] & 0x07);
+        return at <= GcBitMask ? _graphics[at] : (byte)0xFF;
     }
 
-    // --- the S3 extended sequencer registers -----------------------------------
-    //
-    // A VGA's sequencer ends at register 0x04. Above 0x08 an S3 puts its own,
-    // and the interesting ones are the clock synthesiser: 0x12 and 0x13 hold
-    // the multiplier and divider that turn the card's reference crystal into
-    // the pixel clock.
-    //
-    // That is how an SVGA reaches resolutions a VGA cannot. A VGA has two
-    // crystals and therefore two pixel clocks; a card with a synthesiser can
-    // produce any frequency, which is what 800x600 and 1024x768 need. There
-    // is nothing to synthesise here -- the emulator draws a frame when it is
-    // asked to, not when a clock says so -- but the registers have to hold
-    // what is written, because a driver programs them and then reads them
-    // back to check the card accepted the mode.
+    /// <summary>Writes only the standard graphics controller registers.</summary>
+    protected virtual void WriteGraphics(byte index, byte value)
+    {
+        RegistersChanged();
+        byte at = (byte)(index & 0x0F);
+        if (at <= GcBitMask)
+        {
+            _graphics[at] = value;
+        }
+    }
+
+    /// <summary>Reads the five standard sequencer registers.</summary>
+    protected virtual byte ReadSequencer(byte index)
+    {
+        byte at = (byte)(index & 0x1F);
+        return at <= SeqMemoryMode ? _sequencer[at] : (byte)0xFF;
+    }
+
+    /// <summary>Writes the five standard sequencer registers.</summary>
+    protected virtual void WriteSequencer(byte index, byte value)
+    {
+        RegistersChanged();
+        byte at = (byte)(index & 0x1F);
+        if (at <= SeqMemoryMode)
+        {
+            _sequencer[at] = value;
+        }
+    }
+
+    /// <summary>Reads the standard CRTC registers through index 18h.</summary>
+    protected virtual byte ReadCrtc(byte index)
+    {
+        return index <= LastStandardCrtcRegister ? _crtc[index] : (byte)0xFF;
+    }
+
+    /// <summary>Writes the standard CRTC registers through index 18h.</summary>
+    protected virtual void WriteCrtc(byte index, byte value)
+    {
+        RegistersChanged();
+        if (index <= LastStandardCrtcRegister)
+        {
+            StoreStandardCrtc(index, value);
+        }
+    }
 
     /// <summary>
-    /// Sequencer register 0x08 is the lock: 0x06 unlocks the extended range,
-    /// anything else locks it. Same idea as the CRTC's 0x38, and for the same
-    /// reason -- software written for a plain VGA must not stumble into the
-    /// clock registers, because a wrong pixel clock takes the monitor out of
-    /// range and shows nothing at all.
+    /// Store one of the standard CRTC registers and act on the side effects
+    /// that follow from it.
+    ///
+    /// Separated out because a derived card -- the S3 -- handles the standard
+    /// range itself and returns without calling the base, so a side effect
+    /// written only in the base would apply to a plain VGA and not to the
+    /// card the machine actually has. That is exactly how this went wrong the
+    /// first time: the fix was correct and in a method nothing called.
     /// </summary>
-    private bool _sequencerUnlocked;
-
-    private byte ReadSequencer(byte index)
+    protected void StoreStandardCrtc(byte index, byte value)
     {
-        byte at = (byte)(index & 0x1F);
-
-        // Below 0x05 is the VGA's own, always readable.
-        if (at < 0x05) return _sequencer[at];
-
-        // The lock register reads back what unlocks it, which is how a driver
-        // checks whether it succeeded.
-        if (at == 0x08) return _sequencerUnlocked ? (byte)0x06 : (byte)0x00;
-
-        return _sequencer[at];
-    }
-
-    private void WriteSequencer(byte index, byte value)
-    {
-        byte at = (byte)(index & 0x1F);
-
-        RegistersChanged();
-        if (at < 0x05) { _sequencer[at] = value; return; }
-
-        if (at == 0x08)
-        {
-            _sequencerUnlocked = value == 0x06;
-            _sequencer[at] = value;
-            return;
-        }
-
-        // The extended registers take writes only while unlocked.
-        if (!_sequencerUnlocked) return;
-        _sequencer[at] = value;
-    }
-
-    private byte ReadCrtc(byte index)
-    {
-        switch (index)
-        {
-            // The identification registers. These come first because they
-            // sit below 0x30, in the range a VGA also uses -- and an earlier
-            // version of this method returned from the VGA range before
-            // reaching them, so a driver asking what card this was got zero
-            // and concluded there was no S3 here at all.
-
-            // 0x2D and 0x2E are the device identifier, high byte then low.
-            // Together they name the part precisely, where 0x30 only names
-            // the family: 0x88 0x11 is a Trio64V+, which is the card this
-            // emulator claims to be.
-            case 0x2D: return 0x88;
-            case 0x2E: return 0x11;
-
-            // 0x2F is the revision. Drivers read it to work around errata in
-            // particular steppings; zero is the first, which has none to work
-            // around.
-            case 0x2F: return 0x00;
-
-            // 0x30 is the chip identifier, and it is readable whether or not
-            // anything has been unlocked: a driver has to be able to ask what
-            // card this is before it knows which unlock sequence to use.
-            case 0x30: return S3DeviceId;
-        }
-
-        // Below 0x30 the rest is the VGA's own, always readable.
-        if (index < 0x30) return _crtc[index];
-
-        switch (index)
-        {
-            // 0x36 reports how the card is configured. Bits 7-5 say how
-            // much memory, in a three-bit code: 000 is 4 MB, 010 is 3, 100
-            // is 2, 110 is 1, 111 is half a megabyte. This card has two.
-            // It used to answer 010, read as two under a two-bit reading of
-            // the field, and the S3 Windows driver, believing it had three
-            // megabytes, kept its brushes and its cursor in the third:
-            // every window background came out black.
-            case 0x36: return (byte)(0x80 | (_crtc[0x36] & 0x1F));
-
-            // --- the linear aperture -------------------------------------
-            //
-            // Where the whole of video memory appears in the physical address
-            // space, as one flat array. A driver in protected mode writes
-            // there and never touches the 64 KB window or the bank register,
-            // which is what makes an SVGA resolution usable at all: moving a
-            // window every 64 KB while painting a 1024x768 screen is most of
-            // the work.
-            //
-            // The address is not something the driver chooses. It reads it
-            // from these registers, because on a real card the BIOS decided
-            // it at power-on from what else was in the address space. That is
-            // why the driver's own configuration leaves "aperture-base"
-            // empty: it is a question for the hardware, not a setting.
-
-            // 0x58: aperture size in bits 0-1 -- 0 is 64 KB, 1 is 1 MB, 2 is
-            // 2 MB, 3 is 4 MB -- and bit 4 enables it. Two megabytes, on.
-            case 0x58: return 0x12;
-
-            // 0x59 and 0x5A are the top two bytes of the address, which is
-            // therefore aligned to a megabyte. The emulator maps the frame
-            // buffer directly above the installed RAM rather than at a fixed
-            // address a real card would use: a card in a slot cannot know how
-            // much memory the machine has, and this one can.
-            case 0x59: return (byte)(ApertureBase >> 24);
-            case 0x5A: return (byte)(ApertureBase >> 16);
-        }
-
-        // A locked register still answers. The lock protects writes, not
-        // reads: on the silicon the register is there and readable, and what
-        // the lock stops is software written for a plain VGA from changing
-        // it by accident.
-        //
-        // The difference matters more than it sounds. 0xFF is what the bus
-        // puts on the wire when nothing responds at all -- it is what a
-        // driver reads on a machine without the card -- so returning it from
-        // a locked register tells every driver that the card is absent. That
-        // was a wrong choice here, and the Super VGA driver reading 0xFF from
-        // the whole extended range is exactly what it looks like.
-        return _crtc[index];
-    }
-
-    private void WriteCrtc(byte index, byte value)
-    {
-        RegistersChanged();
-        if (index < 0x30) { _crtc[index] = value; return; }
-
-        // The two lock registers themselves are always writable, or there
-        // would be no way in.
-        if (index == 0x38)
-        {
-            _systemUnlocked = value == 0x48;
-            _crtc[index] = value;
-            return;
-        }
-
-        if (index == 0x39)
-        {
-            _extendedUnlocked = value >= 0xA0;
-            _crtc[index] = value;
-            return;
-        }
-
-        if (index < 0x40 && !_systemUnlocked) return;
-        if (index >= 0x40 && !_extendedUnlocked) return;
-
         _crtc[index] = value;
+
+        // The Maximum Scan Line register IS the character cell height: its
+        // low five bits hold the height minus one, and a real VGA has
+        // nowhere else to learn it from. Keeping the derived values in step
+        // with it is what lets an operating system change the text font by
+        // programming the hardware, which is the only way a protected-mode
+        // kernel can: calling the BIOS would mean dropping back to real mode,
+        // so no kernel does it after boot.
+        //
+        // Without this the register stored a value nothing read. A kernel
+        // asking for the 8x8 font got fifty rows of text rendered into a
+        // screen still showing twenty-five, so half its output was invisible
+        // -- and the register read back correctly, which is the worst kind of
+        // wrong.
+        if (index == CrtcMaximumScanLine && !IsGraphicsMode)
+        {
+            UpdateCharacterCellFromCrtc();
+        }
     }
+
+    /// <summary>
+    /// Recompute the character height and the row count from CRTC 0x09.
+    ///
+    /// The display is 400 scan lines in every one of the standard text modes,
+    /// so the rows follow from the cell height: 16 gives 25 rows, 14 gives 28,
+    /// 8 gives 50. That is how the 43- and 50-row modes have always worked --
+    /// they are not different modes at all, just a different font in the same
+    /// one.
+    ///
+    /// MIND that only the LOW FIVE BITS are the height. Bit 5 belongs to the
+    /// start of the vertical blank and bit 7 doubles the scan line count;
+    /// masking the whole byte would read a height of 135 from an ordinary
+    /// register write.
+    /// </summary>
+    private void UpdateCharacterCellFromCrtc()
+    {
+        int height = (_crtc[CrtcMaximumScanLine] & 0x1F) + 1;
+
+        if (height <= 0) return;
+
+        const int rasterLines = 400;
+
+        _characterHeight = height;
+        _textRows = rasterLines / height;
+
+        NotifyModeChanged();
+    }
+
     public byte Attribute(int index) => _attribute[index & 0x1F];
 
     /// <summary>Writes one attribute controller register, as INT 10h AH=10h does.</summary>
@@ -850,40 +740,14 @@ public sealed class VgaRegisters : IIoDevice
     public void SetCursorPosition(int column, int row)
         => CursorAddress = (ushort)(row * TextColumns + column);
 
-    /// <summary>Start address of the visible region; changing it scrolls in hardware.</summary>
-    /// <summary>
-    /// Where the display starts, with the extended bits an S3 adds.
-    ///
-    /// The VGA's own start address is sixteen bits, which reaches 64 KB --
-    /// enough when a screen was 64 KB. At 800x600 in 256 colours a screen is
-    /// 480000 bytes, so the address needs more bits, and the S3 put them in
-    /// two extended registers: two in 0x31 and two more in 0x51.
-    ///
-    /// Without them a driver can only ever show the first 64 KB of video
-    /// memory, which at 800x600 is the top 81 rows and nothing else.
-    /// </summary>
-    public uint ExtendedStartAddress =>
-        (uint)((_crtc[0x0C] << 8) | _crtc[0x0D])
-        | (uint)((_crtc[0x31] & 0x30) << 12)
-        | (uint)((_crtc[0x51] & 0x03) << 18);
+    /// <summary>The displayed start address, which a concrete card can extend.</summary>
+    public virtual uint ExtendedStartAddress => StartAddress;
 
-    /// <summary>
-    /// Bytes between one scan line and the next, with the ninth and tenth
-    /// bits an S3 adds -- 0x43 bit 2 and 0x51 bits 4-5. The VGA's own field
-    /// is eight bits, which stops at a logical width of 2040 bytes.
-    /// </summary>
-    /// <summary>
-    /// Whether a driver has programmed the extended bits of the row offset.
-    /// The plain register always holds something -- whatever the last mode
-    /// set left -- so its value alone says nothing about whether the card's
-    /// own geometry is in force.
-    /// </summary>
-    public bool HasExtendedRowOffset => (_crtc[0x43] & 0x04) != 0 || (_crtc[0x51] & 0x30) != 0;
+    /// <summary>Whether a card-specific scan-line pitch is currently programmed.</summary>
+    public virtual bool HasExtendedRowOffset => false;
 
-    public int ExtendedRowOffset =>
-        (_crtc[0x13]
-         | ((_crtc[0x43] & 0x04) << 6)
-         | ((_crtc[0x51] & 0x30) << 4)) * (Chain4 ? 8 : 2);
+    /// <summary>The scan-line pitch, which a concrete card can extend.</summary>
+    public virtual int ExtendedRowOffset => RowOffsetBytes;
 
     public ushort StartAddress => (ushort)((_crtc[0x0C] << 8) | _crtc[0x0D]);
 
@@ -1073,7 +937,7 @@ public sealed class VgaRegisters : IIoDevice
                 _attributeExpectingIndex = !_attributeExpectingIndex;
                 return;
 
-            // Trio64 FCR: bit 3 selects the external VSYNC output. It does
+            // FCR bit 3 selects the external VSYNC output. It does
             // not change the internal retrace status or attribute flip-flop.
             // Misc Output bit 0 selects the colour or monochrome write port.
             case 0x3DA or 0x3BA:
@@ -1109,19 +973,7 @@ public sealed class VgaRegisters : IIoDevice
             }
 
             case 0x3CE: _graphicsIndex = value; return;
-            case 0x3CF:
-                // Register 0x0F takes only its low three bits. The top five
-                // are the card's own configuration and a write to them goes
-                // nowhere -- which is precisely what the Super VGA driver
-                // tests for.
-                RegistersChanged();
-                if ((_graphicsIndex & 0x0F) == 0x0F)
-                {
-                    _graphics[0x0F] = (byte)(value & 0x07);
-                    return;
-                }
-                _graphics[_graphicsIndex & 0x0F] = value;
-                return;
+            case 0x3CF: WriteGraphics(_graphicsIndex, value); return;
             case 0x3D4 or 0x3B4: _crtcIndex = value; return;
             case 0x3D5 or 0x3B5: WriteCrtc(_crtcIndex, value); return;
         }
@@ -1195,7 +1047,7 @@ public sealed class VgaRegisters : IIoDevice
     public byte[] CaptureRegisters()
     {
         var state = new byte[_crtc.Length + _sequencer.Length + _graphics.Length
-                           + _attribute.Length + _palette.Length + 32];
+                           + _attribute.Length + _palette.Length + SnapshotTailLength];
         int at = 0;
 
         _crtc.CopyTo(state, at); at += _crtc.Length;
@@ -1207,9 +1059,7 @@ public sealed class VgaRegisters : IIoDevice
         state[at++] = _miscOutput;
         state[at++] = _pelMask;
         state[at++] = (byte)DacBitsPerColour;
-        state[at++] = (byte)(_systemUnlocked ? 1 : 0);
-        state[at++] = (byte)(_extendedUnlocked ? 1 : 0);
-        state[at++] = (byte)(_sequencerUnlocked ? 1 : 0);
+        at += 3; // Reserved extension flags in the established snapshot layout.
         state[at++] = VideoMode;
 
         // The VBE state, which is not in any register: it lives here because
@@ -1226,13 +1076,25 @@ public sealed class VgaRegisters : IIoDevice
         state[at++] = (byte)(VesaDisplayStart >> 8);
         state[at++] = (byte)(VesaDisplayStart >> 16);
         state[at++] = _featureControl; // formerly zero padding; old snapshots read as reset
+        CaptureRegisterExtensions(state.AsSpan(SnapshotLength - SnapshotTailLength));
 
         return state;
+    }
+
+    /// <summary>Validates the fixed register snapshot before any VGA bank is copied.</summary>
+    internal static void ValidateSnapshot(ReadOnlySpan<byte> state)
+    {
+        if (state.Length != SnapshotLength)
+        {
+            throw new InvalidDataException("Invalid VGA register snapshot length.");
+        }
     }
 
     /// <summary>Puts the registers back, and tells whoever draws that they changed.</summary>
     public void RestoreRegisters(ReadOnlySpan<byte> state)
     {
+        ValidateSnapshot(state);
+
         int at = 0;
 
         state.Slice(at, _crtc.Length).CopyTo(_crtc); at += _crtc.Length;
@@ -1244,9 +1106,7 @@ public sealed class VgaRegisters : IIoDevice
         _miscOutput = state[at++];
         _pelMask = state[at++];
         DacBitsPerColour = state[at++];
-        _systemUnlocked = state[at++] != 0;
-        _extendedUnlocked = state[at++] != 0;
-        _sequencerUnlocked = state[at++] != 0;
+        at += 3; // Reserved extension flags are restored after standard state.
 
         // The mode setter reprograms the standard registers from its table,
         // which would undo everything just restored -- so the field is set
@@ -1263,8 +1123,20 @@ public sealed class VgaRegisters : IIoDevice
         VesaScanLineBytes = state[at] | (state[at + 1] << 8); at += 2;
         VesaDisplayStart = state[at] | (state[at + 1] << 8) | (state[at + 2] << 16); at += 3;
         _featureControl = (byte)(state[at] & 0x08);
+        at++;
 
+        RestoreRegisterExtensions(state.Slice(SnapshotLength - SnapshotTailLength));
         ModeChanged?.Invoke();
+    }
+
+    /// <summary>Populates reserved fields without changing the standard register record layout.</summary>
+    protected virtual void CaptureRegisterExtensions(Span<byte> tail)
+    {
+    }
+
+    /// <summary>Restores extension fields after standard storage and before the mode notification.</summary>
+    protected virtual void RestoreRegisterExtensions(ReadOnlySpan<byte> tail)
+    {
     }
 
     /// <summary>

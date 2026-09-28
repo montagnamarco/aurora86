@@ -48,6 +48,10 @@ public sealed class VmConfiguration
     public int Version { get; set; } = CurrentVersion;
     public string Name { get; set; } = "PC";
     public CpuModel Cpu { get; set; } = CpuModel.Intel486;
+
+    /// <summary>The primary GPU. ViRGE currently provides experimental VGA and flat triangles.</summary>
+    public VmVideoModel Video { get; set; } = VmVideoModel.S3Trio64VPlus;
+
     public uint RamMegabytes { get; set; } = 16;
 
     /// <summary>Optional host output for an explicitly configured MPU-401 card.</summary>
@@ -307,6 +311,7 @@ public sealed class VmConfiguration
             JsonSerializer.Deserialize<VmConfiguration>(File.ReadAllText(file), Options)
             ?? throw new InvalidDataException($"{file} does not describe a machine.");
 
+        configuration.ValidateVideoModel();
         configuration.Migrate();
         configuration.MapPaths(path => System.IO.Path.IsPathRooted(path)
             ? path
@@ -317,6 +322,7 @@ public sealed class VmConfiguration
     /// <summary>Writes the machine's folder. Paths inside it are stored relative to it.</summary>
     public void Save(string folder)
     {
+        ValidateVideoModel();
         Directory.CreateDirectory(folder);
 
         // A configuration built in code with only the legacy top-level
@@ -531,6 +537,10 @@ public sealed class VmConfiguration
 
     public Machine BuildMachine()
     {
+        // Before anything opens a disk image or a host socket: an unknown
+        // adapter is a configuration error, not a machine to half build.
+        ValidateVideoModel();
+
         if (!_migrated)
         {
             // Never loaded, so Migrate never ran: a configuration built
@@ -559,7 +569,12 @@ public sealed class VmConfiguration
         // setting CpuModel only after the fact would leave a TX board's MP
         // tables describing whatever the default model was, never the one
         // actually configured.
-        Machine machine = new Machine(RamMegabytes * 1024 * 1024, hardware, chipset, initialCpuModel: Cpu);
+        Machine machine = new Machine(
+            RamMegabytes * 1024 * 1024,
+            hardware,
+            chipset,
+            initialCpuModel: Cpu,
+            videoModel: Video);
         try
         {
             if (Hardware.Usb?.Storage is { } storage)
@@ -610,6 +625,16 @@ public sealed class VmConfiguration
             // reference to dispose. Close it here instead of leaking it.
             machine.Dispose();
             throw;
+        }
+    }
+
+    private void ValidateVideoModel()
+    {
+        // The shared enum converter accepts integers as well as names. Reject
+        // undefined values before allocating a machine or opening its disks.
+        if (Video is not (VmVideoModel.S3Trio64VPlus or VmVideoModel.S3Virge325))
+        {
+            throw new InvalidDataException($"Unknown video model: {Video}.");
         }
     }
 }

@@ -42,6 +42,9 @@ public sealed class IoBus
 {
     private readonly IIoDevice?[] _devices = new IIoDevice?[0x10000];
 
+    /// <summary>Inspects decode ownership for snapshot preflight without issuing an IN.</summary>
+    internal IIoDevice? RegisteredDevice(ushort port) => _devices[port];
+
     public void Register(ushort port, IIoDevice device) => _devices[port] = device;
 
     public void Register(ushort firstPort, int count, IIoDevice device)
@@ -105,11 +108,22 @@ public sealed class IoBus
         return value;
     }
 
-    public ushort ReadWord(ushort port) => _devices[port]?.ReadWord(port) ?? 0xFFFF;
+    public ushort ReadWord(ushort port)
+    {
+        ushort value = _devices[port]?.ReadWord(port) ?? 0xFFFF;
+        ReportLanes(port, false, value, 2);
+        return value;
+    }
 
     public uint ReadDword(ushort port)
-        => _devices[port] is IIoDwordDevice wide ? wide.ReadDword(port)
-            : (uint)(ReadWord(port) | (ReadWord((ushort)(port + 2)) << 16));
+    {
+        uint value = _devices[port] is IIoDwordDevice wide
+            ? wide.ReadDword(port)
+            : (uint)(_devices[port]?.ReadWord(port) ?? 0xFFFF)
+                | (uint)(_devices[(ushort)(port + 2)]?.ReadWord((ushort)(port + 2)) ?? 0xFFFF) << 16;
+        ReportLanes(port, false, value, 4);
+        return value;
+    }
 
     public void WriteByte(ushort port, byte value)
     {
@@ -117,12 +131,32 @@ public sealed class IoBus
         _devices[port]?.WriteByte(port, value);
     }
 
-    public void WriteWord(ushort port, ushort value) => _devices[port]?.WriteWord(port, value);
+    public void WriteWord(ushort port, ushort value)
+    {
+        ReportLanes(port, true, value, 2);
+        _devices[port]?.WriteWord(port, value);
+    }
 
     public void WriteDword(ushort port, uint value)
     {
+        ReportLanes(port, true, value, 4);
         if (_devices[port] is IIoDwordDevice wide) { wide.WriteDword(port, value); return; }
-        WriteWord(port, (ushort)value);
-        WriteWord((ushort)(port + 2), (ushort)(value >> 16));
+        _devices[port]?.WriteWord(port, (ushort)value);
+        _devices[(ushort)(port + 2)]?.WriteWord((ushort)(port + 2), (ushort)(value >> 16));
+    }
+
+    /// <summary>
+    /// A word or doubleword access is reported as its byte lanes, the way
+    /// the bytes would appear on the bus: an OUT DX,AX to the CRTC index
+    /// port shows up as the index at 3D4h and the data at 3D5h. A monitor
+    /// that only saw byte accesses missed every driver that pairs them.
+    /// </summary>
+    private void ReportLanes(ushort port, bool write, uint value, int width)
+    {
+        if (PortAccessed is null) return;
+        for (int lane = 0; lane < width; lane++)
+        {
+            PortAccessed.Invoke((ushort)(port + lane), write, (byte)(value >> (8 * lane)));
+        }
     }
 }

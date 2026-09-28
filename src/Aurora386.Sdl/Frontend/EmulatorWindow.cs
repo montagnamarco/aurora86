@@ -102,8 +102,8 @@ public sealed unsafe class EmulatorWindow : IDisposable
         if (_sdl.Init(Silk.NET.SDL.Sdl.InitVideo | Silk.NET.SDL.Sdl.InitEvents) < 0)
             throw new InvalidOperationException($"SDL failed to initialise: {_sdl.GetErrorS()}");
 
-        _textureWidth = _machine.Video.Width;
-        _textureHeight = _machine.Video.Height;
+        _textureWidth = _machine.Display.Width;
+        _textureHeight = _machine.Display.Height;
 
         _window = _sdl.CreateWindow(
             "Aurora386",
@@ -130,8 +130,8 @@ public sealed unsafe class EmulatorWindow : IDisposable
             _sdl.DestroyTexture(_texture);
         }
 
-        _textureWidth = _machine.Video.Width;
-        _textureHeight = _machine.Video.Height;
+        _textureWidth = _machine.Display.Width;
+        _textureHeight = _machine.Display.Height;
 
         // Streaming access: the texture is rewritten on every frame that
         // actually changes.
@@ -156,12 +156,12 @@ public sealed unsafe class EmulatorWindow : IDisposable
     private void Render()
     {
         // The cursor blinks twice a second, as it does on a real PC.
-        _machine.Video.CursorBlinkOn = (_statsTimer.ElapsedMilliseconds / 500) % 2 == 0;
+        _machine.Display.CursorBlinkOn = (_statsTimer.ElapsedMilliseconds / 500) % 2 == 0;
 
-        bool changed = _machine.Video.Render();
+        bool changed = _machine.Display.Render();
 
         // A video mode change may have resized the framebuffer underneath us.
-        if (_machine.Video.Width != _textureWidth || _machine.Video.Height != _textureHeight)
+        if (_machine.Display.Width != _textureWidth || _machine.Display.Height != _textureHeight)
         {
             CreateTexture();
             changed = true;
@@ -173,7 +173,7 @@ public sealed unsafe class EmulatorWindow : IDisposable
             int pitch;
             if (_sdl.LockTexture(_texture, null, &pixels, &pitch) == 0)
             {
-                ReadOnlySpan<uint> source = _machine.Video.Framebuffer;
+                ReadOnlySpan<uint> source = _machine.Display.Framebuffer;
                 var destination = new Span<uint>(pixels, _textureWidth * _textureHeight);
                 source[..Math.Min(source.Length, destination.Length)].CopyTo(destination);
                 _sdl.UnlockTexture(_texture);

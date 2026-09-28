@@ -785,6 +785,36 @@ public class ProtectedModeTests
     }
 
     [Fact]
+    public void LarWithAWordDestinationPreservesTheUpperHalfOfTheRegister()
+    {
+        using Machine machine = BuildProtectedMachine();
+        WriteDescriptor(machine, GdtBase, 3, 0, 0xFFFFF, 0x92, 0xC0);
+        machine.Cpu.State.GdtLimit = 0x1F;
+        machine.Cpu.State.Edi = 0x00440018;
+
+        // 66 0F 02 FF: LAR DI, DI. The selector and result both use DI.
+        RunInstruction(machine, 0x66, 0x0F, 0x02, 0xFF);
+
+        Assert.True(machine.Cpu.Flags.Zero);
+        Assert.Equal(0x00449200u, machine.Cpu.State.Edi);
+    }
+
+    [Fact]
+    public void LslWithAWordDestinationPreservesTheUpperHalfOfTheRegister()
+    {
+        using Machine machine = BuildProtectedMachine();
+        WriteDescriptor(machine, GdtBase, 3, 0, 0x01234, 0x92, 0x40);
+        machine.Cpu.State.GdtLimit = 0x1F;
+        machine.Cpu.State.Edi = 0x00440018;
+
+        // 66 0F 03 FF: LSL DI, DI. Windows keeps the bitmap address in EDI.
+        RunInstruction(machine, 0x66, 0x0F, 0x03, 0xFF);
+
+        Assert.True(machine.Cpu.Flags.Zero);
+        Assert.Equal(0x00441234u, machine.Cpu.State.Edi);
+    }
+
+    [Fact]
     public void LslScalesTheLimitWhenTheGranularityBitIsSet()
     {
         using Machine machine = BuildProtectedMachine();

@@ -41,7 +41,17 @@ public enum CpuModel
     Intel386,
     Intel486,
 
-    /// <summary>P54C, the original Pentium.</summary>
+    /// <summary>
+    /// P54C, the original Pentium of 1993. What it adds that software actually
+    /// looks for is the time stamp counter and the machine specific registers;
+    /// CPUID gains the feature bits that announce them.
+    ///
+    /// Every bootloader written after the middle nineties assumes RDTSC exists
+    /// and uses it to measure time without programming the interval timer. On
+    /// a 486 those bootloaders fault, and a fault with no handler in place is a
+    /// triple fault, which resets the machine: the symptom is a loader that
+    /// appears to restart forever, a long way from its cause.
+    /// </summary>
     Pentium,
 
     /// <summary>P55C: the Pentium with MMX.</summary>

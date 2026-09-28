@@ -254,21 +254,19 @@ public class PciBarTests
     // ------------------------------------------------------------------ S3
 
     /// <summary>
-    /// Video is out of this plan (F1.5): the S3's linear framebuffer BAR
-    /// sizes honestly (see <c>PciTests.TheFramebufferApertureSizesToThe
-    /// InstalledVideoMemory</c>) but does not move, and its command
-    /// register's memory-space bit reads fixed at one -- the aperture really
-    /// is always decoded, and this says so rather than claiming a decode bit
-    /// software could clear and have nothing happen.
+    /// The Trio64V+'s linear framebuffer BAR sizes honestly (see
+    /// <c>PciTests.TheFramebufferApertureSizesToTheInstalledVideoMemory</c>)
+    /// but does not move. Its command register's I/O and memory bits are
+    /// writable as on the chip and read as enabled after POST (see
+    /// <c>PciTests.TheDisplayAdapterReportsEnabledDecodersAfterPost</c>);
+    /// the decoders themselves stay statically mapped whatever they hold.
     /// </summary>
     [Fact]
-    public void TheDisplayAdapterBarStaysFixedAndDoesNotMoveWhileMemoryDecodeReadsHonest()
+    public void TheDisplayAdapterBarStaysFixedAndDoesNotMove()
     {
         using var m = new Machine();
         m.RunInstructions(100);
 
-        Assert.Equal(3u, m.Pci.ReadConfiguration(0x20, 4, 2) & 3);
-        m.Pci.WriteConfiguration(0x20, 4, 2, 0);
         Assert.Equal(3u, m.Pci.ReadConfiguration(0x20, 4, 2) & 3);
 
         uint original = m.Pci.ReadConfiguration(0x20, 0x10, 4);

@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Text;
 using Aurora386.Core;
+using Aurora386.Core.Configuration;
 using Aurora386.Core.Cpu;
 using Aurora386.Core.Devices.Chipset;
 using Aurora386.Core.Devices.Pci;
@@ -391,6 +392,41 @@ public class AcpiTableTests
 
         uint maximum = minimum + length - 1;
         Assert.True(maximum < Machine.IoApicPhysicalBase, "the PCI0 memory window must stay below the I/O APIC's fixed page");
+    }
+
+    /// <summary>
+    /// On a ViRGE machine the window is the card's whole 64 MB BAR 0 at its
+    /// reset base, not the Trio's frame buffer and engine span: an ACPI
+    /// operating system treats a BAR outside its bridge's window as
+    /// misplaced and moves or disables the display.
+    /// </summary>
+    [Fact]
+    public void Pci0MemoryWindowCoversTheVirgeAperture()
+    {
+        const uint VirgeApertureLength = 64u * 1024 * 1024;
+        const ushort VideoFunction = 0x0020;
+        const int Bar0 = 0x10;
+        const uint MemoryBarAddressMask = 0xFFFFFFF0;
+
+        using var machine = new Machine(
+            16u * 1024 * 1024,
+            chipset: Chipset.I430Tx,
+            initialCpuModel: CpuModel.PentiumMmx,
+            videoModel: VmVideoModel.S3Virge325);
+        machine.RunInstructions(200);
+
+        AmlNode dsdt = ReadDsdtNamespace(machine);
+        byte[] crs = (byte[])dsdt.Find("_SB.PCI0")!.Find("_CRS")!.Value!;
+        const int MemoryDescriptorOffset = 16 + 8 + 8;
+        Assert.Equal(0x87, crs[MemoryDescriptorOffset]);
+
+        uint minimum = BinaryPrimitives.ReadUInt32LittleEndian(crs.AsSpan(MemoryDescriptorOffset + 10));
+        uint length = BinaryPrimitives.ReadUInt32LittleEndian(crs.AsSpan(MemoryDescriptorOffset + 22));
+        uint bar = machine.Pci.ReadConfiguration(VideoFunction, Bar0, 4) & MemoryBarAddressMask;
+
+        Assert.Equal(bar, minimum);
+        Assert.Equal(VirgeApertureLength, length);
+        Assert.True(minimum + length - 1 < Machine.IoApicPhysicalBase, "the PCI0 memory window must stay below the I/O APIC's fixed page");
     }
 
     // ---- test case 18: E820 is unchanged --------------------------------------

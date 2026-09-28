@@ -10,10 +10,10 @@ obj/
 images/
 *.vhd
 
-# Working plans and session notes. They are personal working documents;
-# the rules an agent needs are in AGENTS.md and CLAUDE.md.
-PIANO.md
-docs/PIANO-1-storico.md
+# Working plans. They are the user's working documents, hold measurements,
+# local paths and half-formed decisions, and never enter the repository.
+# The format and the rules are in SKILLS.md.
+plans/
 
 # macOS
 .DS_Store

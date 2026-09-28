@@ -1,6 +1,10 @@
+using System.Buffers.Binary;
 using System.Text;
+using Aurora386.Core.Configuration;
 using Aurora386.Core.Cpu;
 using Aurora386.Core.Devices.Cards;
+using Aurora386.Core.Devices.Pci;
+using Aurora386.Core.Devices.Video;
 
 namespace Aurora386.Core;
 
@@ -12,12 +16,13 @@ namespace Aurora386.Core;
 /// and installation; a defect that needs twenty attempts to corner is a day's
 /// work at that rate and a few minutes with a snapshot taken just before it.
 ///
-/// Captures CPU, FPU and RAM together with video, interrupt, timer, keyboard,
-/// PCI, USB, DOS integration, PIIX4 DMA and expansion card state. Coverage is
-/// still incomplete: in-flight PIO/ATAPI transfers and the serial mouse UART
-/// are not captured, nor is the
-/// software coprocessor a 386 without a 387 uses (<c>Machine.Fpu</c>); the FPU
-/// section holds the 486's on-die unit. Disk
+/// Captures CPU, FPU and RAM together with video (including the selected
+/// adapter and its drawing engine), interrupt, timer, keyboard, serial mouse,
+/// DMA, ISA Plug and Play, PCI, USB, DOS integration, PIIX4 bus-master IDE and
+/// expansion card state. Coverage is still incomplete: in-flight PIO/ATAPI
+/// transfers are not captured, nor is the software coprocessor a 386 without
+/// a 387 uses (<c>Machine.Fpu</c>); the FPU section holds the 486's on-die
+/// unit. Disk
 /// contents are external state and must be paired with the snapshot by the
 /// caller; restoring RAM alone does not undo guest writes to an image.
 ///
@@ -27,7 +32,9 @@ namespace Aurora386.Core;
 /// guarantees that a reader skips a section it does not know and that a
 /// missing section is noticed rather than misread. Files written before the
 /// sections existed have no magic word and are read by
-/// <see cref="ReadLegacy"/>, which cuts their fields into the same sections.
+/// <see cref="ReadLegacy"/>, which cuts their fields into the same sections,
+/// including the serial mouse, video topology and device-state tails that
+/// the last unsectioned builds appended.
 /// </summary>
 public sealed class MachineSnapshot
 {
@@ -71,6 +78,40 @@ public sealed class MachineSnapshot
     /// </summary>
     private const string VideoMemorySection = "VMEM";
     private const string VideoRegistersSection = "VREG";
+
+    /// <summary>
+    /// Which display adapter the machine had: the <see cref="VmVideoModel"/>
+    /// value as a 16-bit number. A file without it was taken on a Trio64V+,
+    /// the only adapter that existed before the ViRGE, and is refused by a
+    /// machine with a different card rather than restored into the wrong
+    /// register file.
+    /// </summary>
+    private const string VideoModelSection = "VMOD";
+
+    /// <summary>The ViRGE's 2D/3D engine and Streams state; present only on a ViRGE machine.</summary>
+    private const string VirgeEngineSection = "VENG";
+
+    /// <summary>
+    /// The Trio64V+ drawing engine's registers and any transfer in progress;
+    /// present only on a Trio machine. A Trio file without it restores the
+    /// engine at its power-on state.
+    /// </summary>
+    private const string TrioAcceleratorSection = "TRIO";
+
+    /// <summary>
+    /// The serial mouse's UART on COM1 and the input it had not yet sent. A
+    /// file without it leaves the UART as the receiving machine has it.
+    /// </summary>
+    private const string SerialMouseSection = "SMSE";
+
+    /// <summary>
+    /// The ISA Plug and Play bus: the isolation protocol's latches, every
+    /// card's CSN and state, and each logical device's pending and applied
+    /// configuration registers. Restored before the cards, whose own sections
+    /// then move them to where those registers say. A file without it puts
+    /// the bus back at its power-on state.
+    /// </summary>
+    private const string IsaPnpSection = "PNP ";
 
     /// <summary>
     /// The chips that decide whether the guest is ever interrupted again.
@@ -173,6 +214,13 @@ public sealed class MachineSnapshot
 
     private readonly Dictionary<string, Section> _sections = new();
 
+    /// <summary>
+    /// Set for a file read by <see cref="ReadLegacy"/>. Such a file may carry
+    /// the Sound Blaster's state (from the unsectioned device trailer)
+    /// without any other card's, which a sectioned file never does.
+    /// </summary>
+    private bool _fromUnsectionedFile;
+
     // ---- capture and restore ------------------------------------------------
 
     private MachineSnapshot(Machine machine)
@@ -186,11 +234,23 @@ public sealed class MachineSnapshot
 
         Add(VideoMemorySection, 0, machine.VideoMemory.CaptureMemory());
         Add(VideoRegistersSection, 0, machine.VideoRegisters.CaptureRegisters());
+        Add(VideoModelSection, 0, EncodeVideoModel(machine.VideoModel));
+        if (machine.Virge is { } virge)
+        {
+            Add(VirgeEngineSection, 0, virge.CaptureEngines());
+        }
+
+        if (machine.TrioAccelerator is { } trio)
+        {
+            Add(TrioAcceleratorSection, 0, trio.Capture());
+        }
 
         Add(InterruptControllersSection, 0, machine.Interrupts.Capture());
         Add(TimerSection, 0, machine.Timer.Capture());
         Add(KeyboardSection, 0, machine.Keyboard.Capture());
+        Add(SerialMouseSection, 0, machine.SerialMouse.Capture());
         Add(DmaSection, Devices.System.Dma8237.SnapshotVersion, machine.Dma.Capture());
+        Add(IsaPnpSection, 0, machine.IsaPlugAndPlay.Capture());
         Add(DosSection, 0, machine.CaptureDosState());
         Add(PciSection, PciVersionWithIdeTiming, machine.Pci.Capture());
         Add(CompactDiscSection, 0, [machine.GuestHasItsOwnCompactDiscExtensions ? (byte)1 : (byte)0]);
@@ -234,10 +294,17 @@ public sealed class MachineSnapshot
     public void RestoreTo(Machine machine)
     {
         // Checked before anything else is touched: a snapshot whose card
-        // sections or PCI topology do not match this machine is refused
-        // whole, rather than partly restored and left inconsistent -- see
-        // ValidateAgainstMachine's own summary.
+        // sections, video adapter or PCI topology do not match this machine
+        // is refused whole, rather than partly restored and left
+        // inconsistent -- see ValidateAgainstMachine's own summary.
+        //
+        // The format checks Load makes are repeated first: a snapshot captured
+        // in memory, or one whose sections were changed after loading, has
+        // never been through them.
+        Validate();
         ValidateAgainstMachine(machine);
+        ValidateVideoAgainstMachine(machine);
+        ValidateDevicePayloads(machine);
 
         // Remove the host CD mount before restoring RAM: unmounting clears
         // DOS drive flags, which may already belong to the guest's driver.
@@ -338,37 +405,47 @@ public sealed class MachineSnapshot
             machine.Apic.ImcrApicMode = imcr.ApicMode;
         }
 
-        if (Payload(VideoMemorySection) is { Length: > 0 } videoMemory)
-        {
-            machine.VideoMemory.RestoreMemory(videoMemory);
-        }
+        // The ViRGE rebuilds its aperture and MMIO decode whenever its
+        // registers or PCI BAR change; suspended here, the card applies the
+        // final decode once, after video memory, engines, registers and PCI
+        // configuration all hold the file's values.
+        IDisposable? videoRestoreScope = machine.Virge?.SuspendSnapshotRestore();
 
-        if (Payload(VideoRegistersSection) is { Length: > 0 } videoRegisters)
+        try
         {
-            machine.VideoRegisters.RestoreRegisters(videoRegisters);
-        }
+            RestoreVideo(machine);
 
-        // The keyboard controller owns A20, so it is restored after the bus:
-        // the other order would leave the line as the snapshot's own field
-        // said rather than as the controller had it.
-        if (Payload(InterruptControllersSection) is { Length: > 0 } interruptControllers)
+            // The keyboard controller owns A20, so it is restored after the bus:
+            // the other order would leave the line as the snapshot's own field
+            // said rather than as the controller had it.
+            if (Payload(InterruptControllersSection) is { Length: > 0 } interruptControllers)
+            {
+                machine.Interrupts.Restore(interruptControllers);
+            }
+
+            if (Payload(TimerSection) is { Length: > 0 } timer)
+            {
+                machine.Timer.Restore(timer);
+            }
+
+            if (Payload(KeyboardSection) is { Length: > 0 } keyboard)
+            {
+                machine.Keyboard.Restore(keyboard);
+            }
+
+            if (Payload(SerialMouseSection) is { Length: > 0 } serialMouse)
+            {
+                machine.SerialMouse.Restore(serialMouse);
+            }
+
+            // After the memory, because attaching marks the CDS entries in it.
+            machine.RestoreDosState(Payload(DosSection) ?? []);
+            RestorePci(machine);
+        }
+        finally
         {
-            machine.Interrupts.Restore(interruptControllers);
+            videoRestoreScope?.Dispose();
         }
-
-        if (Payload(TimerSection) is { Length: > 0 } timer)
-        {
-            machine.Timer.Restore(timer);
-        }
-
-        if (Payload(KeyboardSection) is { Length: > 0 } keyboard)
-        {
-            machine.Keyboard.Restore(keyboard);
-        }
-
-        // After the memory, because attaching marks the CDS entries in it.
-        machine.RestoreDosState(Payload(DosSection) ?? []);
-        RestorePci(machine);
 
         // PCI decode is restored before the register blocks. Neither device
         // resumes a transfer merely because a snapshot contained Start=1.
@@ -390,9 +467,30 @@ public sealed class MachineSnapshot
         // file older than this section leaves the receiving machine's DMA
         // state as it was, the same tolerance every other optional section
         // gets.
-        if (Payload(DmaSection) is { Length: > 0 } dma)
+        //
+        // A file without the section resets the controller rather than
+        // leaving the receiving machine's channels in place: a card restored
+        // mid-transfer against someone else's address and count registers
+        // would stream from the wrong memory.
+        if (DmaPayload() is { } dma)
         {
             machine.Dma.Restore(dma);
+        }
+        else
+        {
+            machine.Dma.ResetSnapshotState();
+        }
+
+        // Also before the cards: the bus puts back each logical device's
+        // configuration registers, and every card's own section then moves
+        // the chip to the resources those registers name.
+        if (Payload(IsaPnpSection) is { Length: > 0 } isaPnp)
+        {
+            machine.IsaPlugAndPlay.Restore(isaPnp);
+        }
+        else
+        {
+            machine.IsaPlugAndPlay.ResetSnapshotState();
         }
 
         RestoreCards(machine);
@@ -478,6 +576,11 @@ public sealed class MachineSnapshot
         [A20Section] = 0,
         [VideoMemorySection] = 0,
         [VideoRegistersSection] = 0,
+        [VideoModelSection] = 0,
+        [VirgeEngineSection] = 0,
+        [TrioAcceleratorSection] = 0,
+        [SerialMouseSection] = 0,
+        [IsaPnpSection] = 0,
         [InterruptControllersSection] = 0,
         [TimerSection] = 0,
         [KeyboardSection] = 0,
@@ -514,7 +617,9 @@ public sealed class MachineSnapshot
         (A20Section, _) => 1,
         (CompactDiscSection, _) => 1,
         (ChipsetSection, _) => 1,
-        (DmaSection, 1) => Devices.System.Dma8237.SnapshotLength,
+        (DmaSection, 1) => Devices.System.Dma8237.LegacySnapshotLength,
+        (DmaSection, 2) => Devices.System.Dma8237.SnapshotLength,
+        (VideoModelSection, _) => sizeof(ushort),
         (LocalApicSection, 1) => Devices.Apic.LocalApic.SnapshotLength,
         (IoApicSection, 1) => Devices.Apic.IoApic.SnapshotLength,
         (ImcrSection, _) => Devices.Chipset.Imcr.SnapshotLength,
@@ -553,6 +658,8 @@ public sealed class MachineSnapshot
                     throw new InvalidDataException(
                         $"Snapshot section '{name}' holds {section.Payload.Length} bytes, not {expected}.");
                 }
+
+                ValidateDeviceSection(name, section);
 
                 if (name == BusMasterIdeSection)
                 {
@@ -615,6 +722,12 @@ public sealed class MachineSnapshot
                 {
                     Devices.Audio.Mpu401Uart.ValidateSnapshot(section.Payload, section.Version);
                 }
+
+                if (name == SoundBlaster16Card.SnapshotSectionId
+                    && section.Version >= Devices.Audio.SoundBlaster16.SnapshotVersion)
+                {
+                    Devices.Audio.SoundBlaster16.ValidateSnapshot(section.Payload);
+                }
             }
 
             // A name neither the container nor any known card recognises is
@@ -676,6 +789,30 @@ public sealed class MachineSnapshot
         {
             snapshot._sections[PciSection] = pci with { Version = PciVersionWithIdeTiming };
         }
+
+        // The last unsectioned builds appended three more groups, each of
+        // which may be the end of the file: the serial mouse, the video
+        // topology, and a trailer of device records.
+        if (!AtEnd(file))
+        {
+            snapshot.Add(SerialMouseSection, 0, ReadBoundedCounted(file, "serial mouse"));
+        }
+
+        if (!AtEnd(file))
+        {
+            snapshot.ReadLegacyVideoTopology(file);
+        }
+
+        if (!AtEnd(file))
+        {
+            snapshot.ReadLegacyDeviceTrailer(file);
+        }
+
+        // Such a file predates the card sections. The trailer's Sound
+        // Blaster record becomes the card's section, but the other cards it
+        // never described restore at their power-on state, as for every file
+        // older than the sections -- not refused as a mismatch.
+        snapshot._fromUnsectionedFile = true;
 
         // A file cut short inside the processor block reads fewer bytes than
         // the block holds; this is where that is caught, before any restore.
@@ -789,7 +926,7 @@ public sealed class MachineSnapshot
 
         foreach (IExpansionCard card in machine.Cards)
         {
-            if (fileHasCardSections && !HasRealSection(card.SnapshotId))
+            if (fileHasCardSections && !_fromUnsectionedFile && !HasRealSection(card.SnapshotId))
             {
                 throw new InvalidDataException(
                     $"Snapshot has no '{card.SnapshotId}' section for the {card.Kind} card fitted to this machine.");
@@ -875,6 +1012,481 @@ public sealed class MachineSnapshot
             {
                 card.Reset();
             }
+        }
+    }
+
+    // ---- video --------------------------------------------------------------
+
+    private static byte[] EncodeVideoModel(VmVideoModel model)
+    {
+        byte[] payload = new byte[sizeof(ushort)];
+        BinaryPrimitives.WriteUInt16LittleEndian(payload, (ushort)model);
+        return payload;
+    }
+
+    /// <summary>
+    /// The adapter the file was taken on. A file without the section predates
+    /// the ViRGE and so was taken on the Trio64V+.
+    /// </summary>
+    private VmVideoModel SnapshotVideoModel()
+    {
+        if (Payload(VideoModelSection) is not { } payload)
+        {
+            return VmVideoModel.S3Trio64VPlus;
+        }
+
+        ushort model = BinaryPrimitives.ReadUInt16LittleEndian(payload);
+        if (model is not ((ushort)VmVideoModel.S3Trio64VPlus or (ushort)VmVideoModel.S3Virge325))
+        {
+            throw new InvalidDataException("The video topology snapshot model is invalid.");
+        }
+
+        return (VmVideoModel)model;
+    }
+
+    /// <summary>
+    /// Refuses video state that does not belong to this machine's adapter,
+    /// before anything is restored.
+    ///
+    /// The ViRGE keeps its aperture base in two places a driver can read --
+    /// the PCI BAR and CRTC register 59h -- and its decode is rebuilt from
+    /// them, so a file in which they disagree, or which lacks either, cannot
+    /// be restored into a consistent card. The Trio64V+ decodes at fixed
+    /// addresses, which is why an older Trio file may omit its video blocks.
+    /// </summary>
+    private void ValidateVideoAgainstMachine(Machine machine)
+    {
+        VmVideoModel snapshotModel = SnapshotVideoModel();
+        if (snapshotModel != machine.VideoModel)
+        {
+            throw new InvalidDataException("Snapshot video model differs from the machine.");
+        }
+
+        if (_sections[RamSection].Payload.Length != machine.Memory.RamSize)
+        {
+            throw new InvalidDataException("Snapshot RAM size differs from the machine.");
+        }
+
+        bool virge = snapshotModel == VmVideoModel.S3Virge325;
+        byte[] videoMemory = Payload(VideoMemorySection) ?? [];
+        byte[] videoRegisters = Payload(VideoRegistersSection) ?? [];
+        byte[] virgeEngine = Payload(VirgeEngineSection) ?? [];
+
+        if (virge && _sections.ContainsKey(TrioAcceleratorSection))
+        {
+            throw new InvalidDataException("ViRGE snapshot contains Trio accelerator state.");
+        }
+
+        if (!virge && virgeEngine.Length != 0)
+        {
+            throw new InvalidDataException("Trio snapshot contains ViRGE engine state.");
+        }
+
+        ValidateVideoBlockLength(videoMemory.Length, VgaMemory.TotalSize, virge, "memory");
+        ValidateVideoBlockLength(videoRegisters.Length, VgaRegisters.SnapshotLength, virge, "register");
+
+        if (!virge)
+        {
+            return;
+        }
+
+        ValidateVirgeEngineSnapshot(virgeEngine);
+
+        PciBus.SnapshotState pciSnapshot = machine.Pci.ValidateSnapshot(Payload(PciSection) ?? []);
+        if (pciSnapshot.IsLegacyReset)
+        {
+            throw new InvalidDataException("ViRGE snapshot requires complete PCI state.");
+        }
+
+        ReadOnlySpan<byte> videoFunction = pciSnapshot.FunctionState(machine.VideoFunctionAddress);
+        if (videoFunction.Length != PciFunctionStateLength
+            || BinaryPrimitives.ReadUInt16LittleEndian(videoFunction) != S3VendorId
+            || BinaryPrimitives.ReadUInt16LittleEndian(videoFunction[2..]) != VirgeDeviceId)
+        {
+            throw new InvalidDataException("ViRGE PCI identity is missing or invalid.");
+        }
+
+        // BAR 0 bits 31:26 and CRTC 59h bits 7:2 both hold the 64 MB-aligned
+        // aperture base.
+        uint pciBase = BinaryPrimitives.ReadUInt32LittleEndian(videoFunction[0x10..]) & VirgeApertureBaseMask;
+        uint crtcBase = (uint)(videoRegisters[VirgeLinearAddressRegister] & 0xFC) << 24;
+        if (pciBase != crtcBase)
+        {
+            throw new InvalidDataException("ViRGE PCI BAR and CRTC base latches differ.");
+        }
+    }
+
+    /// <summary>The 256 bytes of one PCI function's configuration space.</summary>
+    private const int PciFunctionStateLength = 256;
+
+    private const ushort S3VendorId = 0x5333;
+    private const ushort VirgeDeviceId = 0x5631;
+
+    /// <summary>The ViRGE's 64 MB aperture is aligned on its own size.</summary>
+    private const uint VirgeApertureBaseMask = 0xFC000000;
+
+    /// <summary>Offset of CRTC register 59h (linear address window, high byte) in the saved register block.</summary>
+    private const int VirgeLinearAddressRegister = 0x59;
+
+    private static void ValidateVideoBlockLength(int actualLength, int expectedLength, bool required, string blockName)
+    {
+        if (actualLength == expectedLength || (!required && actualLength == 0))
+        {
+            return;
+        }
+
+        throw new InvalidDataException($"Invalid video {blockName} snapshot length.");
+    }
+
+    private static void ValidateVirgeEngineSnapshot(ReadOnlySpan<byte> snapshot)
+    {
+        try
+        {
+            S3VirgeCard.ValidateEngineSnapshot(snapshot);
+        }
+        catch (ArgumentException error)
+        {
+            throw new InvalidDataException("Invalid ViRGE engine snapshot.", error);
+        }
+    }
+
+    /// <summary>
+    /// Video memory, then the ViRGE's engines, then the registers, then the
+    /// Trio's engine: the ViRGE engines must be in place before the registers
+    /// whose writes re-derive decode from them.
+    /// </summary>
+    private void RestoreVideo(Machine machine)
+    {
+        if (Payload(VideoMemorySection) is { Length: > 0 } videoMemory)
+        {
+            machine.VideoMemory.RestoreMemory(videoMemory);
+        }
+
+        if (machine.Virge is { } virge && Payload(VirgeEngineSection) is { Length: > 0 } engines)
+        {
+            virge.RestoreEngines(engines);
+        }
+
+        if (Payload(VideoRegistersSection) is { Length: > 0 } videoRegisters)
+        {
+            machine.VideoRegisters.RestoreRegisters(videoRegisters);
+        }
+
+        if (machine.TrioAccelerator is { } trio)
+        {
+            if (Payload(TrioAcceleratorSection) is { Length: > 0 } accelerator)
+            {
+                trio.Restore(accelerator);
+            }
+            else
+            {
+                trio.ResetSnapshotState();
+            }
+        }
+    }
+
+    // ---- devices --------------------------------------------------------------
+
+    /// <summary>
+    /// The format checks each device's own validator makes, run while the
+    /// file is loaded, so a malformed payload is refused before any restore.
+    /// </summary>
+    private static void ValidateDeviceSection(string name, Section section)
+    {
+        switch (name)
+        {
+            case TrioAcceleratorSection:
+                S3Accelerator.ValidateSnapshot(section.Payload);
+                break;
+
+            case VirgeEngineSection:
+                ValidateVirgeEngineSnapshot(section.Payload);
+                break;
+
+            case VideoRegistersSection when section.Payload.Length > 0:
+                VgaRegisters.ValidateSnapshot(section.Payload);
+                break;
+
+            case SerialMouseSection:
+                Devices.Input.SerialMouse.ValidateSnapshot(section.Payload);
+                break;
+
+            case IsaPnpSection:
+                Devices.IsaPnp.IsaPnpBus.ValidateSnapshot(section.Payload);
+                break;
+
+            case DmaSection when section.Version == 1:
+                Devices.System.Dma8237.UpgradeLegacySnapshot(section.Payload);
+                break;
+
+            case DmaSection:
+                Devices.System.Dma8237.ValidateSnapshot(section.Payload);
+                break;
+        }
+    }
+
+    /// <summary>The DMA section in the current layout, or null when the file has none.</summary>
+    private byte[]? DmaPayload()
+    {
+        if (!_sections.TryGetValue(DmaSection, out Section dma) || dma.Payload.Length == 0)
+        {
+            return null;
+        }
+
+        if (dma.Version == 1)
+        {
+            return Devices.System.Dma8237.UpgradeLegacySnapshot(dma.Payload);
+        }
+
+        return dma.Payload;
+    }
+
+    /// <summary>
+    /// Checks the device payloads against the devices this machine actually
+    /// has -- the Plug and Play cards on its bus, the Sound Blaster's output
+    /// rate -- before anything is restored, so a mismatch leaves the machine
+    /// untouched.
+    /// </summary>
+    private void ValidateDevicePayloads(Machine machine)
+    {
+        byte[]? isaPnp = Payload(IsaPnpSection) is { Length: > 0 } pnp ? pnp : null;
+        IReadOnlyList<Devices.IsaPnp.IsaPnpBus.LogicalDeviceSnapshot> logicalDevices = [];
+
+        if (isaPnp is not null)
+        {
+            machine.IsaPlugAndPlay.ValidateSnapshotForRestore(isaPnp);
+            logicalDevices = Devices.IsaPnp.IsaPnpBus.GetSnapshotLogicalDevices(isaPnp);
+            ValidateAppliedConfiguration(logicalDevices);
+        }
+
+        if (machine.SoundBlaster is not { } soundBlaster
+            || !_sections.TryGetValue(SoundBlaster16Card.SnapshotSectionId, out Section card)
+            || card.Version < Devices.Audio.SoundBlaster16.SnapshotVersion
+            || card.Payload.Length == 0)
+        {
+            return;
+        }
+
+        soundBlaster.ValidateSnapshotForRestore(card.Payload);
+
+        // The card moves to the resources its own payload names, and a driver
+        // reads them back from the Plug and Play registers and the mixer: the
+        // three must describe the same card.
+        Devices.IsaPnp.IsaPnpBus.LogicalDeviceSnapshot? audio = logicalDevices
+            .FirstOrDefault(device => device.Id == SoundBlasterLogicalDeviceId);
+        if (audio is not null)
+        {
+            Devices.Audio.SoundBlaster16.ValidateMachineSnapshotResources(
+                card.Payload,
+                audio.IoBase(0),
+                audio.Active,
+                audio.Irq(0),
+                audio.Dma(0),
+                audio.Dma(1));
+        }
+    }
+
+    /// <summary>The Plug and Play identity of the SB16's audio logical device.</summary>
+    private const string SoundBlasterLogicalDeviceId = "CTL0031";
+
+    /// <summary>
+    /// An active logical device decodes what was last applied to it. A file
+    /// whose pending registers for an active device differ from the applied
+    /// ones describes a chip answering somewhere its registers do not say,
+    /// which no sequence of guest writes produces.
+    /// </summary>
+    private static void ValidateAppliedConfiguration(
+        IReadOnlyList<Devices.IsaPnp.IsaPnpBus.LogicalDeviceSnapshot> logicalDevices)
+    {
+        const int ActivateRegister = 0x30;
+
+        foreach (Devices.IsaPnp.IsaPnpBus.LogicalDeviceSnapshot device in logicalDevices)
+        {
+            bool activationDiffers = device.Registers[ActivateRegister] != device.AppliedRegisters[ActivateRegister];
+            bool resourcesDiffer = device.Active
+                && !device.Registers.AsSpan(ActivateRegister).SequenceEqual(device.AppliedRegisters.AsSpan(ActivateRegister));
+            if (activationDiffers || resourcesDiffer)
+            {
+                throw new InvalidDataException("Active ISA PnP registers differ from applied configuration.");
+            }
+        }
+    }
+
+    // ---- the tails of the last unsectioned files -------------------------------
+
+    /// <summary>"VID1": the video topology record the last unsectioned builds wrote.</summary>
+    private const uint LegacyVideoTopologyMagic = 0x31444956;
+    private const ushort LegacyVideoTopologyVersion = 1;
+    private const int LegacyVideoTopologyHeaderLength = 12;
+
+    /// <summary>"DVS1": the device-state trailer written after the video topology.</summary>
+    private const uint LegacyDeviceStateMagic = 0x31535644;
+    private const ushort LegacyDeviceStateVersion = 1;
+    private const int LegacyDeviceStateHeaderLength = 8;
+    private const int LegacyDeviceRecordHeaderLength = 12;
+
+    // The trailer's record kinds, in the order it wrote them.
+    private const ushort LegacyTrioAcceleratorRecord = 1;
+    private const ushort LegacyDmaRecord = 2;
+    private const ushort LegacySoundBlasterRecord = 3;
+    private const ushort LegacyIsaPnpRecord = 4;
+
+    /// <summary>Upper bounds the trailer enforced before allocating a record.</summary>
+    private const int LegacyMaximumDspPayloadLength = 64 * 1024 * 1024;
+    private const int LegacyMaximumPnpPayloadLength = 4 * 1024 * 1024;
+
+    /// <summary>A length-prefixed block whose length is checked against the file before it is read.</summary>
+    private static byte[] ReadBoundedCounted(BinaryReader file, string what)
+    {
+        if (file.BaseStream.Length - file.BaseStream.Position < sizeof(int))
+        {
+            throw new InvalidDataException($"The {what} snapshot length is truncated.");
+        }
+
+        int length = file.ReadInt32();
+        long remaining = file.BaseStream.Length - file.BaseStream.Position;
+        if (length < 0 || length > remaining)
+        {
+            throw new InvalidDataException($"The {what} snapshot length is invalid.");
+        }
+
+        return file.ReadBytes(length);
+    }
+
+    /// <summary>
+    /// The "VID1" record: its length, the magic word, a version, the video
+    /// model, and the ViRGE engine block (empty on a Trio).
+    /// </summary>
+    private void ReadLegacyVideoTopology(BinaryReader file)
+    {
+        byte[] record = ReadBoundedCounted(file, "video topology");
+        if (record.Length < LegacyVideoTopologyHeaderLength)
+        {
+            throw new InvalidDataException("The video topology snapshot length is invalid.");
+        }
+
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(record);
+        ushort version = BinaryPrimitives.ReadUInt16LittleEndian(record.AsSpan(4));
+        ushort model = BinaryPrimitives.ReadUInt16LittleEndian(record.AsSpan(6));
+        int engineLength = BinaryPrimitives.ReadInt32LittleEndian(record.AsSpan(8));
+        if (magic != LegacyVideoTopologyMagic || version != LegacyVideoTopologyVersion)
+        {
+            throw new InvalidDataException("The video topology snapshot header is invalid.");
+        }
+
+        if (engineLength < 0 || engineLength != record.Length - LegacyVideoTopologyHeaderLength)
+        {
+            throw new InvalidDataException("The video engine snapshot length is invalid.");
+        }
+
+        Add(VideoModelSection, 0, record.AsSpan(6, sizeof(ushort)).ToArray());
+        VmVideoModel videoModel = SnapshotVideoModel();
+
+        byte[] engine = record.AsSpan(LegacyVideoTopologyHeaderLength, engineLength).ToArray();
+        if (videoModel == VmVideoModel.S3Virge325)
+        {
+            Add(VirgeEngineSection, 0, engine);
+        }
+        else if (engine.Length != 0)
+        {
+            throw new InvalidDataException("Trio snapshot contains ViRGE engine state.");
+        }
+    }
+
+    /// <summary>
+    /// The "DVS1" trailer: a header naming how many records follow, each a
+    /// kind, a model, a schema version, flags and a length-prefixed payload.
+    /// Every record becomes the section that now holds the same bytes.
+    /// </summary>
+    private void ReadLegacyDeviceTrailer(BinaryReader file)
+    {
+        long remaining = file.BaseStream.Length - file.BaseStream.Position;
+        if (remaining < sizeof(int))
+        {
+            throw new InvalidDataException("The device state snapshot length is truncated.");
+        }
+
+        int length = file.ReadInt32();
+        if (length < LegacyDeviceStateHeaderLength || length != remaining - sizeof(int))
+        {
+            throw new InvalidDataException("The device state snapshot length is invalid.");
+        }
+
+        uint magic = file.ReadUInt32();
+        ushort version = file.ReadUInt16();
+        ushort count = file.ReadUInt16();
+        if (magic != LegacyDeviceStateMagic || version != LegacyDeviceStateVersion || count > LegacyIsaPnpRecord)
+        {
+            throw new InvalidDataException("The device state snapshot header is invalid.");
+        }
+
+        var seen = new HashSet<ushort>();
+        for (int index = 0; index < count; index++)
+        {
+            ReadLegacyDeviceRecord(file, seen);
+        }
+
+        if (!AtEnd(file))
+        {
+            throw new InvalidDataException("Trailing device snapshot data.");
+        }
+    }
+
+    private void ReadLegacyDeviceRecord(BinaryReader file, HashSet<ushort> seen)
+    {
+        long remaining = file.BaseStream.Length - file.BaseStream.Position;
+        if (remaining < LegacyDeviceRecordHeaderLength)
+        {
+            throw new InvalidDataException("The device record header is truncated.");
+        }
+
+        ushort kind = file.ReadUInt16();
+        ushort model = file.ReadUInt16();
+        ushort recordVersion = file.ReadUInt16();
+        ushort flags = file.ReadUInt16();
+        int payloadLength = file.ReadInt32();
+
+        bool knownRecord = kind is >= LegacyTrioAcceleratorRecord and <= LegacyIsaPnpRecord
+            && model == 0
+            && recordVersion == 1
+            && flags == 0;
+        bool fits = payloadLength > 0 && payloadLength <= remaining - LegacyDeviceRecordHeaderLength;
+        if (!knownRecord || !fits || !seen.Add(kind))
+        {
+            throw new InvalidDataException("Invalid or unsupported device snapshot record.");
+        }
+
+        bool withinSchema = kind switch
+        {
+            LegacyTrioAcceleratorRecord => payloadLength <= S3Accelerator.MaximumSnapshotLength,
+            LegacyDmaRecord => payloadLength == Devices.System.Dma8237.SnapshotLength,
+            LegacySoundBlasterRecord => payloadLength <= LegacyMaximumDspPayloadLength,
+            _ => payloadLength <= LegacyMaximumPnpPayloadLength,
+        };
+        if (!withinSchema)
+        {
+            throw new InvalidDataException("The device snapshot payload exceeds its schema limit.");
+        }
+
+        byte[] payload = file.ReadBytes(payloadLength);
+        switch (kind)
+        {
+            case LegacyTrioAcceleratorRecord:
+                Add(TrioAcceleratorSection, 0, payload);
+                break;
+
+            case LegacyDmaRecord:
+                Add(DmaSection, Devices.System.Dma8237.SnapshotVersion, payload);
+                break;
+
+            case LegacySoundBlasterRecord:
+                Devices.Audio.SoundBlaster16.ValidateSnapshot(payload);
+                Add(SoundBlaster16Card.SnapshotSectionId, Devices.Audio.SoundBlaster16.SnapshotVersion, payload);
+                break;
+
+            default:
+                Add(IsaPnpSection, 0, payload);
+                break;
         }
     }
 

@@ -34,6 +34,13 @@ public sealed class Pit8253 : IIoDevice
         public ushort LatchedValue;
         public bool Latched;
 
+        /// <summary>
+        /// Mode 0 only: set once the count has reached zero, which is when
+        /// the output goes high. Cleared when a new count is loaded, because
+        /// loading a count is what restarts the single shot.
+        /// </summary>
+        public bool Mode0Expired;
+
         /// <summary>Fractional cycles carried over, so rounding never loses time.</summary>
         public double Accumulator;
     }
@@ -163,6 +170,10 @@ public sealed class Pit8253 : IIoDevice
     {
         channel.Counter = channel.ReloadValue;
         channel.Accumulator = 0;
+
+        // Loading a count is what re-arms a mode 0 single shot: its output
+        // drops low again and stays there until this new count expires.
+        channel.Mode0Expired = false;
     }
 
     private void WriteControlWord(byte value)
@@ -194,6 +205,22 @@ public sealed class Pit8253 : IIoDevice
     }
 
     /// <summary>
+    /// Channel 2's GATE input, which on a PC is bit 0 of port 0x61.
+    ///
+    /// The other two channels have their gate wired permanently high; only
+    /// channel 2's is under software control, and that is precisely what
+    /// makes it the channel used for timing. The sequence every calibration
+    /// routine uses is: close the gate, load a count, open the gate, and
+    /// watch the output. With the gate closed the counter must NOT advance.
+    ///
+    /// Getting this wrong is invisible in ordinary use -- a delay loop still
+    /// terminates, just at the wrong moment -- but it defeats any attempt to
+    /// measure a known interval, because the counter has already been running
+    /// before the measurement was supposed to start.
+    /// </summary>
+    public bool Channel2Gate { get; set; }
+
+    /// <summary>
     /// Channel 2's output, visible as bit 5 of port 0x61. It is the signal
     /// that drives the PC speaker, and software samples it to time intervals
     /// far shorter than one 18.2 Hz system tick.
@@ -203,6 +230,14 @@ public sealed class Pit8253 : IIoDevice
         get
         {
             Channel channel = _channels[2];
+
+            // Mode 0 is the one a calibration routine chooses, because its
+            // output is a single clean edge rather than a repeating wave:
+            // the output stays LOW from the moment the count is loaded and
+            // goes HIGH once, when the count reaches zero. Software times an
+            // interval by waiting for that one transition.
+            if (channel.OperatingMode == 0) return channel.Mode0Expired;
+
             int reload = channel.ReloadValue == 0 ? 65536 : channel.ReloadValue;
             // Square wave mode: the output is high for the first half of the
             // count and low for the second.
@@ -218,6 +253,11 @@ public sealed class Pit8253 : IIoDevice
     private void AdvanceChannel2(double pitCycles)
     {
         Channel channel = _channels[2];
+
+        // A closed gate stops the count dead. This is the whole point of the
+        // gate, and the reason channel 2 is the one used for measurement.
+        if (!Channel2Gate) return;
+
         channel.Accumulator += pitCycles;
 
         int whole = (int)channel.Accumulator;
@@ -228,6 +268,27 @@ public sealed class Pit8253 : IIoDevice
         channel.Accumulator -= whole;
 
         int reload = channel.ReloadValue == 0 ? 65536 : channel.ReloadValue;
+
+        if (channel.OperatingMode == 0)
+        {
+            // Mode 0 counts down once and stops, raising its output when it
+            // reaches zero. It does not reload, so the counter saturates at
+            // zero rather than wrapping: a wrap here would make the output
+            // pulse repeatedly and a routine waiting for one edge would
+            // measure whichever it happened to catch.
+            int remaining = channel.Counter - whole;
+            if (remaining <= 0)
+            {
+                channel.Counter = 0;
+                channel.Mode0Expired = true;
+            }
+            else
+            {
+                channel.Counter = (ushort)remaining;
+            }
+            return;
+        }
+
         int position = channel.Counter - (whole % reload);
         channel.Counter = (ushort)(position < 0 ? position + reload : position);
     }

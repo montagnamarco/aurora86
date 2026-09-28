@@ -16,7 +16,10 @@ public sealed class SoundBlaster16Card : IExpansionCard
 
     public string Kind => "sound";
     public string Model => "sb16";
-    public string SnapshotId => "SB16";
+    /// <summary>The snapshot section this card keeps its state under.</summary>
+    public const string SnapshotSectionId = "SB16";
+
+    public string SnapshotId => SnapshotSectionId;
     public int SnapshotVersion => SoundBlaster16.SnapshotVersion;
 
     /// <summary>The underlying device. Set once <see cref="Attach"/> has run.</summary>

@@ -24,6 +24,7 @@ namespace Aurora386.Core.Dos;
 public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
 {
     private readonly DirectoryInfo _root;
+    private readonly HostDosAttributeStore _attributes;
 
     /// <summary>
     /// Cache mapping a DOS path to the host path it was derived from.
@@ -45,6 +46,7 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
             throw new DirectoryNotFoundException($"No such directory: {hostPath}");
 
         VolumeLabel = MakeVolumeLabel(volumeLabel ?? _root.Name);
+        _attributes = new HostDosAttributeStore(_root.FullName);
     }
 
     public string VolumeLabel { get; }
@@ -126,6 +128,11 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
 
         foreach (FileSystemInfo entry in entries.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase))
         {
+            if (_attributes.IsPrivate(entry.FullName))
+            {
+                continue;
+            }
+
             // Files whose names cannot be represented at all -- names that
             // shorten to nothing once the illegal characters are stripped --
             // are hidden rather than shown under a made-up name.
@@ -184,16 +191,23 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     public void Create(string path, RedirectedFileAttributes attributes)
     {
         RequireWritable();
-        string host = ResolveOrPlanHostPath(path);
-        Directory.CreateDirectory(Path.GetDirectoryName(host)!);
-        using var stream = new FileStream(host, FileMode.Create, FileAccess.Write);
+        string host = ResolveHostPath(path) ?? ResolveOrPlanHostPath(path);
+        _attributes.RequireGuestPath(host);
+        RequireFileWritable(host);
+        ValidateAttributes(attributes);
+        _attributes.Set(host, attributes, () =>
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(host)!);
+            using var stream = new FileStream(host, FileMode.Create, FileAccess.Write);
+        });
         RememberShortName(path, host);
     }
 
     public void Write(string path, long offset, ReadOnlySpan<byte> data)
     {
         RequireWritable();
-        string host = ResolveOrPlanHostPath(path);
+        string host = ResolveHostPath(path) ?? ResolveOrPlanHostPath(path);
+        _attributes.RequireGuestPath(host);
         using var stream = new FileStream(host, FileMode.OpenOrCreate, FileAccess.Write,
                                           FileShare.ReadWrite);
 
@@ -214,6 +228,7 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
             return;
         }
 
+        _attributes.RequireGuestPath(host);
         using var stream = new FileStream(host, FileMode.Open, FileAccess.Write);
         stream.SetLength(length);
     }
@@ -227,7 +242,9 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
             return;
         }
 
-        File.Delete(host);
+        _attributes.RequireGuestPath(host);
+        RequireFileWritable(host);
+        _attributes.Remove(host, () => File.Delete(host));
         _shortNames.Remove(NormalizePath(path));
     }
 
@@ -241,14 +258,22 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
         }
 
         string target = ResolveOrPlanHostPath(toPath);
+        _attributes.RequireGuestPath(source);
+        _attributes.RequireGuestPath(target);
 
-        if (Directory.Exists(source))
+        _attributes.Rename(source, target, () =>
         {
-            Directory.Move(source, target);
-        }
-        else File.Move(source, target, overwrite: false);
+            if (Directory.Exists(source))
+            {
+                Directory.Move(source, target);
+            }
+            else
+            {
+                File.Move(source, target, overwrite: false);
+            }
+        });
 
-        _shortNames.Remove(NormalizePath(fromPath));
+        _shortNames.Clear();
         RememberShortName(toPath, target);
     }
 
@@ -256,6 +281,7 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
     {
         RequireWritable();
         string host = ResolveOrPlanHostPath(path);
+        _attributes.RequireGuestPath(host);
         Directory.CreateDirectory(host);
         RememberShortName(path, host);
     }
@@ -272,8 +298,52 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
         // Non-recursive on purpose: DOS's RMDIR removes an empty directory
         // and nothing else, and a redirector that quietly deleted a tree
         // would be a trap.
-        Directory.Delete(host, recursive: false);
+        _attributes.RequireGuestPath(host);
+        _attributes.Remove(host, () => Directory.Delete(host, recursive: false));
         _shortNames.Remove(NormalizePath(path));
+    }
+
+    /// <summary>
+    /// DOS 7 permits R/H/S/A, ignores VolumeLabel, and rejects Directory or
+    /// reserved bits (CF set, AX=5). The existing object's directory bit is
+    /// preserved by Describe, rather than being writable through this call.
+    /// </summary>
+    public void SetAttributes(string path, RedirectedFileAttributes attributes)
+    {
+        RequireWritable();
+        ValidateAttributes(attributes);
+        string? host = ResolveHostPath(path);
+        if (host is null || (!File.Exists(host) && !Directory.Exists(host)))
+        {
+            throw new FileNotFoundException("The guest file does not exist.", path);
+        }
+
+        _attributes.RequireGuestPath(host);
+        if (File.Exists(host) && new FileInfo(host).IsReadOnly &&
+            (attributes & RedirectedFileAttributes.ReadOnly) == 0)
+        {
+            throw new UnauthorizedAccessException("DOS cannot clear host-enforced read-only permissions.");
+        }
+
+        _attributes.Set(host, attributes);
+    }
+
+    private static void ValidateAttributes(RedirectedFileAttributes attributes)
+    {
+        // 10h is Directory; C0h contains the two reserved FAT attribute bits.
+        if (((byte)attributes & 0xD0) != 0)
+        {
+            throw new UnauthorizedAccessException("DOS cannot set directory or reserved attribute bits.");
+        }
+    }
+
+    private void RequireFileWritable(string host)
+    {
+        if (File.Exists(host) &&
+            (Describe(new FileInfo(host)).Attributes & RedirectedFileAttributes.ReadOnly) != 0)
+        {
+            throw new UnauthorizedAccessException("The DOS file is read-only.");
+        }
     }
 
     private void RequireWritable()
@@ -325,6 +395,7 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
         }
 
         if (_shortNames.TryGetValue(normalized, out string? cached)
+            && !_attributes.IsPrivate(cached)
             && (File.Exists(cached) || Directory.Exists(cached)))
             return cached;
 
@@ -336,6 +407,10 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
             // The common case: the host already has a file by exactly this
             // name. Only when it does not do we pay for a directory scan.
             string direct = Path.Combine(current, component);
+            if (_attributes.IsPrivate(direct))
+            {
+                return null;
+            }
             if (File.Exists(direct) || Directory.Exists(direct))
             {
                 current = direct;
@@ -379,6 +454,11 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
 
         foreach (FileSystemInfo entry in entries.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase))
         {
+            if (_attributes.IsPrivate(entry.FullName))
+            {
+                continue;
+            }
+
             string? shortName = ShortenName(entry.Name, taken);
             if (shortName is null)
             {
@@ -540,9 +620,19 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
         {
             attributes |= RedirectedFileAttributes.ReadOnly;
         }
+
         if (IsHiddenOnHost(file))
         {
             attributes |= RedirectedFileAttributes.Hidden;
+        }
+
+        // Attributes the guest stored explicitly win over what the host
+        // suggests, but a file the host itself will not let us write stays
+        // read-only whatever the guest recorded.
+        attributes = _attributes.Get(file.FullName) ?? attributes;
+        if (IsReadOnly || file.IsReadOnly)
+        {
+            attributes |= RedirectedFileAttributes.ReadOnly;
         }
 
         return new RedirectedFileInfo
@@ -561,6 +651,8 @@ public sealed class HostDirectoryFileSystem : IRedirectedFileSystem
         {
             attributes |= RedirectedFileAttributes.Hidden;
         }
+
+        attributes = (_attributes.Get(directory.FullName) ?? attributes) | RedirectedFileAttributes.Directory;
 
         return new RedirectedFileInfo
         {

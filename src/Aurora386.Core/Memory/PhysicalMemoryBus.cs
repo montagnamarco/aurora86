@@ -8,19 +8,18 @@ namespace Aurora386.Core.Memory;
 /// pages; each page is either plain RAM (a non-null pointer, taking the fast
 /// path with no indirection at all) or a mapped device served by a handler.
 ///
-/// The 386 addresses 32 bits, but a page table covering the full 4 GB would
-/// need a million entries. Since the emulated machine has 16 MB of RAM and
-/// nothing is mapped above it, the table covers only the first 16 MB;
-/// everything higher reads 0xFF and swallows writes, exactly like a bus with
-/// nothing connected to it.
+/// Installed RAM and decoded address space are separate: PCI devices can
+/// occupy high addresses without advertising those addresses as guest RAM.
+/// Unmapped addresses read 0xFF and swallow writes. Relocatable device windows
+/// rebuild these same page caches when their decoding changes.
 /// </summary>
-public sealed unsafe class PhysicalMemoryBus : IDisposable
+public sealed unsafe partial class PhysicalMemoryBus : IDisposable
 {
     public const int PageShift = 12;
     public const int PageSize = 1 << PageShift;   // 4096
     public const uint PageMask = PageSize - 1;
 
-    private readonly uint _addressableBytes;
+    private readonly ulong _addressableBytes;
     private readonly int _pageCount;
 
     /// <summary>Pointer to the page's backing RAM, or null for MMIO and unmapped pages.</summary>
@@ -63,9 +62,20 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     private (uint Base, uint Length, IMemoryDevice Device)[] _highWindows = [];
 
-    /// <summary>Maps a device at a physical address at or above the addressable space, such as the local APIC's MMIO page.</summary>
+    /// <summary>
+    /// Maps a device at a physical address at or above the addressable
+    /// space, such as the local APIC's MMIO page. A window inside that space
+    /// would never be consulted -- the per-page arrays answer every address
+    /// below it -- so asking for one is refused rather than silently lost.
+    /// </summary>
     public void RegisterHighWindow(uint physicalBase, uint length, IMemoryDevice device)
     {
+        if (physicalBase < _addressableBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(physicalBase),
+                "A high window must lie above the addressable space; map the device instead.");
+        }
+
         _highWindows = [.. _highWindows, (physicalBase, length, device)];
     }
 
@@ -174,22 +184,36 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     public uint RamSize => _ramSize;
 
     /// <summary>
-    /// The top of the space the dense per-page arrays cover. A device
-    /// deciding whether its own address belongs on the ordinary page path
-    /// (<see cref="TryMapDevice"/>) or a high window (<see
+    /// The decoded physical address space, independent of installed RAM: the
+    /// top of the space the dense per-page arrays cover. A device deciding
+    /// whether its own address belongs on the ordinary page path (<see
+    /// cref="TryMapDevice"/>) or a high window (<see
     /// cref="RegisterHighWindow"/>) reads this rather than guessing --
-    /// <c>Devices.Apic.LocalApic</c> is the one example today, since
-    /// IA32_APIC_BASE can relocate its page anywhere in the 36-bit physical
-    /// space (independent review, item N8a).
+    /// <c>Devices.Apic.LocalApic</c> is the example, since IA32_APIC_BASE can
+    /// relocate its page anywhere in the 36-bit physical space (independent
+    /// review, item N8a). A machine with a ViRGE decodes the whole 4 GB, so
+    /// on it even the APIC pages sit inside this space.
     /// </summary>
-    public uint AddressableBytes => _addressableBytes;
+    public ulong AddressableBytes => _addressableBytes;
 
-    public PhysicalMemoryBus(uint ramSize = 16 * 1024 * 1024, uint addressableBytes = 16 * 1024 * 1024)
+    /// <summary>
+    /// Allocates the installed RAM and a separate table for decoded physical
+    /// addresses. PCI apertures can reach the 4 GB boundary without adding
+    /// that address space to guest RAM; the exclusive endpoint needs 33 bits.
+    /// </summary>
+    public PhysicalMemoryBus(
+        uint ramSize = 16 * 1024 * 1024,
+        ulong addressableBytes = 16 * 1024 * 1024)
     {
         if (ramSize == 0 || (ramSize & PageMask) != 0)
             throw new ArgumentException("RAM size must be a multiple of 4 KB.", nameof(ramSize));
         if (addressableBytes < ramSize)
             throw new ArgumentException("The addressable space cannot be smaller than the installed RAM.", nameof(addressableBytes));
+        if ((addressableBytes & PageMask) != 0 || addressableBytes > (1UL << 32))
+        {
+            throw new ArgumentOutOfRangeException(nameof(addressableBytes),
+                "The addressable space must be 4 KB aligned and no larger than 4 GB.");
+        }
 
         _ramSize = ramSize;
         _addressableBytes = addressableBytes;
@@ -219,6 +243,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     public void MapDevice(uint physicalBase, uint length, IMemoryDevice device)
     {
+        ArgumentNullException.ThrowIfNull(device);
         ValidateRange(physicalBase, length);
         MapDeviceUnchecked(physicalBase, length, device);
     }
@@ -285,10 +310,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         for (int i = 0; i < count; i++)
         {
             int page = first + i;
-            _pageRam[page] = null;              // forces the slow path through the handler
-            _pageDevice[page] = device;
-            _pageDeviceBase[page] = physicalBase;
-            _pageReadOnly[page] = false;
+            SetBaseMapping(page, new PageMapping(false, device, physicalBase, false));
         }
     }
 
@@ -304,18 +326,11 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         int count = (int)(length >> PageShift);
         for (int page = first; page < first + count; page++)
         {
-            _pageRam[page] = null;
-            _pageWatchedRam[page] = null;
-            _pageDevice[page] = null;
-            _pageDeviceBase[page] = 0;
-            _pageReadOnly[page] = false;
+            SetBaseMapping(page, default);
         }
     }
 
     /// <summary>
-    /// Maps a ROM: the contents are copied into the underlying RAM and the
-    /// pages are marked read-only. Reads therefore keep taking the fast path,
-    /// which matters because a ROM is read constantly and written never, and
     /// Copies the whole of installed RAM out, for a snapshot.
     ///
     /// The page table is deliberately not part of this: it is rebuilt from the
@@ -358,7 +373,10 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
 
         for (int page = 0; page < _pageCount && ((uint)page << PageShift) < _ramSize; page++)
         {
-            if (_pageReadOnly[page])
+            bool readOnly = _coveredBasePages.TryGetValue(page, out PageMapping underlying)
+                ? underlying.ReadOnly
+                : _pageReadOnly[page];
+            if (readOnly)
             {
                 continue;
             }
@@ -368,14 +386,16 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     }
 
     /// <summary>
-    /// writes are discarded without complaint.
+    /// Maps a ROM by copying its contents into the underlying installed RAM.
+    /// Reads use the RAM fast path, while guest writes are discarded. A
+    /// relocatable device can cover the ROM without changing its base mapping.
     /// </summary>
     public void MapRom(uint physicalBase, ReadOnlySpan<byte> content)
     {
         uint length = AlignUp((uint)content.Length);
         ValidateRange(physicalBase, length);
 
-        if (physicalBase + length > _ramSize)
+        if ((ulong)physicalBase + length > _ramSize)
             throw new ArgumentException("A ROM must lie within the installed RAM.", nameof(physicalBase));
 
         content.CopyTo(new Span<byte>(_ram + physicalBase, content.Length));
@@ -385,9 +405,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         for (int i = 0; i < count; i++)
         {
             int page = first + i;
-            _pageRam[page] = _ram + ((uint)page << PageShift);
-            _pageDevice[page] = null;
-            _pageReadOnly[page] = true;
+            SetBaseMapping(page, new PageMapping(true, null, 0, true));
         }
     }
 
@@ -405,7 +423,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     public void WriteRomWord(uint address, ushort value)
     {
-        if (address + 2 > _ramSize)
+        if ((ulong)address + sizeof(ushort) > _ramSize)
             throw new ArgumentOutOfRangeException(nameof(address));
 
         _ram[address] = (byte)value;
@@ -467,7 +485,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     public void MapRam(uint physicalBase, uint length)
     {
         ValidateRange(physicalBase, length);
-        if (physicalBase + length > _ramSize)
+        if ((ulong)physicalBase + length > _ramSize)
             throw new ArgumentException("The range extends past the installed RAM.", nameof(physicalBase));
 
         int first = (int)(physicalBase >> PageShift);
@@ -475,9 +493,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         for (int i = 0; i < count; i++)
         {
             int page = first + i;
-            _pageRam[page] = _ram + ((uint)page << PageShift);
-            _pageDevice[page] = null;
-            _pageReadOnly[page] = false;
+            SetBaseMapping(page, new PageMapping(true, null, 0, false));
         }
     }
 
@@ -741,7 +757,7 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
         foreach ((uint start, uint length) in _readWatchRanges)
         {
             long first = start >> PageShift;
-            long last = (start + length - 1) >> PageShift;
+            long last = (long)(((ulong)start + length - 1) >> PageShift);
             for (long page = first; page <= last && page < _pageCount; page++)
             {
                 if (_pageRam[page] is null)
@@ -966,8 +982,14 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
     /// </summary>
     public Span<byte> GetRamSpan(uint physicalBase, int length)
     {
-        if (physicalBase + (uint)length > _ramSize)
-            throw new ArgumentOutOfRangeException(nameof(length), "The range extends past the installed RAM.");
+        // Direct host pointers must be bounded by installed RAM, even when
+        // the bus can decode PCI windows all the way up to 4 GB.
+        if (length < 0 || (ulong)physicalBase + (uint)length > _ramSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(length),
+                "The range extends past the installed RAM.");
+        }
+
         return new Span<byte>(_ram + physicalBase, length);
     }
 
@@ -979,8 +1001,14 @@ public sealed unsafe class PhysicalMemoryBus : IDisposable
             throw new ArgumentException("The base address must be 4 KB aligned.", nameof(physicalBase));
         if (length == 0 || (length & PageMask) != 0)
             throw new ArgumentException("The length must be a multiple of 4 KB.", nameof(length));
-        if (physicalBase + length > _addressableBytes)
-            throw new ArgumentOutOfRangeException(nameof(length), "The range extends past the addressable space.");
+        // The final PCI aperture can end exactly at 4 GB. Add in 64 bits
+        // before touching any page entry, so an overflowing range cannot
+        // wrap to zero and partially replace a valid mapping.
+        if ((ulong)physicalBase + length > _addressableBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(length),
+                "The range extends past the addressable space.");
+        }
     }
 
     public void Dispose()

@@ -242,6 +242,29 @@ public sealed class VideoServices
     }
 
     /// <summary>
+    /// Completes an AH=00 mode set that entered through the BIOS ROM.
+    ///
+    /// The ROM performs the state that a virtual display device must see --
+    /// its OUT instructions, BDA stores and text-page clear.  For the colour
+    /// text modes, the native side therefore adopts only hardware that the
+    /// ROM's visible register result actually describes.  Direct callers of
+    /// <see cref="SetVideoMode"/> retain the host implementation used at
+    /// POST and by device tests.
+    /// </summary>
+    public void CompleteRomVideoModeSet(byte requestedMode)
+    {
+        byte mode = (byte)(requestedMode & 0x7F);
+
+        if (mode is not (0x00 or 0x01 or 0x02 or 0x03))
+        {
+            SetVideoMode(requestedMode);
+            return;
+        }
+
+        _registers.TryAdoptTextModeMetadata(mode);
+    }
+
+    /// <summary>
     /// Loads the adapter registers that actually change behaviour, rather than
     /// the full ROM table. Three of them matter to us:
     ///

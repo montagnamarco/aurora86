@@ -155,10 +155,22 @@ public class CardRegistryTests
         using var source = new Machine(4 * 1024 * 1024);
 
         // Moved off the factory address the way Plug and Play configuration
-        // does -- Relocate is exactly what a logical device's Configured
-        // callback calls (see IsaPnpCards.ForSoundBlaster16) -- to 240h,
-        // IRQ 7, the same DMA channels.
-        source.SoundBlaster!.Relocate(0x240, 7, 1, 5, enabled: true);
+        // does: the audio logical device's I/O base (registers 60h/61h) and
+        // IRQ (70h) are rewritten and applied, which calls Relocate through
+        // the device's Configured callback (see IsaPnpCards.ForSoundBlaster16)
+        // -- to 240h, IRQ 7, the same DMA channels. Going through the
+        // registers matters: a snapshot whose card and Plug and Play
+        // registers disagree is refused, since no guest can produce one.
+        const int IoBaseHigh = 0x60;
+        const int IoBaseLow = 0x61;
+        const int InterruptLevel = 0x70;
+        Aurora386.Core.Devices.IsaPnp.IsaPnpLogicalDevice audio = source.IsaPlugAndPlay.Cards
+            .SelectMany(card => card.LogicalDevices)
+            .Single(device => device.Id == "CTL0031");
+        audio.Registers[IoBaseHigh] = 0x02;
+        audio.Registers[IoBaseLow] = 0x40;
+        audio.Registers[InterruptLevel] = 7;
+        audio.NotifyConfigured();
 
         string path = Path.GetTempFileName();
         try

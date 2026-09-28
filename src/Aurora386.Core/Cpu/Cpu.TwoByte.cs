@@ -241,15 +241,11 @@ public sealed partial class Cpu
                     // belongs -- loses part of what the instruction reports.
                     uint rights = (uint)(descriptor >> 32) & 0x00FFFF00;
 
-                    // The whole 32-bit register is written whatever the
-                    // operand size says. This is peculiar to LAR and LSL: the
-                    // access-rights and limit values they produce are 32-bit
-                    // quantities, and the processor stores all of it rather
-                    // than leaving the top half of the destination holding
-                    // whatever it held before. Masking to 16 bits here leaves
-                    // stale bits above the answer, which reads as a plausible
-                    // but wrong set of rights.
-                    State.SetReg32(m.Reg, rights);
+                    // LAR's result has the same width as its destination.
+                    // A 16-bit query writes only the low word, so code that
+                    // keeps an address in the upper half of the register can
+                    // safely use DI or another word register as its target.
+                    WriteRegOperand(m, rights);
                 }
                 else
                 {
@@ -260,8 +256,7 @@ public sealed partial class Cpu
                     // the last page is included whole.
                     if ((descriptor & (1UL << 55)) != 0) limit = (limit << 12) | 0xFFF;
 
-                    // As above: the full register, regardless of operand size.
-                    State.SetReg32(m.Reg, limit);
+                    WriteRegOperand(m, limit);
                 }
 
                 Flags.Zero = true;
