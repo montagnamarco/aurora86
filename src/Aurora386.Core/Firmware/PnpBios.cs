@@ -286,6 +286,18 @@ public sealed class PnpBios
         ushort cannotDisableOrConfigure = CannotDisable | CannotConfigure;
         Add("PNP0A03", 0x06, 0x04, 0x00, cannotDisableOrConfigure, NoResources);
 
+        // LPT1: communication device, parallel, unidirectional. Appended
+        // after every existing node, like the system bus above, so the
+        // handles a guest has already stored keep their meaning.
+        Add("PNP0400", 0x07, 0x01, 0x00, CannotDisable, resources =>
+        {
+            resources.Io(Devices.Parallel.ParallelPort.DataPort, 3); // Data, status and control.
+            if (_machine.ParallelPortInterruptReported)
+            {
+                resources.Irq(7);
+            }
+        });
+
         return nodes;
     }
 

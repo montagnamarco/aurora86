@@ -10,6 +10,7 @@ using Aurora386.Core.Devices.System;
 using Aurora386.Core.Devices.Network;
 using Aurora386.Core.Devices.IsaPnp;
 using Aurora386.Core.Devices.Host;
+using Aurora386.Core.Devices.Parallel;
 using Aurora386.Core.Devices.Pci;
 using Aurora386.Core.Devices.Chipset;
 using Aurora386.Core.Devices.Audio;
@@ -85,6 +86,14 @@ public sealed partial class Machine : IDisposable
     /// hardware to software that probes for a hypervisor.
     /// </summary>
     public VmwareBackdoor Backdoor { get; }
+
+    /// <summary>LPT1 at 378h-37Ah, IRQ 7 (docs/PARALLEL-PORT.md).</summary>
+    public ParallelPort ParallelPort { get; }
+
+    /// <summary>The printer on LPT1, which collects each print job for <see cref="PrintOutputFolder"/>.</summary>
+    public PrintJobCollector Printer { get; }
+
+    private readonly PrinterServices _printerServices;
 
     /// <summary>
     /// The host clipboard a front end offers to guests through the backdoor's
@@ -325,6 +334,35 @@ public sealed partial class Machine : IDisposable
     private readonly uint _trioLinearFrameBufferBase;
     private readonly uint _trioMmioBase;
 
+    /// <summary>LPT1's three ports, data to control, and its interrupt (docs/PARALLEL-PORT.md).</summary>
+    private const int ParallelPortWindowLength = 3;
+    private const int ParallelPortInterrupt = 7;
+
+    /// <summary>
+    /// Whether the Plug and Play BIOS reports IRQ 7 as LPT1's. Cleared when a
+    /// configured ISA card uses IRQ 7 -- a Sound Blaster there was common,
+    /// since DOS printing never used the printer interrupt -- so the port is
+    /// described without an interrupt, as many BIOSes of the period did,
+    /// rather than claiming a line the card also drives.
+    /// </summary>
+    public bool ParallelPortInterruptReported { get; }
+
+    private static bool AnyIsaCardOnInterrupt(IEnumerable<CardSettings> cards, int interrupt)
+    {
+        foreach (CardSettings card in cards)
+        {
+            bool isaCard = card.Card is not null
+                && !card.Card.EndsWith("-pci", StringComparison.OrdinalIgnoreCase)
+                && !card.Card.StartsWith("uhci", StringComparison.OrdinalIgnoreCase);
+            if (isaCard && card.Irq == interrupt)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>The I/O APIC's fixed physical address (coordinator decision A3: no relocation register is modelled).</summary>
     public const uint IoApicPhysicalBase = 0xFEC00000;
 
@@ -446,6 +484,11 @@ public sealed partial class Machine : IDisposable
 
         SerialMouse = new SerialMouse(Mouse, Interrupts);
         SerialMouse.Register(Io);
+
+        Printer = new PrintJobCollector(Scheduler, () => Cpu.Cycles, () => CpuFrequencyHz, _printOutput);
+        ParallelPort = new ParallelPort(Interrupts, Printer);
+        ParallelPort.Register(Io);
+        _printerServices = new PrinterServices(ParallelPort);
 
         if (videoModel == VmVideoModel.S3Trio64VPlus)
         {
@@ -696,6 +739,9 @@ public sealed partial class Machine : IDisposable
         }
 
         ValidateExpansionWindows(hardware.Sound, hardware.Network);
+        ParallelPortInterruptReported = !AnyIsaCardOnInterrupt(
+            hardware.Sound.Concat(hardware.Network),
+            ParallelPortInterrupt);
 
         // Only now does each card claim its ports, its PCI function, its
         // Plug and Play identity and -- for a NAT-backed network card -- its
@@ -998,6 +1044,9 @@ public sealed partial class Machine : IDisposable
 
     public void Dispose()
     {
+        // A job still open when the machine stops is as finished as it will
+        // ever be: hand it over rather than lose the last page.
+        Printer?.Flush();
         DisposeNetworkBackends(Cards);
         if (Midi is not null)
         {
@@ -1029,6 +1078,13 @@ public sealed partial class Machine : IDisposable
         IEnumerable<CardSettings> networkSettings)
     {
         var ranges = new List<(int Start, int End)>();
+
+        // LPT1 is fitted on every machine, before any card: a card over
+        // 378h-37Ah would silently take its ports from the I/O bus
+        // (docs/PARALLEL-PORT.md). IRQ 7 is not refused the same way -- see
+        // ParallelPortInterruptReported.
+        AddRange(ParallelPort.DataPort, ParallelPortWindowLength);
+
         foreach (CardSettings card in settings)
         {
             if (string.Equals(card.Card, "sb16", StringComparison.OrdinalIgnoreCase))

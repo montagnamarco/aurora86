@@ -129,6 +129,13 @@ public sealed class MachineSnapshot
     private const string BackdoorSection = "VMBD";
 
     /// <summary>
+    /// LPT1's DATA and CONTROL registers (docs/PARALLEL-PORT.md section 4).
+    /// A print job in progress is not saved; a file without the section
+    /// leaves the port at its power-on state.
+    /// </summary>
+    private const string ParallelPortSection = "LPT1";
+
+    /// <summary>
     /// The chips that decide whether the guest is ever interrupted again.
     ///
     /// A snapshot without them restores the interrupt controllers to their
@@ -272,6 +279,7 @@ public sealed class MachineSnapshot
         Add(DmaSection, Devices.System.Dma8237.SnapshotVersion, machine.Dma.Capture());
         Add(IsaPnpSection, 0, machine.IsaPlugAndPlay.Capture());
         Add(BackdoorSection, Devices.Host.VmwareBackdoor.SnapshotVersion, machine.Backdoor.Capture());
+        Add(ParallelPortSection, Devices.Parallel.ParallelPort.SnapshotVersion, machine.ParallelPort.Capture());
         Add(DosSection, 0, machine.CaptureDosState());
         Add(PciSection, PciVersionWithIdeTiming, machine.Pci.Capture());
         Add(CompactDiscSection, 0, [machine.GuestHasItsOwnCompactDiscExtensions ? (byte)1 : (byte)0]);
@@ -477,6 +485,19 @@ public sealed class MachineSnapshot
 
             machine.Backdoor.Enabled = backdoorConfigured;
 
+            // The receiving machine's open print job belongs to its own past,
+            // not to the restored guest's: deliver it before the port changes.
+            machine.Printer.Flush();
+
+            if (Payload(ParallelPortSection) is { Length: > 0 } parallelPort)
+            {
+                machine.ParallelPort.Restore(parallelPort);
+            }
+            else
+            {
+                machine.ParallelPort.Reset();
+            }
+
             // After the memory, because attaching marks the CDS entries in it.
             machine.RestoreDosState(Payload(DosSection) ?? []);
             RestorePci(machine);
@@ -622,6 +643,7 @@ public sealed class MachineSnapshot
         [SerialMouseSection] = 0,
         [IsaPnpSection] = 0,
         [BackdoorSection] = Devices.Host.VmwareBackdoor.SnapshotVersion,
+        [ParallelPortSection] = Devices.Parallel.ParallelPort.SnapshotVersion,
         [InterruptControllersSection] = 0,
         [TimerSection] = 0,
         [KeyboardSection] = 0,
@@ -662,6 +684,7 @@ public sealed class MachineSnapshot
         (DmaSection, 2) => Devices.System.Dma8237.SnapshotLength,
         (VideoModelSection, _) => sizeof(ushort),
         (BackdoorSection, Devices.Host.VmwareBackdoor.SnapshotVersion) => Devices.Host.VmwareBackdoor.SnapshotLength,
+        (ParallelPortSection, Devices.Parallel.ParallelPort.SnapshotVersion) => Devices.Parallel.ParallelPort.SnapshotLength,
         (AuroraGpuSection, AuroraGpuCard.SnapshotVersion) => AuroraGpuCard.SnapshotLength,
         (LocalApicSection, 1) => Devices.Apic.LocalApic.SnapshotLength,
         (IoApicSection, 1) => Devices.Apic.IoApic.SnapshotLength,
@@ -1306,6 +1329,10 @@ public sealed class MachineSnapshot
 
             case BackdoorSection:
                 Devices.Host.VmwareBackdoor.ValidateSnapshot(section.Payload);
+                break;
+
+            case ParallelPortSection:
+                Devices.Parallel.ParallelPort.ValidateSnapshot(section.Payload);
                 break;
 
             case DmaSection when section.Version == 1:

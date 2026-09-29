@@ -59,6 +59,13 @@ public sealed class VmConfiguration
     /// </summary>
     public bool HostIntegration { get; set; }
 
+    /// <summary>
+    /// The folder LPT1's print jobs are written to (docs/PARALLEL-PORT.md),
+    /// relative to the machine folder like every other path here; null
+    /// drops them.
+    /// </summary>
+    public string? PrinterFolder { get; set; }
+
     public uint RamMegabytes { get; set; } = 16;
 
     /// <summary>Optional host output for an explicitly configured MPU-401 card.</summary>
@@ -378,6 +385,10 @@ public sealed class VmConfiguration
             Hardware.Usb.Storage.Path = map(Hardware.Usb.Storage.Path);
         }
         foreach (SharedFolder shared in SharedFolders) shared.Path = map(shared.Path);
+        if (PrinterFolder is not null)
+        {
+            PrinterFolder = map(PrinterFolder);
+        }
     }
 
     /// <summary>
@@ -583,6 +594,7 @@ public sealed class VmConfiguration
             initialCpuModel: Cpu,
             videoModel: Video);
         machine.Backdoor.Enabled = HostIntegration;
+        machine.PrintOutputFolder = PrinterFolder;
         try
         {
             if (Hardware.Usb?.Storage is { } storage)

@@ -215,6 +215,11 @@ public sealed partial class Machine
         // The absolute pointer and the RPC channels start closed on every
         // boot; whether the port answers at all is configuration and stays.
         Backdoor.Reset();
+        ParallelPort.Reset();
+
+        // A reboot ends whatever the printer was receiving: the job is
+        // delivered as it stands rather than merged with the next boot's.
+        Printer.Flush();
 
         // A system BIOS enables the VGA device's I/O and memory decoders during
         // POST. The ViRGE gates standard VGA behind these bits, so they must be

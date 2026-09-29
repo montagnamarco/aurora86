@@ -484,15 +484,10 @@ public sealed partial class Machine
         cpu.State.SetReg8(0, Ready);                     // AL: modem status
     }
 
-    /// <summary>
-    /// INT 17h: parallel ports. As with the serial ports, the answer says
-    /// "absent" rather than "busy", so software does not sit there retrying.
-    /// </summary>
+    /// <summary>INT 17h: the printer on LPT1 (docs/PARALLEL-PORT.md section 2).</summary>
     private void HandlePrinter(CpuNs.Cpu cpu)
     {
-        // AH = printer status. Bit 3 reports an I/O error, which is how a
-        // port with nothing plugged into it announces itself.
-        cpu.State.SetReg8(4, 0x08);
+        _printerServices.Handle(cpu);
     }
 
     /// <summary>

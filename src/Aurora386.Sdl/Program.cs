@@ -52,6 +52,7 @@ string? mouse = null;
 string? cpuModel = null;
 VmVideoModel? videoModel = null;
 bool hostIntegration = false;
+string? printerFolder = null;
 string? vmFolder = null;
 string? network = null;
 var forwards = new List<VmConfiguration.PortForward>();
@@ -178,6 +179,13 @@ for (int i = 0; i < args.Length; i++)
             hostIntegration = true;
             break;
 
+        // Where LPT1's print jobs land on the host (docs/PARALLEL-PORT.md).
+        case "--printer":
+            if (++i >= args.Length)
+                return Fail("--printer needs a folder");
+            printerFolder = args[i];
+            break;
+
         case "--net":
             if (++i >= args.Length || args[i] is not ("nat" or "none"))
                 return Fail("--net needs nat or none");
@@ -267,6 +275,11 @@ using var machine = vmFolder is null
     ? new Machine(ramMegabytes * 1024 * 1024, videoModel: videoModel ?? VmVideoModel.S3Trio64VPlus)
     : LoadConfiguredMachine(vmFolder, videoModel);
 if (vmFolder is not null) Console.WriteLine($"machine: {vmFolder}");
+if (printerFolder is not null)
+{
+    machine.PrintOutputFolder = Path.GetFullPath(printerFolder);
+    Console.WriteLine($"printer: jobs on LPT1 go to {machine.PrintOutputFolder}");
+}
 if (hostIntegration)
 {
     machine.Backdoor.Enabled = true;
@@ -463,6 +476,7 @@ static void PrintUsage()
               --boot <list>        boot order, like A,C or CD,C (default: every drive by number)
               --mouse ps2|serial   which port the mouse is on
               --host-integration   answer the VMware-compatible backdoor (port 5658h)
+              --printer <folder>   write LPT1 print jobs there (.prn, and .pdf for plain text)
               --video <adapter>    trio (default), virge, or aurora: the Aurora Display
                                    Adapter, VBE up to 1920x1080x32 and a 2D engine
               --cpu <model>        386, 486, pentium, pentium-mmx, pentium2, pentium3 or

@@ -24,6 +24,9 @@ public sealed class BiosDataArea
     /// <summary>Base I/O port of the first serial port (0x400).</summary>
     public ushort Com1Port { get => ReadWord(0x00); set => WriteWord(0x00, value); }
 
+    /// <summary>Base I/O port of the first parallel port, LPT1 (0x408); 0 when absent.</summary>
+    public ushort Lpt1Port { get => ReadWord(0x08); set => WriteWord(0x08, value); }
+
     /// <summary>
     /// Equipment word (0x410): how many floppy drives, which video adapter,
     /// how much memory. It is the first thing the POST writes.
@@ -231,10 +234,14 @@ public sealed class BiosDataArea
         // COM1 at all and never touches 0x3F8.
         Com1Port = Devices.Input.SerialMouse.BasePort;
 
+        // LPT1, where DOS's PRN device looks for it.
+        Lpt1Port = Devices.Parallel.ParallelPort.DataPort;
+
         // Bit 0: a floppy drive is present. Bits 4-5: 10 = 80-column color
         // video. Bits 6-7: number of floppy drives minus one. Bits 9-11 count
-        // the serial ports, and there is now one -- the mouse's.
-        EquipmentWord = 0b0000_0010_0010_0001;
+        // the serial ports, and there is now one -- the mouse's. Bits 14-15
+        // count the parallel ports: one, LPT1.
+        EquipmentWord = 0b0100_0010_0010_0001;
 
         MemorySizeKb = conventionalMemoryKb;
 
