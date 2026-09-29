@@ -12,11 +12,12 @@ public sealed partial class Cpu
 {
     private void Execute64(byte opcode)
     {
-        // None of the instructions carried so far accepts LOCK: the prefix
-        // is #UD in front of each of them (SDM Vol.2, LOCK), and in front of
-        // MOV CRn in particular, where AMD's CR8 alias is not declared.
-        // Stage C2 replaces this with the 64-bit counterpart of LockAllowed.
-        if (_longPrefixes.Lock)
+        // LOCK is legal only in front of the read-modify-write forms with a
+        // memory destination (SDM Vol.2, LOCK); in front of anything else,
+        // MOV CRn included (AMD's CR8 alias is not declared), it is #UD. A
+        // two-byte opcode is judged once its second byte is known, in
+        // ExecuteTwoByte64.
+        if (opcode != 0x0F && _longPrefixes.Lock && !LockAllowedAlu64(opcode, twoByte: false))
         {
             throw new CpuException(6);
         }
@@ -83,13 +84,24 @@ public sealed partial class Cpu
                 return;
 
             default:
-                throw new CpuException(6);
+                // The arithmetic and logic groups (Cpu.LongMode.Alu.cs).
+                if (!TryExecuteAlu64(opcode))
+                {
+                    throw new CpuException(6);
+                }
+
+                return;
         }
     }
 
     /// <summary>The 0Fh opcode table of 64-bit mode; see <see cref="Execute64"/> for what is not there yet.</summary>
     private void ExecuteTwoByte64(byte opcode)
     {
+        if (_longPrefixes.Lock && !LockAllowedAlu64(opcode, twoByte: true))
+        {
+            throw new CpuException(6);
+        }
+
         switch (opcode)
         {
             case 0x20:
@@ -99,7 +111,12 @@ public sealed partial class Cpu
                 MoveToControlRegister64();
                 return;
             default:
-                throw new CpuException(6);
+                if (!TryExecuteAluTwoByte64(opcode))
+                {
+                    throw new CpuException(6);
+                }
+
+                return;
         }
     }
 
