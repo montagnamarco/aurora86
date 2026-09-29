@@ -353,7 +353,8 @@ public sealed partial class Machine : IDisposable
         {
             bool isaCard = card.Card is not null
                 && !card.Card.EndsWith("-pci", StringComparison.OrdinalIgnoreCase)
-                && !card.Card.StartsWith("uhci", StringComparison.OrdinalIgnoreCase);
+                && !card.Card.StartsWith("uhci", StringComparison.OrdinalIgnoreCase)
+                && !card.Card.EndsWith("-ich9", StringComparison.OrdinalIgnoreCase);
             if (isaCard && card.Irq == interrupt)
             {
                 return true;
@@ -441,9 +442,14 @@ public sealed partial class Machine : IDisposable
         //
         // The ViRGE and the Aurora Display Adapter are the exception: their
         // PCI BARs may be placed anywhere in the 32-bit space, so their
-        // machines decode all of it.
+        // machines decode all of it. So do machines with a modern-platform
+        // controller (the AHCI SATA adapter): the operating systems that drive
+        // it place its memory BAR high, near FEB00000h as Linux and
+        // Windows both do, and a bus that stopped at 32 MB would leave the
+        // BAR silently unmapped -- every register reading as all ones.
         bool relocatableAdapter = videoModel is VmVideoModel.S3Virge325 or VmVideoModel.AuroraGpu;
-        ulong addressableBytes = relocatableAdapter
+        bool modernPlatformController = hardware?.Sata is not null;
+        ulong addressableBytes = relocatableAdapter || modernPlatformController
             ? 1UL << 32
             : frameBufferBase + TrioMmioOffset + 0x10000;
         Memory = new PhysicalMemoryBus(ramSize, addressableBytes);
@@ -718,6 +724,11 @@ public sealed partial class Machine : IDisposable
         if (usbSettings is not null)
         {
             cards.Add(CardCatalog.Build(_bus, usbSettings));
+        }
+
+        if (hardware.Sata is not null)
+        {
+            cards.Add(CardCatalog.Build(_bus, hardware.Sata));
         }
 
         // Two cards of the same kind would keep their state under the same
@@ -1055,6 +1066,7 @@ public sealed partial class Machine : IDisposable
         }
 
         foreach (DiskImage disk in _disks) disk.Dispose();
+        DisposeSataDisks();
         CompactDisc?.Dispose();
         UsbStorage?.Dispose();
         VideoCard?.Dispose();

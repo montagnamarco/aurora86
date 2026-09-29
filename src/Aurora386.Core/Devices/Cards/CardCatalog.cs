@@ -29,6 +29,7 @@ public static class CardCatalog
             ["rtl8029-pci"] = (_, settings) => new Rtl8029Card(settings),
             ["rtl8139-pci"] = (_, settings) => new Rtl8139Card(settings),
             ["uhci-piix"] = (_, _) => new UhciCard(),
+            ["ahci-ich9"] = (_, _) => new AhciCard(),
         };
 
     /// <summary>
@@ -48,6 +49,7 @@ public static class CardCatalog
             ["rtl8029-pci"] = "network",
             ["rtl8139-pci"] = "network",
             ["uhci-piix"] = "usb",
+            ["ahci-ich9"] = "storage",
         };
 
     /// <summary>
@@ -68,6 +70,7 @@ public static class CardCatalog
         [Rtl8029Card.SnapshotSectionId] = Rtl8029Card.CurrentSnapshotVersion,
         [Rtl8139Card.SnapshotSectionId] = Rtl8139Card.CurrentSnapshotVersion,
         [UhciCard.SnapshotSectionId] = UhciCard.CurrentSnapshotVersion,
+        [AhciCard.SnapshotSectionId] = AhciCard.CurrentSnapshotVersion,
     };
 
     /// <summary>
@@ -83,12 +86,13 @@ public static class CardCatalog
         [Mpu401Card.SnapshotSectionId] = Mpu401Uart.SnapshotLength,
         [Rtl8029Card.SnapshotSectionId] = Rtl8029.SnapshotLength,
         [Rtl8139Card.SnapshotSectionId] = Rtl8139.SnapshotLength,
+        [AhciCard.SnapshotSectionId] = Storage.AhciController.SnapshotLength,
     };
 
     /// <summary>Whether a card of this name is registered.</summary>
     public static bool IsKnown(string card) => Factories.ContainsKey(card);
 
-    /// <summary>The kind ("sound", "network", "usb") a catalog name builds, or null if the name is not registered.</summary>
+    /// <summary>The kind ("sound", "network", "usb", "storage") a catalog name builds, or null if the name is not registered.</summary>
     public static string? KindOf(string card) => KindByName.TryGetValue(card, out string? kind) ? kind : null;
 
     /// <summary>

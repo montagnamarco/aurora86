@@ -29,6 +29,9 @@ public sealed class HardwareConfiguration
     /// </summary>
     public CardSettings? Usb { get; set; }
 
+    /// <summary>The SATA host adapter ("ahci-ich9"), or null for none; see <see cref="AhciCard"/>.</summary>
+    public CardSettings? Sata { get; set; }
+
     /// <summary>
     /// Today's machine, unchanged: one Sound Blaster 16 at 220h, IRQ 5, DMA
     /// channels 1 and 5, and one NE2000 at 300h, IRQ 3, on a loopback wire --

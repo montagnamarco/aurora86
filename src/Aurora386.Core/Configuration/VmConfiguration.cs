@@ -178,6 +178,39 @@ public sealed class VmConfiguration
         /// the entry.
         /// </summary>
         public UsbSettings? Usb { get; set; }
+
+        /// <summary>
+        /// The SATA host adapter and the disks on its ports, or null for none
+        /// -- every configuration written before it existed. See
+        /// <see cref="Devices.Cards.AhciCard"/>.
+        /// </summary>
+        public SataSettings? Sata { get; set; }
+    }
+
+    /// <summary>
+    /// <see cref="HardwareSettings.Sata"/>: a catalog name and up to six disk
+    /// images, each on its own port. These disks are for operating systems
+    /// with an AHCI driver; the BIOS boots only from IDE disks.
+    /// </summary>
+    public sealed class SataSettings
+    {
+        public string Card { get; set; } = "ahci-ich9";
+
+        public List<SataDiskEntry> Disks { get; set; } = new();
+
+        /// <summary>The <see cref="Devices.Cards.CardSettings"/> the registry actually builds from.</summary>
+        public Devices.Cards.CardSettings ToCardSettings() => new() { Card = Card };
+    }
+
+    /// <summary>One disk of <see cref="SataSettings.Disks"/>.</summary>
+    public sealed class SataDiskEntry
+    {
+        /// <summary>The SATA port, 0-5.</summary>
+        public int Port { get; set; }
+
+        public string Path { get; set; } = "";
+
+        public bool ReadOnly { get; set; }
     }
 
     /// <summary>One entry of <see cref="HardwareSettings.Sound"/>: a catalog name and the resources it claims.</summary>
@@ -384,6 +417,13 @@ public sealed class VmConfiguration
         {
             Hardware.Usb.Storage.Path = map(Hardware.Usb.Storage.Path);
         }
+        if (Hardware.Sata is not null)
+        {
+            foreach (SataDiskEntry disk in Hardware.Sata.Disks)
+            {
+                disk.Path = map(disk.Path);
+            }
+        }
         foreach (SharedFolder shared in SharedFolders) shared.Path = map(shared.Path);
         if (PrinterFolder is not null)
         {
@@ -447,6 +487,11 @@ public sealed class VmConfiguration
         {
             ValidateCardKind("hardware.usb", "usb", [Hardware.Usb.Card]);
         }
+        if (Hardware.Sata is not null)
+        {
+            ValidateCardKind("hardware.sata", "storage", [Hardware.Sata.Card]);
+            ValidateSataPorts(Hardware.Sata.Disks);
+        }
 
         Version = CurrentVersion;
         _migrated = true;
@@ -459,6 +504,25 @@ public sealed class VmConfiguration
     /// cref="Load"/> rather than a machine that silently came up without the
     /// device, or with it in the wrong slot.
     /// </summary>
+    /// <summary>Each SATA disk names a port 0-5, and no two share one.</summary>
+    private static void ValidateSataPorts(List<SataDiskEntry> disks)
+    {
+        var used = new HashSet<int>();
+        foreach (SataDiskEntry disk in disks)
+        {
+            if (disk.Port is < 0 or >= Machine.SataPortCount)
+            {
+                throw new InvalidDataException(
+                    $"'hardware.sata' puts a disk on port {disk.Port}; ports are 0-{Machine.SataPortCount - 1}.");
+            }
+
+            if (!used.Add(disk.Port))
+            {
+                throw new InvalidDataException($"'hardware.sata' puts two disks on port {disk.Port}.");
+            }
+        }
+    }
+
     private static void ValidateCardKind(string listName, string expectedKind, IEnumerable<string> cardNames)
     {
         foreach (string name in cardNames)
@@ -575,6 +639,7 @@ public sealed class VmConfiguration
             Sound = Hardware.Sound.Select(card => card.ToCardSettings()).ToList(),
             Network = Hardware.Network.Select(card => card.ToCardSettings()).ToList(),
             Usb = Hardware.Usb?.ToCardSettings(),
+            Sata = Hardware.Sata?.ToCardSettings(),
         };
 
         Devices.Chipset.Chipset chipset = Devices.Chipset.ChipsetNames.Parse(Hardware.Chipset)
@@ -608,6 +673,9 @@ public sealed class VmConfiguration
 
             foreach (DiskEntry disk in Disks)
                 machine.AttachDisk(DiskImage.OpenHardDisk(disk.Path, disk.Drive, disk.ReadOnly));
+
+            foreach (SataDiskEntry disk in Hardware.Sata?.Disks ?? [])
+                machine.AttachSataDisk(disk.Port, DiskImage.OpenHardDisk(disk.Path, readOnly: disk.ReadOnly));
 
             if (CompactDisc is not null)
                 machine.AttachCompactDisc(IsoImage.Open(CompactDisc));
