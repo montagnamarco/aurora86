@@ -59,13 +59,31 @@ public sealed class UsbMassStorageDevice : IUsbDevice, IDisposable
     private const ushort DescriptorValueSerialString = 0x303;
     private const byte DescriptorTypeString = 3;
 
+    // USB 2.0 section 9.6.2 (Device Qualifier) and 9.6.4 (Other Speed
+    // Configuration): a high-speed-capable device answers both, describing
+    // what its device/configuration descriptors would read at the speed it
+    // is not currently running at.
+    private const ushort DescriptorValueDeviceQualifier = 0x600;
+    private const ushort DescriptorValueOtherSpeedConfiguration = 0x700;
+    private const byte DescriptorTypeDeviceQualifier = 6;
+    private const byte DescriptorTypeOtherSpeedConfiguration = 7;
+    private const byte DescriptorTypeConfiguration = 2;
+
     // Interface descriptor fields identifying this as a Bulk-Only Transport
     // SCSI mass storage function (USB Mass Storage Class specification).
     private const byte InterfaceClassMassStorage = 8;
     private const byte InterfaceSubClassScsiTransparent = 6;
     private const byte InterfaceProtocolBulkOnlyTransport = 0x50;
     private const byte EndpointAttributesBulk = 2;
-    private const byte BulkEndpointMaxPacketSize = 64;
+
+    // Endpoint 0's packet size never depends on speed (USB 2.0 section 5.5.3
+    // fixes it at 64 bytes for every device, high speed included); the bulk
+    // endpoints step up from full speed's 64 bytes to high speed's 512
+    // (USB 2.0 section 5.8.3) once SelectSpeed tells this device which port
+    // it negotiated on.
+    private const int ControlEndpointMaxPacketSize = 64;
+    private const int FullSpeedBulkMaxPacketSize = 64;
+    private const int HighSpeedBulkMaxPacketSize = 512;
 
     // Command Block Wrapper / Command Status Wrapper (Bulk-Only Transport
     // 1.0, sections 5.1 and 5.2).
@@ -125,8 +143,15 @@ public sealed class UsbMassStorageDevice : IUsbDevice, IDisposable
     public byte Address { get; private set; }
     public byte Configuration { get; private set; }
     public bool LowSpeed => false;
+
+    /// <summary>This device answers the high-speed chirp during port reset; see <see cref="SelectSpeed"/>.</summary>
+    public bool HighSpeedCapable => true;
     public long SectorCount => _image.Length / 512;
 
+    /// <summary>The bulk endpoints' current packet size: 512 bytes at high speed, 64 at full speed (USB 2.0 section 5.8.3).</summary>
+    private int BulkPacketSize => _highSpeed ? HighSpeedBulkMaxPacketSize : FullSpeedBulkMaxPacketSize;
+
+    private bool _highSpeed;
     private bool _medium = true;
     private bool _haltIn;
     private bool _haltOut;
@@ -187,11 +212,21 @@ public sealed class UsbMassStorageDevice : IUsbDevice, IDisposable
     {
         Address = Configuration = 0;
         _haltIn = _haltOut = _needsReset = _inToggle = _outToggle = false;
+        _highSpeed = false; // renegotiated by SelectSpeed once the port that issued this reset completes it
         ResetTransport();
         _controlStage = 0;
         _setup = _controlReply = [];
         _controlPosition = 0;
     }
+
+    /// <summary>
+    /// Told which speed the port reset that just completed negotiated: true
+    /// on an EHCI port (this device answered the high-speed chirp), false on
+    /// a full-speed UHCI one. Changes the bulk endpoints' packet size the
+    /// configuration descriptor reports from here on; endpoint 0 is
+    /// unaffected (USB 2.0 section 5.5.3 fixes it at 64 bytes regardless).
+    /// </summary>
+    public void SelectSpeed(bool highSpeed) => _highSpeed = highSpeed;
 
     private void ResetTransport()
     {
@@ -424,7 +459,7 @@ public sealed class UsbMassStorageDevice : IUsbDevice, IDisposable
         // than the host expected, must still end in a short packet so the
         // host driver notices completion; a synthetic zero-length one does
         // that without changing what was already transferred.
-        _zeroPacket = _hostIn && _hostLength > _data.Length && _data.Length % 64 == 0;
+        _zeroPacket = _hostIn && _hostLength > _data.Length && _data.Length % BulkPacketSize == 0;
         _phase = output ? 2 : 1;
         return true;
     }
@@ -463,7 +498,7 @@ public sealed class UsbMassStorageDevice : IUsbDevice, IDisposable
             int count;
             if (_phase == 1)
             {
-                count = Math.Min(Math.Min(data.Length, 64), _data.Length - _position);
+                count = Math.Min(Math.Min(data.Length, BulkPacketSize), _data.Length - _position);
                 _data.AsSpan(_position, count).CopyTo(data);
                 _position += count;
                 _processed += (uint)count;
@@ -504,7 +539,7 @@ public sealed class UsbMassStorageDevice : IUsbDevice, IDisposable
 
         if (endpoint == BulkOutEndpoint && pid == PidOut)
         {
-            if (_haltOut || data.Length > 64)
+            if (_haltOut || data.Length > BulkPacketSize)
             {
                 return new(UsbHandshake.Stall);
             }
@@ -561,25 +596,38 @@ public sealed class UsbMassStorageDevice : IUsbDevice, IDisposable
     }
 
     /// <summary>
-    /// One of the four descriptors GET_DESCRIPTOR answers: the device
-    /// descriptor (idVendor/idProduct 0xCAFE/0x0003, a fictitious pair
-    /// reserved for this emulator), the configuration descriptor (one Mass
-    /// Storage/SCSI/Bulk-Only interface with a bulk IN and a bulk OUT
-    /// endpoint), the language ID string descriptor, and the three string
-    /// descriptors it names.
+    /// One of the descriptors GET_DESCRIPTOR answers: the device descriptor
+    /// (idVendor/idProduct 0xCAFE/0x0003, a fictitious pair reserved for
+    /// this emulator; bcdUSB 0200h regardless of which controller answers,
+    /// since this device is high-speed capable even where it currently sits
+    /// at full speed -- owner decision, matching how a real USB 2.0 stick
+    /// answers on a full-speed-only port), the configuration descriptor
+    /// (one Mass Storage/SCSI/Bulk-Only interface with a bulk IN and a bulk
+    /// OUT endpoint sized for whichever speed <see cref="SelectSpeed"/> last
+    /// reported), the device qualifier and other-speed configuration
+    /// descriptors USB 2.0 section 9.6.2/9.6.4 require of a high-speed-
+    /// capable device (also answered regardless of current speed, for the
+    /// same reason), the language ID string descriptor, and the three
+    /// string descriptors it names.
     /// </summary>
     private byte[] Descriptor(ushort value)
     {
         if (value == DescriptorValueDevice)
         {
-            return [18, 1, 0x10, 1, 0, 0, 0, BulkEndpointMaxPacketSize, 0xFE, 0xCA, 3, 0, 0, 1, 1, 2, 3, 1];
+            return [18, 1, 0, 2, 0, 0, 0, ControlEndpointMaxPacketSize, 0xFE, 0xCA, 3, 0, 0, 1, 1, 2, 3, 1];
         }
         if (value == DescriptorValueConfiguration)
         {
-            return [9, 2, 32, 0, 1, 1, 0, 0x80, 50,
-                    9, 4, 0, 0, 2, InterfaceClassMassStorage, InterfaceSubClassScsiTransparent, InterfaceProtocolBulkOnlyTransport, 0,
-                    7, 5, BulkInEndpointAddress, EndpointAttributesBulk, BulkEndpointMaxPacketSize, 0, 0,
-                    7, 5, BulkOutEndpoint, EndpointAttributesBulk, BulkEndpointMaxPacketSize, 0, 0];
+            return ConfigurationDescriptor(DescriptorTypeConfiguration, BulkPacketSize);
+        }
+        if (value == DescriptorValueDeviceQualifier)
+        {
+            return [10, DescriptorTypeDeviceQualifier, 0, 2, 0, 0, 0, ControlEndpointMaxPacketSize, 1, 0];
+        }
+        if (value == DescriptorValueOtherSpeedConfiguration)
+        {
+            int otherSpeedBulkPacketSize = _highSpeed ? FullSpeedBulkMaxPacketSize : HighSpeedBulkMaxPacketSize;
+            return ConfigurationDescriptor(DescriptorTypeOtherSpeedConfiguration, otherSpeedBulkPacketSize);
         }
         if (value == DescriptorValueLanguageIds)
         {
@@ -595,6 +643,23 @@ public sealed class UsbMassStorageDevice : IUsbDevice, IDisposable
         };
         byte[] chars = Encoding.Unicode.GetBytes(text);
         return text.Length == 0 ? [] : [(byte)(chars.Length + 2), DescriptorTypeString, .. chars];
+    }
+
+    /// <summary>
+    /// The configuration descriptor's bytes, shared between GET_DESCRIPTOR's
+    /// own configuration type (2) and its other-speed counterpart (7): the
+    /// two differ only in <paramref name="descriptorType"/> and in the bulk
+    /// endpoints' packet size, which the caller supplies for whichever speed
+    /// -- current or other -- it is describing.
+    /// </summary>
+    private byte[] ConfigurationDescriptor(byte descriptorType, int bulkPacketSize)
+    {
+        byte packetSizeLow = (byte)bulkPacketSize;
+        byte packetSizeHigh = (byte)(bulkPacketSize >> 8);
+        return [9, descriptorType, 32, 0, 1, 1, 0, 0x80, 50,
+                9, 4, 0, 0, 2, InterfaceClassMassStorage, InterfaceSubClassScsiTransparent, InterfaceProtocolBulkOnlyTransport, 0,
+                7, 5, BulkInEndpointAddress, EndpointAttributesBulk, packetSizeLow, packetSizeHigh, 0,
+                7, 5, BulkOutEndpoint, EndpointAttributesBulk, packetSizeLow, packetSizeHigh, 0];
     }
 
     private UsbTransactionResult Control(byte pid, bool data1, Span<byte> packet)
@@ -647,11 +712,11 @@ public sealed class UsbMassStorageDevice : IUsbDevice, IDisposable
 
         if (_controlStage == 1 && pid == PidIn && data1 == _controlToggle)
         {
-            int count = Math.Min(Math.Min(packet.Length, 64), _controlReply.Length - _controlPosition);
+            int count = Math.Min(Math.Min(packet.Length, ControlEndpointMaxPacketSize), _controlReply.Length - _controlPosition);
             _controlReply.AsSpan(_controlPosition, count).CopyTo(packet);
             _controlPosition += count;
             _controlToggle = !_controlToggle;
-            if (count < 64 || _controlPosition >= BinaryPrimitives.ReadUInt16LittleEndian(_setup.AsSpan(6)))
+            if (count < ControlEndpointMaxPacketSize || _controlPosition >= BinaryPrimitives.ReadUInt16LittleEndian(_setup.AsSpan(6)))
             {
                 _controlStage = 3;
             }
@@ -729,6 +794,10 @@ public sealed class UsbMassStorageDevice : IUsbDevice, IDisposable
             w.Write(bytes.Length);
             w.Write(bytes);
         }
+        // Appended after every field an older build already saved (EHCI support added this
+        // one later): a snapshot captured before high speed existed has nothing to read here,
+        // and Restore below treats that absence as full speed, its only possible value then.
+        w.Write(_highSpeed);
         return stream.ToArray();
     }
 
@@ -780,9 +849,20 @@ public sealed class UsbMassStorageDevice : IUsbDevice, IDisposable
         _csw = ReadBlock();
         _setup = ReadBlock();
         _controlReply = ReadBlock();
+
+        // Appended by Capture after every other field, so a snapshot from before EHCI
+        // support existed simply has nothing left to read here; the device it came from
+        // could then only ever have been full speed, so that is exactly what an absent
+        // flag means.
+        bool highSpeed = false;
+        if (r.BaseStream.Position < r.BaseStream.Length)
+        {
+            highSpeed = r.ReadBoolean();
+        }
         if (r.BaseStream.Position != r.BaseStream.Length || _phase is < 0 or > 3 || _processed > _hostLength)
         {
             throw new InvalidDataException("Invalid USB disk snapshot.");
         }
+        _highSpeed = highSpeed;
     }
 }

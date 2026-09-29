@@ -32,6 +32,27 @@ public interface IUsbDevice
 
     bool LowSpeed { get; }
 
+    /// <summary>
+    /// Whether the device can run at USB 2.0 high speed (480 Mbit/s): true
+    /// only for a device that answers the high-speed detection handshake
+    /// (the chirp during port reset, USB 2.0 §7.1.7.5) and carries the
+    /// high-speed descriptors. An EHCI port keeps such a device after reset;
+    /// any other device reads as not enabled there, and the driver hands the
+    /// port to the companion UHCI controller. False for every USB 1.1 device.
+    /// </summary>
+    bool HighSpeedCapable => false;
+
+    /// <summary>
+    /// Tells a <see cref="HighSpeedCapable"/> device which speed its port
+    /// reset negotiated: true on an EHCI port, false on a UHCI one. The
+    /// device then reports the matching descriptors (bulk endpoints of 512
+    /// bytes at high speed, 64 at full speed; USB 2.0 §9.6.6). Ignored by
+    /// devices that only have one speed.
+    /// </summary>
+    void SelectSpeed(bool highSpeed)
+    {
+    }
+
     void Reset();
 
     void Advance(double microseconds) { }

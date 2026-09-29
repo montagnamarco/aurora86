@@ -136,6 +136,34 @@ public class UsbMassStorageTests
     }
 
     [Fact]
+    public void RestoringAnOldFormatSnapshotWithoutTheHighSpeedFlagDefaultsToFullSpeed()
+    {
+        var image = new MemoryStream(new byte[4096]);
+        using var disk = Disk(image);
+        disk.SelectSpeed(true); // simulate this device having last run on an EHCI port
+
+        // High-speed support appended one boolean to the very end of Capture()'s output
+        // after EHCI already shipped; a snapshot saved before that addition simply ends
+        // one byte earlier than this, so stripping the last byte reproduces it exactly.
+        byte[] oldFormatState = disk.Capture()[..^1];
+
+        disk.Reset();
+        disk.Restore(oldFormatState);
+        Assert.Equal(1, disk.Configuration); // every other field still restores correctly
+
+        Write(disk, Cbw(Rw(0x28, 0), 512, true));
+        byte[] firstPacket = Read(disk, capacity: 512);
+        Assert.Equal(64, firstPacket.Length); // full speed caps each packet at 64 bytes: _highSpeed defaulted to false, not to whatever it was before Restore
+        var read = new List<byte>(firstPacket);
+        for (int i = 1; i < 8; i++)
+        {
+            read.AddRange(Read(disk));
+        }
+        Assert.Equal(512, read.Count);
+        Status(disk);
+    }
+
+    [Fact]
     public void ThirdDeviceCoexistsWithHidAndHotplugKeepsPciTopology()
     {
         using var machine = new Machine(); machine.EnableUsb(); machine.RunInstructions(3000);

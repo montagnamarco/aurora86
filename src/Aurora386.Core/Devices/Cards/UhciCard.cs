@@ -23,6 +23,15 @@ namespace Aurora386.Core.Devices.Cards;
 /// cref="Machine.Cards"/> at run time too, which is how the GUI's "enable
 /// USB" toggle and its "insert image" menu keep working on a machine that
 /// started with no USB card fitted at all -- see that method's own summary.
+///
+/// <b>USB 2.0.</b> Built as "ehci-ich9", the card adds an ICH9 EHCI
+/// controller (<see cref="EhciController"/>, plans/usb2-ehci.md) as
+/// function 7 of the storage controller's device, 00:03.7, the way an ICH
+/// pairs EHCI with its UHCI companions; the storage UHCI at 00:03.0 then
+/// reports a multifunction header. The two share the storage ports: the
+/// card plugs the physical device into whichever controller owns each port
+/// (EHCI's CONFIGFLAG and PORTSC.PortOwner decide) and moves it when the
+/// guest's driver changes that.
 /// </summary>
 public sealed class UhciCard : IExpansionCard
 {
@@ -34,7 +43,25 @@ public sealed class UhciCard : IExpansionCard
     /// <see cref="MachineSnapshot"/> for how a file with that older section
     /// name is mapped onto this card's "UHCI" one.
     /// </summary>
-    public const int CurrentSnapshotVersion = 0;
+    public const int CurrentSnapshotVersion = 1;
+
+    /// <summary>
+    /// The version a card without EHCI still writes: the two UHCI
+    /// controllers only, the payload every file before EHCI holds. Version 1
+    /// appends the EHCI controller's state.
+    /// </summary>
+    private const int UhciOnlySnapshotVersion = 0;
+
+    /// <summary>00:03.7: function 7 of the storage controller's device, where an ICH puts EHCI beside its companion UHCI functions.</summary>
+    private const ushort EhciFunctionAddress = (3 << 3) | 7;
+
+    /// <summary>The storage UHCI's function address, 00:03.0.</summary>
+    private const ushort StorageFunctionAddress = 3 << 3;
+
+    /// <summary>PCI header type byte (0Eh) bit 7: the device has more than one function.</summary>
+    private const byte MultifunctionHeader = 0x80;
+
+    private const int HeaderTypeOffset = 0x0E;
 
     /// <summary>
     /// The section name this card's state is kept under, as a constant <see
@@ -44,10 +71,33 @@ public sealed class UhciCard : IExpansionCard
     /// </summary>
     public const string SnapshotSectionId = "UHCI";
 
+    private readonly bool _withEhci;
+    private EhciController? _ehci;
+
+    /// <summary>The physical devices on the storage ports, whichever controller currently owns each.</summary>
+    private readonly IUsbDevice?[] _storagePortDevices = new IUsbDevice?[EhciController.PortCount];
+
+    /// <summary>
+    /// Where each storage port's device is plugged now: true on EHCI. The
+    /// snapshot records this, not the owner EHCI's registers name, because
+    /// each controller's restore checks the device actually plugged into it
+    /// (independent review of the EHCI wiring, finding 7).
+    /// </summary>
+    private readonly bool[] _storagePortOnEhci = new bool[EhciController.PortCount];
+
+    /// <param name="withEhci">True for "ehci-ich9": add the EHCI controller in front of the storage ports.</param>
+    public UhciCard(bool withEhci = false)
+    {
+        _withEhci = withEhci;
+    }
+
     public string Kind => "usb";
-    public string Model => "uhci-piix";
+    public string Model => _withEhci ? "ehci-ich9" : "uhci-piix";
     public string SnapshotId => SnapshotSectionId;
-    public int SnapshotVersion => CurrentSnapshotVersion;
+    public int SnapshotVersion => _withEhci ? CurrentSnapshotVersion : UhciOnlySnapshotVersion;
+
+    /// <summary>The EHCI controller, or null on a card built without it.</summary>
+    public EhciController? Ehci => _ehci;
 
     private UhciController? _controller;
     private UhciController? _storageController;
@@ -91,7 +141,14 @@ public sealed class UhciCard : IExpansionCard
         ushort deviceId = integrated ? (ushort)0x7112 : (ushort)0x7020;
         _controller = new UhciController(
             bus.Memory, bus.Io, bus.Pci, functionAddress, deviceId: deviceId);
-        _storageController = new UhciController(bus.Memory, bus.Io, bus.Pci, 0x18, 0xC120);
+        _storageController = new UhciController(bus.Memory, bus.Io, bus.Pci, StorageFunctionAddress, 0xC120);
+        if (_withEhci)
+        {
+            _storageController.Function.Define(HeaderTypeOffset, MultifunctionHeader, 1);
+            _ehci = new EhciController(bus.Pci, bus.Memory, EhciFunctionAddress);
+            _ehci.PortRoutingChanged += RouteStoragePort;
+        }
+
         _keyboard = new UsbHidDevice(true);
         _mouse = new UsbHidDevice(false);
         _controller.Attach(0, _keyboard);
@@ -102,12 +159,44 @@ public sealed class UhciCard : IExpansionCard
     {
         _controller?.Reset();
         _storageController?.Reset();
+        if (_ehci is not null)
+        {
+            _ehci.Reset();
+            RouteAllStoragePorts();
+        }
     }
 
     public void Advance(double microseconds)
     {
         _controller?.Advance(microseconds);
         _storageController?.Advance(microseconds);
+        _ehci?.Advance(microseconds);
+    }
+
+    /// <summary>
+    /// Plugs the device on storage port <paramref name="port"/> into the
+    /// controller that owns the port now, and unplugs it from the other: the
+    /// companion UHCI at full speed, or EHCI, whose own port reset then
+    /// selects high speed (<see cref="IUsbDevice.SelectSpeed"/>).
+    /// </summary>
+    private void RouteStoragePort(int port)
+    {
+        IUsbDevice? device = _storagePortDevices[port];
+        if (_ehci is null)
+        {
+            StorageController.Attach(port, device);
+            return;
+        }
+
+        PlugStoragePort(port, onEhci: !_ehci.PortOwnedByCompanion(port));
+    }
+
+    private void RouteAllStoragePorts()
+    {
+        for (int port = 0; port < _storagePortDevices.Length; port++)
+        {
+            RouteStoragePort(port);
+        }
     }
 
     /// <summary>
@@ -125,13 +214,19 @@ public sealed class UhciCard : IExpansionCard
 
         EjectStorage();
         _storage = device;
-        StorageController.Attach(0, device);
+        _storagePortDevices[0] = device;
+        RouteStoragePort(0);
     }
 
     /// <summary>Unplugs and disposes whatever mass storage device is inserted, if any.</summary>
     public void EjectStorage()
     {
-        _storageController?.Attach(0, null);
+        _storagePortDevices[0] = null;
+        if (_storageController is not null)
+        {
+            RouteStoragePort(0);
+        }
+
         _storage?.Dispose();
         _storage = null;
     }
@@ -173,6 +268,20 @@ public sealed class UhciCard : IExpansionCard
             writer.Write(state.Length);
             writer.Write(state);
         }
+
+        // Version 1: the EHCI controller after the two UHCI ones, then for
+        // each storage port whether its device is plugged into EHCI.
+        if (_ehci is not null)
+        {
+            byte[] ehciState = _ehci.Capture();
+            writer.Write(ehciState.Length);
+            writer.Write(ehciState);
+            foreach (bool onEhci in _storagePortOnEhci)
+            {
+                writer.Write(onEhci);
+            }
+        }
+
         return stream.ToArray();
     }
 
@@ -185,20 +294,77 @@ public sealed class UhciCard : IExpansionCard
         }
 
         using var reader = new BinaryReader(new MemoryStream(payload));
-        foreach (UhciController controller in new[] { Controller, StorageController })
-        {
-            int length = reader.ReadInt32();
-            if (length < 0 || length > reader.BaseStream.Length - reader.BaseStream.Position)
-            {
-                throw new InvalidDataException("Invalid USB snapshot length.");
-            }
+        byte[] controllerState = ReadBlock(reader, "USB");
+        byte[] storageState = ReadBlock(reader, "USB");
 
-            controller.Restore(reader.ReadBytes(length));
+        // A version-1 file carries EHCI's state and, after it, which storage
+        // ports had their device on EHCI. The routing is applied first:
+        // each controller checks on restore that the device it recorded is
+        // the one plugged into it now.
+        if (version >= 1 && _ehci is null)
+        {
+            throw new InvalidDataException("The snapshot has EHCI state but this machine's USB card has no EHCI controller.");
+        }
+
+        byte[]? ehciState = null;
+        if (version >= 1)
+        {
+            ehciState = ReadBlock(reader, "EHCI");
+            for (int port = 0; port < _storagePortDevices.Length; port++)
+            {
+                bool onEhci = reader.ReadBoolean();
+                PlugStoragePort(port, onEhci);
+            }
+        }
+        else if (_ehci is not null)
+        {
+            // A file from before EHCI: everything on the companion, EHCI at reset.
+            _ehci.Reset();
+            for (int port = 0; port < _storagePortDevices.Length; port++)
+            {
+                PlugStoragePort(port, onEhci: false);
+            }
         }
 
         if (reader.BaseStream.Position != reader.BaseStream.Length)
         {
             throw new InvalidDataException("Invalid USB snapshot tail.");
+        }
+
+        Controller.Restore(controllerState);
+        StorageController.Restore(storageState);
+        if (ehciState is not null)
+        {
+            _ehci!.Restore(ehciState, EhciController.SnapshotVersion);
+        }
+    }
+
+    private static byte[] ReadBlock(BinaryReader reader, string what)
+    {
+        int length = reader.ReadInt32();
+        if (length < 0 || length > reader.BaseStream.Length - reader.BaseStream.Position)
+        {
+            throw new InvalidDataException($"Invalid {what} snapshot length.");
+        }
+
+        return reader.ReadBytes(length);
+    }
+
+    /// <summary>Plugs a storage port's device into EHCI or into the companion UHCI, unplugging it from the other.</summary>
+    private void PlugStoragePort(int port, bool onEhci)
+    {
+        IUsbDevice? device = _storagePortDevices[port];
+        _storagePortOnEhci[port] = onEhci;
+        if (onEhci)
+        {
+            StorageController.Attach(port, null);
+            _ehci!.Attach(port, device);
+        }
+        else
+        {
+            _ehci?.Attach(port, null);
+            device?.SelectSpeed(false);
+            StorageController.Attach(port, device);
         }
     }
 }

@@ -29,6 +29,7 @@ public static class CardCatalog
             ["rtl8029-pci"] = (_, settings) => new Rtl8029Card(settings),
             ["rtl8139-pci"] = (_, settings) => new Rtl8139Card(settings),
             ["uhci-piix"] = (_, _) => new UhciCard(),
+            ["ehci-ich9"] = (_, _) => new UhciCard(withEhci: true),
             ["ahci-ich9"] = (_, _) => new AhciCard(),
             ["hda-ich9"] = (_, _) => new HdaCard(),
         };
@@ -50,6 +51,7 @@ public static class CardCatalog
             ["rtl8029-pci"] = "network",
             ["rtl8139-pci"] = "network",
             ["uhci-piix"] = "usb",
+            ["ehci-ich9"] = "usb",
             ["ahci-ich9"] = "storage",
             ["hda-ich9"] = "sound",
         };
