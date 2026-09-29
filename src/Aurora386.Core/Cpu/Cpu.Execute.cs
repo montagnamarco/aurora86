@@ -532,7 +532,17 @@ public sealed partial class Cpu
             case 0xE6: { ushort port = FetchByte(); if (!IoPermitted(port, 1)) { FaultNow(13, 0); return; } _io.WriteByte(port, State.GetReg8(0)); return; }
             case 0xE7: { ushort port = FetchByte(); if (!IoPermitted(port, OperandSize32 ? 4 : 2)) { FaultNow(13, 0); return; } WriteAccumulatorToPort(port); return; }
             case 0xEC: if (!IoPermitted(State.Dx, 1)) { FaultNow(13, 0); return; } State.SetReg8(0, _io.ReadByte(State.Dx)); return;
-            case 0xED: if (!IoPermitted(State.Dx, OperandSize32 ? 4 : 2)) { FaultNow(13, 0); return; } ReadPortToAccumulator(State.Dx); return;
+            case 0xED:
+                // A backdoor call is answered before the permission check,
+                // as VMware answers it from any ring (IBackdoorPort).
+                if (OperandSize32 && Backdoor is { } backdoor && backdoor.TryHandleInput(State, State.Dx))
+                {
+                    return;
+                }
+
+                if (!IoPermitted(State.Dx, OperandSize32 ? 4 : 2)) { FaultNow(13, 0); return; }
+                ReadPortToAccumulator(State.Dx);
+                return;
             case 0xEE: if (!IoPermitted(State.Dx, 1)) { FaultNow(13, 0); return; } _io.WriteByte(State.Dx, State.GetReg8(0)); return;
             case 0xEF: if (!IoPermitted(State.Dx, OperandSize32 ? 4 : 2)) { FaultNow(13, 0); return; } WriteAccumulatorToPort(State.Dx); return;
 

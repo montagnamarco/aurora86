@@ -212,6 +212,10 @@ public sealed partial class Machine
         Pci.Reset();
         AuroraGpu?.Reset();
 
+        // The absolute pointer and the RPC channels start closed on every
+        // boot; whether the port answers at all is configuration and stays.
+        Backdoor.Reset();
+
         // A system BIOS enables the VGA device's I/O and memory decoders during
         // POST. The ViRGE gates standard VGA behind these bits, so they must be
         // set before the first text-mode store; the Trio decodes regardless,

@@ -52,6 +52,13 @@ public sealed class VmConfiguration
     /// <summary>The primary GPU. ViRGE currently provides experimental VGA and flat triangles.</summary>
     public VmVideoModel Video { get; set; } = VmVideoModel.S3Trio64VPlus;
 
+    /// <summary>
+    /// Whether the VMware-compatible backdoor answers (docs/VMWARE-BACKDOOR.md):
+    /// guest tools then find a hypervisor to talk to. Off by default, so a
+    /// guest probing for one sees real hardware.
+    /// </summary>
+    public bool HostIntegration { get; set; }
+
     public uint RamMegabytes { get; set; } = 16;
 
     /// <summary>Optional host output for an explicitly configured MPU-401 card.</summary>
@@ -575,6 +582,7 @@ public sealed class VmConfiguration
             chipset,
             initialCpuModel: Cpu,
             videoModel: Video);
+        machine.Backdoor.Enabled = HostIntegration;
         try
         {
             if (Hardware.Usb?.Storage is { } storage)

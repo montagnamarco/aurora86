@@ -51,6 +51,7 @@ string? writeLogPath = null;
 string? mouse = null;
 string? cpuModel = null;
 VmVideoModel? videoModel = null;
+bool hostIntegration = false;
 string? vmFolder = null;
 string? network = null;
 var forwards = new List<VmConfiguration.PortForward>();
@@ -172,6 +173,11 @@ for (int i = 0; i < args.Length; i++)
             };
             break;
 
+        // The VMware-compatible channel to the host (docs/VMWARE-BACKDOOR.md).
+        case "--host-integration":
+            hostIntegration = true;
+            break;
+
         case "--net":
             if (++i >= args.Length || args[i] is not ("nat" or "none"))
                 return Fail("--net needs nat or none");
@@ -261,6 +267,11 @@ using var machine = vmFolder is null
     ? new Machine(ramMegabytes * 1024 * 1024, videoModel: videoModel ?? VmVideoModel.S3Trio64VPlus)
     : LoadConfiguredMachine(vmFolder, videoModel);
 if (vmFolder is not null) Console.WriteLine($"machine: {vmFolder}");
+if (hostIntegration)
+{
+    machine.Backdoor.Enabled = true;
+    Console.WriteLine("host integration: VMware-compatible backdoor on port 5658h");
+}
 
 // Floppies take BIOS drive numbers 0x00 and 0x01; the hard disk takes 0x80,
 // the convention that separates removable from fixed media.
@@ -451,6 +462,7 @@ static void PrintUsage()
                                    letter after the disks, or X:; repeatable
               --boot <list>        boot order, like A,C or CD,C (default: every drive by number)
               --mouse ps2|serial   which port the mouse is on
+              --host-integration   answer the VMware-compatible backdoor (port 5658h)
               --video <adapter>    trio (default), virge, or aurora: the Aurora Display
                                    Adapter, VBE up to 1920x1080x32 and a 2D engine
               --cpu <model>        386, 486, pentium, pentium-mmx, pentium2, pentium3 or

@@ -78,7 +78,7 @@ public sealed partial class Machine
             keyboard.PushScanCode(scanCode);
             return true;
         };
-        Mouse.MotionInterceptor = (deltaX, deltaY) =>
+        _usbMotionRoute = (deltaX, deltaY) =>
         {
             if (mouse.Configuration == 0)
             {
@@ -88,7 +88,7 @@ public sealed partial class Machine
             mouse.Move(deltaX, deltaY);
             return true;
         };
-        Mouse.ButtonInterceptor = (button, pressed) =>
+        _usbButtonRoute = (button, pressed) =>
         {
             if (mouse.Configuration == 0)
             {

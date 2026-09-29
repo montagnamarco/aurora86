@@ -9,6 +9,7 @@ using Aurora386.Core.Devices.Timing;
 using Aurora386.Core.Devices.System;
 using Aurora386.Core.Devices.Network;
 using Aurora386.Core.Devices.IsaPnp;
+using Aurora386.Core.Devices.Host;
 using Aurora386.Core.Devices.Pci;
 using Aurora386.Core.Devices.Chipset;
 using Aurora386.Core.Devices.Audio;
@@ -74,6 +75,16 @@ public sealed partial class Machine : IDisposable
 
     /// <summary>The mouse on the 8042's auxiliary port, interrupting on IRQ 12.</summary>
     public Ps2Mouse Ps2Mouse { get; }
+
+    /// <summary>
+    /// The VMware-compatible hypervisor port (docs/VMWARE-BACKDOOR.md):
+    /// detection, the absolute mouse, time and screen size for tools already
+    /// written for VMware, and the channel Aurora OS reaches the host through.
+    /// Always fitted, answering only once <see cref="VmwareBackdoor.Enabled"/>
+    /// is set, so that a machine left at its defaults behaves like real
+    /// hardware to software that probes for a hypervisor.
+    /// </summary>
+    public VmwareBackdoor Backdoor { get; }
 
     /// <summary>A Microsoft serial mouse on COM1, for drivers that expect one there.</summary>
     public SerialMouse SerialMouse { get; }
@@ -489,6 +500,14 @@ public sealed partial class Machine : IDisposable
         Cpu.Msrs.ApicBaseChanged += Apic.OnApicBaseChanged;
         Apic.OnApicBaseChanged(Cpu.Msrs.ApicBaseRaw);
         Cpu.Interrupts = Apic;
+
+        Backdoor = new VmwareBackdoor(
+            () => CpuFrequencyHz / 1_000_000,
+            () => (Display.Width, Display.Height),
+            () => DateTimeOffset.UtcNow,
+            Ps2Mouse.RequestWakeupPacket);
+        Cpu.Backdoor = Backdoor;
+        InstallMouseRoutes();
 
         Bda = new BiosDataArea(Memory);
         VideoServices = new VideoServices(VideoMemory, VideoRegisters, Bda);

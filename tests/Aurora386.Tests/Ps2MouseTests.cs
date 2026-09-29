@@ -443,6 +443,81 @@ public class Ps2MouseTests
     }
 
     [Fact]
+    public void ARequestedWakeupPacketIsEmptyAndRaisesTheInterrupt()
+    {
+        // The VMware backdoor's absolute pointer channel (docs/VMWARE-BACKDOOR.md,
+        // section 4) has no interrupt of its own; it borrows the PS/2
+        // mouse's IRQ 12 by asking for an empty packet -- header 08h, no
+        // motion -- purely to raise it, even though nothing about this mouse
+        // has changed.
+        using var rig = new Rig();
+        rig.EnableMouse();
+
+        rig.Mouse.RequestWakeupPacket();
+        rig.Controller.PollMouse();
+
+        Assert.True(rig.OutputFull);
+        Assert.Equal(0x74, rig.Interrupts.Master.GetPendingVector());   // IRQ 12
+
+        byte header = rig.Data;
+        Assert.Equal(0x08, header);            // no buttons, no sign bits, bit 3 set
+        Assert.Equal(0, (sbyte)rig.Data);      // dx
+        Assert.Equal(0, (sbyte)rig.Data);      // dy
+    }
+
+    [Fact]
+    public void ARequestedWakeupPacketIsSentExactlyOncePerRequest()
+    {
+        // A second poll with nothing new to report -- and no fresh request --
+        // must go back to being silent, or the borrowed IRQ would fire on
+        // every poll forever after a single ABSPOINTER_DATA queue event.
+        using var rig = new Rig();
+        rig.EnableMouse();
+
+        rig.Mouse.RequestWakeupPacket();
+        rig.Controller.PollMouse();
+        rig.Skip(); rig.Skip(); rig.Skip();      // drain the one wakeup packet
+
+        rig.Controller.PollMouse();
+
+        Assert.False(rig.OutputFull, "a second poll without a new request must send nothing");
+    }
+
+    [Fact]
+    public void AWakeupRequestDoesNothingWhileReportingIsOff()
+    {
+        // The PS/2 mouse only volunteers packets in stream mode; a driver
+        // that has not yet enabled it is not listening for IRQ 12 either.
+        using var rig = new Rig();
+
+        rig.Mouse.RequestWakeupPacket();
+        rig.Controller.PollMouse();
+
+        Assert.False(rig.OutputFull);
+    }
+
+    [Fact]
+    public void ARealMovementSatisfiesAPendingWakeupRequestWithoutAnExtraPacket()
+    {
+        // If the PS/2 mouse already has real news, that packet raises IRQ 12
+        // on its own; the wakeup request is satisfied by it rather than
+        // adding a second, empty packet behind it.
+        using var rig = new Rig();
+        rig.EnableMouse();
+
+        rig.Mouse.RequestWakeupPacket();
+        rig.State.Move(5, 0);
+        rig.Controller.PollMouse();
+
+        byte header = rig.Data;
+        Assert.Equal(5, (sbyte)rig.Data);       // the real motion, not an empty packet
+        rig.Skip();
+
+        rig.Controller.PollMouse();
+        Assert.False(rig.OutputFull, "the wakeup request must not queue a second packet");
+    }
+
+    [Fact]
     public void AMachineFittedWithAMouseUnmasksIrqTwelve()
     {
         // The mouse's line has to be open on the slave controller and the
