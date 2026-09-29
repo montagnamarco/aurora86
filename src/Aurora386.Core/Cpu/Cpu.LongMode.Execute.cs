@@ -84,13 +84,20 @@ public sealed partial class Cpu
                 return;
 
             default:
-                // The arithmetic and logic groups (Cpu.LongMode.Alu.cs).
-                if (!TryExecuteAlu64(opcode))
+                // The arithmetic and logic groups (Cpu.LongMode.Alu.cs), then
+                // the stack, control-flow and miscellaneous ones
+                // (Cpu.LongMode.Control.cs).
+                if (TryExecuteAlu64(opcode))
                 {
-                    throw new CpuException(6);
+                    return;
                 }
 
-                return;
+                if (TryExecuteControl64(opcode))
+                {
+                    return;
+                }
+
+                throw new CpuException(6);
         }
     }
 
@@ -111,12 +118,17 @@ public sealed partial class Cpu
                 MoveToControlRegister64();
                 return;
             default:
-                if (!TryExecuteAluTwoByte64(opcode))
+                if (TryExecuteAluTwoByte64(opcode))
                 {
-                    throw new CpuException(6);
+                    return;
                 }
 
-                return;
+                if (TryExecuteControlTwoByte64(opcode))
+                {
+                    return;
+                }
+
+                throw new CpuException(6);
         }
     }
 

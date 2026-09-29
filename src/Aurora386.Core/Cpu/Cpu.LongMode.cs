@@ -76,8 +76,17 @@ public sealed partial class Cpu
 
         public SegReg Segment;
 
-        /// <summary>Base plus scaled index plus displacement, or only the displacement when <see cref="RipRelative"/>.</summary>
+        /// <summary>Base plus scaled index plus displacement; for RIP-relative operands already resolved against the end of the instruction.</summary>
         public ulong Address;
+
+        /// <summary>
+        /// Whether the SIB base register is RSP. POP r/m is the one
+        /// instruction that computes such an address after incrementing RSP
+        /// (SDM Vol.2 POP), so it adds its own operand size to
+        /// <see cref="Address"/> when this is set. RIP-relative operands
+        /// never have a base register.
+        /// </summary>
+        public bool StackPointerBase;
     }
 
     private LongModePrefixes _longPrefixes;
@@ -362,6 +371,8 @@ public sealed partial class Cpu
                 {
                     segment = SegReg.Ss;
                 }
+
+                operand.StackPointerBase = baseRegister == StackPointerIndex;
             }
         }
         else if (rmField == RipRelativeOrNoBase && mod == 0)
