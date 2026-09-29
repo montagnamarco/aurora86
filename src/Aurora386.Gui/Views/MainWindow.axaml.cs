@@ -70,7 +70,11 @@ public partial class MainWindow : Window
         // desktop, not just for us, because the platform call underneath is
         // system-wide and counts its hides. Nothing would then bring it back
         // short of logging out.
-        Closed += (_, _) => Screen.Capture.Release();
+        Closed += (_, _) =>
+        {
+            Screen.Capture.Release();
+            _hostClipboard?.Dispose();
+        };
     }
 
     private MainWindowViewModel? ViewModel => DataContext as MainWindowViewModel;
@@ -116,7 +120,17 @@ public partial class MainWindow : Window
         ViewModel.SaveScreenshotAsync = SaveScreenshotAsync;
         ViewModel.ShowDebugger = ShowDebugger;
         ViewModel.ShowVideoInspector = ShowVideoInspector;
+
+        // Built once and kept: it hooks this window's own Activated and
+        // Deactivated events, and building a second one on a later
+        // DataContext change would leave the first still subscribed and
+        // polling a clipboard nobody reads any more.
+        _hostClipboard ??= new AvaloniaHostClipboard(this, () => ViewModel?.HostIntegrationEnabled == true);
+        ViewModel.HostClipboard = _hostClipboard;
     }
+
+    /// <summary>The window's offer of the host clipboard to whichever machine the session builds.</summary>
+    private AvaloniaHostClipboard? _hostClipboard;
 
     /// <summary>
     /// Shows the debugger, reusing the window if it is already open rather

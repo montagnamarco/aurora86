@@ -47,6 +47,10 @@ tests.
 | # | Command | In | Out |
 |---|---|---|---|
 | 1 | GETMHZ | | EAX = processor MHz, EBX = magic |
+| 6 | GETSELLENGTH | | EAX = host selection length in bytes (section 8) |
+| 7 | GETNEXTPIECE | | EAX = next 4 bytes of the host selection, little-endian (section 8) |
+| 8 | SETSELLENGTH | EBX = guest selection length in bytes | (section 8) |
+| 9 | SETNEXTPIECE | EBX = next 4 bytes of the guest selection, little-endian | (section 8) |
 | 10 | GETVERSION | | EAX = 6, EBX = magic, ECX = 2 (QEMU's defaults: version 6, VMX type "scalable server") |
 | 15 | GETSCREENSIZE | | EAX = width << 16 \| height of the displayed picture |
 | 23 | GETTIME | | EAX = seconds since 1970, EBX = microseconds, ECX = maximum lag (µs), EDX = 0 |
@@ -111,3 +115,51 @@ absolute pointer and asked for absolute packets, the machine adds that
 motion to a position on the displayed picture, scales it to 0-FFFFh and
 queues a packet for every movement and button change; otherwise the motion
 goes to the USB, PS/2 or serial mouse as before.
+
+## 8. Clipboard
+
+Four commands, older than the RPC channel (section 5) and independent of it:
+open-vm-tools' compatibility shim (`services/plugins/dndcp/copyPasteCompat.c`)
+still drives exactly these when a guest's tools are too old to know about the
+RPCI clipboard exchange, and `backdoor_def.h` still declares them alongside
+every other command. There is no OPEN/CLOSE step; a transfer is just a
+length announcement followed by the payload four bytes at a time.
+
+- GETSELLENGTH: no input; returns the host selection's length in bytes in
+  EAX. VMware's own error constants for this call are not published, so
+  Aurora386 never returns a negative value: an absent front end or an empty
+  host clipboard both answer 0, which every guest already treats as "no
+  selection".
+- GETNEXTPIECE: no input; returns the next 4 bytes of the host selection in
+  EAX, packed little-endian, so a guest reads `ceil(length / 4)` pieces to
+  drain it. Reading past the end returns 0.
+- SETSELLENGTH: EBX = the guest selection's length in bytes.
+- SETNEXTPIECE: EBX = the next 4 bytes of the guest selection, packed
+  little-endian.
+
+Everything below this line is Aurora386's own choice, not a fact taken from
+open-vm-tools or any other reference implementation, because VMware never
+published the numeric limits or the exact error behaviour for this legacy
+pair of transfers:
+
+- Text crosses the backdoor as UTF-8 in both directions.
+- Both directions are capped at 65436 bytes, (1 << 16) - 100: the
+  independent review recalled that limit in open-vm-tools' copy-paste code,
+  above which a guest drops the selection whole. It is not confirmed against
+  the source; staying under it costs nothing. A host selection longer than
+  that is truncated to the cap at a UTF-8 character boundary -- the
+  character that would straddle the cut is dropped whole, never split. A
+  guest SETSELLENGTH longer than the cap is ignored outright: every
+  SETNEXTPIECE that follows it is discarded until the next SETSELLENGTH
+  announces a length Aurora386 is willing to hold.
+- GETSELLENGTH takes a snapshot of the host text; GETNEXTPIECE walks that
+  snapshot rather than re-reading the host clipboard on every call, so a
+  host copy in the middle of a transfer cannot tear what the guest reads.
+- The guest's selection is handed to `IHostClipboard.SetText` only once its
+  declared length has fully arrived. A zero-length SETSELLENGTH hands
+  nothing to the host clipboard at all -- "the guest selection is empty" is
+  not the same claim as "replace the host clipboard with an empty string".
+- Neither direction's transfer state is part of the snapshot format
+  (section 6): a host-selection read in progress and a guest-selection
+  write in progress are both dropped on `Reset()` and on `Restore()`, the
+  same as a queued pointer packet or an open RPC channel.

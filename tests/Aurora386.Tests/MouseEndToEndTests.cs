@@ -1,5 +1,7 @@
 using Aurora386.Core;
+using Aurora386.Core.Cpu;
 using Aurora386.Core.Devices.Storage;
+using Aurora386.Core.Devices.Host;
 using Aurora386.Core.Devices.Input;
 using Aurora386.Core.Devices.Interrupts;
 using Aurora386.Core.Devices.Timing;
@@ -447,6 +449,184 @@ public class MouseEndToEndTests
             machine => machine.MouseInterface);
 
         Assert.Equal(MouseInterface.Serial, afterReset);
+    }
+
+    // --- the VMware-compatible absolute pointer -------------------------------
+    //
+    // A guest that has loaded VMware Tools' mouse driver (or Linux's
+    // vmmouse) no longer wants deltas: it wants to know exactly where the
+    // host cursor is, in the 0-FFFFh range docs/VMWARE-BACKDOOR.md section 4
+    // describes. Once that driver is active there is nothing left for
+    // capture to do -- the pointer already tracks the host exactly, without
+    // ever needing to be hidden or leave the window -- so the front end must
+    // stop capturing and feed the cursor's own position instead.
+
+    [Fact]
+    public void MovingToTheCentreOfTheScreenFeedsTheAbsolutePointer()
+    {
+        (MainWindow window, _, Machine machine, _) = Open();
+
+        EnableAbsolutePointer(machine);
+
+        // The picture is always centred within the screen control's own
+        // bounds -- FitToMonitorAspect shrinks it symmetrically -- so the
+        // centre of the drawn picture is the centre of the control, whatever
+        // its aspect ratio ends up being.
+        Point centre = TranslateToWindow(window, new Point(
+            window.Screen.Bounds.Width / 2, window.Screen.Bounds.Height / 2));
+
+        // Machine.HostPointer.cs starts a freshly entered absolute route at
+        // the centre of the picture, on the theory that is roughly where a
+        // guest cursor already is -- see NoticeRouteChange's own summary. A
+        // move that lands exactly there first would then match that default
+        // and change nothing, queueing no packet at all. Moving off-centre
+        // first, and draining that packet, gives the move to the centre
+        // something to actually change from.
+        Move(window, TranslateToWindow(window, new Point(20, 20)));
+        DrainAbsolutePointerPacket(machine);
+
+        Move(window, centre);
+
+        (uint queueLength, int x, int y) = DrainAbsolutePointerPacket(machine);
+
+        // One packet is four dwords (status/buttons, X, Y, wheel); STATUS
+        // reports the queue in dwords, which is what a driver checks before
+        // asking DATA for a whole packet.
+        Assert.Equal(4u, queueLength);
+
+        // Centre of the picture scales to about the middle of the 0-FFFFh
+        // range; "about" because a picture a few hundred pixels wide can
+        // never land on FFFFh's exact midpoint.
+        Assert.InRange(x, 0x7000, 0x9000);
+        Assert.InRange(y, 0x7000, 0x9000);
+    }
+
+    [Fact]
+    public void ClickingWhileTheAbsolutePointerIsActiveDoesNotCaptureTheMouse()
+    {
+        (MainWindow window, _, Machine machine, _) = Open();
+
+        EnableAbsolutePointer(machine);
+
+        ClickLeft(window);
+
+        Assert.False(window.Screen.Capture.IsCaptured);
+    }
+
+    /// <summary>
+    /// A click with no move before it -- a window activated by the click
+    /// itself, a pen or touch tap -- lands where it was made, not wherever
+    /// the absolute pointer last was: the click is positioned first.
+    /// </summary>
+    [Fact]
+    public void AClickInAbsoluteModeLandsWhereItWasMade()
+    {
+        const uint LeftButtonBit = 0x20;
+        (MainWindow window, _, Machine machine, _) = Open();
+        EnableAbsolutePointer(machine);
+
+        Point nearTopLeft = TranslateToWindow(window, new Point(20, 20));
+        _app.Invoke(() => window.MouseDown(nearTopLeft, MouseButton.Left));
+
+        uint lastStatus = 0;
+        int lastX = -1;
+        machine.Backdoor.Enabled = true;
+        while (true)
+        {
+            CpuState status = CallBackdoor(machine, 40, 0);
+            if (status.Eax == 0)
+            {
+                break;
+            }
+
+            CpuState packet = CallBackdoor(machine, 39, 4);
+            lastStatus = packet.Eax;
+            lastX = (int)packet.Ebx;
+        }
+
+        Assert.Equal(LeftButtonBit, lastStatus & LeftButtonBit);
+        Assert.InRange(lastX, 0, 0x2000);
+    }
+
+    [Fact]
+    public void RequestingTheAbsolutePointerReleasesACaptureAlreadyHeld()
+    {
+        // A guest can load its VMware-aware driver after the user has
+        // already clicked the screen and taken capture the ordinary way.
+        // The next pointer event has to notice and let go, or the host
+        // pointer would stay hidden for a route nothing is reading any more.
+        (MainWindow window, _, Machine machine, _) = Open();
+
+        ClickLeft(window);
+        Assert.True(window.Screen.Capture.IsCaptured);
+
+        EnableAbsolutePointer(machine);
+        Move(window, new Point(400, 300));
+
+        Assert.False(window.Screen.Capture.IsCaptured);
+    }
+
+    /// <summary>
+    /// Enables the absolute pointer the way Linux's vmmouse driver does:
+    /// ENABLE, read the version dword back, REQUEST_ABSOLUTE
+    /// (docs/VMWARE-BACKDOOR.md section 4).
+    /// </summary>
+    private static void EnableAbsolutePointer(Machine machine)
+    {
+        const uint AbsolutePointerCommand = 41;
+        const uint AbsolutePointerData = 39;
+        const uint EnableSubcommand = 0x45414552;
+        const uint RequestAbsoluteSubcommand = 0x53424152;
+
+        machine.Backdoor.Enabled = true;
+        CallBackdoor(machine, AbsolutePointerCommand, EnableSubcommand);
+        CpuState version = CallBackdoor(machine, AbsolutePointerData, 1);
+        Assert.Equal(0x3442554Au, version.Eax);
+        CallBackdoor(machine, AbsolutePointerCommand, RequestAbsoluteSubcommand);
+    }
+
+    /// <summary>
+    /// Reads the queue length from ABSPOINTER_STATUS and, when a whole
+    /// packet is waiting, dequeues it through ABSPOINTER_DATA. X and Y come
+    /// back from EBX and ECX -- see VmwareBackdoor.Pointer.cs's
+    /// HandlePointerData for why those are the second and third dwords of a
+    /// packet.
+    /// </summary>
+    private static (uint QueueLength, int X, int Y) DrainAbsolutePointerPacket(Machine machine)
+    {
+        const uint AbsolutePointerStatus = 40;
+        const uint AbsolutePointerData = 39;
+        const uint WholePacket = 4;
+
+        CpuState status = CallBackdoor(machine, AbsolutePointerStatus, 0);
+        CpuState data = CallBackdoor(machine, AbsolutePointerData, WholePacket);
+
+        return (status.Eax, (int)(ushort)data.Ebx, (int)(ushort)data.Ecx);
+    }
+
+    /// <summary>
+    /// Converts a point in the screen control's own coordinates to the
+    /// window's, the way <see cref="Move"/> expects it: raised on the
+    /// window's own pointer pipeline, not on the control directly.
+    /// </summary>
+    private Point TranslateToWindow(MainWindow window, Point pointOnScreen) => _app.Invoke(() =>
+    {
+        Point? translated = window.Screen.TranslatePoint(pointOnScreen, window);
+        Assert.NotNull(translated);
+        return translated!.Value;
+    });
+
+    /// <summary>One backdoor call made directly on the device, with EBX as its argument.</summary>
+    private static CpuState CallBackdoor(Machine machine, uint command, uint argument)
+    {
+        var state = new CpuState
+        {
+            Eax = VmwareBackdoor.Magic,
+            Ecx = command,
+            Ebx = argument,
+        };
+        Assert.True(machine.Backdoor.TryHandleInput(state, VmwareBackdoor.Port));
+        return state;
     }
 
     // --- plumbing ------------------------------------------------------------

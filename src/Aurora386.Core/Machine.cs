@@ -86,6 +86,16 @@ public sealed partial class Machine : IDisposable
     /// </summary>
     public VmwareBackdoor Backdoor { get; }
 
+    /// <summary>
+    /// The host clipboard a front end offers to guests through the backdoor's
+    /// selection commands; null when it offers none.
+    /// </summary>
+    public IHostClipboard? HostClipboard
+    {
+        get => Backdoor.Clipboard;
+        set => Backdoor.Clipboard = value;
+    }
+
     /// <summary>A Microsoft serial mouse on COM1, for drivers that expect one there.</summary>
     public SerialMouse SerialMouse { get; }
 

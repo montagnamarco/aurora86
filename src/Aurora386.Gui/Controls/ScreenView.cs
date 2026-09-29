@@ -143,6 +143,14 @@ public sealed class ScreenView : Control
     {
         base.OnPointerMoved(e);
 
+        // A guest driver that understands the VMware-compatible absolute
+        // pointer wants the host cursor's own position, not a delta -- see
+        // TryDeliverAbsolutePointer for why that replaces capture entirely.
+        if (TryDeliverAbsolutePointer(e))
+        {
+            return;
+        }
+
         if (!TryReadMovement(e, out double hostX, out double hostY))
         {
             return;
@@ -207,6 +215,73 @@ public sealed class ScreenView : Control
 
     private double _residualX, _residualY;
 
+    /// <summary>
+    /// Feeds the host cursor's own position to the machine's absolute
+    /// pointer, when a guest driver has asked for one, and reports whether it
+    /// did.
+    ///
+    /// This is the alternative to capture, not a variant of it. Once the
+    /// guest tracks the host cursor exactly there is nothing left for capture
+    /// to add -- the pointer already follows the host across the whole
+    /// screen without ever needing to leave the window or be hidden -- so a
+    /// relative capture still held from before the driver loaded is let go
+    /// here rather than fighting the absolute route for the same motion.
+    ///
+    /// The picture's drawn rectangle is <see cref="FitToMonitorAspect"/>'s,
+    /// the same one <see cref="Render"/> uses to place the bitmap: computing
+    /// it twice from two different ideas of where the picture sits is how a
+    /// pointer ends up parked in a letterbox bar while the guest is drawn
+    /// somewhere else entirely.
+    /// </summary>
+    private bool TryDeliverAbsolutePointer(PointerEventArgs e)
+    {
+        if (_session is null)
+        {
+            return false;
+        }
+
+        Point position = e.GetPosition(this);
+        bool delivered = false;
+
+        _session.WithMachine(machine =>
+        {
+            if (!machine.AbsolutePointerRequested)
+            {
+                return;
+            }
+
+            if (Capture.IsCaptured)
+            {
+                Capture.Release();
+            }
+
+            Rect target = FitToMonitorAspect(Bounds.Size);
+            if (target.Width <= 0 || target.Height <= 0)
+            {
+                return;
+            }
+
+            double pictureX = (position.X - target.X) / target.Width * machine.Display.Width;
+            double pictureY = (position.Y - target.Y) / target.Height * machine.Display.Height;
+
+            // The pixel under the cursor is the one whose square contains it:
+            // floor, not round, or the pointer sits half a pixel off.
+            machine.PointAbsolute((int)Math.Floor(pictureX), (int)Math.Floor(pictureY));
+            delivered = true;
+        });
+
+        if (delivered)
+        {
+            // A reference point for whichever route resumes once absolute
+            // mode ends, so the first relative move afterwards reads as a
+            // small nudge rather than a leap from wherever the pointer
+            // happened to be sitting last.
+            _lastPointerPosition = position;
+        }
+
+        return delivered;
+    }
+
     protected override void OnPointerExited(PointerEventArgs e)
     {
         base.OnPointerExited(e);
@@ -228,7 +303,20 @@ public sealed class ScreenView : Control
         // itself is still delivered: the user meant to click something in
         // there, and swallowing the first click of every capture would be a
         // small but permanent annoyance.
-        Capture.Capture();
+        //
+        // Not while a guest driver has already asked for the absolute
+        // pointer, though: it already tracks the host cursor exactly, so
+        // there is nothing capture would add and hiding the cursor would
+        // only take away the host's own feedback for where the click landed.
+        //
+        // A click in absolute mode is positioned first: without a move
+        // before it -- a window activated by a click, a pen or touch tap --
+        // the button would otherwise land wherever the pointer last was.
+        bool absoluteRequested = TryDeliverAbsolutePointer(e);
+        if (!absoluteRequested)
+        {
+            Capture.Capture();
+        }
 
         PointerPointProperties properties = e.GetCurrentPoint(this).Properties;
         SetButtons(properties);

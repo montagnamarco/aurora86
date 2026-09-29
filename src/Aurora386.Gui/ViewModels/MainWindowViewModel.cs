@@ -9,6 +9,7 @@ using Aurora386.Core.Firmware;
 using Aurora386.Core.Firmware.Fpu;
 using Aurora386.Core.Configuration;
 using Aurora386.Core.Devices.Storage;
+using Aurora386.Core.Devices.Host;
 using Aurora386.Core.Diagnostics;
 using Aurora386.Core.Devices.Input;
 using Aurora386.Core.Devices.Network;
@@ -99,6 +100,33 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// <summary>Set by the view to open the debugger window.</summary>
     public Action<DebuggerViewModel>? ShowDebugger { get; set; }
 
+    /// <summary>
+    /// The host clipboard, set once by the view -- which is the only thing
+    /// that has a window to read it through -- shortly after construction.
+    /// Reaches the machine at once, the same way <see cref="MouseInterface"/>
+    /// does, and is reapplied by <see cref="HookMachineEvents"/> to every
+    /// machine built afterwards, cold reset and machine swap included, so a
+    /// rebuilt machine offers it just as the first one did.
+    /// </summary>
+    public IHostClipboard? HostClipboard
+    {
+        get => _hostClipboard;
+        set
+        {
+            _hostClipboard = value;
+            Session.WithMachine(machine => machine.HostClipboard = value);
+        }
+    }
+
+    private IHostClipboard? _hostClipboard;
+
+    /// <summary>
+    /// Whether the machine answers the VMware-compatible backdoor, and so
+    /// whether any guest can ask for the host clipboard at all; the view
+    /// polls the host clipboard only while this is true.
+    /// </summary>
+    public bool HostIntegrationEnabled => Session.WithMachine(machine => machine.Backdoor.Enabled);
+
     /// <summary>Carries the sound card's output to the host's speakers.</summary>
     private readonly AudioOutput _audio;
 
@@ -175,6 +203,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         Session.WithMachine(machine =>
         {
+            // Applied here rather than left to whoever set the property,
+            // because this method is what runs again on every reset and
+            // every machine swap: the clipboard belongs to the window, not
+            // to any one Machine instance, and each new instance starts with
+            // Backdoor.Clipboard null until this reapplies it.
+            machine.HostClipboard = HostClipboard;
+
             machine.DiskServices.DriveAccessed += OnDriveAccessed;
 
             // The guest decides the CD-ROM's letter, and says so only once

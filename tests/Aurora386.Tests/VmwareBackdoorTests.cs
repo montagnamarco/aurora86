@@ -417,6 +417,178 @@ public class VmwareBackdoorTests
         Assert.Equal(0u, recvSize.Ebx);
     }
 
+    // --- the clipboard (GETSELLENGTH/GETNEXTPIECE/SETSELLENGTH/SETNEXTPIECE) ---
+
+    private const ushort CommandGetSelLength = 6;
+    private const ushort CommandGetNextPiece = 7;
+    private const ushort CommandSetSelLength = 8;
+    private const ushort CommandSetNextPiece = 9;
+
+    /// <summary>
+    /// A host clipboard double that hands back a fixed string and records
+    /// what the guest last set, so tests can assert on both directions
+    /// without a real toolkit clipboard.
+    /// </summary>
+    private sealed class FakeHostClipboard : IHostClipboard
+    {
+        public string? Text { get; set; }
+        public string? LastSetText { get; private set; }
+
+        public string? GetText() => Text;
+
+        public void SetText(string text)
+        {
+            LastSetText = text;
+        }
+    }
+
+    [Fact]
+    public void GetSelLengthAndGetNextPieceReadTheHostSelectionUtf8LittleEndian()
+    {
+        // "héllo" is 6 bytes in UTF-8 (h, C3, A9, l, l, o): the accented
+        // letter takes two bytes, so this also proves the packing is byte-
+        // exact rather than one dword per character.
+        var clipboard = new FakeHostClipboard { Text = "héllo" };
+        VmwareBackdoor device = NewDevice();
+        device.Enabled = true;
+        device.Clipboard = clipboard;
+
+        CpuState length = NewCallWithMagic(CommandGetSelLength);
+        Assert.True(device.TryHandleInput(length, VmwareBackdoor.Port));
+        Assert.Equal(6u, length.Eax);
+
+        CpuState firstPiece = NewCallWithMagic(CommandGetNextPiece);
+        Assert.True(device.TryHandleInput(firstPiece, VmwareBackdoor.Port));
+        Assert.Equal(0x6CA9C368u, firstPiece.Eax);   // 'h', C3, A9, 'l' packed little-endian
+
+        CpuState secondPiece = NewCallWithMagic(CommandGetNextPiece);
+        Assert.True(device.TryHandleInput(secondPiece, VmwareBackdoor.Port));
+        Assert.Equal(0x00006F6Cu, secondPiece.Eax);   // 'l', 'o', then nothing left
+
+        CpuState pastTheEnd = NewCallWithMagic(CommandGetNextPiece);
+        Assert.True(device.TryHandleInput(pastTheEnd, VmwareBackdoor.Port));
+        Assert.Equal(0u, pastTheEnd.Eax);
+    }
+
+    [Fact]
+    public void AMissingHostClipboardReportsASelectionLengthOfZero()
+    {
+        VmwareBackdoor device = NewDevice();
+        device.Enabled = true;
+        device.Clipboard = null;
+
+        CpuState length = NewCallWithMagic(CommandGetSelLength);
+        Assert.True(device.TryHandleInput(length, VmwareBackdoor.Port));
+        Assert.Equal(0u, length.Eax);
+
+        CpuState piece = NewCallWithMagic(CommandGetNextPiece);
+        Assert.True(device.TryHandleInput(piece, VmwareBackdoor.Port));
+        Assert.Equal(0u, piece.Eax);
+    }
+
+    [Fact]
+    public void SetSelLengthAndSetNextPieceHandleTheGuestSelectionToTheHostClipboard()
+    {
+        // Five ASCII bytes, "ABCDE": a length that is not a multiple of four,
+        // so the second SETNEXTPIECE dword only contributes its low byte.
+        var clipboard = new FakeHostClipboard();
+        VmwareBackdoor device = NewDevice();
+        device.Enabled = true;
+        device.Clipboard = clipboard;
+
+        CpuState declare = NewCallWithMagic(CommandSetSelLength);
+        declare.Ebx = 5;
+        Assert.True(device.TryHandleInput(declare, VmwareBackdoor.Port));
+        Assert.Null(clipboard.LastSetText);   // nothing handed over until the transfer completes
+
+        CpuState firstPiece = NewCallWithMagic(CommandSetNextPiece);
+        firstPiece.Ebx = 0x44434241;   // 'A', 'B', 'C', 'D' packed little-endian
+        Assert.True(device.TryHandleInput(firstPiece, VmwareBackdoor.Port));
+        Assert.Null(clipboard.LastSetText);   // one byte still to come
+
+        CpuState secondPiece = NewCallWithMagic(CommandSetNextPiece);
+        secondPiece.Ebx = 0x00000045;   // 'E' in the low byte; the rest is padding past the declared length
+        Assert.True(device.TryHandleInput(secondPiece, VmwareBackdoor.Port));
+        Assert.Equal("ABCDE", clipboard.LastSetText);
+    }
+
+    [Fact]
+    public void AZeroLengthGuestSelectionSetsNothingOnTheHostClipboard()
+    {
+        var clipboard = new FakeHostClipboard { Text = "unchanged" };
+        VmwareBackdoor device = NewDevice();
+        device.Enabled = true;
+        device.Clipboard = clipboard;
+
+        CpuState declare = NewCallWithMagic(CommandSetSelLength);
+        declare.Ebx = 0;
+        Assert.True(device.TryHandleInput(declare, VmwareBackdoor.Port));
+
+        Assert.Null(clipboard.LastSetText);
+    }
+
+    [Fact]
+    public void AnOversizedSetSelLengthIsIgnoredAndItsPiecesAreDiscarded()
+    {
+        var clipboard = new FakeHostClipboard();
+        VmwareBackdoor device = NewDevice();
+        device.Enabled = true;
+        device.Clipboard = clipboard;
+
+        CpuState declare = NewCallWithMagic(CommandSetSelLength);
+        declare.Ebx = 64 * 1024 + 1;   // one byte past Aurora386's cap
+        Assert.True(device.TryHandleInput(declare, VmwareBackdoor.Port));
+
+        CpuState piece = NewCallWithMagic(CommandSetNextPiece);
+        piece.Ebx = 0x44434241;
+        Assert.True(device.TryHandleInput(piece, VmwareBackdoor.Port));
+
+        Assert.Null(clipboard.LastSetText);
+    }
+
+    [Fact]
+    public void AHostSelectionOverTheCapIsTruncatedWithoutSplittingACharacter()
+    {
+        // 65435 ASCII bytes followed by "é" (two UTF-8 bytes) is 65437 bytes
+        // total, one past the 65436-byte cap; cutting at the cap would land
+        // inside "é" (its second, continuation byte), so the whole character
+        // must be dropped rather than have only its first byte kept.
+        string oversized = new string('a', 65435) + "é";
+        var clipboard = new FakeHostClipboard { Text = oversized };
+        VmwareBackdoor device = NewDevice();
+        device.Enabled = true;
+        device.Clipboard = clipboard;
+
+        CpuState length = NewCallWithMagic(CommandGetSelLength);
+        Assert.True(device.TryHandleInput(length, VmwareBackdoor.Port));
+        Assert.Equal(65435u, length.Eax);
+    }
+
+    [Fact]
+    public void GetSelLengthSnapshotsTheHostTextSoALaterHostChangeCannotTearTheRead()
+    {
+        var clipboard = new FakeHostClipboard { Text = "first" };
+        VmwareBackdoor device = NewDevice();
+        device.Enabled = true;
+        device.Clipboard = clipboard;
+
+        CpuState length = NewCallWithMagic(CommandGetSelLength);
+        Assert.True(device.TryHandleInput(length, VmwareBackdoor.Port));
+        Assert.Equal(5u, length.Eax);
+
+        // The host clipboard changes after GETSELLENGTH but before every
+        // piece has been read.
+        clipboard.Text = "a completely different and much longer replacement";
+
+        CpuState firstPiece = NewCallWithMagic(CommandGetNextPiece);
+        Assert.True(device.TryHandleInput(firstPiece, VmwareBackdoor.Port));
+        Assert.Equal(0x73726966u, firstPiece.Eax);   // 'f', 'i', 'r', 's' packed little-endian
+
+        CpuState secondPiece = NewCallWithMagic(CommandGetNextPiece);
+        Assert.True(device.TryHandleInput(secondPiece, VmwareBackdoor.Port));
+        Assert.Equal(0x00000074u, secondPiece.Eax);   // 't', the fifth and last byte of "first"
+    }
+
     // --- snapshots -------------------------------------------------------------
 
     [Fact]

@@ -169,6 +169,42 @@ public sealed partial class Machine
         }
     }
 
+    /// <summary>
+    /// True while a guest driver has asked for absolute pointer packets. A
+    /// front end reads it to stop capturing the host mouse and deliver the
+    /// host cursor's own position through <see cref="PointAbsolute"/>, which
+    /// is what lets the pointer leave and re-enter the window freely.
+    /// </summary>
+    public bool AbsolutePointerRequested => AbsolutePointerActive;
+
+    /// <summary>
+    /// Places the absolute pointer at a pixel of the displayed picture, from
+    /// a front end that knows where the host cursor is. Ignored unless a
+    /// guest driver has asked for absolute packets; coordinates outside the
+    /// picture are clamped to its edge.
+    /// </summary>
+    public void PointAbsolute(int x, int y)
+    {
+        NoticeRouteChange();
+        if (!AbsolutePointerActive)
+        {
+            return;
+        }
+
+        int widthLimit = Math.Max(Display.Width, 1) - 1;
+        int heightLimit = Math.Max(Display.Height, 1) - 1;
+        int clampedX = Math.Clamp(x, 0, widthLimit);
+        int clampedY = Math.Clamp(y, 0, heightLimit);
+        if (clampedX == _absolutePointerX && clampedY == _absolutePointerY)
+        {
+            return;
+        }
+
+        _absolutePointerX = clampedX;
+        _absolutePointerY = clampedY;
+        QueueAbsolutePointer(0);
+    }
+
     /// <summary>Scales the pixel position to 0-FFFFh across the picture and queues one packet.</summary>
     private void QueueAbsolutePointer(int wheel)
     {

@@ -33,6 +33,8 @@ public sealed partial class VmwareBackdoor : IBackdoorPort
     public const uint Magic = 0x564D5868;
 
     // Command numbers (ECX's low word, docs/VMWARE-BACKDOOR.md section 3).
+    // The clipboard quartet (6-9) is declared in VmwareBackdoor.Clipboard.cs,
+    // next to the handlers that answer them.
     private const ushort CommandGetMhz = 1;
     private const ushort CommandGetVersion = 10;
     private const ushort CommandGetScreenSize = 15;
@@ -74,6 +76,14 @@ public sealed partial class VmwareBackdoor : IBackdoorPort
     /// what a real PC does and what detection code tests for.
     /// </summary>
     public bool Enabled { get; set; }
+
+    /// <summary>
+    /// The host clipboard the legacy selection commands read and write
+    /// (docs/VMWARE-BACKDOOR.md section 8), or null when the front end
+    /// offers none: the guest then sees an empty host selection and its own
+    /// is discarded.
+    /// </summary>
+    public IHostClipboard? Clipboard { get; set; }
 
     /// <summary>
     /// The far end of the RPC channel (section 5). Defaults to
@@ -122,6 +132,22 @@ public sealed partial class VmwareBackdoor : IBackdoorPort
         ushort command = (ushort)(state.Ecx & 0xFFFF);
         switch (command)
         {
+            case CommandGetSelLength:
+                HandleGetSelLength(state);
+                break;
+
+            case CommandGetNextPiece:
+                HandleGetNextPiece(state);
+                break;
+
+            case CommandSetSelLength:
+                HandleSetSelLength(state);
+                break;
+
+            case CommandSetNextPiece:
+                HandleSetNextPiece(state);
+                break;
+
             case CommandGetMhz:
                 state.Eax = (uint)_processorMegahertz();
                 state.Ebx = Magic;
@@ -206,6 +232,9 @@ public sealed partial class VmwareBackdoor : IBackdoorPort
     /// Restores power-on state: the port stops answering ABSPOINTER_DATA
     /// with anything queued and every open RPC channel disappears, exactly
     /// as section 6 says a guest must expect after a VMware checkpoint.
+    /// Any clipboard transfer in progress (section 8) is dropped the same
+    /// way, since it is neither published state a guest can query nor part
+    /// of the snapshot format.
     /// </summary>
     public void Reset()
     {
@@ -214,6 +243,7 @@ public sealed partial class VmwareBackdoor : IBackdoorPort
         _pointerQueue.Clear();
         _channels.Clear();
         _nextCookieSeed = 1;
+        ResetClipboardTransfers();
     }
 
     // --- snapshot ------------------------------------------------------------
@@ -268,9 +298,10 @@ public sealed partial class VmwareBackdoor : IBackdoorPort
     }
 
     /// <summary>
-    /// Installs a validated capture. Queued packets and open channels are not
-    /// part of the format, so restoring always leaves them as
-    /// <see cref="Reset"/> would: empty and closed.
+    /// Installs a validated capture. Queued packets, open channels and any
+    /// clipboard transfer in progress are not part of the format, so
+    /// restoring always leaves them as <see cref="Reset"/> would: empty and
+    /// closed.
     /// </summary>
     public void Restore(ReadOnlySpan<byte> payload)
     {
@@ -282,6 +313,7 @@ public sealed partial class VmwareBackdoor : IBackdoorPort
         _pointerQueue.Clear();
         _channels.Clear();
         _nextCookieSeed = 1;
+        ResetClipboardTransfers();
     }
 
     private static byte BoolToByte(bool value) => value ? (byte)1 : (byte)0;
