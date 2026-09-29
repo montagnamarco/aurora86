@@ -462,7 +462,18 @@ public sealed class ModelSpecificRegisters
         }
 
         ulong writable = implemented & ~CpuState.EferLongModeActive;
-        state.Efer = (value & writable) | (state.Efer & CpuState.EferLongModeActive);
+        ulong newEfer = (value & writable) | (state.Efer & CpuState.EferLongModeActive);
+        bool executeDisableChanges = ((state.Efer ^ newEfer) & CpuState.EferNoExecuteEnable) != 0;
+        state.Efer = newEfer;
+
+        // NXE changes what a cached translation means -- whether XD forbids
+        // a fetch, whether bit 63 is reserved -- so no cached one survives
+        // it, exactly as a CR4.PAE change flushes (SDM Vol.3A §4.10.4.1).
+        if (executeDisableChanges)
+        {
+            _cpu.FlushTlb();
+        }
+
         return true;
     }
 

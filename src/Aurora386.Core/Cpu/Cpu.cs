@@ -261,6 +261,8 @@ public sealed partial class Cpu
     {
         if (!State.PagingEnabled) return _memory.ReadByte(linear);
 
+        if (State.LongModeActive) return PeekLinearLongMode(linear);
+
         if ((State.Cr4 & CpuState.Cr4Pae) != 0) return PeekLinearPae(linear);
 
         // The walk by hand, because TranslatePaged raises a page fault on a
@@ -510,7 +512,7 @@ public sealed partial class Cpu
         uint page = linear & 0xFFFFF000;
         if (page != _fetchPage || State.Cpl != _fetchCpl)
         {
-            _fetchPhysical = TranslateWhenPaging(linear, false) & 0xFFFFF000;
+            _fetchPhysical = TranslateWhenPaging(linear, false, execute: true) & 0xFFFFF000;
             _fetchPage = page;
             _fetchCpl = State.Cpl;
         }
@@ -527,6 +529,7 @@ public sealed partial class Cpu
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ushort FetchWord()
     {
+        CheckFetchIntoNextPage(2);
         ushort value = ReadMem16(SegReg.Cs, State.Eip);
         State.Eip += 2;
         return value;
@@ -535,9 +538,53 @@ public sealed partial class Cpu
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint FetchDword()
     {
+        CheckFetchIntoNextPage(4);
         uint value = ReadMem32(SegReg.Cs, State.Eip);
         State.Eip += 4;
         return value;
+    }
+
+    /// <summary>
+    /// A word or dword of the instruction stream is read as data
+    /// (ReadMem16/ReadMem32), which never asks whether a page may be
+    /// executed. When the read runs past the page <see cref="FetchByte"/>
+    /// last cleared for execution, and execute-disable is in force, this
+    /// asks the page walk that question for the next page first, so an
+    /// immediate that spills into an XD page faults as the fetch it is. With
+    /// execute-disable off, or within the same page, it costs one compare.
+    /// The CS limit is checked here before any page is walked: a limit
+    /// violation outranks a code page fault (SDM Vol.3A Table 6-2, class 7).
+    /// Only on this execute-disable path; otherwise ReadMem16/ReadMem32
+    /// check it as always, so older guests pay nothing twice. A fault on the second
+    /// page reports that page's first byte in CR2, as Bochs and QEMU do.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CheckFetchIntoNextPage(int size)
+    {
+        if (!State.PagingEnabled || !InstructionFetchReported)
+        {
+            return;
+        }
+
+        CheckLimit(SegReg.Cs, State.Eip, (uint)size);
+        uint firstLinear = State.Segments[(int)SegReg.Cs].Base + State.Eip;
+        uint lastLinear = firstLinear + (uint)(size - 1);
+        uint firstPage = firstLinear & 0xFFFFF000;
+        uint lastPage = lastLinear & 0xFFFFF000;
+        if (lastPage == _fetchPage)
+        {
+            return;
+        }
+
+        if (firstPage != _fetchPage)
+        {
+            TranslateWhenPaging(firstLinear, false, execute: true);
+        }
+
+        if (lastPage != firstPage)
+        {
+            TranslateWhenPaging(lastPage, false, execute: true);
+        }
     }
 
     /// <summary>Immediate at the current operand size.</summary>

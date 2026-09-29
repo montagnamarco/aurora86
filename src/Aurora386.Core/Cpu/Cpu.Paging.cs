@@ -68,7 +68,13 @@ public sealed partial class Cpu
     /// cannot express it in virtual 8086 mode, where the privilege is not a
     /// stored field but a consequence of the mode. See TranslateSupervisor.
     /// </param>
-    private uint TranslatePaged(uint linear, bool write, bool asSupervisor = false)
+    /// <param name="execute">
+    /// True for an instruction fetch. The legacy two-level format has no
+    /// execute-disable bit, so every page it maps is executable; the flag is
+    /// passed only so a cached translation filled by this walk answers the
+    /// same question the PAE and long-mode walks ask of it.
+    /// </param>
+    private uint TranslatePaged(uint linear, bool write, bool asSupervisor = false, bool execute = false)
     {
         uint page = linear & 0xFFFFF000;
         uint offset = linear & 0xFFF;
@@ -83,7 +89,7 @@ public sealed partial class Cpu
         ref TlbEntry entry = ref _tlb[(page >> 12) & (TlbSize - 1)];
         if (entry.Valid && entry.Page == page)
         {
-            CheckPagePermissions(linear, write, entry.Writable, entry.User, asSupervisor);
+            CheckPagePermissions(linear, write, entry.Writable, entry.User, asSupervisor, execute, entry.Executable);
 
             // The dirty bit is not cached: a page that has only been read may
             // be written next, and the operating system has to be told.
@@ -141,6 +147,7 @@ public sealed partial class Cpu
         entry.Writable = writable;
         entry.User = user;
         entry.Dirty = (updated & PageDirty) != 0;
+        entry.Executable = true;
         entry.TableEntryAddress = tableEntryAddress;
         entry.LargePageMask = 0;
 
@@ -211,6 +218,7 @@ public sealed partial class Cpu
         // The dirty bit lives in the PDE itself here, so the lazy dirty-bit
         // write in TranslatePaged's cache-hit path -- which always targets
         // TableEntryAddress -- reaches the right dword without change.
+        entry.Executable = true;
         entry.TableEntryAddress = directoryAddress;
         entry.LargePageMask = LegacyLargePageMask;
         entry.Global = (State.Cr4 & CpuState.Cr4Pge) != 0 && (directoryEntry & PageGlobal) != 0;
@@ -229,14 +237,22 @@ public sealed partial class Cpu
     /// cannot be expressed by writing ring 0 into the state in V86 mode.
     /// </summary>
     private void CheckPagePermissions(uint linear, bool write, bool writable, bool user,
-                                      bool asSupervisor = false)
+                                      bool asSupervisor = false, bool execute = false, bool executable = true)
     {
         bool userMode = !asSupervisor && State.Cpl == 3;
+        bool instructionFetch = execute && InstructionFetchReported;
 
         // Supervisor-only pages are invisible to ring 3. This is the whole
         // basis of keeping the kernel safe from applications.
         if (userMode && !user)
-            throw new PageFaultException(linear, write, present: true, user: true);
+            throw new PageFaultException(linear, write, present: true, user: true, instructionFetch: instructionFetch);
+
+        // A page whose tables set the execute-disable bit (XD, bit 63, with
+        // EFER.NXE on) may be read and written but never fetched from, at
+        // any privilege (SDM Vol.3A §4.6). The bit exists only in the PAE
+        // and long-mode formats; the legacy walk marks every page executable.
+        if (execute && !executable)
+            throw new PageFaultException(linear, write, present: true, user: userMode, instructionFetch: true);
 
         // Read-only pages cannot be written from user code. Supervisor code
         // may write them on a 386 whatever the bit says -- the 386 has no
@@ -248,6 +264,33 @@ public sealed partial class Cpu
         bool writeProtect = (State.Cr0 & (1u << 16)) != 0;
         if (write && !writable && (userMode || writeProtect))
             throw new PageFaultException(linear, write, present: true, user: userMode);
+    }
+
+    /// <summary>
+    /// Whether a page fault's error code reports instruction fetches (bit 4,
+    /// I/D): only when execute-disable is in force, that is PAE or long-mode
+    /// paging with EFER.NXE set (SDM Vol.3A §4.7; there is no SMEP here).
+    /// </summary>
+    private bool InstructionFetchReported =>
+        (State.Cr4 & CpuState.Cr4Pae) != 0 && (State.Efer & CpuState.EferNoExecuteEnable) != 0;
+
+    /// <summary>
+    /// A page fault from the PAE or long-mode walk, whose error code carries
+    /// the instruction-fetch bit whenever <see cref="InstructionFetchReported"/>
+    /// says so -- for a missing page and a reserved bit as much as for a
+    /// protection violation, since the bit describes the access, not the
+    /// cause.
+    /// </summary>
+    private PageFaultException WalkFault(uint linear, bool write, bool present, bool asSupervisor,
+                                         bool execute, bool reserved = false)
+    {
+        return new PageFaultException(
+            linear,
+            write,
+            present,
+            user: !asSupervisor && State.Cpl == 3,
+            reserved: reserved,
+            instructionFetch: execute && InstructionFetchReported);
     }
 
     private void MarkDirty(uint tableEntryAddress)
@@ -418,6 +461,15 @@ public sealed partial class Cpu
         public bool Dirty;
 
         /// <summary>
+        /// Whether code may be fetched from the page: false when any level
+        /// of a PAE or long-mode walk had XD (bit 63) set with EFER.NXE on.
+        /// EFER.NXE changing flushes the TLB (ModelSpecificRegisters'
+        /// TryWriteEfer), so a cached value never outlives the rule it was
+        /// computed under.
+        /// </summary>
+        public bool Executable;
+
+        /// <summary>
         /// Whether PGE (CR4 bit 7) makes this translation survive a CR3
         /// reload: the leaf entry's own G bit, already ANDed with CR4.PGE
         /// at fill time (TranslatePaged, TranslateLargePage, TranslatePae),
@@ -529,7 +581,7 @@ public sealed partial class Cpu
     /// -- mirrors <see cref="LargePageReservedMask"/>'s legacy-format
     /// equivalent (coordinator decision U3).
     /// </summary>
-    private ulong PaePteReservedMask => PaeReservedHighMask
+    private ulong PaePteReservedMask => PaeEntryReservedHighMask
         | (State.Features.Has(CpuFeature.Pat) ? 0UL : PaePatBit);
 
     /// <summary>
@@ -538,8 +590,25 @@ public sealed partial class Cpu
     /// <see cref="CpuFeature.Pat"/> -- mirrors <see cref="LargePageReservedMask"/>'s
     /// legacy-format equivalent (coordinator decision U3).
     /// </summary>
-    private ulong Pae2MbPdeReservedMask => PaeReservedHighMask | Pae2MbReservedMask
+    private ulong Pae2MbPdeReservedMask => PaeEntryReservedHighMask | Pae2MbReservedMask
         | (State.Features.Has(CpuFeature.Pat) ? 0UL : PaeLargePagePatBit);
+
+    /// <summary>
+    /// Bit 63 of a PAE or long-mode PDE/PTE (and a long-mode PML4E/PDPTE):
+    /// XD, execute-disable, meaningful only while EFER.NXE is set and
+    /// reserved otherwise (SDM Vol.3A Tables 4-9 to 4-11 and 4-15 to 4-20).
+    /// A PAE PDPT register never has it.
+    /// </summary>
+    private const ulong ExecuteDisableBit = 1UL << 63;
+
+    /// <summary>
+    /// The high reserved bits of a PAE PDE or PTE: 63:36 (this processor's
+    /// physical address width is 36 bits, CPUID 80000008h), less bit 63
+    /// once EFER.NXE makes it the XD bit.
+    /// </summary>
+    private ulong PaeEntryReservedHighMask => (State.Efer & CpuState.EferNoExecuteEnable) != 0
+        ? PaeReservedHighMask & ~ExecuteDisableBit
+        : PaeReservedHighMask;
 
     /// <summary>Bits 35:12: a 4 KB-aligned 36-bit physical address, whether it names the next table down or (a PTE's, or a 2 MB PDE's) own frame.</summary>
     private const ulong PaeAddressMask4K = ((1UL << 36) - 1) & ~0xFFFUL;
@@ -700,7 +769,7 @@ public sealed partial class Cpu
     /// lives in bit 6 of the low dword in both formats, so the lazy dirty
     /// write on a cache hit needs no PAE-specific version at all).
     /// </summary>
-    private uint TranslatePae(uint linear, bool write, bool asSupervisor = false)
+    private uint TranslatePae(uint linear, bool write, bool asSupervisor = false, bool execute = false)
     {
         uint page = linear & 0xFFFFF000;
         uint offset = linear & 0xFFF;
@@ -708,7 +777,7 @@ public sealed partial class Cpu
         ref TlbEntry entry = ref _tlb[(page >> 12) & (TlbSize - 1)];
         if (entry.Valid && entry.Page == page)
         {
-            CheckPagePermissions(linear, write, entry.Writable, entry.User, asSupervisor);
+            CheckPagePermissions(linear, write, entry.Writable, entry.User, asSupervisor, execute, entry.Executable);
 
             if (write && !entry.Dirty)
             {
@@ -726,27 +795,27 @@ public sealed partial class Cpu
         // loaded; only presence is checked on every translation.
         ulong pdpte = Pdpte[(linear >> 30) & 0x3];
         if ((pdpte & PaePresent) == 0)
-            throw new PageFaultException(linear, write, present: false, user: !asSupervisor && State.Cpl == 3);
+            throw WalkFault(linear, write, present: false, asSupervisor, execute);
 
         uint directoryIndex = (linear >> 21) & 0x1FF;
         ulong pdeAddress64 = (pdpte & PaeAddressMask4K) + directoryIndex * 8;
         ulong pde = ReadPagingStructureEntry(pdeAddress64);
         if ((pde & PaePresent) == 0)
-            throw new PageFaultException(linear, write, present: false, user: !asSupervisor && State.Cpl == 3);
+            throw WalkFault(linear, write, present: false, asSupervisor, execute);
 
         if ((pde & PaePageSize) != 0)
-            return TranslatePae2MbPage(linear, write, page, offset, (uint)pdeAddress64, pde, ref entry, asSupervisor);
+            return TranslatePae2MbPage(linear, write, page, offset, (uint)pdeAddress64, pde, ref entry, asSupervisor, execute);
 
-        if ((pde & PaeReservedHighMask) != 0)
-            throw new PageFaultException(linear, write, present: true, user: !asSupervisor && State.Cpl == 3, reserved: true);
+        if ((pde & PaeEntryReservedHighMask) != 0)
+            throw WalkFault(linear, write, present: true, asSupervisor, execute, reserved: true);
 
         uint tableIndex = (linear >> 12) & 0x1FF;
         ulong pteAddress64 = (pde & PaeAddressMask4K) + tableIndex * 8;
         ulong pte = ReadPagingStructureEntry(pteAddress64);
         if ((pte & PaePresent) == 0)
-            throw new PageFaultException(linear, write, present: false, user: !asSupervisor && State.Cpl == 3);
+            throw WalkFault(linear, write, present: false, asSupervisor, execute);
         if ((pte & PaePteReservedMask) != 0)
-            throw new PageFaultException(linear, write, present: true, user: !asSupervisor && State.Cpl == 3, reserved: true);
+            throw WalkFault(linear, write, present: true, asSupervisor, execute, reserved: true);
 
         // Reaching here means PS was clear, so pde is not the open-bus
         // sentinel (that reads back with every bit, PS included, set) --
@@ -760,8 +829,9 @@ public sealed partial class Cpu
         // 6's confirmation that rights are the PDE/PTE AND alone).
         bool writable = (pde & PaeReadWrite) != 0 && (pte & PaeReadWrite) != 0;
         bool user = (pde & PaeUserSupervisor) != 0 && (pte & PaeUserSupervisor) != 0;
+        bool executable = IsExecutable(pde) && IsExecutable(pte);
 
-        CheckPagePermissions(linear, write, writable, user, asSupervisor);
+        CheckPagePermissions(linear, write, writable, user, asSupervisor, execute, executable);
 
         // The PDE's own A bit records that the walk reached it, exactly as
         // the legacy directory entry's does.
@@ -793,6 +863,7 @@ public sealed partial class Cpu
         entry.Writable = writable;
         entry.User = user;
         entry.Dirty = (updatedPte & PaeDirty) != 0;
+        entry.Executable = executable;
         entry.TableEntryAddress = pteAddress;
         entry.LargePageMask = 0;
         entry.Global = (State.Cr4 & CpuState.Cr4Pge) != 0 && (pte & PaeGlobal) != 0;
@@ -810,19 +881,20 @@ public sealed partial class Cpu
     /// </summary>
     private uint TranslatePae2MbPage(uint linear, bool write, uint page, uint offset,
                                       uint pdeAddress, ulong pde, ref TlbEntry entry,
-                                      bool asSupervisor)
+                                      bool asSupervisor, bool execute)
     {
         // PDE[20:13]: no page-table frame number to hold once PS says there
         // is no second level, so reserved-must-be-zero, folded into the same
         // #PF-with-RSVD as bits 63:36 -- and, on a processor without PAT,
         // bit 12 too (plans/specs/p6.md item 6; coordinator decision U3).
         if ((pde & Pae2MbPdeReservedMask) != 0)
-            throw new PageFaultException(linear, write, present: true, user: !asSupervisor && State.Cpl == 3, reserved: true);
+            throw WalkFault(linear, write, present: true, asSupervisor, execute, reserved: true);
 
         bool writable = (pde & PaeReadWrite) != 0;
         bool user = (pde & PaeUserSupervisor) != 0;
+        bool executable = IsExecutable(pde);
 
-        CheckPagePermissions(linear, write, writable, user, asSupervisor);
+        CheckPagePermissions(linear, write, writable, user, asSupervisor, execute, executable);
 
         ulong updated = pde | PaeAccessed | (write ? PaeDirty : 0);
         if (updated != pde)
@@ -847,6 +919,7 @@ public sealed partial class Cpu
         entry.Writable = writable;
         entry.User = user;
         entry.Dirty = (updated & PaeDirty) != 0;
+        entry.Executable = executable;
         entry.TableEntryAddress = pdeAddress;
         entry.LargePageMask = PaeLargePageMask;
         entry.Global = (State.Cr4 & CpuState.Cr4Pge) != 0 && (pde & PaeGlobal) != 0;
@@ -881,7 +954,7 @@ public sealed partial class Cpu
             return IsOpenBusPhysicalAddress(physical) ? (byte)0xFF : _memory.ReadByte((uint)physical);
         }
 
-        if ((pde & PaeReservedHighMask) != 0) return 0xFF;
+        if ((pde & PaeEntryReservedHighMask) != 0) return 0xFF;
 
         ulong pteAddress64 = (pde & PaeAddressMask4K) + ((linear >> 12) & 0x1FFu) * 8;
         ulong pte = ReadPagingStructureEntry(pteAddress64);
@@ -893,19 +966,42 @@ public sealed partial class Cpu
     }
 
     /// <summary>
-    /// The single dispatch point between the two paging modes, used
+    /// Whether an entry of a PAE or long-mode walk allows instruction
+    /// fetches: XD (bit 63) counts only while EFER.NXE is set; otherwise the
+    /// bit is reserved and a walk that met it has already faulted.
+    /// </summary>
+    private bool IsExecutable(ulong entry)
+    {
+        bool executeDisableEnabled = (State.Efer & CpuState.EferNoExecuteEnable) != 0;
+        return !executeDisableEnabled || (entry & ExecuteDisableBit) == 0;
+    }
+
+    /// <summary>
+    /// The single dispatch point between the three paging modes, used
     /// everywhere a linear address needs translating once
     /// <see cref="CpuState.PagingEnabled"/> already says paging is on:
     /// <see cref="Cpu.TranslateLinear"/>, the split-access helpers and the
-    /// instruction-fetch cache (Cpu.cs). CR4.PAE changing always flushes the
-    /// TLB (Cpu.TwoByte.cs's WriteCr4), so nothing here needs to worry about
-    /// the two walks disagreeing about an already-cached slot.
+    /// instruction-fetch cache (Cpu.cs). Long mode (EFER.LMA) comes first,
+    /// since it keeps CR4.PAE set; CR4.PAE and CR0.PG changing always flush
+    /// the TLB (Cpu.TwoByte.cs), so nothing here needs to worry about two
+    /// walks disagreeing about an already-cached slot.
     /// </summary>
+    /// <param name="execute">True for an instruction fetch; see <see cref="CheckPagePermissions"/>.</param>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    private uint TranslateWhenPaging(uint linear, bool write, bool asSupervisor = false) =>
-        (State.Cr4 & CpuState.Cr4Pae) != 0
-            ? TranslatePae(linear, write, asSupervisor)
-            : TranslatePaged(linear, write, asSupervisor);
+    private uint TranslateWhenPaging(uint linear, bool write, bool asSupervisor = false, bool execute = false)
+    {
+        if (State.LongModeActive)
+        {
+            return TranslateLongMode(linear, write, asSupervisor, execute);
+        }
+
+        if ((State.Cr4 & CpuState.Cr4Pae) != 0)
+        {
+            return TranslatePae(linear, write, asSupervisor, execute);
+        }
+
+        return TranslatePaged(linear, write, asSupervisor, execute);
+    }
 }
 
 /// <summary>
@@ -913,7 +1009,8 @@ public sealed partial class Cpu
 /// the handler goes on to read from CR2, and the reason, which the processor
 /// pushes as an error code.
 /// </summary>
-public sealed class PageFaultException(uint linearAddress, bool write, bool present, bool user = false, bool reserved = false)
+public sealed class PageFaultException(uint linearAddress, bool write, bool present, bool user = false, bool reserved = false,
+                                        bool instructionFetch = false)
     : Exception($"Page fault at 0x{linearAddress:X8}")
 {
     public uint LinearAddress { get; } = linearAddress;
@@ -930,11 +1027,19 @@ public sealed class PageFaultException(uint linearAddress, bool write, bool pres
     public bool Reserved { get; } = reserved;
 
     /// <summary>
+    /// Set when the access was an instruction fetch and execute-disable is in
+    /// force (PAE or long-mode paging with EFER.NXE): error code bit 4, I/D.
+    /// </summary>
+    public bool InstructionFetch { get; } = instructionFetch;
+
+    /// <summary>
     /// The error code pushed onto the handler's stack: bit 0 says the page was
     /// present (so this is a protection violation rather than a missing page),
     /// bit 1 that the access was a write, bit 2 that it came from user code,
-    /// bit 3 that a reserved bit was set in a paging-structure entry.
+    /// bit 3 that a reserved bit was set in a paging-structure entry, bit 4
+    /// that it was an instruction fetch under execute-disable.
     /// </summary>
     public uint ErrorCode =>
-        (Present ? 1u : 0u) | (Write ? 2u : 0u) | (User ? 4u : 0u) | (Reserved ? 8u : 0u);
+        (Present ? 1u : 0u) | (Write ? 2u : 0u) | (User ? 4u : 0u) | (Reserved ? 8u : 0u)
+        | (InstructionFetch ? 16u : 0u);
 }

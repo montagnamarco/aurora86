@@ -302,7 +302,7 @@ public sealed partial class Cpu
 
         // 0x0F opens the two-byte opcodes: the decision depends on the second
         // byte, which has not been consumed here either.
-        if (opcode == 0x0F) return LockAllowedTwoByte(ReadMem8(SegReg.Cs, State.Eip));
+        if (opcode == 0x0F) return LockAllowedTwoByte(PeekInstructionByte(State.Eip));
 
         return opcode switch
         {
@@ -332,8 +332,8 @@ public sealed partial class Cpu
     private bool LockAllowedTwoByte(byte opcode)
     {
         // The ModR/M byte comes after the second opcode byte.
-        bool memory = (ReadMem8(SegReg.Cs, State.Eip + 1) >> 6) != 3;
-        int reg = (ReadMem8(SegReg.Cs, State.Eip + 1) >> 3) & 7;
+        bool memory = (PeekInstructionByte(State.Eip + 1) >> 6) != 3;
+        int reg = (PeekInstructionByte(State.Eip + 1) >> 3) & 7;
 
         return opcode switch
         {
@@ -363,11 +363,31 @@ public sealed partial class Cpu
     /// r/m operand is in memory: the only case in which LOCK means anything.
     /// </summary>
     private bool PeekModRmIsMemory()
-        => (ReadMem8(SegReg.Cs, State.Eip) >> 6) != 3;
+        => (PeekInstructionByte(State.Eip) >> 6) != 3;
 
     /// <summary>The ModR/M reg field, which in some groups selects the operation.</summary>
     private int PeekModRmReg()
-        => (ReadMem8(SegReg.Cs, State.Eip) >> 3) & 7;
+        => (PeekInstructionByte(State.Eip) >> 3) & 7;
+
+    /// <summary>
+    /// Reads an instruction byte ahead of the fetch that will consume it,
+    /// as an instruction fetch rather than a data read: the CS limit first,
+    /// then the page walk asked whether the page may be executed, so a
+    /// peek into an execute-disabled page faults as the fetch would (#PF
+    /// with I/D) instead of deciding LOCK's legality from bytes the
+    /// processor could never have fetched.
+    /// </summary>
+    private byte PeekInstructionByte(uint offset)
+    {
+        CheckLimit(SegReg.Cs, offset, 1);
+        uint linear = State.Segments[(int)SegReg.Cs].Base + offset;
+        if (!State.PagingEnabled)
+        {
+            return _memory.ReadByte(linear);
+        }
+
+        return _memory.ReadByte(TranslateWhenPaging(linear, false, execute: true));
+    }
 
     /// <summary>
     /// Opcode dispatch.
