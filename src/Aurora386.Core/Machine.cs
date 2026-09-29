@@ -411,7 +411,7 @@ public sealed partial class Machine : IDisposable
         SystemPort = new SystemPort61(Timer);
         SystemPort.Register(Io);
 
-        Cmos = new Cmos(ramSize);
+        Cmos = new Cmos(ramSize, Interrupts);
         Cmos.Register(Io);
 
         // Port 0xE9 is unassigned on a real PC, so fitting it here takes
