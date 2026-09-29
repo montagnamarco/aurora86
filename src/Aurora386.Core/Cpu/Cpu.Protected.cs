@@ -129,6 +129,17 @@ public sealed partial class Cpu
         cache.Readable = !isCode || (access & 0x02) != 0;
         cache.Writable = !isCode && (access & 0x02) != 0;
         cache.ExpandDown = !isCode && (access & 0x04) != 0;
+
+        // The L bit, descriptor bit 53 (bit 1 of the flags nibble): with long
+        // mode active, a code segment carrying it runs 64-bit code, one
+        // without it 32- or 16-bit compatibility-mode code (SDM Vol.3A
+        // §5.2.1). It is cached for every code segment, in every mode, as
+        // Bochs does: entering long mode with CS.L already set is #GP(0)
+        // (WriteCr0), which needs the bit before LMA is. What it means is
+        // decided by CpuState.SixtyFourBitMode, which also requires LMA.
+        // On data segments the bit is ignored.
+        const byte LongModeFlag = 0x02;
+        cache.Long = isCode && (granularity & LongModeFlag) != 0;
     }
 
     private static uint DescriptorBase(ulong descriptor)

@@ -197,7 +197,7 @@ public static class LegacySnapshotFile
         file.Write(ram.Length);
         file.Write(ram);
 
-        foreach (uint value in state.Gpr)
+        foreach (uint value in state.Gpr.Take(8).Select(register => (uint)register))
         {
             file.Write(value);
         }

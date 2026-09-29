@@ -118,7 +118,7 @@ public sealed partial class Cpu
         }
         else
         {
-            address = State.Gpr[rm];
+            address = State.GetReg32(rm);
             if (rm == 5) segment = SegReg.Ss;   // EBP as a base implies the stack
         }
 
@@ -161,7 +161,7 @@ public sealed partial class Cpu
         // clever enough to depend on it.
         bool scaleAppliesToBase = index == 4 && scale != 0;
         if (index != 4)
-            address += State.Gpr[index] << scale;
+            address += State.GetReg32(index) << scale;
 
         if (baseReg == 5 && mod == 0)
         {
@@ -170,8 +170,8 @@ public sealed partial class Cpu
         }
         else
         {
-            address += scaleAppliesToBase ? State.Gpr[baseReg] << scale
-                                      : State.Gpr[baseReg];
+            address += scaleAppliesToBase ? State.GetReg32(baseReg) << scale
+                                      : State.GetReg32(baseReg);
             if (baseReg == 4 || baseReg == 5) segment = SegReg.Ss;  // ESP or EBP
             if (baseReg == 4) result.UsesStackPointer = true;
         }

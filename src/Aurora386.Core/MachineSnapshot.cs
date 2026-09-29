@@ -672,6 +672,11 @@ public sealed class MachineSnapshot
                            + 4 + 8 + Cpu.ModelSpecificRegisters.SnapshotLength,
         (CpuSection, 3) => LegacyProcessorLength + 8 * 4 + 2 * 4 + 1 + 1
                            + 4 + 8 + 4 * 8,
+        // Version 4 adds the long-mode state: eight upper halves, R8-R15,
+        // RIP's upper half, EFER and six L bits.
+        (CpuSection, 4) => LegacyProcessorLength + 8 * 4 + 2 * 4 + 1 + 1
+                           + 4 + 8 + 4 * 8
+                           + 8 * 4 + 8 * 8 + 4 + 8 + 6,
         (MsrSection, 1) => Cpu.ModelSpecificRegisters.SnapshotLength,
         (MsrSection, 2) => Cpu.ModelSpecificRegisters.FamilySixSnapshotLength,
         (SseSection, 1) => Cpu.Sse.SseUnit.SnapshotLength,

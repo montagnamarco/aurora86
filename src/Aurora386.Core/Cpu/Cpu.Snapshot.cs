@@ -23,7 +23,13 @@ namespace Aurora386.Core.Cpu;
 public sealed partial class Cpu
 {
     /// <summary>The layout <see cref="WriteSnapshot"/> produces.</summary>
-    public const int SnapshotVersion = 3;
+    public const int SnapshotVersion = 4;
+
+    /// <summary>The eight registers every 16- and 32-bit processor has; the version-0 fields hold their low halves.</summary>
+    private const int LegacyRegisterCount = 8;
+
+    /// <summary>The registers only 64-bit code reaches, R8 to R15.</summary>
+    private const int ExtendedRegisterCount = 8;
 
     /// <summary>Writes the integer unit's state for a machine snapshot.</summary>
     public void WriteSnapshot(BinaryWriter writer)
@@ -64,6 +70,27 @@ public sealed partial class Cpu
         foreach (ulong entry in Pdpte)
         {
             writer.Write(entry);
+        }
+
+        // Version 4, long mode (plans/long-mode.md stage A): the upper halves
+        // of the eight legacy registers, R8-R15 whole, the upper half of RIP,
+        // EFER, and each segment's L bit. The version-0 fields keep the low
+        // halves, so an older reader of this layout never sees a difference.
+        for (int i = 0; i < LegacyRegisterCount; i++)
+        {
+            writer.Write((uint)(State.Gpr[i] >> 32));
+        }
+
+        for (int i = 0; i < ExtendedRegisterCount; i++)
+        {
+            writer.Write(State.Gpr[LegacyRegisterCount + i]);
+        }
+
+        writer.Write((uint)(State.Rip >> 32));
+        writer.Write(State.Efer);
+        foreach (SegmentCache segment in State.Segments)
+        {
+            writer.Write(segment.Long);
         }
     }
 
@@ -151,6 +178,44 @@ public sealed partial class Cpu
             Array.Clear(Pdpte);
         }
 
+        if (version >= 4)
+        {
+            for (int i = 0; i < LegacyRegisterCount; i++)
+            {
+                State.Gpr[i] |= (ulong)reader.ReadUInt32() << 32;
+            }
+
+            for (int i = 0; i < ExtendedRegisterCount; i++)
+            {
+                State.Gpr[LegacyRegisterCount + i] = reader.ReadUInt64();
+            }
+
+            State.Rip |= (ulong)reader.ReadUInt32() << 32;
+            // Masked to the bits this processor carries, as CR4 is above: a
+            // file from a long-mode model restored into one without it must
+            // not leave LME/LMA set where RDMSR cannot even reach them.
+            State.Efer = reader.ReadUInt64() & Msrs.EferImplementedBits;
+            for (int i = 0; i < State.Segments.Length; i++)
+            {
+                State.Segments[i].Long = reader.ReadBoolean();
+            }
+        }
+        else
+        {
+            // Files from before long mode existed: nothing above 32 bits, no
+            // R8-R15, EFER at its power-on zero, no 64-bit code segment.
+            for (int i = LegacyRegisterCount; i < State.Gpr.Length; i++)
+            {
+                State.Gpr[i] = 0;
+            }
+
+            State.Efer = 0;
+            for (int i = 0; i < State.Segments.Length; i++)
+            {
+                State.Segments[i].Long = false;
+            }
+        }
+
         FlushTlb();
     }
 
@@ -160,9 +225,9 @@ public sealed partial class Cpu
     /// </summary>
     private void WriteVersionZeroFields(BinaryWriter writer)
     {
-        foreach (uint value in State.Gpr)
+        for (int i = 0; i < LegacyRegisterCount; i++)
         {
-            writer.Write(value);
+            writer.Write(State.GetReg32(i));
         }
 
         foreach (SegmentCache segment in State.Segments)
@@ -206,7 +271,7 @@ public sealed partial class Cpu
 
     private void ReadVersionZeroFields(BinaryReader reader)
     {
-        for (int i = 0; i < State.Gpr.Length; i++)
+        for (int i = 0; i < LegacyRegisterCount; i++)
         {
             State.Gpr[i] = reader.ReadUInt32();
         }

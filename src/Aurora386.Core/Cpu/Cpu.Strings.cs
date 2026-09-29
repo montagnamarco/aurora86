@@ -155,18 +155,26 @@ public sealed partial class Cpu
     private uint SourceIndex => AddressSize32 ? State.Esi : State.Si;
     private uint DestinationIndex => AddressSize32 ? State.Edi : State.Di;
 
-    private ref uint SourceIndexRef => ref State.Gpr[(int)Reg.Esi];
-    private ref uint DestinationIndexRef => ref State.Gpr[(int)Reg.Edi];
+    private ref ulong SourceIndexRef => ref State.Gpr[(int)Reg.Esi];
+    private ref ulong DestinationIndexRef => ref State.Gpr[(int)Reg.Edi];
 
     /// <summary>
     /// Advances an index. At 16-bit address size the increment wraps within the
     /// low 16 bits and leaves the top half of the register alone, so a string
     /// operation running off the end of a segment comes back round to its
-    /// start rather than spilling into the next one.
+    /// start rather than spilling into the next one. At 32-bit address size
+    /// the new value is a 32-bit register write, so it zero-extends like
+    /// every other one (CpuState.SetReg32).
     /// </summary>
-    private void AdvanceIndex(ref uint index, int delta)
+    private void AdvanceIndex(ref ulong index, int delta)
     {
-        if (AddressSize32) index = (uint)(index + delta);
-        else index = (index & 0xFFFF0000u) | (ushort)(index + delta);
+        if (AddressSize32)
+        {
+            index = (uint)(index + (ulong)(long)delta);
+        }
+        else
+        {
+            index = (index & ~0xFFFFUL) | (ushort)(index + (ulong)(long)delta);
+        }
     }
 }

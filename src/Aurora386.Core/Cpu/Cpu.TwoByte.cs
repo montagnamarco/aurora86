@@ -484,11 +484,11 @@ public sealed partial class Cpu
                 // already, so the simplest faithful answer is that zero.
                 if (!OperandSize32) { State.SetReg16(register, 0); return; }
 
-                uint value = State.Gpr[register];
-                State.Gpr[register] = (value >> 24)
+                uint value = State.GetReg32(register);
+                State.SetReg32(register, (value >> 24)
                                     | ((value >> 8) & 0x0000FF00)
                                     | ((value << 8) & 0x00FF0000)
-                                    | (value << 24);
+                                    | (value << 24));
                 return;
             }
 
@@ -636,7 +636,10 @@ public sealed partial class Cpu
                         // fault deferred to first use. With CR0.PG clear, CR3
                         // is simply stored -- there is no paging, PAE or
                         // otherwise, for it to be part of yet.
-                        if ((State.Cr4 & CpuState.Cr4Pae) != 0 && (State.Cr0 & CpuState.Cr0Paging) != 0)
+                        // In long mode the four-level walk reads the PML4
+                        // on demand and there are no PDPT registers to load.
+                        bool paePagingActive = (State.Cr4 & CpuState.Cr4Pae) != 0 && (State.Cr0 & CpuState.Cr0Paging) != 0;
+                        if (paePagingActive && !State.LongModeActive)
                             LoadPdptRegisters(value);
 
                         State.Cr3 = value;
@@ -980,6 +983,28 @@ public sealed partial class Cpu
         if ((value & CpuState.Cr0Paging) != 0 && (value & CpuState.Cr0ProtectionEnable) == 0)
             throw new CpuException(13, 0);
 
+        // Long mode is activated, and left, by CR0.PG alone (SDM Vol.3A
+        // §9.8.5): turning paging on with EFER.LME set enters IA-32e mode
+        // and sets EFER.LMA; turning it off leaves it. Entering requires
+        // PAE's page-table format (CR4.PAE) and a code segment that is not
+        // already marked 64-bit; leaving is refused from 64-bit code, which
+        // has to drop to a compatibility-mode segment first. Each refusal is
+        // #GP(0) with CR0 unchanged.
+        bool enablingPaging = (State.Cr0 & CpuState.Cr0Paging) == 0 && (value & CpuState.Cr0Paging) != 0;
+        bool disablingPaging = (State.Cr0 & CpuState.Cr0Paging) != 0 && (value & CpuState.Cr0Paging) == 0;
+        bool enteringLongMode = enablingPaging && (State.Efer & CpuState.EferLongModeEnable) != 0;
+
+        if (enteringLongMode && (State.Cr4 & CpuState.Cr4Pae) == 0)
+            throw new CpuException(13, 0);
+
+        if (enteringLongMode && State.Segments[(int)SegReg.Cs].Long)
+            throw new CpuException(13, 0);
+
+        if (disablingPaging && State.SixtyFourBitMode)
+            throw new CpuException(13, 0);
+
+        bool longModeAfterWrite = enteringLongMode || (State.LongModeActive && !disablingPaging);
+
         // While PAE paging will be active once this write commits -- PAE
         // already set in CR4, and PG about to be either already set or set
         // by this very write -- a change to PG, CD or NW reloads the four
@@ -994,7 +1019,7 @@ public sealed partial class Cpu
         // address space.
         bool paePagingActiveAfterWrite = (value & CpuState.Cr0Paging) != 0 && (State.Cr4 & CpuState.Cr4Pae) != 0;
         const uint PdptReloadTriggers = CpuState.Cr0Paging | CpuState.Cr0CacheDisable | CpuState.Cr0NotWriteThrough;
-        if (paePagingActiveAfterWrite && ((State.Cr0 ^ value) & PdptReloadTriggers) != 0)
+        if (paePagingActiveAfterWrite && !longModeAfterWrite && ((State.Cr0 ^ value) & PdptReloadTriggers) != 0)
             LoadPdptRegisters(State.Cr3);
 
         // Turning paging on or off changes what every linear address means,
@@ -1006,6 +1031,15 @@ public sealed partial class Cpu
         if (((State.Cr0 ^ value) & Invalidating) != 0) FlushTlb();
 
         State.Cr0 = value;
+
+        if (enteringLongMode)
+        {
+            State.Efer |= CpuState.EferLongModeActive;
+        }
+        else if (disablingPaging)
+        {
+            State.Efer &= ~CpuState.EferLongModeActive;
+        }
     }
 
     /// <summary>
@@ -1034,6 +1068,10 @@ public sealed partial class Cpu
     {
         if ((value & ~State.Cr4Writable) != 0) throw new CpuException(13, 0);
 
+        // Long mode's page tables are PAE-format, so PAE cannot be turned off
+        // underneath it (SDM Vol.3A §9.8.5.4): #GP(0), CR4 unchanged.
+        if (State.LongModeActive && (value & CpuState.Cr4Pae) == 0) throw new CpuException(13, 0);
+
         // While PAE paging will be active once this write commits -- paging
         // already on, and PAE about to be either already set or set by this
         // very write -- a change to PAE, PGE or PSE reloads the four PDPT
@@ -1047,7 +1085,7 @@ public sealed partial class Cpu
         // unchanged, whichever of the three bits triggered the reload.
         bool paePagingActiveAfterWrite = (value & CpuState.Cr4Pae) != 0 && (State.Cr0 & CpuState.Cr0Paging) != 0;
         const uint PdptReloadTriggers = CpuState.Cr4Pae | CpuState.Cr4Pge | CpuState.Cr4Pse;
-        if (paePagingActiveAfterWrite && ((State.Cr4 ^ value) & PdptReloadTriggers) != 0)
+        if (paePagingActiveAfterWrite && !State.LongModeActive && ((State.Cr4 ^ value) & PdptReloadTriggers) != 0)
             LoadPdptRegisters(State.Cr3);
 
         // PSE, PAE and PGE all change what a linear address means or how its

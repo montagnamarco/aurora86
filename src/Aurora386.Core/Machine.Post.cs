@@ -99,7 +99,7 @@ public sealed partial class Machine
 
         MpSystemInfo? mpTables = IoApic is not null && Imcr is not null && Cpu.State.Features.Has(CpuNs.CpuFeature.Apic)
             ? new MpSystemInfo(
-                Cpu.State.Gpr[(int)CpuNs.Reg.Edx],
+                Cpu.State.GetReg32((int)CpuNs.Reg.Edx),
                 ComputeCpuidEdxForMpTable(Cpu.State.Features),
                 (byte)(LocalApic.VersionRegisterFor(Cpu.State.Model) & 0xFF))
             : null;

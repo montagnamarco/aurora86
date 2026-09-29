@@ -232,6 +232,17 @@ public sealed class ModelSpecificRegisters
     public const uint PatIndex = 0x277;
     private const ulong PatResetValue = 0x0007040600070406UL;
 
+    /// <summary>
+    /// IA32_EFER (C0000080h), the extended feature enable register AMD
+    /// introduced with the K8 and Intel adopted with EM64T: SCE (bit 0)
+    /// enables SYSCALL/SYSRET, LME (bit 8) arms long mode, LMA (bit 10) says
+    /// long mode is active, NXE (bit 11) enables the page tables' XD bit.
+    /// The value itself lives in <see cref="CpuState.Efer"/>, because paging
+    /// and the mode tests read it on every instruction; see
+    /// <see cref="TryWriteEfer"/> for the write rules.
+    /// </summary>
+    public const uint EferIndex = 0xC0000080;
+
     /// <summary>The eight memory types a PAT or MTRR byte/field may hold: UC, WC, WT, WP, WB and UC- (plans/specs/p6.md items 7-8). 2 and 3 are reserved encodings and anything above 7 does not fit the field at all; both are #GP(0) on WRMSR.</summary>
     /// <summary>
     /// The memory types an MTRR may hold: UC (0), WC (1), WT (4), WP (5) and
@@ -386,6 +397,75 @@ public sealed class ModelSpecificRegisters
         return true;
     }
 
+    /// <summary>
+    /// The EFER bits this processor carries, each present exactly when the
+    /// feature behind it is (the rule <see cref="CpuState.Cr4Writable"/>
+    /// applies to CR4): a processor without long mode, NX and SYSCALL has
+    /// no EFER at all.
+    /// </summary>
+    internal ulong EferImplementedBits
+    {
+        get
+        {
+            ulong bits = 0;
+            CpuFeatures features = _cpu.State.Features;
+
+            if (features.Has(CpuFeature.Syscall))
+            {
+                bits |= CpuState.EferSyscallEnable;
+            }
+
+            if (features.Has(CpuFeature.LongMode))
+            {
+                bits |= CpuState.EferLongModeEnable | CpuState.EferLongModeActive;
+            }
+
+            if (features.Has(CpuFeature.Nx))
+            {
+                bits |= CpuState.EferNoExecuteEnable;
+            }
+
+            return bits;
+        }
+    }
+
+    /// <summary>RDMSR of EFER: <c>#GP(0)</c> on a processor that has none.</summary>
+    private bool TryReadEfer(out ulong value)
+    {
+        value = _cpu.State.Efer;
+        return EferImplementedBits != 0;
+    }
+
+    /// <summary>
+    /// WRMSR of EFER (SDM Vol.4, IA32_EFER; Vol.3A §9.8.5). A 1 in a bit the
+    /// processor does not carry is <c>#GP(0)</c>. LMA is read-only: the
+    /// processor sets and clears it itself when CR0.PG changes with LME set
+    /// (Cpu.TwoByte.cs's WriteCr0), and a write's bit 10 is ignored, as KVM
+    /// does with the same bit. LME cannot change while paging is on --
+    /// long mode is entered and left only through CR0.PG -- so such a write
+    /// is <c>#GP(0)</c> too, EFER unchanged.
+    /// </summary>
+    private bool TryWriteEfer(ulong value)
+    {
+        ulong implemented = EferImplementedBits;
+        if (implemented == 0 || (value & ~implemented) != 0)
+        {
+            return false;
+        }
+
+        CpuState state = _cpu.State;
+        bool pagingEnabled = (state.Cr0 & CpuState.Cr0Paging) != 0;
+        bool longModeEnableChanges = ((state.Efer ^ value) & CpuState.EferLongModeEnable) != 0;
+        if (pagingEnabled && longModeEnableChanges)
+        {
+            return false;
+        }
+
+        ulong writable = implemented & ~CpuState.EferLongModeActive;
+        state.Efer = (value & writable) | (state.Efer & CpuState.EferLongModeActive);
+        return true;
+    }
+
     // ---- the P5 set, exactly as it has always been ------------------------
 
     private bool TryReadP5(uint index, out ulong value)
@@ -507,6 +587,9 @@ public sealed class ModelSpecificRegisters
 
             case ApicBaseIndex:
                 return TryReadApicBase(out value);
+
+            case EferIndex:
+                return TryReadEfer(out value);
 
             case EblCrPoweronIndex:
                 value = _eblCrPoweron;
@@ -642,6 +725,9 @@ public sealed class ModelSpecificRegisters
 
             case ApicBaseIndex:
                 return TryWriteApicBase(value);
+
+            case EferIndex:
+                return TryWriteEfer(value);
 
             case EblCrPoweronIndex:
                 _eblCrPoweron = value;

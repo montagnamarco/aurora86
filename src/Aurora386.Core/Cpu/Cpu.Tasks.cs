@@ -228,7 +228,9 @@ public sealed partial class Cpu
         // CR3 does (FlushTlbForCr3Load).
         if (incomingIs386 && State.PagingEnabled)
         {
-            if ((State.Cr4 & CpuState.Cr4Pae) != 0) LoadPdptRegisters(next.Cr3);
+            // Long mode has no PDPT registers (and no hardware task switch
+            // at all: stage D of plans/long-mode.md makes it #GP).
+            if ((State.Cr4 & CpuState.Cr4Pae) != 0 && !State.LongModeActive) LoadPdptRegisters(next.Cr3);
 
             State.Cr3 = next.Cr3;
             FlushTlbForCr3Load();
@@ -373,7 +375,7 @@ public sealed partial class Cpu
             WriteTssDword(tssBase, 0x20, State.Eip);
             WriteTssDword(tssBase, 0x24, Flags.Value);
             for (int i = 0; i < 8; i++)
-                WriteTssDword(tssBase, (uint)(0x28 + i * 4), State.Gpr[i]);
+                WriteTssDword(tssBase, (uint)(0x28 + i * 4), State.GetReg32(i));
 
             WriteTssWord(tssBase, 0x48, State.Es.Selector);
             WriteTssWord(tssBase, 0x4C, State.Cs.Selector);

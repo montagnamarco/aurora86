@@ -159,9 +159,9 @@ public sealed partial class Cpu
     {
         if (OperandSize32)
         {
-            uint value = State.Gpr[index] + 1;
-            Flags.Set(FlagOp.Inc, State.Gpr[index], 1, value, 32);
-            State.Gpr[index] = value;
+            uint value = State.GetReg32(index) + 1;
+            Flags.Set(FlagOp.Inc, State.GetReg32(index), 1, value, 32);
+            State.SetReg32(index, value);
         }
         else
         {
@@ -175,9 +175,9 @@ public sealed partial class Cpu
     {
         if (OperandSize32)
         {
-            uint value = State.Gpr[index] - 1;
-            Flags.Set(FlagOp.Dec, State.Gpr[index], 1, value, 32);
-            State.Gpr[index] = value;
+            uint value = State.GetReg32(index) - 1;
+            Flags.Set(FlagOp.Dec, State.GetReg32(index), 1, value, 32);
+            State.SetReg32(index, value);
         }
         else
         {

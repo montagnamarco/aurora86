@@ -534,14 +534,14 @@ public sealed class RedirectorInstaller(Machine machine)
     /// cannot tell that anything happened. This is the same job a multitasker
     /// does around a task switch, and for the same reason.
     /// </summary>
-    private sealed record SavedContext(uint[] Registers, CpuNs.SegmentCache[] Segments,
+    private sealed record SavedContext(ulong[] Registers, CpuNs.SegmentCache[] Segments,
                                        uint Eip, uint Flags, bool Halted);
 
     private SavedContext SaveContext()
     {
         CpuNs.CpuState state = _machine.Cpu.State;
         return new SavedContext(
-            (uint[])state.Gpr.Clone(),
+            (ulong[])state.Gpr.Clone(),
             (CpuNs.SegmentCache[])state.Segments.Clone(),
             state.Eip,
             _machine.Cpu.Flags.Value,

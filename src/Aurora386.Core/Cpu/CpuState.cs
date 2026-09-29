@@ -25,6 +25,12 @@ public struct SegmentCache
     public bool ExpandDown;
     /// <summary>Descriptor privilege level.</summary>
     public byte Dpl;
+    /// <summary>
+    /// The L bit of a code descriptor (bit 53): with long mode active, a code
+    /// segment that has it runs in 64-bit mode, one without it in
+    /// compatibility mode. Ignored outside long mode.
+    /// </summary>
+    public bool Long;
 }
 
 /// <summary>
@@ -76,15 +82,55 @@ public enum CpuModel
 public sealed class CpuState
 {
     /// <summary>
-    /// The 32-bit general-purpose registers. They are kept as an array indexed
-    /// by the opcode's own encoding, so the decoder can index straight in
-    /// instead of switching on a register name. The EAX/AX/AH/AL overlap falls
-    /// out of masking this single value: there are no separate copies that
-    /// could drift out of sync.
+    /// The general-purpose registers, 64 bits wide and sixteen of them: RAX to
+    /// RDI in the opcode's own encoding order, then R8 to R15, which only
+    /// 64-bit code reaches (plans/long-mode.md, stage A). They are kept as an
+    /// array indexed by the encoding so the decoder can index straight in.
+    /// The RAX/EAX/AX/AH/AL overlap falls out of masking this single value:
+    /// there are no separate copies that could drift out of sync.
     /// </summary>
-    public readonly uint[] Gpr = new uint[8];
+    public readonly ulong[] Gpr = new ulong[16];
 
-    public uint Eip;
+    /// <summary>The instruction pointer, 64 bits wide; <see cref="Eip"/> is its low half.</summary>
+    public ulong Rip;
+
+    /// <summary>
+    /// The instruction pointer as every 16- and 32-bit path sees it. Writing
+    /// it clears the upper half of <see cref="Rip"/>: outside 64-bit mode the
+    /// processor never fetches above 4 GB.
+    /// </summary>
+    public uint Eip
+    {
+        get => (uint)Rip;
+        set => Rip = value;
+    }
+
+    // --- EFER (MSR C0000080h, AMD64 / Intel 64) --------------------------------
+
+    /// <summary>The extended feature enable register. See the bit constants below.</summary>
+    public ulong Efer;
+
+    /// <summary>EFER bit 0, SCE: SYSCALL and SYSRET are enabled.</summary>
+    public const ulong EferSyscallEnable = 1UL << 0;
+
+    /// <summary>EFER bit 8, LME: long mode is enabled, and becomes active when paging is turned on.</summary>
+    public const ulong EferLongModeEnable = 1UL << 8;
+
+    /// <summary>EFER bit 10, LMA: long mode is active. Read-only; the processor sets it.</summary>
+    public const ulong EferLongModeActive = 1UL << 10;
+
+    /// <summary>EFER bit 11, NXE: the execute-disable bit of PAE and 4-level entries is honoured.</summary>
+    public const ulong EferNoExecuteEnable = 1UL << 11;
+
+    /// <summary>True while long mode is active (EFER.LMA).</summary>
+    public bool LongModeActive => (Efer & EferLongModeActive) != 0;
+
+    /// <summary>
+    /// True in 64-bit mode: long mode active and the code segment's L bit set.
+    /// Long mode with L clear is compatibility mode, which runs 16- and 32-bit
+    /// code under 4-level paging.
+    /// </summary>
+    public bool SixtyFourBitMode => LongModeActive && Segments[(int)SegReg.Cs].Long;
 
     /// <summary>Segments in hardware order: ES CS SS DS FS GS.</summary>
     public readonly SegmentCache[] Segments = new SegmentCache[6];
@@ -438,10 +484,25 @@ public sealed class CpuState
     // --- general-purpose register access --------------------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public uint GetReg32(int index) => Gpr[index];
+    public uint GetReg32(int index) => (uint)Gpr[index];
 
+    /// <summary>
+    /// Writes a 32-bit register, clearing the upper half of the 64-bit
+    /// register. In 64-bit mode that is the architecture (SDM Vol.1
+    /// §3.4.1.1); elsewhere the SDM leaves the upper half undefined, and
+    /// zero-extending in every mode is what Bochs (BX_WRITE_32BIT_REGZ) and
+    /// QEMU (gen_op_mov_reg_v, MO_32) both do. It also keeps every path
+    /// consistent -- XCHG and a task switch store whole registers -- and
+    /// keeps this hot path a single store (independent review, finding 1).
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SetReg32(int index, uint value) => Gpr[index] = value;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ulong GetReg64(int index) => Gpr[index];
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void SetReg64(int index, ulong value) => Gpr[index] = value;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ushort GetReg16(int index) => (ushort)Gpr[index];
@@ -453,7 +514,7 @@ public sealed class CpuState
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SetReg16(int index, ushort value)
-        => Gpr[index] = (Gpr[index] & 0xFFFF0000u) | value;
+        => Gpr[index] = (Gpr[index] & ~0xFFFFUL) | value;
 
     /// <summary>
     /// Reads an 8-bit register. Indices 0-3 are the low bytes of EAX..EBX, 4-7
@@ -467,21 +528,21 @@ public sealed class CpuState
     public void SetReg8(int index, byte value)
     {
         if (index < 4)
-            Gpr[index] = (Gpr[index] & 0xFFFFFF00u) | value;
+            Gpr[index] = (Gpr[index] & ~0xFFUL) | value;
         else
-            Gpr[index - 4] = (Gpr[index - 4] & 0xFFFF00FFu) | ((uint)value << 8);
+            Gpr[index - 4] = (Gpr[index - 4] & ~0xFF00UL) | ((ulong)value << 8);
     }
 
     // --- readable shorthands for the registers used most often -----------------
 
-    public uint Eax { get => Gpr[0]; set => Gpr[0] = value; }
-    public uint Ecx { get => Gpr[1]; set => Gpr[1] = value; }
-    public uint Edx { get => Gpr[2]; set => Gpr[2] = value; }
-    public uint Ebx { get => Gpr[3]; set => Gpr[3] = value; }
-    public uint Esp { get => Gpr[4]; set => Gpr[4] = value; }
-    public uint Ebp { get => Gpr[5]; set => Gpr[5] = value; }
-    public uint Esi { get => Gpr[6]; set => Gpr[6] = value; }
-    public uint Edi { get => Gpr[7]; set => Gpr[7] = value; }
+    public uint Eax { get => GetReg32(0); set => SetReg32(0, value); }
+    public uint Ecx { get => GetReg32(1); set => SetReg32(1, value); }
+    public uint Edx { get => GetReg32(2); set => SetReg32(2, value); }
+    public uint Ebx { get => GetReg32(3); set => SetReg32(3, value); }
+    public uint Esp { get => GetReg32(4); set => SetReg32(4, value); }
+    public uint Ebp { get => GetReg32(5); set => SetReg32(5, value); }
+    public uint Esi { get => GetReg32(6); set => SetReg32(6, value); }
+    public uint Edi { get => GetReg32(7); set => SetReg32(7, value); }
 
     public ushort Ax { get => (ushort)Gpr[0]; set => SetReg16(0, value); }
     public ushort Cx { get => (ushort)Gpr[1]; set => SetReg16(1, value); }
@@ -529,6 +590,7 @@ public sealed class CpuState
         // with #GP -- which is exactly why LoadSegmentRealModeReset exists as
         // a separate entry point for RESET.
         cache.Big = false;
+        cache.Long = false;
         cache.Readable = true;
         cache.Writable = true;
         cache.ExpandDown = false;
@@ -554,6 +616,7 @@ public sealed class CpuState
     public void Reset()
     {
         Array.Clear(Gpr);
+        Efer = 0;
         Array.Clear(Dr);
         Array.Clear(Tr);
         OtherFlags = Flags.Reserved1;

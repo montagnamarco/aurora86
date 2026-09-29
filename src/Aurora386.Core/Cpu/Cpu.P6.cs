@@ -175,6 +175,7 @@ public sealed partial class Cpu
         cache.Base = 0;
         cache.Limit = 0xFFFFFFFF;
         cache.Big = true;
+        cache.Long = false;
         cache.Readable = true;
         cache.Writable = writable;
         cache.ExpandDown = false;

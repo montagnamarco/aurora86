@@ -418,7 +418,7 @@ public sealed partial class Cpu
 
             // --- register PUSH/POP (0x50-0x5F) -----------------------------
             case >= 0x50 and <= 0x57:
-                PushOperand(State.Gpr[opcode - 0x50]);
+                PushOperand(State.GetReg32(opcode - 0x50));
                 return;
             case >= 0x58 and <= 0x5F:
             {
