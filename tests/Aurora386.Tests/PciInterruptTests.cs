@@ -160,13 +160,14 @@ public class PciInterruptTests
         using var m = new Machine();
         uint table = BiosRom.Base + BiosRom.Entry.PciRoutingTable;
         Assert.Equal(0x52495024u, m.Memory.ReadDword(table));
-        Assert.Equal(96, m.Memory.ReadWord(table + 6));
+        int tableLength = 32 + PciInterruptRouter.SlotCount * 16;   // header, then one 16-byte entry per slot
+        Assert.Equal(tableLength, m.Memory.ReadWord(table + 6));
         Assert.Equal(8, m.Memory.ReadByte(table + 9));
         Assert.Equal(0x122E8086u, m.Memory.ReadDword(table + 12));
         int sum = 0;
-        for (uint i = 0; i < 96; i++) sum += m.Memory.ReadByte(table + i);
+        for (uint i = 0; i < tableLength; i++) sum += m.Memory.ReadByte(table + i);
         Assert.Equal(0, sum & 255);
-        for (int slot = 0; slot < 4; slot++)
+        for (int slot = 0; slot < PciInterruptRouter.SlotCount; slot++)
         for (byte pin = 1; pin <= 4; pin++)
         {
             uint entry = table + 32 + (uint)(slot * 16);

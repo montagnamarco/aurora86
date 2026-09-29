@@ -256,13 +256,15 @@ public class PciTests
         m.Memory.WriteByte(0x4000, 0xCC);
         Bios(m, 0xB10E);
         Assert.Equal(0x89, m.Cpu.State.GetReg8(4));
-        Assert.Equal(64, m.Memory.ReadWord(0x3000));
+        // Sixteen bytes per slot entry; the i430FX board has no integrated USB entry.
+        int slotEntriesLength = PciInterruptRouter.SlotCount * 16;
+        Assert.Equal(slotEntriesLength, m.Memory.ReadWord(0x3000));
         Assert.Equal(0xCC, m.Memory.ReadByte(0x4000));
         m.Memory.WriteWord(0x3002, 0x4000); m.Memory.WriteWord(0x3004, 0);
         Bios(m, 0xB10E);
         Assert.False(m.Cpu.Flags.Carry);
         Assert.Equal(0, m.Cpu.State.Bx);
-        for (uint i = 0; i < 64; i++)
+        for (uint i = 0; i < slotEntriesLength; i++)
             Assert.Equal(m.Memory.ReadByte(BiosRom.Base + BiosRom.Entry.PciRoutingTable + 32 + i),
                 m.Memory.ReadByte(0x4000 + i));
         m.Cpu.State.Bx = 0x10; m.Cpu.State.Cx = 0x0B0A;
@@ -315,7 +317,7 @@ public class PciTests
         Assert.Equal(0x12308086u, m.Cpu.State.Ecx);
         m.Cpu.SetSegment(SegReg.Es, 16);
         m.Cpu.State.Edi = 0x13000;
-        m.Memory.WriteWord(0x13000, 64);
+        m.Memory.WriteWord(0x13000, PciInterruptRouter.SlotCount * 16);   // a buffer exactly the size of the slot entries
         m.Memory.WriteDword(0x13002, 0x14000);
         m.Memory.WriteWord(0x13006, 16);
         m.Cpu.State.Ax = 0xB10E;

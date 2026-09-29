@@ -81,7 +81,7 @@ public class MpTableTests
         // independent review item 5) plus PIIX4's own USB function, and the
         // two local (LINT0/LINT1) entries -- plans/specs/apic.md §3.
         ushort entryCount = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(34));
-        Assert.Equal(1 + 2 + 1 + 15 + 4 * 4 + 1 + 2, entryCount);
+        Assert.Equal(1 + 2 + 1 + 15 + PciInterruptRouter.SlotCount * 4 + 1 + 2, entryCount);
 
         uint lapicAddress = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(36));
         Assert.Equal(0xFEE00000u, lapicAddress);
@@ -129,9 +129,9 @@ public class MpTableTests
             at += entryLength;
         }
 
-        Assert.Equal(17, pciEntries.Count);   // 4 devices * 4 pins, plus USB
+        Assert.Equal(PciInterruptRouter.SlotCount * 4 + 1, pciEntries.Count);   // every slot's four pins, plus USB
 
-        for (byte device = 2; device <= 5; device++)
+        for (byte device = PciInterruptRouter.FirstSlotDevice; device <= PciInterruptRouter.LastSlotDevice; device++)
         {
             for (byte pin = 1; pin <= 4; pin++)
             {

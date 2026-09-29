@@ -303,10 +303,11 @@ public class AcpiTableTests
         AmlNode pci0 = dsdt.Find("_SB.PCI0")!;
         var prt = (List<object>)pci0.Find("_PRT")!.Value!;
 
-        Assert.Equal(17, prt.Count);   // 4 devices x 4 pins, plus PIIX4's own USB function.
+        int slotEntries = PciInterruptRouter.SlotCount * 4;
+        Assert.Equal(slotEntries + 1, prt.Count);   // every slot's four pins, plus PIIX4's own USB function.
 
         int index = 0;
-        for (uint device = 2; device <= 5; device++)
+        for (uint device = PciInterruptRouter.FirstSlotDevice; device <= PciInterruptRouter.LastSlotDevice; device++)
         {
             for (byte pin = 1; pin <= 4; pin++)
             {
@@ -321,7 +322,7 @@ public class AcpiTableTests
             }
         }
 
-        var usbEntry = (List<object>)prt[16];
+        var usbEntry = (List<object>)prt[slotEntries];
         Assert.Equal(0x1FFFFul, (ulong)usbEntry[0]);   // device 1 (PIIX4's own function), any function.
         Assert.Equal(0ul, (ulong)usbEntry[1]);          // INTA.
         int usbLink = PciInterruptRouter.Link(0x000A, 1);

@@ -53,6 +53,26 @@ public sealed class PciInterruptRouter
         bridge.ConfigurationChanged += Update;
     }
 
+    /// <summary>
+    /// The first PCI device number wired to the PIRQ links as an expansion
+    /// slot. Devices 0 and 1 are the host bridge and the southbridge.
+    /// </summary>
+    public const byte FirstSlotDevice = 2;
+
+    /// <summary>
+    /// The last slot device. Devices 2-5 were this board's four original
+    /// slots (USB and sound, removable-storage USB, video, network); 6 and 7
+    /// were added for the modern-platform controllers (AHCI, HD Audio), as
+    /// boards of the late 1990s with six slots did. The INTA-D rotation
+    /// simply continues, so device 6 shares device 2's links and device 7
+    /// device 3's; every table describing the wiring -- $PIR, the MP table,
+    /// the ACPI _PRT -- iterates this same range.
+    /// </summary>
+    public const byte LastSlotDevice = 7;
+
+    /// <summary>How many slot entries the routing tables carry.</summary>
+    public const int SlotCount = LastSlotDevice - FirstSlotDevice + 1;
+
     public static int Link(ushort address, byte pin)
     {
         // PIIX4's integrated USB INTA is wired to PIRQD, independently of
@@ -63,11 +83,11 @@ public sealed class PciInterruptRouter
         }
 
         int device = (address & 255) >> 3;
-        if ((address >> 8) != 0 || device is < 2 or > 5 || pin is < 1 or > 4)
+        if ((address >> 8) != 0 || device is < FirstSlotDevice or > LastSlotDevice || pin is < 1 or > 4)
         {
             return -1;
         }
-        return (device - 2 + pin - 1) & 3;
+        return (device - FirstSlotDevice + pin - 1) & 3;
     }
 
     public bool Route(ushort address, byte pin, byte irq)
@@ -95,7 +115,7 @@ public sealed class PciInterruptRouter
     /// IRQ and its Interrupt Line (offset 3Ch, scratch for the OS but set by
     /// convention to what the BIOS actually routed) written to match.
     ///
-    /// A function outside the four PIRQ slots, or one whose pin register
+    /// A function outside the PIRQ slots, or one whose pin register
     /// reads zero -- no interrupt pin wired, as the S3 and the ISA and IDE
     /// bridge functions all report -- is left alone.
     ///
@@ -235,12 +255,12 @@ public sealed class PciInterruptRouter
     /// <summary>
     /// The routing table for a specific compatible-router device ID -- see
     /// <see cref="CompatibleRouterDeviceId"/>. PIIX4 adds the motherboard
-    /// USB function; the four expansion slots keep their existing wiring.
+    /// USB function; the expansion slots keep their existing wiring.
     /// </summary>
     public static byte[] BuildRoutingTable(ushort routerDeviceId)
     {
         bool integratedUsb = routerDeviceId == 0x7110;
-        int entryCount = integratedUsb ? 5 : 4;
+        int entryCount = integratedUsb ? SlotCount + 1 : SlotCount;
         byte[] table = new byte[32 + entryCount * 16];
         BinaryPrimitives.WriteUInt32LittleEndian(table, 0x52495024); // $PIR
         BinaryPrimitives.WriteUInt16LittleEndian(table.AsSpan(4), 0x0100);
@@ -248,21 +268,22 @@ public sealed class PciInterruptRouter
         table[9] = 8; // router 00:01.0
         BinaryPrimitives.WriteUInt16LittleEndian(table.AsSpan(12), 0x8086);
         BinaryPrimitives.WriteUInt16LittleEndian(table.AsSpan(14), routerDeviceId);
-        for (int slot = 0; slot < 4; slot++)
+        for (int slot = 0; slot < SlotCount; slot++)
         {
             int entry = 32 + slot * 16;
-            table[entry + 1] = (byte)((slot + 2) << 3);
+            ushort slotAddress = (ushort)((slot + FirstSlotDevice) << 3);
+            table[entry + 1] = (byte)slotAddress;
             table[entry + 14] = (byte)(slot + 1);
             for (byte pin = 1; pin <= 4; pin++)
             {
                 int at = entry + 2 + (pin - 1) * 3;
-                table[at] = (byte)(0x60 + Link((ushort)((slot + 2) << 3), pin));
+                table[at] = (byte)(0x60 + Link(slotAddress, pin));
                 BinaryPrimitives.WriteUInt16LittleEndian(table.AsSpan(at + 1), AllowedIrqs);
             }
         }
         if (integratedUsb)
         {
-            const int integratedEntry = 32 + 4 * 16;
+            const int integratedEntry = 32 + SlotCount * 16;
             table[integratedEntry + 1] = 8; // Motherboard device 1, slot 0.
             table[integratedEntry + 2] = 0x63; // INTA -> PIRQD.
             BinaryPrimitives.WriteUInt16LittleEndian(

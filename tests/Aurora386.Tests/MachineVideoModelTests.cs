@@ -206,7 +206,10 @@ public sealed class MachineVideoModelTests
         Assert.Equal(defaultRom, explicitDefaultRom);
         // Captured before ViRGE VBE work; the Trio firmware is an established
         // guest dependency, not merely equal to another call of the new builder.
-        Assert.Equal("92F4E138A5A4CC1F1FA2E3DD57BA96C8F31B06B19158125035607C0948ADE7A8",
+        // Recaptured once when $PIR grew from four slots to six (PCI devices 6
+        // and 7): the ROMs before and after differ only at F1AA6h-F1B1Fh,
+        // inside the routing table, measured with a byte-for-byte compare.
+        Assert.Equal("E73780705847F60BF5DDDEBB91937DA5DA401B217BA819DE9EF02ECD26A9A602",
             Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(defaultRom)));
         Assert.Equal(0xC3, vgaOnlyRom[BiosRom.Entry.VesaProgram]);
         Assert.Equal(

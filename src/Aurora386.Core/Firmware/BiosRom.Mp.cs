@@ -61,9 +61,9 @@ public static partial class BiosRom
     private const byte IoApicId = 0;   // matches IoApic.Reset()'s own default; nothing reprograms it during POST
     private const byte AllLocalApics = 0xFF;
 
-    /// <summary>The four virtual PCI slots this board's INTA-D rotation covers (Machine.cs's own pciVideo/pciIde/... device numbers all fall in here); see <see cref="Devices.Pci.PciInterruptRouter.Link"/>.</summary>
-    private const byte FirstSlotDevice = 2;
-    private const byte LastSlotDevice = 5;
+    /// <summary>The virtual PCI slots this board's INTA-D rotation covers; see <see cref="Devices.Pci.PciInterruptRouter.LastSlotDevice"/>.</summary>
+    private const byte FirstSlotDevice = Devices.Pci.PciInterruptRouter.FirstSlotDevice;
+    private const byte LastSlotDevice = Devices.Pci.PciInterruptRouter.LastSlotDevice;
 
     /// <summary>
     /// Every ISA IRQ this board wires to the I/O APIC, and which INTIN pin
@@ -103,7 +103,7 @@ public static partial class BiosRom
         }
 
         // One entry per wired (device, pin), not per PIRQ link (independent
-        // review, item 5): the board's four virtual slots (devices 2-5)
+        // review, item 5): the board's virtual slots (devices 2-7)
         // each carry all four INTA-D pins, source bus IRQ encoded the way
         // the MP spec's own PCI convention asks -- bits 6:2 device, 1:0 pin
         // -- and destination INTIN computed from the same

@@ -329,8 +329,8 @@ public static class AcpiTables
     // and AcpiResources rather than compiled from ASL (decision C3).
     // =====================================================================
 
-    private const byte FirstSlotDevice = 2;
-    private const byte LastSlotDevice = 5;
+    private const byte FirstSlotDevice = Devices.Pci.PciInterruptRouter.FirstSlotDevice;
+    private const byte LastSlotDevice = Devices.Pci.PciInterruptRouter.LastSlotDevice;
     private const int UsbDevice = 1;
     private const ushort UsbAddress = 0x000A;
     private const byte UsbPin = 1;
