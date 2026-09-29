@@ -30,6 +30,7 @@ public static class CardCatalog
             ["rtl8139-pci"] = (_, settings) => new Rtl8139Card(settings),
             ["uhci-piix"] = (_, _) => new UhciCard(),
             ["ahci-ich9"] = (_, _) => new AhciCard(),
+            ["hda-ich9"] = (_, _) => new HdaCard(),
         };
 
     /// <summary>
@@ -50,6 +51,7 @@ public static class CardCatalog
             ["rtl8139-pci"] = "network",
             ["uhci-piix"] = "usb",
             ["ahci-ich9"] = "storage",
+            ["hda-ich9"] = "sound",
         };
 
     /// <summary>
@@ -71,6 +73,7 @@ public static class CardCatalog
         [Rtl8139Card.SnapshotSectionId] = Rtl8139Card.CurrentSnapshotVersion,
         [UhciCard.SnapshotSectionId] = UhciCard.CurrentSnapshotVersion,
         [AhciCard.SnapshotSectionId] = AhciCard.CurrentSnapshotVersion,
+        [HdaCard.SnapshotSectionId] = HdaCard.CurrentSnapshotVersion,
     };
 
     /// <summary>
@@ -87,6 +90,7 @@ public static class CardCatalog
         [Rtl8029Card.SnapshotSectionId] = Rtl8029.SnapshotLength,
         [Rtl8139Card.SnapshotSectionId] = Rtl8139.SnapshotLength,
         [AhciCard.SnapshotSectionId] = Storage.AhciController.SnapshotLength,
+        [HdaCard.SnapshotSectionId] = HdaController.SnapshotLength,
     };
 
     /// <summary>Whether a card of this name is registered.</summary>

@@ -443,12 +443,14 @@ public sealed partial class Machine : IDisposable
         // The ViRGE and the Aurora Display Adapter are the exception: their
         // PCI BARs may be placed anywhere in the 32-bit space, so their
         // machines decode all of it. So do machines with a modern-platform
-        // controller (the AHCI SATA adapter): the operating systems that drive
-        // it place its memory BAR high, near FEB00000h as Linux and
+        // controller (AHCI SATA, HD Audio): the operating systems that drive
+        // them place their memory BARs high, near FEB00000h as Linux and
         // Windows both do, and a bus that stopped at 32 MB would leave the
         // BAR silently unmapped -- every register reading as all ones.
         bool relocatableAdapter = videoModel is VmVideoModel.S3Virge325 or VmVideoModel.AuroraGpu;
-        bool modernPlatformController = hardware?.Sata is not null;
+        bool modernPlatformController = hardware is not null
+            && (hardware.Sata is not null
+                || hardware.Sound.Any(card => string.Equals(card.Card, "hda-ich9", StringComparison.OrdinalIgnoreCase)));
         ulong addressableBytes = relocatableAdapter || modernPlatformController
             ? 1UL << 32
             : frameBufferBase + TrioMmioOffset + 0x10000;
