@@ -9,11 +9,10 @@
 // reserved. Sources: SDM Vol.3A §4.5 and Tables 4-14 to 4-20; AMD APM
 // Vol.2 §5.3.
 //
-// Linear addresses are still 32 bits wide throughout the core: until stage C
-// widens address generation, only compatibility-mode code reaches this walk,
-// and its linear addresses are zero-extended, hence always canonical and
-// always in the first PML4 and PDPT slot ranges. The walk itself indexes
-// with the full 48-bit layout, so stage C only has to widen its parameter.
+// Compatibility-mode code reaches this walk with 32-bit linear addresses,
+// zero-extended; 64-bit code (Cpu.LongMode.cs) with full 64-bit ones that it
+// has already checked for canonical form, so the walk itself only indexes
+// with the 48-bit layout and never sees a non-canonical address.
 
 namespace Aurora386.Core.Cpu;
 
@@ -53,10 +52,10 @@ public sealed partial class Cpu
     /// OR of their XD bits. The accessed bit is set on each level walked; the
     /// dirty bit on the leaf alone.
     /// </summary>
-    private uint TranslateLongMode(uint linear, bool write, bool asSupervisor, bool execute)
+    private uint TranslateLongMode(ulong linear, bool write, bool asSupervisor, bool execute)
     {
-        uint page = linear & 0xFFFFF000;
-        uint offset = linear & 0xFFF;
+        ulong page = linear & ~0xFFFUL;
+        uint offset = (uint)linear & 0xFFF;
 
         ref TlbEntry entry = ref _tlb[(page >> 12) & (TlbSize - 1)];
         if (entry.Valid && entry.Page == page)
@@ -191,7 +190,7 @@ public sealed partial class Cpu
     /// The per-level checks of the walk: a missing entry is #PF with P=0, a
     /// present one with a reserved bit set #PF with P=1 and RSVD.
     /// </summary>
-    private void CheckLongModeEntry(ulong entryValue, ulong reservedMask, uint linear, bool write,
+    private void CheckLongModeEntry(ulong entryValue, ulong reservedMask, ulong linear, bool write,
                                     bool asSupervisor, bool execute)
     {
         if ((entryValue & PaePresent) == 0)

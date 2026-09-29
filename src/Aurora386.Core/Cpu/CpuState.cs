@@ -26,6 +26,18 @@ public struct SegmentCache
     /// <summary>Descriptor privilege level.</summary>
     public byte Dpl;
     /// <summary>
+    /// Bits 63:32 of the base. Only FS and GS ever have them, and only in
+    /// 64-bit mode: WRMSR to IA32_FS_BASE/IA32_GS_BASE (C0000100h/C0000101h)
+    /// or SWAPGS writes a full 64-bit base, while every descriptor or
+    /// real-mode load writes a 32-bit one and clears this half (SDM Vol.3A
+    /// §3.4.4.1). See <see cref="Base64"/>.
+    /// </summary>
+    public uint BaseHigh;
+
+    /// <summary>The full base: <see cref="BaseHigh"/> over <see cref="Base"/>.</summary>
+    public readonly ulong Base64 => ((ulong)BaseHigh << 32) | Base;
+
+    /// <summary>
     /// The L bit of a code descriptor (bit 53): with long mode active, a code
     /// segment that has it runs in 64-bit mode, one without it in
     /// compatibility mode. Ignored outside long mode.
@@ -109,6 +121,13 @@ public sealed class CpuState
 
     /// <summary>The extended feature enable register. See the bit constants below.</summary>
     public ulong Efer;
+
+    /// <summary>
+    /// IA32_KERNEL_GS_BASE (MSR C0000102h): the base SWAPGS exchanges with
+    /// GS's, so a 64-bit kernel entered by SYSCALL can reach its per-CPU data
+    /// without a free register (SDM Vol.4; AMD APM Vol.2 §4.5.3).
+    /// </summary>
+    public ulong KernelGsBase;
 
     /// <summary>EFER bit 0, SCE: SYSCALL and SYSRET are enabled.</summary>
     public const ulong EferSyscallEnable = 1UL << 0;
@@ -570,6 +589,7 @@ public sealed class CpuState
         ref SegmentCache cache = ref Segments[(int)segment];
         cache.Selector = selector;
         cache.Base = (uint)selector << 4;
+        cache.BaseHigh = 0;
 
         // Note what is NOT reset here: the limit. A real-mode segment load
         // recomputes only the base -- selector * 16 -- and leaves the rest of
@@ -617,6 +637,7 @@ public sealed class CpuState
     {
         Array.Clear(Gpr);
         Efer = 0;
+        KernelGsBase = 0;
         Array.Clear(Dr);
         Array.Clear(Tr);
         OtherFlags = Flags.Reserved1;

@@ -173,6 +173,7 @@ public sealed partial class Cpu
     {
         cache.Selector = selector;
         cache.Base = 0;
+        cache.BaseHigh = 0;
         cache.Limit = 0xFFFFFFFF;
         cache.Big = true;
         cache.Long = false;

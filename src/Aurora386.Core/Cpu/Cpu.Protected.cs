@@ -40,6 +40,7 @@ public sealed partial class Cpu
 
             cache.Selector = selector;
             cache.Base = 0;
+            cache.BaseHigh = 0;
             cache.Limit = 0;
             cache.Readable = cache.Writable = false;
             return;
@@ -117,6 +118,7 @@ public sealed partial class Cpu
 
         cache.Selector = selector;
         cache.Base = baseAddress;
+        cache.BaseHigh = 0;
         cache.Limit = limit;
         cache.Big = (granularity & 0x04) != 0;
         cache.Dpl = (byte)((access >> 5) & 3);
@@ -189,6 +191,7 @@ public sealed partial class Cpu
             if (!drop) continue;
             cache.Selector = 0;
             cache.Base = 0;
+            cache.BaseHigh = 0;
             cache.Limit = 0;
             cache.Readable = cache.Writable = false;
         }

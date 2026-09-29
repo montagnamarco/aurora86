@@ -236,7 +236,7 @@ public sealed partial class Cpu
     /// its own behalf. See TranslateSupervisor for why that distinction
     /// cannot be expressed by writing ring 0 into the state in V86 mode.
     /// </summary>
-    private void CheckPagePermissions(uint linear, bool write, bool writable, bool user,
+    private void CheckPagePermissions(ulong linear, bool write, bool writable, bool user,
                                       bool asSupervisor = false, bool execute = false, bool executable = true)
     {
         bool userMode = !asSupervisor && State.Cpl == 3;
@@ -281,7 +281,7 @@ public sealed partial class Cpu
     /// protection violation, since the bit describes the access, not the
     /// cause.
     /// </summary>
-    private PageFaultException WalkFault(uint linear, bool write, bool present, bool asSupervisor,
+    private PageFaultException WalkFault(ulong linear, bool write, bool present, bool asSupervisor,
                                          bool execute, bool reserved = false)
     {
         return new PageFaultException(
@@ -445,7 +445,14 @@ public sealed partial class Cpu
     private struct TlbEntry
     {
         public bool Valid;
-        public uint Page;
+
+        /// <summary>
+        /// The linear page this slot translates, 64 bits wide: in 64-bit
+        /// mode a page lies anywhere in the 48-bit canonical space, and two
+        /// pages 4 GB apart must not share a tag. The legacy and PAE walks
+        /// store their 32-bit pages zero-extended.
+        /// </summary>
+        public ulong Page;
 
         /// <summary>
         /// The 4 KB-aligned physical address this slot translates to (low 12
@@ -1009,11 +1016,15 @@ public sealed partial class Cpu
 /// the handler goes on to read from CR2, and the reason, which the processor
 /// pushes as an error code.
 /// </summary>
-public sealed class PageFaultException(uint linearAddress, bool write, bool present, bool user = false, bool reserved = false,
+public sealed class PageFaultException(ulong linearAddress, bool write, bool present, bool user = false, bool reserved = false,
                                         bool instructionFetch = false)
     : Exception($"Page fault at 0x{linearAddress:X8}")
 {
-    public uint LinearAddress { get; } = linearAddress;
+    /// <summary>
+    /// The faulting linear address, what CR2 receives: 64 bits wide for a
+    /// fault in 64-bit mode, zero-extended from 32 everywhere else.
+    /// </summary>
+    public ulong LinearAddress { get; } = linearAddress;
     public bool Write { get; } = write;
     public bool Present { get; } = present;
     public bool User { get; } = user;

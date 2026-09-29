@@ -243,6 +243,15 @@ public sealed class ModelSpecificRegisters
     /// </summary>
     public const uint EferIndex = 0xC0000080;
 
+    /// <summary>IA32_FS_BASE (C0000100h): FS's full 64-bit base, long-mode processors only.</summary>
+    public const uint FsBaseIndex = 0xC0000100;
+
+    /// <summary>IA32_GS_BASE (C0000101h): GS's full 64-bit base.</summary>
+    public const uint GsBaseIndex = 0xC0000101;
+
+    /// <summary>IA32_KERNEL_GS_BASE (C0000102h): the base SWAPGS exchanges with GS's.</summary>
+    public const uint KernelGsBaseIndex = 0xC0000102;
+
     /// <summary>The eight memory types a PAT or MTRR byte/field may hold: UC, WC, WT, WP, WB and UC- (plans/specs/p6.md items 7-8). 2 and 3 are reserved encodings and anything above 7 does not fit the field at all; both are #GP(0) on WRMSR.</summary>
     /// <summary>
     /// The memory types an MTRR may hold: UC (0), WC (1), WT (4), WP (5) and
@@ -477,6 +486,58 @@ public sealed class ModelSpecificRegisters
         return true;
     }
 
+    /// <summary>RDMSR of the three segment-base MSRs: present only with long mode.</summary>
+    private bool TryReadSegmentBase(uint index, out ulong value)
+    {
+        CpuState state = _cpu.State;
+        value = index switch
+        {
+            FsBaseIndex => state.Segments[(int)SegReg.Fs].Base64,
+            GsBaseIndex => state.Segments[(int)SegReg.Gs].Base64,
+            _ => state.KernelGsBase,
+        };
+
+        return state.Features.Has(CpuFeature.LongMode);
+    }
+
+    /// <summary>
+    /// WRMSR of the three segment-base MSRs. The address must be canonical
+    /// (bits 63:47 all equal), otherwise #GP(0) (SDM Vol.4, and Vol.3A
+    /// §3.4.4.1). Writing FS_BASE or GS_BASE replaces the hidden base of the
+    /// segment register directly, selector untouched.
+    /// </summary>
+    private bool TryWriteSegmentBase(uint index, ulong value)
+    {
+        CpuState state = _cpu.State;
+        if (!state.Features.Has(CpuFeature.LongMode) || !Cpu.IsCanonical(value))
+        {
+            return false;
+        }
+
+        switch (index)
+        {
+            case FsBaseIndex:
+                SetSegmentBase(ref state.Segments[(int)SegReg.Fs], value);
+                break;
+
+            case GsBaseIndex:
+                SetSegmentBase(ref state.Segments[(int)SegReg.Gs], value);
+                break;
+
+            default:
+                state.KernelGsBase = value;
+                break;
+        }
+
+        return true;
+    }
+
+    private static void SetSegmentBase(ref SegmentCache segment, ulong value)
+    {
+        segment.Base = (uint)value;
+        segment.BaseHigh = (uint)(value >> 32);
+    }
+
     // ---- the P5 set, exactly as it has always been ------------------------
 
     private bool TryReadP5(uint index, out ulong value)
@@ -601,6 +662,11 @@ public sealed class ModelSpecificRegisters
 
             case EferIndex:
                 return TryReadEfer(out value);
+
+            case FsBaseIndex:
+            case GsBaseIndex:
+            case KernelGsBaseIndex:
+                return TryReadSegmentBase(index, out value);
 
             case EblCrPoweronIndex:
                 value = _eblCrPoweron;
@@ -739,6 +805,11 @@ public sealed class ModelSpecificRegisters
 
             case EferIndex:
                 return TryWriteEfer(value);
+
+            case FsBaseIndex:
+            case GsBaseIndex:
+            case KernelGsBaseIndex:
+                return TryWriteSegmentBase(index, value);
 
             case EblCrPoweronIndex:
                 _eblCrPoweron = value;

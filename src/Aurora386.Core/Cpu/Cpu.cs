@@ -524,7 +524,11 @@ public sealed partial class Cpu
     private byte _fetchCpl = 0xFF;
 
     /// <summary>Forgets the fetch page: called whenever a translation may have changed.</summary>
-    private void InvalidateFetchPage() => _fetchPage = 0xFFFFFFFF;
+    private void InvalidateFetchPage()
+    {
+        _fetchPage = 0xFFFFFFFF;
+        _fetchPage64 = ulong.MaxValue;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ushort FetchWord()

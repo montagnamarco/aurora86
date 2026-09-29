@@ -23,7 +23,7 @@ namespace Aurora386.Core.Cpu;
 public sealed partial class Cpu
 {
     /// <summary>The layout <see cref="WriteSnapshot"/> produces.</summary>
-    public const int SnapshotVersion = 4;
+    public const int SnapshotVersion = 5;
 
     /// <summary>The eight registers every 16- and 32-bit processor has; the version-0 fields hold their low halves.</summary>
     private const int LegacyRegisterCount = 8;
@@ -92,6 +92,15 @@ public sealed partial class Cpu
         {
             writer.Write(segment.Long);
         }
+
+        // Version 5, 64-bit segment bases: each segment's upper base half
+        // (only FS and GS ever hold one) and IA32_KERNEL_GS_BASE.
+        foreach (SegmentCache segment in State.Segments)
+        {
+            writer.Write(segment.BaseHigh);
+        }
+
+        writer.Write(State.KernelGsBase);
     }
 
     /// <summary>
@@ -214,6 +223,26 @@ public sealed partial class Cpu
             {
                 State.Segments[i].Long = false;
             }
+        }
+
+        if (version >= 5)
+        {
+            for (int i = 0; i < State.Segments.Length; i++)
+            {
+                State.Segments[i].BaseHigh = reader.ReadUInt32();
+            }
+
+            State.KernelGsBase = reader.ReadUInt64();
+        }
+        else
+        {
+            // Files from before 64-bit segment bases: every base fits in 32 bits.
+            for (int i = 0; i < State.Segments.Length; i++)
+            {
+                State.Segments[i].BaseHigh = 0;
+            }
+
+            State.KernelGsBase = 0;
         }
 
         FlushTlb();

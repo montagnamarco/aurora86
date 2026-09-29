@@ -28,6 +28,13 @@ public sealed partial class Cpu
             return 1;
         }
 
+        // 64-bit mode (EFER.LMA with a CS whose L bit is set) has its own
+        // decoder, Cpu.LongMode.cs; compatibility mode stays here.
+        if (State.SixtyFourBitMode)
+        {
+            return Step64();
+        }
+
         _instructionStart = State.Eip;
         _prefixes.Clear();
 
@@ -47,7 +54,7 @@ public sealed partial class Cpu
             // The instruction has to be restarted from the top once the handler
             // has brought the page in, so EIP is rewound to where it began.
             State.Eip = _instructionStart;
-            State.Cr2 = fault.LinearAddress;
+            State.Cr2 = (uint)fault.LinearAddress;   // CR2 is 32 bits wide until stage D
             DeliverException(14, fault.ErrorCode);
         }
         catch (CpuException ex)
@@ -197,7 +204,7 @@ public sealed partial class Cpu
     {
         if (ex is PageFaultException fault)
         {
-            State.Cr2 = fault.LinearAddress;
+            State.Cr2 = (uint)fault.LinearAddress;   // CR2 is 32 bits wide until stage D
             return (14, fault.ErrorCode);
         }
         var cpu = (CpuException)ex;
@@ -225,7 +232,7 @@ public sealed partial class Cpu
         if (!IsDoubleFault(first, second))
         {
             try { RaiseException(second, secondError); return; }
-            catch (PageFaultException fault) { State.Cr2 = fault.LinearAddress; }
+            catch (PageFaultException fault) { State.Cr2 = (uint)fault.LinearAddress; }
             catch (CpuException) { }
         }
 

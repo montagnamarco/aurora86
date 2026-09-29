@@ -677,6 +677,11 @@ public sealed class MachineSnapshot
         (CpuSection, 4) => LegacyProcessorLength + 8 * 4 + 2 * 4 + 1 + 1
                            + 4 + 8 + 4 * 8
                            + 8 * 4 + 8 * 8 + 4 + 8 + 6,
+        // Version 5 adds six upper base halves and IA32_KERNEL_GS_BASE.
+        (CpuSection, 5) => LegacyProcessorLength + 8 * 4 + 2 * 4 + 1 + 1
+                           + 4 + 8 + 4 * 8
+                           + 8 * 4 + 8 * 8 + 4 + 8 + 6
+                           + 6 * 4 + 8,
         (MsrSection, 1) => Cpu.ModelSpecificRegisters.SnapshotLength,
         (MsrSection, 2) => Cpu.ModelSpecificRegisters.FamilySixSnapshotLength,
         (SseSection, 1) => Cpu.Sse.SseUnit.SnapshotLength,

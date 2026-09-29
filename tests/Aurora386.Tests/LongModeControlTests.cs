@@ -327,6 +327,39 @@ public class LongModeControlTests
         }
     }
 
+    /// <summary>CPU snapshot version 5 carries FS's and GS's 64-bit bases and IA32_KERNEL_GS_BASE.</summary>
+    [Fact]
+    public void ASnapshotCarriesSixtyFourBitSegmentBases()
+    {
+        const ulong FsBase = 0xFFFF8000_00401000UL;
+        const ulong KernelGsBase = 0xFFFF8000_00802000UL;
+        string path = Path.GetTempFileName();
+        try
+        {
+            using (var source = new Machine())
+            {
+                source.CpuModel = CpuModel.PentiumII;   // the family-six MSR set; resets the CPU
+                source.RunInstructions(200);
+                CpuState state = source.Cpu.State;
+                state.Features = state.Features.With(CpuFeature.LongMode);
+                Assert.True(source.Cpu.Msrs.TryWrite(0xC0000100, FsBase));
+                Assert.True(source.Cpu.Msrs.TryWrite(0xC0000102, KernelGsBase));
+                MachineSnapshot.Capture(source).Save(path);
+            }
+
+            using var target = new Machine();
+            target.RunInstructions(200);
+            MachineSnapshot.Load(path).RestoreTo(target);
+
+            Assert.Equal(FsBase, target.Cpu.State.Segments[(int)SegReg.Fs].Base64);
+            Assert.Equal(KernelGsBase, target.Cpu.State.KernelGsBase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     /// <summary>
     /// EFER from a file is masked to the bits the restoring processor has, as
     /// CR4 is: a model without long mode ends up with no LME, LMA or SCE.
