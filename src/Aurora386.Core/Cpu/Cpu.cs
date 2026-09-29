@@ -93,6 +93,12 @@ public sealed partial class Cpu
     public Devices.Interrupts.IInterruptSource? Interrupts { get; set; }
 
     /// <summary>
+    /// The hypervisor call port, when the machine offers one; null on a
+    /// machine that behaves like real hardware (see <see cref="IBackdoorPort"/>).
+    /// </summary>
+    public IBackdoorPort? Backdoor { get; set; }
+
+    /// <summary>
     /// STI does not enable interrupts on the spot: the window opens only after
     /// the following instruction has retired. That one-instruction delay is
     /// what makes the "STI; HLT" idiom atomic -- without it an interrupt could

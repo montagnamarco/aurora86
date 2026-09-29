@@ -122,6 +122,13 @@ public sealed class MachineSnapshot
     private const string IsaPnpSection = "PNP ";
 
     /// <summary>
+    /// The VMware-compatible backdoor (docs/VMWARE-BACKDOOR.md section 6):
+    /// whether it answers and the absolute pointer's mode. A file without it
+    /// leaves the port as the receiving machine's configuration set it.
+    /// </summary>
+    private const string BackdoorSection = "VMBD";
+
+    /// <summary>
     /// The chips that decide whether the guest is ever interrupted again.
     ///
     /// A snapshot without them restores the interrupt controllers to their
@@ -264,6 +271,7 @@ public sealed class MachineSnapshot
         Add(SerialMouseSection, 0, machine.SerialMouse.Capture());
         Add(DmaSection, Devices.System.Dma8237.SnapshotVersion, machine.Dma.Capture());
         Add(IsaPnpSection, 0, machine.IsaPlugAndPlay.Capture());
+        Add(BackdoorSection, Devices.Host.VmwareBackdoor.SnapshotVersion, machine.Backdoor.Capture());
         Add(DosSection, 0, machine.CaptureDosState());
         Add(PciSection, PciVersionWithIdeTiming, machine.Pci.Capture());
         Add(CompactDiscSection, 0, [machine.GuestHasItsOwnCompactDiscExtensions ? (byte)1 : (byte)0]);
@@ -451,6 +459,24 @@ public sealed class MachineSnapshot
                 machine.SerialMouse.Restore(serialMouse);
             }
 
+            // Queued pointer packets and open RPC channels are not in the
+            // file; the guest reopens its channels as after a VMware
+            // checkpoint, so they are dropped here rather than kept stale.
+            // Whether the port answers at all is the receiving machine's
+            // configuration, not guest state: a snapshot resumed with
+            // --host-integration, or without it, obeys the command line.
+            bool backdoorConfigured = machine.Backdoor.Enabled;
+            if (Payload(BackdoorSection) is { Length: > 0 } backdoor)
+            {
+                machine.Backdoor.Restore(backdoor);
+            }
+            else
+            {
+                machine.Backdoor.Reset();
+            }
+
+            machine.Backdoor.Enabled = backdoorConfigured;
+
             // After the memory, because attaching marks the CDS entries in it.
             machine.RestoreDosState(Payload(DosSection) ?? []);
             RestorePci(machine);
@@ -595,6 +621,7 @@ public sealed class MachineSnapshot
         [AuroraGpuSection] = AuroraGpuCard.SnapshotVersion,
         [SerialMouseSection] = 0,
         [IsaPnpSection] = 0,
+        [BackdoorSection] = Devices.Host.VmwareBackdoor.SnapshotVersion,
         [InterruptControllersSection] = 0,
         [TimerSection] = 0,
         [KeyboardSection] = 0,
@@ -634,6 +661,7 @@ public sealed class MachineSnapshot
         (DmaSection, 1) => Devices.System.Dma8237.LegacySnapshotLength,
         (DmaSection, 2) => Devices.System.Dma8237.SnapshotLength,
         (VideoModelSection, _) => sizeof(ushort),
+        (BackdoorSection, Devices.Host.VmwareBackdoor.SnapshotVersion) => Devices.Host.VmwareBackdoor.SnapshotLength,
         (AuroraGpuSection, AuroraGpuCard.SnapshotVersion) => AuroraGpuCard.SnapshotLength,
         (LocalApicSection, 1) => Devices.Apic.LocalApic.SnapshotLength,
         (IoApicSection, 1) => Devices.Apic.IoApic.SnapshotLength,
@@ -1274,6 +1302,10 @@ public sealed class MachineSnapshot
 
             case IsaPnpSection:
                 Devices.IsaPnp.IsaPnpBus.ValidateSnapshot(section.Payload);
+                break;
+
+            case BackdoorSection:
+                Devices.Host.VmwareBackdoor.ValidateSnapshot(section.Payload);
                 break;
 
             case DmaSection when section.Version == 1:

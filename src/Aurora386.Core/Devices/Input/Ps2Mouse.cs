@@ -69,6 +69,17 @@ public sealed class Ps2Mouse
     private MouseButtons _lastReportedButtons;
 
     /// <summary>
+    /// Set by <see cref="RequestWakeupPacket"/> when the VMware backdoor's
+    /// absolute pointer channel (<see cref="Devices.Host.VmwareBackdoor"/>)
+    /// has queued a packet of its own. That channel has no interrupt of its
+    /// own -- QEMU's <c>vmmouse.c</c> reuses the PS/2 mouse's IRQ 12 to tell
+    /// the guest something is waiting -- so this flag makes the ordinary
+    /// PS/2 packet builder emit one empty packet purely to raise that IRQ,
+    /// even though nothing about the PS/2 mouse itself has changed.
+    /// </summary>
+    private bool _wakeupPacketRequested;
+
+    /// <summary>
     /// Bytes the mouse wants to send: command acknowledgements and movement
     /// packets, in the order they were produced. The controller drains this.
     /// </summary>
@@ -92,6 +103,31 @@ public sealed class Ps2Mouse
         _sampleRate = 100;
         _scaling = false;
         _pendingCommand = 0;
+        _wakeupPacketRequested = false;
+    }
+
+    /// <summary>
+    /// Asks for one empty packet -- header 08h, no motion -- the next time
+    /// <see cref="TryBuildPacket"/> would otherwise have nothing to send.
+    ///
+    /// This is how the VMware backdoor's absolute pointer channel gets its
+    /// IRQ: it has none of its own, so it borrows the PS/2 mouse's, and the
+    /// packet it borrows is empty because the real data lives on the
+    /// backdoor port, not in this one. If the PS/2 mouse already has real
+    /// motion to report, that packet raises the interrupt just as well and
+    /// this request is satisfied without sending a second one.
+    /// </summary>
+    /// <remarks>
+    /// Ignored while the mouse is not reporting: a request remembered across
+    /// a disabled stretch would produce a stray packet the moment the driver
+    /// re-enabled the mouse, answering data that no longer exists.
+    /// </remarks>
+    public void RequestWakeupPacket()
+    {
+        if (Reporting)
+        {
+            _wakeupPacketRequested = true;
+        }
     }
 
     /// <summary>
@@ -126,8 +162,24 @@ public sealed class Ps2Mouse
         MouseButtons buttons = _state.Buttons;
         if (!_state.HasPs2Motion && buttons == _lastReportedButtons)
         {
-            return false;
+            // Nothing of the PS/2 mouse's own has changed. A pending wakeup
+            // request still gets exactly one empty packet -- enough to raise
+            // IRQ 12 -- and is then cleared so it fires only once.
+            if (!_wakeupPacketRequested)
+            {
+                return false;
+            }
+
+            _wakeupPacketRequested = false;
+            _output.Enqueue(0x08);   // header: bit 3 always one, no buttons, no motion
+            _output.Enqueue(0);
+            _output.Enqueue(0);
+            return true;
         }
+
+        // A real packet is about to be sent, which raises IRQ 12 on its own;
+        // any pending wakeup request is satisfied by it.
+        _wakeupPacketRequested = false;
 
         (int x, int y) = _state.TakePs2Motion();
         _lastReportedButtons = buttons;
