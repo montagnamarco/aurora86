@@ -361,6 +361,39 @@ public class CpuFeatureTests
         Assert.Equal("              Intel(R) Pentium(R) 4 CPU 2.40GHz", brand);
     }
 
+    // --- the 64-bit models claim nothing the emulator does not execute ------
+
+    /// <summary>
+    /// The Core 2 and Haswell silicon carries long mode, NX, SYSCALL and
+    /// LAHF/SAHF in 64-bit mode (extended leaf 80000001h: EDX bits 29, 20 and
+    /// 11, ECX bit 0), and SSSE3 onwards at leaf 1 ECX. Aurora executes none
+    /// of it yet, so none of it may be advertised: a 64-bit loader that saw
+    /// EDX bit 29 would set EFER.LME and switch into a mode that does not
+    /// exist here. The bits come on together with the code behind them (plan
+    /// item M1).
+    /// </summary>
+    [Theory]
+    [InlineData(CpuModel.Core2)]
+    [InlineData(CpuModel.Haswell)]
+    public void TheSixtyFourBitModelsDoNotClaimLongModeOrTheirUnimplementedExtensions(CpuModel model)
+    {
+        const uint LongModeEdxBit = 1u << 29;
+        const uint NoExecuteEdxBit = 1u << 20;
+        const uint SyscallEdxBit = 1u << 11;
+        const uint LahfInLongModeEcxBit = 1u << 0;
+        const uint Sse3EcxBit = 1u << 0;
+
+        var extended = Cpuid(model, 0x80000001);
+        var leafOne = Cpuid(model, 1);
+
+        Assert.Equal(0u, extended.Edx & (LongModeEdxBit | NoExecuteEdxBit | SyscallEdxBit));
+        Assert.Equal(0u, extended.Ecx & LahfInLongModeEcxBit);
+
+        // SSE3 is implemented and stays; every other leaf-1 ECX bit these
+        // models carry (SSSE3, CX16, SSE4.x, POPCNT, AES, XSAVE, AVX...) is not.
+        Assert.Equal(Sse3EcxBit, leafOne.Ecx);
+    }
+
     // --- leaves the model does not have fall back to the highest basic one --
 
     [Fact]
