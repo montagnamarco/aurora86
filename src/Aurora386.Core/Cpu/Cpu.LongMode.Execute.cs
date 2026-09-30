@@ -97,6 +97,12 @@ public sealed partial class Cpu
                     return;
                 }
 
+                // The string instructions (Cpu.LongMode.Strings.cs).
+                if (TryExecuteString64(opcode))
+                {
+                    return;
+                }
+
                 throw new CpuException(6);
         }
     }
