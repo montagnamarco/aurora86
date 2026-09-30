@@ -131,6 +131,10 @@ public sealed partial class Machine
                 SystemControl.ResetRequested = false;
                 Cpu.Reset();
 
+                // The AT ties the RTC's RESET pin to the system reset: its
+                // interrupt enables and flags go, its time and memory stay.
+                Cmos.Reset();
+
                 // Cpu.Cycles just went back to zero, so every due cycle still
                 // in the queue was measured against a clock that no longer
                 // exists. No device has migrated to the scheduler yet, so
@@ -389,6 +393,9 @@ public sealed partial class Machine
         // of emulated time, converted from the instructions just executed.
         double microseconds = (double)instructions * 1_000_000.0 / CpuFrequencyHz;
         foreach (IExpansionCard card in Cards) card.Advance(microseconds);
+
+        // The real-time clock's periodic, update-ended and alarm interrupts.
+        Cmos.Advance(microseconds);
 
         // And so is the video beam. A program polling for vertical retrace is
         // waiting for a moment that has a duration; without the clock behind
