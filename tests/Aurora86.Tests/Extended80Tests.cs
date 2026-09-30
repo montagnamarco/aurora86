@@ -13,6 +13,35 @@ namespace Aurora86.Tests;
 /// </summary>
 public class Extended80Tests
 {
+    /// <summary>
+    /// ZERO AGAINST A VALUE UNDER ONE, both orders and both signs: the case
+    /// the exponent comparison got wrong, because zero's stored exponent (0)
+    /// is larger than an unbiased exponent below it (0.5's is -1). A value
+    /// over one, and two nonzero values, are kept as controls.
+    /// </summary>
+    [Theory]
+    [InlineData(0.5, 0.0, 1)]
+    [InlineData(0.0, 0.5, -1)]
+    [InlineData(-0.5, 0.0, -1)]
+    [InlineData(0.0, -0.5, 1)]
+    [InlineData(1e-300, 0.0, 1)]
+    [InlineData(0.0, 1e-300, -1)]
+    [InlineData(-0.0, 0.25, -1)]
+    [InlineData(0.25, -0.0, 1)]
+    [InlineData(99.5, 0.0, 1)]
+    [InlineData(0.5, 0.25, 1)]
+    [InlineData(0.0, -0.0, 0)]
+    [InlineData(-0.0, -0.5, 1)]                          // two negatives: also wrong before
+    [InlineData(-0.5, -0.0, -1)]
+    [InlineData(0.0, double.PositiveInfinity, -1)]
+    [InlineData(0.0, double.NegativeInfinity, 1)]
+    [InlineData(4.9406564584124654e-324, 0.0, 1)]        // the smallest subnormal double
+    [InlineData(-0.0, -4.9406564584124654e-324, 1)]
+    public void ZeroIsOrderedAgainstEveryOtherValue(double a, double b, int expected)
+    {
+        Assert.Equal(expected, Extended80.Compare(Extended80.FromDouble(a), Extended80.FromDouble(b)));
+    }
+
     [Fact]
     public void AValueSurvivesTheTripThroughADouble()
     {

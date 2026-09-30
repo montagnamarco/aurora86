@@ -298,6 +298,16 @@ public readonly struct Extended80
         if (a.IsNaN || b.IsNaN) return 2;
         if (a.IsZero && b.IsZero) return 0;
 
+        // A ZERO AGAINST ANYTHING ELSE is decided by the other's sign alone.
+        // The exponent comparison below cannot be used: this type keeps the
+        // exponent unbiased and gives zero an exponent of 0, which orders it
+        // above every value under 1 -- 0.5 compared as less than zero, and
+        // FCOM/FUCOM/FTST set C0 the wrong way for it. Measured from Aurora
+        // OS: printf("%.3f", 0.5) never returned, because its "value < 0.0"
+        // came out true and its scaling loop then ran towards minus infinity.
+        if (a.IsZero) return b.Negative ? 1 : -1;
+        if (b.IsZero) return a.Negative ? -1 : 1;
+
         if (a.Negative != b.Negative) return a.Negative ? -1 : 1;
 
         int sign = a.Negative ? -1 : 1;

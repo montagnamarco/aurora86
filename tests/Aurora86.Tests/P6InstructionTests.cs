@@ -351,6 +351,60 @@ public class P6InstructionTests
         }
     }
 
+    // === FUCOM and FTST against zero, on the 486 =================================
+
+    private const ushort ConditionC0 = 1 << 8;
+    private const ushort ConditionC3 = 1 << 14;
+
+    /// <summary>
+    /// ZERO AGAINST A VALUE UNDER ONE, through the instructions and the
+    /// condition bits a program reads with FNSTSW: C0 set for "less", C3 for
+    /// "equal". The type once ordered zero above every value under one, so
+    /// FUCOM of 0.5 against 0 set C0; printf("%.3f", 0.5) in Aurora OS then
+    /// took 0.5 for negative and never returned.
+    /// </summary>
+    [Theory]
+    [InlineData(0.0, 0.5, false, false)]     // ST1=0, ST0=0.5: greater
+    [InlineData(0.5, 0.0, true, false)]      // ST1=0.5, ST0=0: less
+    [InlineData(0.0, -0.5, true, false)]     // ST0=-0.5 < 0
+    [InlineData(0.0, 0.0, false, true)]      // equal
+    public void FucomOrdersZeroAgainstAValueUnderOne(double st1Value, double st0Value, bool c0, bool c3)
+    {
+        const uint address = 0x4000;
+        var (cpu, bus) = Setup([.. FldAt(address), .. FldAt(address + 4), 0xDD, 0xE1]);   // FUCOM ST1
+        using (bus)
+        {
+            LoadTwo(cpu, bus, st1Value, st0Value);
+
+            cpu.Step();
+            cpu.Step();
+            cpu.Step();
+
+            Assert.Equal(c0, (cpu.Fpu.StatusWord & ConditionC0) != 0);
+            Assert.Equal(c3, (cpu.Fpu.StatusWord & ConditionC3) != 0);
+        }
+    }
+
+    [Theory]
+    [InlineData(0.5, false, false)]
+    [InlineData(-0.5, true, false)]
+    [InlineData(0.0, false, true)]
+    public void FtstComparesAValueUnderOneWithZero(double value, bool c0, bool c3)
+    {
+        const uint address = 0x4000;
+        var (cpu, bus) = Setup([.. FldAt(address), 0xD9, 0xE4]);   // FLD [addr] ; FTST
+        using (bus)
+        {
+            bus.WriteDword(address, (uint)BitConverter.SingleToInt32Bits((float)value));
+
+            cpu.Step();
+            cpu.Step();
+
+            Assert.Equal(c0, (cpu.Fpu.StatusWord & ConditionC0) != 0);
+            Assert.Equal(c3, (cpu.Fpu.StatusWord & ConditionC3) != 0);
+        }
+    }
+
     // === FCOMI / FCOMIP / FUCOMI / FUCOMIP =======================================
 
     private static void LoadTwo(Cpu cpu, PhysicalMemoryBus bus, double st1, double st0)
@@ -364,6 +418,8 @@ public class P6InstructionTests
     [InlineData(2.0, 1.0, false, false, true)]    // ST1=2.0, ST0=1.0: ST0 < ST1, less -- 001
     [InlineData(1.0, 2.0, false, false, false)]   // ST1=1.0, ST0=2.0: ST0 > ST1, greater -- 000
     [InlineData(1.0, 1.0, true, false, false)]    // equal -- 100
+    [InlineData(0.0, 0.5, false, false, false)]   // ST0=0.5 > ST1=0: a value under one against zero
+    [InlineData(0.5, 0.0, false, false, true)]    // ST0=0 < ST1=0.5 -- CF set
     public void FcomiReportsTheComparisonInZfPfCf(double st1Value, double st0Value, bool zero, bool parity, bool carry)
     {
         const uint address = 0x4000;
