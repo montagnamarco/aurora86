@@ -142,7 +142,7 @@ And a fourth mode that is not in Intel's manuals:
 > go back to real mode. The limit **stays** in the hidden register, and from
 > real mode you address 4 GB. Undocumented, a side effect of the silicon --
 > and `HIMEM.SYS` leans on it. Aurora386 reproduces it: see
-> `REAL-VS-PROTECTED-MODE.md`, or the tests in `UnrealModeTests`.
+> [REAL-VS-PROTECTED-MODE.md](REAL-VS-PROTECTED-MODE.md).
 
 ### How Aurora386 emulates it
 
@@ -347,8 +347,7 @@ The registers are a **stack of eight** with a rotating top:
 
 Values are kept at **true 80 bits** (`Extended80`): a 64-bit mantissa,
 against the 53 of a `double`. The difference shows only in long chains of
-arithmetic, but it is the one the 387 had. The plan is to turn this into a
-real instruction-level x87 -- a 487 once the CPU becomes a 486.
+arithmetic, but it is the one the 387 had.
 
 ---
 
@@ -701,8 +700,8 @@ Two logs, switched on by environment variable because they cost too much to
 keep always on:
 
 ```bash
-AURORA_WRITELOG=/tmp/writes.log   # the files the guest writes, by name
-AURORA_DOSLOG=/tmp/dos.log        # rename, exec, create, delete
+AURORA_WRITELOG=writes.log   # the files the guest writes, by name
+AURORA_DOSLOG=dos.log        # rename, exec, create, delete
 ```
 
 The first resolves every written sector to the file that owns it, by reading

@@ -1,15 +1,14 @@
-# Device snapshot implementation contract
+# Device snapshot format
 
-This contract began as the P3-01 design at source `fd3b728` (2026-09-14).
-It now records the implemented SNAP-01 through SNAP-06 continuation formats.
-The scope is deterministic continuation of the existing Trio/ViRGE and SB16
-models at a stopped machine execution boundary. It does not add hardware
-features, change instruction semantics, or make disk snapshots transactional.
+This document records the implemented continuation formats for deterministic
+snapshot/restore of the Trio/ViRGE and SB16 device models at a stopped
+machine execution boundary. It does not add hardware features, change
+instruction semantics, or make disk snapshots transactional.
 
-SNAP-01 through SNAP-06 are implemented. New captures contain DVS1 version 1
-records for DMA (kind 2), SB16 including mixer/OPL (kind 3), and ISA PnP
-(kind 4), plus the Trio accelerator (kind 1) on Trio machines. ViRGE engines
-remain in VID1/VGE1. Every record uses model 0, version 1 and zero flags.
+New captures contain DVS1 version 1 records for DMA (kind 2), SB16 including
+mixer/OPL (kind 3), and ISA PnP (kind 4), plus the Trio accelerator (kind 1)
+on Trio machines. ViRGE engines remain in VID1/VGE1. Every record uses model
+0, version 1 and zero flags.
 
 Historical absence, empty trailers and Trio-only trailers survive load/save
 byte-for-byte. Restoring those files resets omitted DMA/audio/PnP state to
@@ -191,7 +190,7 @@ Topology validation matches every card's identity/resource bytes and ordered
 logical devices before mutation. The standalone parser bounds cards to 255,
 LDNs per card to 256 and resource data per card to 1 MiB, with exact consumption.
 
-[MachineSnapshot.Devices.cs](../src/Aurora386.Core/MachineSnapshot.Devices.cs)
+[MachineSnapshot.cs](../src/Aurora386.Core/MachineSnapshot.cs)
 requires the complete DMA/SB16/PnP set whenever any of those records is present;
 Trio additionally requires kind 1. Historical empty and Trio-only sets remain
 valid. Before allocating record bodies, the file reader checks exact remaining
@@ -273,8 +272,9 @@ Assign record kinds 1=Trio accelerator, 2=DMA, 3=SB16, 4=ISA PnP;
 model 0 denotes the current implementation of each kind. Kinds 1 through 4, model 0, version 1 are implemented.
 SB16 owns nested versioned mixer/OPL payloads; DMA remains a system device.
 
-Before SNAP-01 the loader required VID1's declared length to equal all remaining
-bytes. The loader now bounds VID1 to its declared length and parses the trailer
+Before this format existed, the loader required VID1's declared length to
+equal all remaining bytes. The loader now bounds VID1 to its declared length
+and parses the trailer
 separately. Old readers reject files containing DVS1: compatibility means
 new readers accept old files, not that old readers can load new state.
 Reject unknown kinds/models/versions, duplicate records, nonzero flags,
@@ -320,75 +320,9 @@ Save the device fractions and require matching CPU frequency/output rate for
 replay tests. This contract does not promise bit-identical PCM across runtime
 architectures with different floating-point behaviour.
 
-## Ordered implementation units
+## Known limitation: combined PCM/FM mixing
 
-Each unit uses a direct owner and affected tests. Machine integration runs the
-full `Speed!=Slow` suite and solution build. Obtain independent review for any
-new concurrency guarantee or destructive transition; do not add these implicitly.
-
-1. **SNAP-01 — Trailer and compatibility (implemented).** Files: `MachineSnapshot.cs`,
-   snapshot tests. Implement bounded DVS1 parsing and presence tracking,
-   initially with no newly claimed device continuation. Test VID1 length versus
-   trailer length, legacy round-trip, duplicate/unknown records and truncation.
-   Reject malformed state with CPU/RAM/VRAM/PIC/CD ownership unchanged.
-   Done when the extension infrastructure is tested without rewriting old bytes
-   or accepting unsupported records as successfully restored.
-2. **SNAP-02 — Trio accelerator (implemented).** Files: `S3Accelerator.cs`, a focused snapshot
-   partial/helper, machine integration and accelerator tests. Capture all
-   register latches, `_pendingLow`, multifunction/read/colour selectors,
-   write-mask-written flag, transfer geometry/directions/mask/row/column,
-   `_unit`/`_unitBytes` and `_processorPixel`/`_processorPixelBytes`.
-   Exclude diagnostic counters and callbacks. Preserve byte-write ordering;
-   restore through raw state, never `Execute`. Tests drive command `9AE8`,
-   data `E2E8`, multifunction `BEE8` and colour `A6E8`: capture after one byte
-   of a word, midway through monochrome expansion, and during a split 24-bit
-   pixel; replay the suffix and compare entire VRAM and subsequent readbacks.
-   Verify immediate commands are not repeated. Done when fresh and previously
-   used target machines continue identically and legacy pending work resets.
-3. **SNAP-03 — DMA (standalone serializer implemented).**
-   Files: `Dma8237.cs`, DMA tests. Capture base/current
-   address/count, page, mode, mask, terminal-count flag for eight channels and
-   `_highByte8`/`_highByte16`. Test channel 1 and 5 port programming, capture
-   between low/high bytes, decrement, auto-init mode bit 4, word addressing,
-   and terminal-count status read-to-clear. Replay remaining transfers using
-   explicit RAM data and compare bytes, address/count and status. Done when
-   payload validation and continuation pass without transferring during restore.
-4. **SNAP-04 — Mixer and OPL (standalone serializers implemented).**
-   Files: `SbMixer.cs`, `Opl3.cs`, audio tests.
-   Save mixer index/registers/resources/IRQ status; OPL banks and address
-   selectors, mode, operator phase/envelope state, voice parameters, timer
-   registers/status and both timer accumulators. Encode doubles losslessly;
-   reject invalid enums/nonfinite values. Restore without register writes that
-   trigger key-on. Test bank 1 register `05`, key-on `B0`, panning `C0`, timer
-   control `04`, index/data sequencing and nonzero PCM after mid-envelope
-   capture. Compare the complete PCM suffix and timer status to uninterrupted
-   execution. Derived fields may be recomputed only without side effects.
-5. **SNAP-05 — DSP playback and PCM (implemented standalone).** Files: `SoundBlaster16.cs`, audio tests.
-   Save output FIFO order/last byte, pending command/arguments/counts, reset
-   latch, identification/test registers, speaker, playback format/block state,
-   sample/resample/FM fractions and core ring. Include resources/enabled state
-   and nested mixer/OPL. Test partial `41` command arguments through base+`0C`,
-   unread DSP FIFO at base+`0A`, paused playback, 8/16-bit auto-init and a
-   snapshot immediately before/after block completion. Compare PCM, DMA
-   counters and mixer `82` IRQ bits; acknowledge through base+`0E`/`0F`.
-   Use a port-programmed DMA buffer, never a live DOS allocation. Done when
-   replay preserves queued output and future samples without an extra IRQ.
-6. **SNAP-06 — PnP and machine integration (implemented).** Files: ISA PnP bus/card classes,
-   `MachineSnapshot.cs`, frontend snapshot callers and machine tests. Capture
-   read-data port, initiation-key cursor, selected address, isolation state,
-   each card's identity/CSN/state/resource cursor/selected logical device and
-   logical registers. Include all attached card configuration, not only SB16,
-   to preserve bus protocol; this does not claim network packet continuation.
-   Test partial isolation, activation register `30`, relocated base `60/61`,
-   IRQ `70` and DMA `74/75`, then replay audio on the relocated ports. Validate
-   topology and supported resource conflicts before callbacks. Compare captures
-   on fresh/dirty targets; assert PIC pending state and absence of duplicate
-   IRQ edges. Test old files' explicit reset policy. Done when machine replay,
-   malformed/mismatched atomic rejection, caller quiescence audit and full
-   integration checks pass. Guest benches are needed only for gaps not proved
-   by these constructed port/CPU tests.
-
-The existing `RenderFmOverPending` currently calls `RenderFmFrames(0)` during
-digital playback. Combined PCM/FM mixing therefore needs a separate behaviour
-investigation; snapshot work must preserve current semantics and must not use
-that path alone as evidence that OPL continuation works.
+`RenderFmOverPending` calls `RenderFmFrames(0)` during digital playback, so
+combined PCM/FM mixing is a separate, unresolved behaviour question. Snapshot
+continuation preserves this current semantics and does not by itself
+establish that OPL continuation is correct when PCM and FM play together.

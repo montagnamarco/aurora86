@@ -231,8 +231,7 @@ identity of QEMU's qemu-xhci: PCI 1B36:000D, revision 01, class 0C0330.
 Linux's xhci-hcd and the inbox usbxhci.sys of Windows 8 and later bind it by
 class code; Windows 7 has no inbox xHCI driver. It is fitted as the card
 `qemu-xhci` at PCI 00:08.0 (vm.json `hardware.xhci`, with an optional USB
-stick on its first port), independent of the UHCI/EHCI card. The design
-decisions and every register constant are in `plans/usb3-xhci.md`.
+stick on its first port), independent of the UHCI/EHCI card.
 
 **What is modelled.**
 

@@ -96,7 +96,7 @@ returned in ECX's high word: `0001h` SUCCESS, `0002h` DORECV, `0004h` CLOSED,
 - CLOSE ends the channel. Eight channels may be open at once.
 - RPCI replies start with `"1 "` for success or `"0 "` for failure. Requests
   the host does not act on are answered `"1 "`, so tools do not retry; the
-  first real use is the clipboard (plan item M11).
+  first real use is the clipboard.
 
 ## 6. Snapshots
 
@@ -143,10 +143,10 @@ published the numeric limits or the exact error behaviour for this legacy
 pair of transfers:
 
 - Text crosses the backdoor as UTF-8 in both directions.
-- Both directions are capped at 65436 bytes, (1 << 16) - 100: the
-  independent review recalled that limit in open-vm-tools' copy-paste code,
-  above which a guest drops the selection whole. It is not confirmed against
-  the source; staying under it costs nothing. A host selection longer than
+- Both directions are capped at 65436 bytes, (1 << 16) - 100: this is the
+  limit recalled from open-vm-tools' copy-paste code, above which a guest
+  drops the selection whole. It is not confirmed against the source;
+  staying under it costs nothing. A host selection longer than
   that is truncated to the cap at a UTF-8 character boundary -- the
   character that would straddle the cut is dropped whole, never split. A
   guest SETSELLENGTH longer than the cap is ignored outright: every

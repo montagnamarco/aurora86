@@ -14,9 +14,8 @@ documentation incorrectly described these vectors as hardware captures.
 
 The [public SingleStepTests repository list](https://github.com/orgs/SingleStepTests/repositories)
 and searches for 486 SingleStepTests did not identify a hardware-generated
-486 suite during this audit. The search task is complete; hardware-based
-validation of 486-specific behaviour remains open in `PIANO.md`.
+486 suite as of this audit; hardware-based validation of 486-specific
+behaviour remains an open gap.
 
-Current regression result after the DR4/DR5 alias change: 1257 fast unit
-tests and 6100 protected-mode reference vectors pass. The real-mode suite
-was not rerun in this audit; its README result is historical.
+The real-mode suite was not rerun for this audit; its README result is
+historical.

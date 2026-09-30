@@ -51,7 +51,8 @@ mode, `mov eax, [es:0x12345678]` works.
 
 HIMEM.SYS uses exactly this to copy to extended memory without leaving real
 mode, and it is the reason the cache must survive a mode switch untouched.
-The regression is in `UnrealModeTests`. V86 loads use the reset variant,
+`MachineSnapshotTests.ASegmentsHiddenLimitSurvives` pins that the hidden
+limit also survives a snapshot. V86 loads use the reset variant,
 so a virtual DOS task does not inherit an unreal-mode segment limit.
 
 ## 2. The tables
@@ -72,10 +73,10 @@ fields scattered in the least convenient order history could devise; the
 decoding is in `LoadSegmentProtected`, and `WriteDescriptor` in `ProtectedModeTests` constructs those fields for
 executable regression cases.
 
-In an earlier measured standard-mode boot Windows put its GDT at 0x310800 and its LDT at 0x314C80,
-both in extended memory; in enhanced mode the tables live behind paging at
-linear addresses like 0x80663000. Neither address means anything to a real
-mode program, which is the point.
+In a standard-mode boot, Windows puts its GDT at 0x310800 and its LDT at
+0x314C80, both in extended memory; in enhanced mode the tables live behind
+paging at linear addresses like 0x80663000. Neither address means anything
+to a real mode program, which is the point.
 
 ## 3. Rings, and why CLI faults
 
@@ -267,10 +268,8 @@ never through `INT 10h` -- when it hands the display back. The DPMI services
 (`INT 31h`) and the DOS calls (`INT 21h`) are reached through gates at ring
 0, so an `INT n` from ring 3 faults with `#GP` and the VMM does the work.
 
-If you want to see it happen, the harnesses in the project's history do:
-boot the installed image, run `win`, and watch `ProcessorException` and
-`SoftwareInterruptIssued`. The counts per 300 million instructions are in
-the plan (`PIANO.md`, phase 1.4).
+If you want to see it happen, boot the installed image, run `win`, and
+watch `ProcessorException` and `SoftwareInterruptIssued`.
 
 ## References and scope
 

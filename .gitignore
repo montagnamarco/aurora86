@@ -18,8 +18,7 @@ plans/
 # macOS
 .DS_Store
 
-# Working plans per initiative, and Claude Code local settings. The agent
-# definitions in .claude/agents are committed.
-plans/
+# Claude Code local settings. The agent definitions in .claude/agents are
+# committed.
 **/.claude/settings.local.json
 **/CLAUDE.local.md

@@ -33,8 +33,8 @@ write-one-to-clear operation. Snapshots preserve its phase and the IDE
 engine's pending DMA state, along with PCI configuration.
 
 ACPI 1.0b tables and the SCI/SMI-adjacent runtime (SMI_CMD, GPE0, the power
-button, SLP_EN) are covered separately in `docs/ACPI.md` (work package
-P4.5). This is still not full host-memory-controller emulation: SMBus, PAM
+button, SLP_EN) are covered separately in [ACPI.md](ACPI.md). This is
+still not full host-memory-controller emulation: SMBus, PAM
 shadow routing and SMRAM/SMM proper remain unimplemented.
 In-flight PIO/ATAPI transfers are outside snapshot coverage. Disk contents
 are external to snapshots and must still be paired with the saved state.

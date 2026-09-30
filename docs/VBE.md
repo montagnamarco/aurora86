@@ -32,4 +32,4 @@ dotnet test tests/Aurora386.Tests --filter 'FullyQualifiedName~Vesa'
 ```
 
 This covers the VBE framebuffer interface. Validation with DOS VESA
-applications and Windows SVGA256.DRV remains a separate item in `PIANO.md`.
+applications and Windows SVGA256.DRV is not yet established.

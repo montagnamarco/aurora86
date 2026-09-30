@@ -1,43 +1,43 @@
-# Rete
+# Network
 
-La scheda emulata è una **NE2000** su ISA (porta 300h, IRQ 3). La scheda c'è
-sempre; quello che si sceglie è dove va il suo cavo.
+The emulated card is an **NE2000** on ISA (port 300h, IRQ 3). The card is
+always there; what you choose is where its cable goes.
 
-| Modalità | Cosa succede |
+| Mode | What happens |
 |---|---|
-| **Unplugged** (default) | i frame trasmessi tornano indietro alla scheda (loopback). Basta a un driver per trovare la scheda e superare il proprio autotest, e l'emulatore non tocca la rete del computer. |
-| **NAT** | l'emulatore fa da router: il guest vede una rete privata e raggiunge il mondo attraverso le connessioni normali del computer. Nessun privilegio richiesto. |
+| **Unplugged** (default) | transmitted frames come straight back to the card (loopback). That is enough for a driver to find the card and pass its own self-test, and the emulator never touches the host's network. |
+| **NAT** | the emulator acts as a router: the guest sees a private network and reaches the world through the host's own ordinary connections. No privileges required. |
 
-## Il NAT
+## The NAT
 
-Gli indirizzi sono quelli resi consueti da slirp/QEMU, così le istruzioni
-scritte per QEMU valgono tali e quali:
+The addresses are the ones slirp/QEMU made familiar, so instructions
+written for QEMU apply unchanged:
 
-| Chi | Indirizzo |
+| Who | Address |
 |---|---|
-| gateway (l'emulatore) | 10.0.2.2 |
-| server DNS | 10.0.2.3 |
+| gateway (the emulator) | 10.0.2.2 |
+| DNS server | 10.0.2.3 |
 | guest (via DHCP) | 10.0.2.15 / 255.255.255.0 |
 
-Cosa fa il router, in ordine dal basso:
+What the router does, from the bottom up:
 
-- **ARP**: risponde per 10.0.2.2 e 10.0.2.3 con il proprio MAC (52:55:0A:00:02:02). Non risponde per l'indirizzo del guest, così un probe prima di prendere l'indirizzo non lo trova occupato.
-- **DHCP**: un solo indirizzo, offerto a chi lo chiede. Un guest configurato staticamente come 10.0.2.15 con gateway 10.0.2.2 funziona ugualmente.
-- **ICMP echo**: al gateway e al DNS risponde subito; verso l'esterno fa un ping dal computer e, se torna, ricostruisce la risposta con l'identificatore del guest.
-- **DNS**: le richieste a 10.0.2.3:53 vanno al primo server DNS del computer; la risposta torna come se venisse da 10.0.2.3, altrimenti il resolver del guest la scarterebbe.
-- **UDP**: un socket dell'host per ogni porta sorgente del guest, riusato per qualunque destinazione (NAT "full cone"); chiuso dopo 60 s di inattività.
-- **TCP**: il NAT **termina** le connessioni. Il guest parla TCP con quello che crede il server remoto e l'emulatore fa quella parte (numeri di sequenza, ACK, finestre, ritrasmissione con backoff), mentre i byte passano su un socket connesso dal computer. Un SYN non riceve risposta finché il socket non è connesso; un rifiuto diventa un RST. Non si riassemblano frammenti IP e si accettano solo segmenti in ordine: sul filo emulato non c'è né perdita né riordino, l'unica perdita possibile è il ring buffer pieno della scheda, e la ritrasmissione la copre.
-- **Verso il guest** al massimo 8 segmenti in volo, qualunque finestra dichiari: il ring della NE2000 tiene pochi frame e un driver DOS li svuota lentamente.
+- **ARP**: answers for 10.0.2.2 and 10.0.2.3 with its own MAC (52:55:0A:00:02:02). It does not answer for the guest's own address, so a probe made before picking up the address does not find it already taken.
+- **DHCP**: a single address, offered to whoever asks for it. A guest configured statically as 10.0.2.15 with gateway 10.0.2.2 works just the same.
+- **ICMP echo**: answers immediately for the gateway and the DNS server; towards the outside it pings from the host and, if that returns, rebuilds the reply with the guest's own identifier.
+- **DNS**: requests to 10.0.2.3:53 go to the host's first DNS server; the reply comes back as if it came from 10.0.2.3, since otherwise the guest's resolver would discard it.
+- **UDP**: one host socket per guest source port, reused for any destination (a "full cone" NAT); closed after 60 s of inactivity.
+- **TCP**: the NAT **terminates** the connections. The guest talks TCP to what it believes is the remote server, and the emulator plays that part (sequence numbers, ACKs, windows, retransmission with backoff), while the bytes go over a socket the host connects. A SYN gets no answer until the socket is connected; a refusal becomes an RST. IP fragments are not reassembled and only in-order segments are accepted: on the emulated wire there is neither loss nor reordering, the only possible loss is the card's own full ring buffer, and retransmission covers it.
+- **Towards the guest**, at most 8 segments in flight, whatever window it declares: the NE2000's ring holds few frames and a DOS driver drains it slowly.
 
-Tutto gira sul thread di emulazione, dentro le chiamate della scheda. I
-socket completano su thread propri e mettono in coda quello che hanno da
-dire; la coda viene svuotata prima di gestire ogni frame, così lo stack non
-ha mai due thread dentro e non ha lock.
+Everything runs on the emulation thread, inside the card's own calls. The
+sockets complete on their own threads and queue what they have to say; the
+queue is drained before handling each frame, so the stack never has two
+threads inside it and needs no lock.
 
 ### Port forwarding
 
-Un NAT non lascia entrare nessuno. Per raggiungere un servizio nel guest si
-dichiara una porta in `vm.json`:
+A NAT lets nobody in. To reach a service inside the guest, declare a port
+in `vm.json`:
 
 ```json
 "network": {
@@ -49,24 +49,26 @@ dichiara una porta in `vm.json`:
 }
 ```
 
-Da riga di comando: `--net nat --forward tcp:8080:80`. Una connessione che
-arriva dal computer stesso (127.0.0.1) si presenta al guest come proveniente
-dal gateway 10.0.2.2, perché per il guest 127.0.0.1 è "me stesso".
+From the command line: `--net nat --forward tcp:8080:80`. A connection
+that arrives from the host itself (127.0.0.1) presents itself to the guest
+as coming from the gateway 10.0.2.2, because to the guest 127.0.0.1 is
+"itself".
 
-## Nel guest
+## In the guest
 
-**DOS** (verificato): packet driver Crynwr `NE2000.COM 0x60 3 0x300`, poi
-mTCP con `MTCPCFG` che punta a un file con `PACKETINT 0x60`. `DHCP` prende
-l'indirizzo, `PING 10.0.2.2` prova il router, `PING 1.1.1.1` esce davvero,
-`HTGET http://...` risolve il nome e scarica via TCP.
+**DOS** (verified): the Crynwr packet driver `NE2000.COM 0x60 3 0x300`,
+then mTCP with `MTCPCFG` pointing at a file with `PACKETINT 0x60`. `DHCP`
+picks up the address, `PING 10.0.2.2` tries the router, `PING 1.1.1.1`
+really reaches out, `HTGET http://...` resolves the name and downloads
+over TCP.
 
-**Windows 3.11 for Workgroups**: driver NE2000 di Windows, TCP/IP-32 con DHCP.
-Trumpet Winsock sopra il packet driver funziona allo stesso modo.
+**Windows 3.11 for Workgroups**: Windows' own NE2000 driver, TCP/IP-32
+with DHCP. Trumpet Winsock on top of the packet driver works the same way.
 
-## Limiti
+## Limits
 
-- Niente connessioni in ingresso senza port forwarding.
-- Niente frammenti IP, niente ICMP oltre l'echo, niente IPv6.
-- I datagrammi UDP più grandi di 1472 byte in arrivo dall'host vengono scartati (non si frammenta).
-- Il ping verso l'esterno dipende da quanto il sistema ospite concede l'ICMP a un processo senza privilegi; su macOS funziona.
-- La modalità **bridged** (TAP/pcap) non c'è: serve un driver e privilegi di amministratore, e il NAT copre l'uso normale.
+- No incoming connections without port forwarding.
+- No IP fragments, no ICMP beyond echo, no IPv6.
+- UDP datagrams larger than 1472 bytes arriving from the host are dropped (no fragmentation).
+- Pinging outward depends on how much the host system grants ICMP to an unprivileged process; it works on macOS.
+- **Bridged** mode (TAP/pcap) does not exist: it needs a driver and administrator privileges, and the NAT covers ordinary use.

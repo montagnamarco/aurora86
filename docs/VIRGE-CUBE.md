@@ -1,9 +1,11 @@
 # Observed S3d CUBE drawing requests
 
 This records guest-submitted values from the Toolkit 2.6 DOS CUBE sample,
-using the input hashes and procedure in the [probe README](../tools/Virge3DProbe/README.md).
-It is a contract for further implementation, not evidence of a rendered cube.
-The baseline is VBE mode 0110h on the experimental ViRGE 86C325.
+using the procedure in the [probe README](../tools/Virge3DProbe/README.md).
+The baseline is VBE mode 0110h on the experimental ViRGE 86C325. The current
+build renders the sample's first Gouraud/Z triangle and presents it through
+primary Streams; texture modes, secondary composition and general
+period-driver compatibility remain unverified.
 
 ## Capture boundary
 
@@ -47,12 +49,12 @@ B560=FFF00000 B564=0F000000 B568=00033333 B56C=0C800000
 B570=00000000 B574=0C800000 B578=00000168 B57C=80C80029
 ```
 
-These are observed bus values. At the capture revision, the engine ignored several
-of these registers and rejected the command; reading its implemented latches alone would
-lose the missing parameters. PIO and status reads are outside this capture,
+These are observed bus values, captured directly from the bus rather than
+from the engine's own latches, which do not store every parameter on their
+own. PIO and status reads are outside this capture,
 so display-start changes and polling protocol still need separate observation.
 
-## Databook interpretation and next subsets
+## Databook interpretation
 
 The reference is the [August 1996 ViRGE databook](https://vgamuseum.info/images/doc/s3/virge.pdf),
 sections 15.4, 19.3, 19.4 and 21. This interpretation separates fields documented
@@ -71,11 +73,8 @@ synchronous model.
 | 079808A6 | 16-bit CPU image transfer, SRCCOPY, inclusive clipping, DWORD alignment and zero first-DWORD offset. Pixel words arrive low word first at offsets 0000h–7FFFh. |
 | 07980224 | 16-bit screen copy, SRCCOPY, positive X/Y, no clipping. Transparency is ignored here because the documented image-source prerequisite is clear. |
 
-Each has autoexecute clear, so A500 itself submits the command. The first
-implementation can reject other ROPs and image-transfer formats explicitly.
-It needs state for an in-progress CPU upload, including snapshot and restore
-coverage, before accepting the transfer command. Width in A504 is encoded
-minus one; height is the actual count. Bases are aligned to eight bytes,
+Each has autoexecute clear, so A500 itself submits the command. Width in
+A504 is encoded minus one; height is the actual count. Bases are aligned to eight bytes,
 strides to eight bytes, and coordinate/clip fields are eleven bits. Use the
 detailed clipping descriptions in 19-5: high half is left/top, low half is
 right/bottom; the appendix summary reverses the horizontal labels.
@@ -87,37 +86,22 @@ All 319 triangle submissions retained by the register budget use this value.
 The first destination is 096000h; Z starts at 12C000h, both with 1280-byte
 strides. Nonzero colour gradients confirm that flat-colour output is insufficient.
 
-The 3D subset needs the missing Z-base/stride and Z-start/delta latches
-(B4D4, B4E8, B554, B558, B55C), with compatible snapshot evolution. It must
-interpolate signed S8.7 RGB attributes, produce two-byte ZRGB1555 pixels,
-and compare/update 16-bit Z before writing colour. Z attributes use S16.15;
-the first starting value 00C80000h represents 400, and the observed clear is
-FFFFh. These examples support explicit integer-depth tests, but do not establish
-all subpixel rounding, colour saturation or fractional-Z conversion behaviour.
-Those boundaries need a further reference or hardware measurement before
-claiming general bit-exact rendering.
+Z attributes use S16.15; the first starting value 00C80000h represents 400,
+and the observed clear is FFFFh. These examples support explicit
+integer-depth tests, but do not establish all subpixel rounding, colour
+saturation or fractional-Z conversion behaviour. Those boundaries need a
+further reference or hardware measurement before claiming general
+bit-exact rendering.
 
-The implementation order is 2D clear/copy/upload with regression vectors,
-then Gouraud and Z with explicit coverage tests. Page presentation remains a
-separate integration check because this capture does not record PIO writes.
-The full demo must render and return to DOS before its compatibility task closes.
+## 2D BitBLT coverage
 
-## Result with the first BitBLT subset
-
-The 2D implementation now accepts the four measured A500 variants. CUBE's
-background and instructions appear at 640x480, with RGB frame hash
-`0E1908F147D05A35A0D3DBC5A392D58F921F4E26444C6AFD28E7C3FB97F2CD5D`.
-Esc returns to the DOS prompt. The observed fault and selected-interrupt counts
-remain 84 and 18; unsupported notifications fall from 4,852,563 to 2,094.
-No unsupported 2D command is reported. The 1,728 unsupported triangle
-submissions remain, and streams accesses account for the other notifications.
-
-The retained write trace also shows primary streams registers 8180=03000000,
-81C8=00000500, 81F0=00010001 and 81F4=027F01E0. Writes to 81C0 and 81D0
-alternate between base addresses 00096000 and 00000000. These are evidence for
-a later presentation task, not implemented streams functionality. The 2D
-background alone must not be treated as proof that page flipping or the
-offscreen triangle destination is visible.
+The 2D implementation accepts the four measured A500 variants above. CUBE's
+background and instructions render correctly at 640x480, and Esc returns to
+the DOS prompt. No unsupported 2D command is reported for this sample;
+remaining unsupported notifications come from triangle submissions and
+Streams accesses the 2D subset does not implement. The 2D background alone
+must not be treated as proof that page flipping or the offscreen triangle
+destination is visible.
 
 The BitBLT engine snapshots all fifteen latches and a frozen upload descriptor
 with its row/DWORD position in a 112-byte V2D1 block. VGE1 bundles that block
@@ -155,55 +139,39 @@ bundles containing a version 1 triangle remain loadable and resave byte-identica
 before restoration. Restoring either version never submits a command.
 
 
-## Result with Gouraud and Z
+## Gouraud/Z output
 
-A fresh DOS checkpoint with the new Core builds the first triangle in page
-096000h and updates 4,880 Z pixels before the following MMIO write. Its depth
-surface SHA-256 is
-`103BEA0787506B513A914F17371548AE0453486490557D7E1D0420B2882CED4F`.
-The final raw page shows the cube's front face: green at top left, magenta at
-top right, blue at bottom left and white at bottom right. Its RGB SHA-256 is
-`3FE2C6EC5A71F48B08E13CDA61EA515E53A0565CF8D82967C5161AC512370076`.
-At that stage the visible page's hash differed because Streams presentation
-was still absent.
-At that final boundary the sample has already cleared its depth surface for
-the next frame; an all-FFFF dump there does not mean the triangles skipped Z.
+A DOS checkpoint builds the first triangle in page 096000h and updates 4,880
+Z pixels before the following MMIO write. The final raw page shows the
+cube's front face: green at top left, magenta at top right, blue at bottom
+left and white at bottom right. At the sample's final boundary the sample
+has already cleared its depth surface for the next frame; an all-FFFF dump
+there does not mean the triangles skipped Z.
 
 The right-to-left regression uses the captured third triangle and the vertex
-colours in the Toolkit's [EXAMPLE.C](https://github.com/kytulendu/S3DTK/blob/16ea84eb03b5209718106fd0f51ae420698185b2/SAMPLES/EXAMPLE.C).
-Its source SHA-256 is
-`1DEA0F4CBEA7FCB14D9CC3C2AA534DE86770FC0646CAADDEE816DDA94D73004A`.
-An earlier implementation multiplied the deltas by signed screen-X distance,
-which inverted their effect in right-to-left triangles and saturated colours.
-The captured vertices establish that these deltas advance in drawing order.
-Tests retain that reproducer along with signed X/Y gradients, clipping, both
-halves, independent colour/Z bounds, strict depth ordering and CPU snapshots.
+colours in the Toolkit's [EXAMPLE.C](https://github.com/kytulendu/S3DTK/blob/16ea84eb03b5209718106fd0f51ae420698185b2/SAMPLES/EXAMPLE.C),
+confirming the direction rule above. Tests retain that reproducer
+along with signed X/Y gradients, clipping, both halves, independent
+colour/Z bounds, strict depth ordering and CPU snapshots.
 
-The recreated input uses an existing DOS disk backup with its configuration
-preserved; the Toolkit binary hashes match the original capture. This run
-reports 18 selected interrupts, 102 fault events and 366 unsupported card
-notifications, with no rejected BitBLT or triangle commands. These fault counts
-are from a different DOS input and do not establish a CPU regression. Esc
-returns to `C:\>`, and the probe's source-image hash is unchanged.
+Replaying the sample on your own DOS image reaches the same result, with no
+rejected BitBLT or triangle commands. Esc returns to the DOS prompt, and the
+probe leaves the source image unmodified.
 
+## Primary Streams presentation
 
-## Result with primary Streams presentation
-
-The primary display now follows CR67 bits 3:2 and the seven primary Streams
+The primary display follows CR67 bits 3:2 and the seven primary Streams
 registers. The final CUBE capture contains `CR67=3C`, `8180=03000000`,
 `81C0=00096000`, `81C4=0`, `81CC=0`, `81C8=00000500`, `81F0=00010001`
 and `81F4=027F01E0`. These select an unscaled KRGB1555 page at 096000h,
 1280 bytes per row, covering the full 640x480 display. The resulting display
-RGB hash is `3FE2C6EC5A71F48B08E13CDA61EA515E53A0565CF8D82967C5161AC512370076`,
-identical to the raw selected page. The unselected page is partially drawn at
-this boundary and has a different hash. The probe neither modifies a display
-register nor substitutes the raw image for the renderer's output.
+matches the raw selected page pixel for pixel; the unselected page is
+partially drawn at this boundary and differs from it. The probe neither
+modifies a display register nor substitutes the raw image for the
+renderer's output.
 
-CR67 observations at MMIO boundaries show 00h initially and 3Ch after the mode
-setup. It returns to 00h when Esc exits to the DOS prompt. Counts remain 18
-selected interrupts and 102 fault events on the same DOS input; unsupported
-notifications decrease from 366 to 203. No BitBLT or triangle command is
-rejected. The input-image SHA-256 remains unchanged.
+CR67 reads 00h before the mode setup, 3Ch afterward, and returns to 00h when
+Esc exits to the DOS prompt. No BitBLT or triangle command is rejected.
 
 Only primary presentation is implemented here. The capture selects primary
 opaque composition with `81A0=01000000` and places the secondary window outside

@@ -595,8 +595,8 @@ Due log, attivabili da variabile d'ambiente perché costano troppo per
 tenerli sempre accesi:
 
 ```bash
-AURORA_WRITELOG=/tmp/scritture.log   # i file che il guest scrive, per nome
-AURORA_DOSLOG=/tmp/dos.log           # rename, exec, create, delete
+AURORA_WRITELOG=scritture.log   # i file che il guest scrive, per nome
+AURORA_DOSLOG=dos.log           # rename, exec, create, delete
 ```
 
 Il primo risolve ogni settore scritto al file che lo possiede, leggendo le

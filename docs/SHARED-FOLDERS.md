@@ -48,11 +48,6 @@ isolated copy of the VM. Three changes make automatic attachment work:
   redirector only after a safe query confirms a stable table, then returns
   to the normal polling interval.
 
-In the measured boot, the live CDS changed from `80080` to `B7F0`, and the
-redirector attached after two safe queries at 101.206 and 101.208 million
-instructions. The earlier invalid E: drive was not evidence of a LASTDRIVE
-configuration error.
-
 Windows 95 4.00.1111 has been checked end to end: DIR and TYPE read the share
 in a DOS window; COPY, REN and DEL create, rename and remove a fixture file;
 Explorer opens E: and lists its contents; EXIT returns to the desktop. A

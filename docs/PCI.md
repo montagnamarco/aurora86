@@ -73,16 +73,13 @@ Sources:
 
 ## PnP BIOS bus discovery
 
-The PnP BIOS now announces the PCI bus as `PNP0A03`, appended after the
-existing system nodes so their handles do not change. The exported Windows
-95 registry previously contained the ISA bus but no PCI enumeration tree,
-even though the machine already implemented PCI configuration access.
-A firmware-call regression reproduces the missing node and now passes;
-30 PnP/PCI tests pass. On the disposable Windows 95 installation, the next boot now detects the
-Intel 82371FB PCI-to-ISA bridge and requests a restart to finish installing
-the new hardware. After that restart Windows also detects the Intel
-82371FB PCI Bus Master IDE Controller and finds its driver in the local INF
-directory. IDE and CD access remain under verification.
+The PnP BIOS announces the PCI bus as `PNP0A03`, appended after the existing
+system nodes so their handles do not change. A firmware-call regression
+covers the node's presence and shape. On a Windows 95 guest, this lets
+Setup detect the Intel 82371FB PCI-to-ISA bridge and, after a restart, the
+Intel 82371FB PCI Bus Master IDE Controller, resolving its driver from the
+local INF directory. IDE and CD access through this path remain under
+verification (see below).
 
 The node uses the system/peripheral-bus type and cannot-disable/cannot-configure
 attributes used by the [DOSBox-X PCI system node](https://dosbox-x.com/doxygen/html/bios_8cpp_source.html).
@@ -90,78 +87,53 @@ It has no allocated I/O resources, matching that reference implementation.
 
 ## PIIX IDE channel enable registers
 
-After installing the PCI IDE driver, the disposable Windows 95 guest reported
-Device Manager code 29 (disabled in hardware). Configuration words `40h` and
-`42h` read zero, although both IDE channels decoded their compatibility ports.
-The PIIX IDETIM bit 15 enables the corresponding channel. Both words now start
-at `8000h`, representing firmware setup, and independently gate their channel
-together with PCI command bit 0. The writable mask is `B3FFh`; timing fields
-are retained but do not yet alter transfer timing. Bus mastering remains absent.
-The register definition follows section 2.3.10 of the Intel PIIX/PIIX3 datasheet
-linked above. After rebooting the disposable guest, code 29 is gone. Windows
-instead reports a resource conflict (code 15); the two BIOS IDE nodes also
-claim the compatibility ports and IRQs. CD access remains unresolved.
+Configuration words `40h` and `42h` implement the PIIX IDETIM bit 15, which
+enables the corresponding IDE channel. Both words start at `8000h` at reset
+(representing firmware setup) and independently gate their channel together
+with PCI command bit 0. The writable mask is `B3FFh`; timing fields are
+retained but do not yet alter transfer timing, and bus mastering is absent.
+The register definition follows section 2.3.10 of the Intel PIIX/PIIX3
+datasheet linked above.
 
 New snapshots distinguish implemented IDETIM registers from the zeros in old
-snapshots. Loading an old snapshot enables both timing registers while retaining
-the saved PCI command; a new snapshot preserves intentionally disabled channels.
+snapshots. Loading an old snapshot enables both timing registers while
+retaining the saved PCI command; a new snapshot preserves intentionally
+disabled channels.
 
-The BIOS no longer announces the same channels as separate `PNP0600` devices.
-PCI enumeration owns their resources. BIOS handles `0Ah` and `0Bh` are retired;
-the enumeration function follows stored handles rather than list indices so
-the video, memory and PCI-bus nodes keep their previous identities. Two
-regressions failed before the change, and all 35 PnP/PCI tests pass. The guest
-installed the primary and secondary dual-FIFO channels across two requested
-restarts. The PCI controller no longer has a warning or code 15. The primary
-channel now reports code 10, while the secondary channel has no warning;
-the CD remains absent. This is a separate initialization failure still under
-investigation, not a completed CD fix.
+The BIOS no longer announces the IDE channels as separate `PNP0600` devices;
+PCI enumeration owns their resources. BIOS handles `0Ah` and `0Bh` are
+retired, and the enumeration function follows stored handles rather than
+list indices, so the video, memory and PCI-bus nodes keep their previous
+identities across a rescan.
+
+On a Windows 95 guest, Device Manager can still report a resource conflict
+between the PCI IDE function and the two BIOS-announced IDE nodes, and CD
+access through the PCI IDE path has an unresolved initialization failure
+distinct from the resource-conflict issue; see the disk monitor requirement
+below.
 
 ## BIOS reads and the Windows 95 disk monitor
 
-The code-10 trace showed a successful ATA IDENTIFY and sector-zero read,
-followed by an INT 13h read under the driver's I/O monitor. At
-`0028:C10486B7` the driver tested its observed-I/O flag; it remained clear,
-and the channel was rejected at `C10486CD`. The native BIOS handler had
-read the disk image without executing any port instructions. DOSBox-X
-also documents this detection requirement in its
+Windows 95's IDE disk driver runs an I/O monitor: it expects to observe real
+port traffic on the ATA registers, and rejects a channel if its own
+observed-I/O flag never got set, even when the read itself succeeded. A
+native BIOS handler that read the disk image directly, without executing
+any port instructions, is invisible to that monitor. DOSBox-X documents the
+same detection requirement in its
 [IDE BIOS integration](https://dosbox-x.com/doxygen/html/ide_8cpp_source.html).
 
-Validated CHS reads for BIOS disks 80h and 81h now enter a ROM PIO routine.
-The native helper translates the address and prepares registers; the guest
-executes the command, status polling and INSW transfer. PUSHAD and the
-original interrupt frame preserve the caller's registers and flags. The
-routine masks device interrupts with nIEN while polling, acknowledges
-completion and restores the previous device control. Unsupported functions
-and requests outside this path retain their existing handlers; extended
-INT 13h reads and writes have not yet been moved into the ROM routine.
-
-Four regressions failed before this change. Both cables now pass data and
-register-preservation checks, and nIEN suppresses IRQ delivery while retaining
-an unacknowledged request until re-enabled. All 31 targeted tests pass. The
-CHS translation test needed more than its former 40-instruction allowance;
-all nine disk-extension tests pass with the actual PIO transfer completed.
-On the disposable guest restored immediately before driver initialization,
-Windows now performs native IDE disk I/O, identifies the ATAPI slave and
-shows D: with the ISO's files in Explorer. Copy/restart/media-change checks
-remain separate acceptance steps.
+To satisfy it, validated CHS reads for BIOS disks 80h and 81h enter a ROM
+PIO routine: the native helper translates the address and prepares
+registers, then the guest itself executes the command, status polling and
+INSW transfer. PUSHAD and the original interrupt frame preserve the
+caller's registers and flags. The routine masks device interrupts with
+nIEN while polling, acknowledges completion and restores the previous
+device control. Unsupported functions and requests outside this path
+retain their existing handlers; extended INT 13h reads and writes have not
+yet been moved into the ROM routine.
 
 `Win95SetupProbe` accepts `AURORA_IDE_LOG=1` for bounded task-file logging.
-Adding `AURORA_IDE_TRACE=1` records the first primary ATA read until the next
-drive selection and emits only instructions in that driver's 64 KiB code
-region. The larger instruction ring is allocated only for this diagnostic.
-
-The first file-transfer check succeeded: Windows copied `D:\README.TXT` to
-`C:\CDTEST.TXT` through `COMMAND.COM /C COPY`. Extracting the resulting file
-from the disposable disk gave 3728 bytes and the same SHA-256 as the ISO:
-`43b018a2ace818fb9fabb2bb41311de1d9670edfffda8295f538e8eba73258e2`.
-The DOS screen transition needs a separate video check; this copy verifies
-storage, not completion of the DOS-window/display acceptance tests.
-
-A cold boot after interrupting the DOS-copy run required ScanDisk repairs
-and subsequently reported a registry/configuration error. That acceptance
-check remains open. In a separate run from the intact pre-driver checkpoint,
-Windows reached the desktop, performed Start > Shut Down, and cold-booted
-back to login without ScanDisk or a registry error. The latter did not repeat
-the DOS-copy/display transition, so it does not isolate the cause of the
-interrupted run's corruption.
+Adding `AURORA_IDE_TRACE=1` records the first primary ATA read until the
+next drive selection and emits only instructions in that driver's 64 KiB
+code region; the larger instruction ring is allocated only for this
+diagnostic.

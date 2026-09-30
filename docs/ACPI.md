@@ -1,10 +1,9 @@
-# ACPI (work package P4.5)
+# ACPI
 
 ACPI 1.0b, on the i430TX/PIIX4 board only (`hardware.chipset` = `"i430tx"`
 in `vm.json`, or `new Machine(chipset: Chipset.I430Tx)`). The i430FX board
 carries none of this: no RSDP, no ACPI tables in ROM, and pressing the host
-power button always calls `Machine.RequestPowerOff()` directly, exactly as
-before this package.
+power button always calls `Machine.RequestPowerOff()` directly.
 
 ## Tables
 
@@ -119,14 +118,13 @@ DOS/Win9x-era guests this BIOS targets.
   BIOS enables every one of the chipset's own fixed hardware register
   blocks during POST, and an ACPI OS trusts the FADT's own PM1a_EVT_BLK and
   its neighbours to already answer rather than negotiating this decode
-  through PCI configuration space. Before this package nothing exercised
-  the PM block through a real `Machine` at all, so this gap went unnoticed.
+  through PCI configuration space.
 
 ## Snapshot
 
 The PM section (`"PIXP"`) gains a version 2: two more 16-bit fields, GPE0
 STS and EN, after the existing 22 bytes. A version 1 file (from before this
-package) still restores cleanly, with both fields put back at their reset
+extension) still restores cleanly, with both fields put back at their reset
 value of zero -- the same tolerance every other section added after the
 container's own versioning gets. The tables themselves are firmware output,
 rebuilt from the machine's own configuration on every boot, and keep no
@@ -138,22 +136,18 @@ snapshot section of their own.
   General/Type-Specific Flags bytes are left at conservative defaults (0,
   or bit 0 "writable" for the memory window) rather than confirmed against
   a datasheet -- there is nothing PIIX4-specific about a plain PCI root
-  bridge's own memory window, and the primary ACPI PDF would not fetch when
-  this package was researched.
+  bridge's own memory window, and the primary ACPI specification PDF was
+  not available to check against.
 - The IRQ Descriptor's flags byte (Level, Active-Low, Shared = 18h) is
   recalled from the ACPI opcode tables rather than independently
   re-confirmed against the PIIX4 datasheet; it is cross-checked only
   against this codebase's own existing PIRQ wiring facts.
 - FDC's DMA channel (2) is not encoded as an ACPI resource: no DMA
-  descriptor tag is named among the resource encodings this package
-  confirmed, so it is omitted rather than guessed.
-- No S1/S3/S4, no HPET, no reset register (FADT 1.0 has none) -- explicitly
-  out of scope (coordinator decision C6 in `plans/specs/acpi.md`).
+  descriptor tag is confirmed among the resource encodings checked, so it
+  is omitted rather than guessed.
+- No S1/S3/S4, no HPET, no reset register (FADT 1.0 has none): explicitly
+  out of scope.
 - Not verified on real Windows 98/2000/XP or Linux ACPI code paths: no such
   guest could be booted in this environment. DOS 6.22 boots and reaches its
   command prompt unchanged on both chipsets, and the fast test suite and the
   protected-mode hardware vectors (6100/6100) are unaffected.
-
-See `plans/specs/acpi.md` for the full register-level spec and the
-coordinator's decisions (C1-C6), and `plans/specs/apic.md` for the MADT and
-MP table facts this package builds both from.

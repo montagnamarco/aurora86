@@ -10,8 +10,7 @@ legacy IDE task file `IdeController` models for DOS and Windows 3.1/95.
 Primary source: Intel *Serial ATA AHCI 1.3.1 Specification*, October 2012.
 Section numbers below are that document's. Slot choice, the card catalog,
 `vm.json` wiring, snapshot section registration and any INT 13h path onto
-this device are the owner's, not this document's -- see the coordinator's
-contract for `AhciController`.
+this device are outside this document's scope.
 
 ## PCI identity and placement
 
@@ -28,7 +27,7 @@ this project targets).
 
 | Off | Name | Value |
 |---|---|---|
-| 00h | CAP | NP=5 (six ports), NCS=31 (32 command slots), SAM=1 (AHCI-only mode, no legacy index/data pair), ISS=3 (Gen3, 6 Gb/s), SCLO=1 (supports PxCMD.CLO, the command-list-override "clear busy status" bit -- not, as an earlier revision of this file mis-stated, COMRESET), S64A=1; every other capability bit (SXS, EMS, CCCS, FBSS, SPM, SNCQ, SSNTF, SMPS, SSS, SALP, SAL) is 0 |
+| 00h | CAP | NP=5 (six ports), NCS=31 (32 command slots), SAM=1 (AHCI-only mode, no legacy index/data pair), ISS=3 (Gen3, 6 Gb/s), SCLO=1 (supports PxCMD.CLO, the command-list-override "clear busy status" bit, not COMRESET), S64A=1; every other capability bit (SXS, EMS, CCCS, FBSS, SPM, SNCQ, SSNTF, SMPS, SSS, SALP, SAL) is 0 |
 | 04h | GHC | HR (bit 0, self-clearing host reset), IE (bit 1), AE (bit 31, hardwired to read 1 because CAP.SAM=1). A write that sets HR takes priority over anything else in the same dword: it resets every port and forces IE back to 0, exactly as section 10.1.2's initialization sequence expects to observe |
 | 08h | IS | not separate storage: bit *n* is the live OR of port *n*'s PxIS & PxIE (section 3.1.2). The usual driver sequence -- clear the pending PxIS bits, then write IS -- still works, because by the time the IS write lands PxIS has already dropped the bits and IS recomputes to 0 |
 | 0Ch | PI | 3Fh, fixed: all six ports are implemented (*choice*) |
@@ -69,10 +68,9 @@ still modelled, because that is also how this HBA *tells the driver* a
 device exists: on the 1→0 edge, if a disk is attached, the HBA posts a D2H
 Register FIS carrying the ATA signature (LBA low = 1, sector count = 1,
 status 50h) into the received-FIS area (gated on PxCMD.FRE, like every FIS
-this device posts), sets PxIS.DHRS, and sets PxSERR.DIAG.X -- "as real HBAs
-do on device presence change" (contract wording, taken as given; not
-independently re-derived against 3.3.12's own prose in this pass, since the
-coordinator's brief already cites it as settled behaviour).
+this device posts), sets PxIS.DHRS, and sets PxSERR.DIAG.X, as real HBAs do
+on device presence change (taken as given, not independently re-derived
+against section 3.3.12's own prose).
 
 ## Command engine (sections 4.2, 5.3, 6.2.2.1)
 
@@ -106,7 +104,7 @@ with no bus grant would leave a schedule unwalked.
 ### Addressing: LBA28, LBA48 and legacy CHS
 
 An `*EXT` command (LBA48) always reads bytes 4-6/8-10 as a 48-bit LBA. A
-28-bit command consults the H2D FIS's own Device byte bit 6 ("L", A5): set,
+28-bit command consults the H2D FIS's own Device byte bit 6 ("L"): set,
 it is LBA28 exactly as before (bytes 4-6 plus the device byte's own low
 nibble). Clear, the same three bytes are legacy CHS -- byte 4 the sector
 number, bytes 5-6 the cylinder, the device byte's low nibble the head --
@@ -128,8 +126,8 @@ gated on PxCMD.FRE -- without it software never told the HBA it may write
 there.
 
 PIO Setup is only ever posted ahead of a data-in command's own D2H FIS
-(IDENTIFY DEVICE, READ SECTORS/READ SECTORS EXT): "PSS, then DHRS", per the
-coordinator's brief. A PIO *write* (WRITE SECTORS/WRITE SECTORS EXT)
+(IDENTIFY DEVICE, READ SECTORS/READ SECTORS EXT): PSS, then DHRS. A PIO
+*write* (WRITE SECTORS/WRITE SECTORS EXT)
 completes like a DMA write, with only the D2H FIS -- *choice*: nothing in
 the test list exercises the write-side PIO Setup FIS's own fields, and a
 driver's completion handling does not depend on it.
@@ -143,7 +141,7 @@ driver's completion handling does not depend on it.
 | 35h/CAh WRITE DMA EXT/WRITE DMA, 34h/30h WRITE SECTORS EXT/WRITE SECTORS | gathers the PRDT into a buffer, writes whole sectors to disk |
 | 40h/42h READ VERIFY SECTORS/EXT | range check only, no data moved |
 | E7h/EAh FLUSH CACHE/EXT | accepted, no-op (every write is already synchronous) |
-| EFh SET FEATURES | 03h (transfer mode) accepted for PIO default/flow-control/PIO3-4, multiword DMA 0-2 (20h-22h) and Ultra DMA 0-6 (40h-46h, A4 -- wider than `IdeController.SetTransferMode`'s own PIIX4-limited 0-2, matching this HBA's own IDENTIFY words 63/88 below) sub-values, each stored and reported back through IDENTIFY; 02h/82h (write cache) accepted; anything else aborts |
+| EFh SET FEATURES | 03h (transfer mode) accepted for PIO default/flow-control/PIO3-4, multiword DMA 0-2 (20h-22h) and Ultra DMA 0-6 (40h-46h -- wider than `IdeController.SetTransferMode`'s own PIIX4-limited 0-2, matching this HBA's own IDENTIFY words 63/88 below) sub-values, each stored and reported back through IDENTIFY; 02h/82h (write cache) accepted; anything else aborts |
 | C6h SET MULTIPLE MODE | accepted, no-op (*choice*: no per-block interrupt pacing to configure) |
 | 90h EXECUTE DEVICE DIAGNOSTIC | accepted, ERR register reports 01h ("passed") without STS.ERR being set -- the ATA convention that a diagnostic result is not a failure |
 | E5h CHECK POWER MODE | accepted, D2H FIS's own Count field reports FFh (active) |
@@ -178,8 +176,8 @@ hold); this model instead reports an undersized PRDT the same way as any
 other failed command (PxTFD.STS.ERR/ABRT + PxIS.TFES), since that is the
 completion path every driver already has to handle for a command list, and
 it lets the same `ProcessCommandList` halt-and-CCS machinery cover it
-without a second, parallel failure path (*choice*, both were open per the
-coordinator's own resolution of this review finding).
+without a second, parallel failure path (*choice*: both approaches were
+open, and this one avoids a second failure path).
 
 ### IDENTIFY DEVICE buffer
 
@@ -189,11 +187,9 @@ what an AHCI/SATA disk needs beyond it:
 
 - Word 49 bit 8 (DMA) alongside bit 9 (LBA).
 - Word 63: multiword DMA modes 0-2 supported (bits 2:0 = 7); bits 10:8 name
-  the selected mode once SET FEATURES 03h 20h-22h picks one (A4).
+  the selected mode once SET FEATURES 03h 20h-22h picks one.
 - Word 76: SATA capabilities. Bits 3:1 = Gen1/Gen2/Gen3 supported; with
-  CAP.ISS=3 this disk advertises all three, 000Eh (A4 -- an earlier revision
-  of this file both mislabelled the bit meanings and advertised only two of
-  the three speeds).
+  CAP.ISS=3 this disk advertises all three, 000Eh.
 - Word 80 extended through ATA/ATAPI-6 (required to legitimately claim
   LBA48).
 - Words 83/86 bit 10 with their own validity bit 14 set (LBA48 supported and
@@ -201,13 +197,13 @@ what an AHCI/SATA disk needs beyond it:
 - Words 57-58/60-61: the 32-bit LBA28 total sector count, capped at
   0FFFFFFFh (Lba28MaxSectors) rather than wrapping past it -- the ATA-6
   convention that tells a driver to fall back to LBA48 for a disk's real
-  capacity (A4).
+  capacity.
 - Words 100-103: the 48-bit total sector count, little-endian across the
   four words.
 - Word 88: Ultra DMA modes 0-6 supported (bits 6:0 = 7Fh); bits 14:8 name the
-  selected mode. Defaults to UDMA5 selected at reset (*choice*, A4: a
-  freshly attached SATA disk already has some transfer mode active before
-  any driver negotiates one, and UDMA5 is a common real-drive default), then
+  selected mode. Defaults to UDMA5 selected at reset (*choice*: a freshly
+  attached SATA disk already has some transfer mode active before any
+  driver negotiates one, and UDMA5 is a common real-drive default), then
   tracks whatever SET FEATURES 03h 40h-46h last selected.
 
 ## Snapshot

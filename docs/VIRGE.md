@@ -38,10 +38,11 @@ banked and relocated linear pixel writes against the rendered scanlines,
 snapshot restoration, and the return to B8000 text memory.
 
 These settings follow the August 1996 S3 databook, sections 8-2, 16-20,
-16-30, 18-3, 18-10, 18-16 and 18-25/26. The Windows 95 native ViRGE driver was
-observed requesting `INT 10h AX=4F02h BX=8101h`; the previous firmware rejected
-this standard mode before programming the adapter. Supporting that request
-does not establish complete Windows 95 driver compatibility.
+16-30, 18-3, 18-10, 18-16 and 18-25/26. The Windows 95 native ViRGE driver
+requests `INT 10h AX=4F02h BX=8101h`, the standard-mode form of mode 0101h;
+the firmware accepts this request and programs the adapter accordingly.
+Supporting that request does not establish complete Windows 95 driver
+compatibility.
 [S3 ViRGE Integrated 3D Accelerator databook](https://vgamuseum.info/images/doc/s3/virge.pdf).
 
 Machine snapshots include the selected video model and ViRGE drawing-engine
@@ -63,8 +64,8 @@ latches does not submit a drawing command or replay consumed upload pixels.
 An independent save/load probe resumes the CPU immediately before an
 auto-execute trigger. Its 39,340-pixel frame matches uninterrupted execution
 byte for byte, and the target's former MMIO address no longer decodes. A Trio
-snapshot captured by the previous implementation also restores and resaves
-byte-identically with the new loader.
+snapshot in the older, pre-ViRGE format also restores and resaves
+byte-identically with the current loader.
 
 The end-to-end fixture submits `CMD_SET` through a real CPU `MOV`, reaches the
 MMIO engine, updates VRAM, and renders the result. It produced a 640x480 frame
@@ -85,12 +86,12 @@ version 2 snapshot payload; version 1's 84 bytes restore with zero Z latches. Re
 whole header and length before changing latches, without submitting commands,
 touching VRAM, or raising command diagnostics. VRAM remains separate state.
 
-The original engine tests attach it at the low fixture address `0x01200000`.
-The new card fixture uses actual PCI configuration ports: CPU `OUT` instructions
+Some engine tests attach it directly at a low fixture address, `0x01200000`;
+others drive it through actual PCI configuration ports: CPU `OUT` instructions
 move BAR0 to `0x74000000` and enable memory decoding, then CPU `MOV` instructions
-reach the engine at `0x75000000`. An independent 640x480 run produces the same
-39,340-pixel frame, byte for byte, as the isolated engine. The old MMIO address
-then reads all ones. Display timing is prepared by the fixture, rather than
+reach the engine at `0x75000000`. Both paths produce the same 39,340-pixel
+frame, byte for byte. After relocation, the address BAR0 held before reads
+all ones. Display timing is prepared by the fixture, rather than
 by a guest display driver.
 
 BAR0 reserves 64 MB, resets to `0x70000000`, and reports `0xFC000000` during
@@ -162,8 +163,8 @@ Windows 3.11 with VGA and native S3 drivers, and Windows 95 desktop interaction
 after primary Streams integration. It also records the unresolved Windows 95
 startup glyph symptom and the precise scope of these smoke checks.
 
-The [DOS startup probe](../tools/Virge3DProbe/README.md) now runs the original
-Toolkit 2.6 cube sample on a private image and supports a hash-checked DOS
+The [DOS startup probe](../tools/Virge3DProbe/README.md) runs the original
+Toolkit 2.6 cube sample on your own DOS image and supports a hash-checked DOS
 prompt checkpoint. The sample reaches DPMI mappings for `70000000h` and
 `71000000h` and enters VBE mode `0110h` through INT 10h `AX=4F02`. Observed
 unsupported accesses remain in secondary-stream, composition and FIFO controls.
@@ -181,12 +182,11 @@ before the next guest command. At the final sample boundary, the guest has
 already cleared Z for another frame; this is why the probe also captures
 immediately after the first triangle. Primary page selection now follows
 `81C0/81C4/81CC` independently of VGA/VBE display-start metadata.
-The earlier startup log recorded 84 CPU fault events; the recreated DOS input
-records 102. Their presence alone does
-not establish a CPU defect, and this probe makes no instruction changes.
-Earlier experimental logs using physical-memory write watches are invalid for
-hardware conclusions: those watches split DWORD transactions into bytes.
-The retained probe uses passive CPU/card diagnostics only.
+The probe records CPU fault events for reference; their presence alone does
+not establish a CPU defect, and the probe makes no instruction changes.
+A write watch on physical memory is not valid for hardware conclusions here:
+it splits DWORD transactions into bytes. The probe uses passive CPU/card
+diagnostics only.
 
 References:
 

@@ -69,9 +69,7 @@ Each per-stream INTSTS bit (0-7) mirrors that stream's own **raw** pending
 condition (`SDnSTS & (BCIS|FIFOE|DESE)`), *unqualified* by SDnCTL's own
 IOCE/FEIE/DEIE: HDA spec 3.3.14 (Interrupt Status Register) does not describe
 these bits as gated by SDnCTL's own enables, and QEMU's own `intel-hda.c`
-does not gate BCIS by IOCE for them either -- an earlier revision of this
-document claimed the opposite; that claim was wrong and has been corrected
-here (`HdaController.IsStreamStatusPending`).
+does not gate BCIS by IOCE for them either (`HdaController.IsStreamStatusPending`).
 
 SDnCTL's own IOCE/FEIE/DEIE (spec 3.3.13) instead gate whether that raw
 condition is allowed to *assert the interrupt line*, alongside INTCTL's own
@@ -268,9 +266,7 @@ Four nodes, following QEMU's `hda-output` codec:
 Subordinate Node Count (Get Parameter 04h) response format, HDA spec
 7.3.4.3: bits 23:16 the starting node number, bits 7:0 the total node count
 -- root reports `(1u<<16)|1` (AFG starts at NID 1, one node); the AFG
-reports `(2u<<16)|2` (the DAC and pin start at NID 2, two nodes). An earlier
-revision of this codec had these two fields swapped; that was a bug, now
-fixed.
+reports `(2u<<16)|2` (the DAC and pin start at NID 2, two nodes).
 
 ### Verbs implemented
 
@@ -303,11 +299,6 @@ Unknown verbs, or a verb sent to a node that does not implement it, answer 0.
   `HdaControllerTests` uses Linux's own Get-Left (A000h) and Get-Right
   (8000h) payloads.
 
-An earlier revision of this codec used a different, *choice*-encoded payload
-(no output/input select bit, no index); that was wrong against the real spec
-and has been replaced with the layout above, which now matches what an
-actual HD Audio driver sends.
-
 Gain step 74 (`MaxAmpGainSteps`), the amplifier's own Offset field (see the
 node graph table above), is 0 dB; each step below it attenuates and each
 step above it boosts, by (StepSize + 1) x 0.25 dB = 1.0 dB per step
@@ -315,8 +306,7 @@ step above it boosts, by (StepSize + 1) x 0.25 dB = 1.0 dB per step
 codec's StepSize field at 03h). The reset default is **unmuted at gain 74**
 (0 dB) -- **choice**: an audible amplifier at reset, matching QEMU's own
 `hda-output` codec, which likewise powers up unmuted rather than at minimum
-gain; an earlier revision of this codec defaulted to muted at minimum gain,
-which left a driver that never touches the amplifier with silence.
+gain, so a driver that never touches the amplifier still produces sound.
 
 ## Snapshot
 
