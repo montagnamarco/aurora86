@@ -223,9 +223,9 @@ public class LongModeControlTests
             cpu.State.Segments[(int)SegReg.Cs].Long = true;
             cpu.State.Eax = 0;
 
-            Assert.Equal(GeneralProtection, FaultVector(cpu));
-            Assert.True(cpu.State.LongModeActive);
-            Assert.NotEqual(0u, cpu.State.Cr0 & CpuState.Cr0Paging);
+            Assert.Equal(GeneralProtection, FaultWithControlState(cpu, out ControlState atFault));
+            Assert.True((atFault.Efer & CpuState.EferLongModeActive) != 0);
+            Assert.NotEqual(0u, atFault.Cr0 & CpuState.Cr0Paging);
         }
     }
 
@@ -239,8 +239,8 @@ public class LongModeControlTests
             EnterLongModeDirectly(cpu, bus);
             cpu.State.Eax = 0;
 
-            Assert.Equal(GeneralProtection, FaultVector(cpu));
-            Assert.NotEqual(0u, cpu.State.Cr4 & CpuState.Cr4Pae);
+            Assert.Equal(GeneralProtection, FaultWithControlState(cpu, out ControlState atFault));
+            Assert.NotEqual(0u, atFault.Cr4 & CpuState.Cr4Pae);
         }
     }
 
@@ -420,8 +420,8 @@ public class LongModeControlTests
             cpu.State.Edx = 0;
             cpu.State.Eax = 0;
 
-            Assert.Equal(GeneralProtection, FaultVector(cpu));
-            Assert.NotEqual(0UL, cpu.State.Efer & CpuState.EferLongModeEnable);
+            Assert.Equal(GeneralProtection, FaultWithControlState(cpu, out ControlState atFault));
+            Assert.NotEqual(0UL, atFault.Efer & CpuState.EferLongModeEnable);
         }
     }
 
@@ -533,6 +533,34 @@ public class LongModeControlTests
     {
         bus.WriteDword(address, (uint)value);
         bus.WriteDword(address + 4, (uint)(value >> 32));
+    }
+
+    /// <summary>CR0, CR4 and EFER as they stood when an exception was raised.</summary>
+    private readonly record struct ControlState(uint Cr0, uint Cr4, ulong Efer);
+
+    /// <summary>
+    /// Runs one instruction and returns the first exception vector, with the
+    /// control state taken inside the exception hook: in long mode a fault is
+    /// delivered through the 64-bit IDT, which this bare harness leaves empty,
+    /// so what the faulting instruction left behind has to be read before
+    /// that delivery escalates to a reset.
+    /// </summary>
+    private static byte FaultWithControlState(Cpu cpu, out ControlState atFault)
+    {
+        byte vector = NoFault;
+        ControlState snapshot = default;
+        cpu.ProcessorException += (raised, _, _, _) =>
+        {
+            if (vector == NoFault)
+            {
+                vector = raised;
+                snapshot = new ControlState(cpu.State.Cr0, cpu.State.Cr4, cpu.State.Efer);
+            }
+        };
+
+        cpu.Step();
+        atFault = snapshot;
+        return vector;
     }
 
     /// <summary>Runs one instruction and returns the vector of the first exception it raised, or <see cref="NoFault"/>.</summary>

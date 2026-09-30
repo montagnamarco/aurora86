@@ -337,9 +337,9 @@ public class LongModeDecoderTests
         Assert.Equal(GeneralProtection, harness.FaultVector());
     }
 
-    /// <summary>REX.R extends the control register number; CR8 (the TPR) is stage D's, so it is #UD for now, as are the numbers that do not exist.</summary>
+    /// <summary>REX.R extends the control register number; numbers that name no control register (CR5, CR9) are #UD.</summary>
     [Theory]
-    [InlineData(0x44, 0xC0)]   // mov rax, cr8
+    [InlineData(0x44, 0xC8)]   // mov rax, cr9
     [InlineData(0x00, 0xE8)]   // mov rax, cr5
     public void AControlRegisterWithoutAnImplementationIsInvalid(byte rex, byte modrm)
     {

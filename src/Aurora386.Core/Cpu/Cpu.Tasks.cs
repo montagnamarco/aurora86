@@ -216,6 +216,7 @@ public sealed partial class Cpu
         // --- install the new context ---------------------------------------
         State.TaskRegister = taskSelector;
         State.TssBase = incomingBase;
+        State.TssBaseHigh = 0;
         State.TssLimit = incomingLimit;
 
         // CR3 first: every address the segment loads are about to translate
@@ -435,6 +436,7 @@ public sealed partial class Cpu
         {
             State.Ldtr = 0;
             State.LdtBase = 0;
+            State.LdtBaseHigh = 0;
             State.LdtLimit = 0;
             return;
         }
@@ -449,6 +451,7 @@ public sealed partial class Cpu
 
         State.Ldtr = selector;
         State.LdtBase = DescriptorBase(descriptor);
+        State.LdtBaseHigh = 0;
         State.LdtLimit = DescriptorLimitOf(descriptor);
     }
 

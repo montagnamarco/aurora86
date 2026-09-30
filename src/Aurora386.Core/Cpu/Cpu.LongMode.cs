@@ -92,6 +92,9 @@ public sealed partial class Cpu
     private LongModePrefixes _longPrefixes;
     private ulong _longInstructionStart;
 
+    /// <summary>Whether the instruction in flight came through Step64, so a fault rewinds RIP to <see cref="_longInstructionStart"/>.</summary>
+    private bool _executingLongModeInstruction;
+
     // The 64-bit fetch page cache, the counterpart of FetchByte's.
     private ulong _fetchPage64 = ulong.MaxValue;
     private uint _fetchPhysical64;
@@ -117,6 +120,7 @@ public sealed partial class Cpu
     private int Step64()
     {
         _longInstructionStart = State.Rip;
+        _executingLongModeInstruction = true;
         _longPrefixes = default;
 
         try
@@ -127,7 +131,7 @@ public sealed partial class Cpu
         catch (PageFaultException fault)
         {
             State.Rip = _longInstructionStart;
-            State.Cr2 = (uint)fault.LinearAddress;   // CR2 is 32 bits wide until stage D
+            State.SetCr2(fault.LinearAddress);
             DeliverException(14, fault.ErrorCode);
         }
         catch (CpuException exception)

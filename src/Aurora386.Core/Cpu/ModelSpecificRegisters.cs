@@ -243,6 +243,23 @@ public sealed class ModelSpecificRegisters
     /// </summary>
     public const uint EferIndex = 0xC0000080;
 
+    /// <summary>
+    /// The SYSCALL/SYSRET registers AMD introduced with the K6 and the K8
+    /// (SDM Vol.4; AMD APM Vol.2 §6.1.1): STAR holds the kernel's CS base
+    /// selector in bits 47:32 and the user one in 63:48 (and the legacy
+    /// SYSCALL EIP in 31:0); LSTAR the 64-bit-mode entry point; CSTAR the
+    /// compatibility-mode one; SFMASK the RFLAGS bits SYSCALL clears.
+    /// </summary>
+    public const uint StarIndex = 0xC0000081;
+    public const uint LstarIndex = 0xC0000082;
+    public const uint CstarIndex = 0xC0000083;
+    public const uint SfmaskIndex = 0xC0000084;
+
+    public ulong Star { get; private set; }
+    public ulong Lstar { get; private set; }
+    public ulong Cstar { get; private set; }
+    public ulong Sfmask { get; private set; }
+
     /// <summary>IA32_FS_BASE (C0000100h): FS's full 64-bit base, long-mode processors only.</summary>
     public const uint FsBaseIndex = 0xC0000100;
 
@@ -532,6 +549,69 @@ public sealed class ModelSpecificRegisters
         return true;
     }
 
+    /// <summary>The SYSCALL registers exist on a processor with SYSCALL or long mode.</summary>
+    private bool HasSystemCallRegisters =>
+        _cpu.State.Features.Has(CpuFeature.Syscall) || _cpu.State.Features.Has(CpuFeature.LongMode);
+
+    private bool TryReadSystemCallRegister(uint index, out ulong value)
+    {
+        value = index switch
+        {
+            StarIndex => Star,
+            LstarIndex => Lstar,
+            CstarIndex => Cstar,
+            _ => Sfmask,
+        };
+
+        return HasSystemCallRegisters;
+    }
+
+    /// <summary>
+    /// WRMSR of the SYSCALL registers. LSTAR and CSTAR hold code addresses and
+    /// must be canonical (#GP(0) otherwise); SFMASK's upper half is reserved.
+    /// </summary>
+    private bool TryWriteSystemCallRegister(uint index, ulong value)
+    {
+        if (!HasSystemCallRegisters)
+        {
+            return false;
+        }
+
+        switch (index)
+        {
+            case StarIndex:
+                Star = value;
+                return true;
+
+            case LstarIndex:
+                if (!Cpu.IsCanonical(value))
+                {
+                    return false;
+                }
+
+                Lstar = value;
+                return true;
+
+            case CstarIndex:
+                if (!Cpu.IsCanonical(value))
+                {
+                    return false;
+                }
+
+                Cstar = value;
+                return true;
+
+            default:
+                if ((value >> 32) != 0)
+                {
+                    return false;
+                }
+
+                Sfmask = value;
+                return true;
+        }
+    }
+
     private static void SetSegmentBase(ref SegmentCache segment, ulong value)
     {
         segment.Base = (uint)value;
@@ -667,6 +747,12 @@ public sealed class ModelSpecificRegisters
             case GsBaseIndex:
             case KernelGsBaseIndex:
                 return TryReadSegmentBase(index, out value);
+
+            case StarIndex:
+            case LstarIndex:
+            case CstarIndex:
+            case SfmaskIndex:
+                return TryReadSystemCallRegister(index, out value);
 
             case EblCrPoweronIndex:
                 value = _eblCrPoweron;
@@ -810,6 +896,12 @@ public sealed class ModelSpecificRegisters
             case GsBaseIndex:
             case KernelGsBaseIndex:
                 return TryWriteSegmentBase(index, value);
+
+            case StarIndex:
+            case LstarIndex:
+            case CstarIndex:
+            case SfmaskIndex:
+                return TryWriteSystemCallRegister(index, value);
 
             case EblCrPoweronIndex:
                 _eblCrPoweron = value;
@@ -1015,6 +1107,11 @@ public sealed class ModelSpecificRegisters
     /// </summary>
     public void Reset()
     {
+        Star = 0;
+        Lstar = 0;
+        Cstar = 0;
+        Sfmask = 0;
+
         McAddr = 0;
         McType = 0;
         Cesr = 0;
@@ -1050,7 +1147,10 @@ public sealed class ModelSpecificRegisters
     /// snapshot stores it as the version of its "MSR " section, which keeps
     /// each version at a fixed length it can check before restoring.
     /// </summary>
-    public int SnapshotVersion => IsFamilySix ? 2 : 1;
+    public int SnapshotVersion => IsFamilySix ? 3 : 1;
+
+    /// <summary>Version 3's addition to the family-six layout: STAR, LSTAR, CSTAR and SFMASK.</summary>
+    public const int SystemCallSnapshotLength = 4 * 8;
 
     /// <summary>
     /// Reads a section of either version. The registers are reset first, so
@@ -1061,9 +1161,17 @@ public sealed class ModelSpecificRegisters
     {
         Reset();
 
-        if (version == 2)
+        if (version >= 2)
         {
             ReadFamilySixSnapshot(reader);
+            if (version >= 3)
+            {
+                Star = reader.ReadUInt64();
+                Lstar = reader.ReadUInt64();
+                Cstar = reader.ReadUInt64();
+                Sfmask = reader.ReadUInt64();
+            }
+
             return;
         }
 
@@ -1080,6 +1188,10 @@ public sealed class ModelSpecificRegisters
         if (IsFamilySix)
         {
             WriteFamilySixSnapshot(writer);
+            writer.Write(Star);
+            writer.Write(Lstar);
+            writer.Write(Cstar);
+            writer.Write(Sfmask);
             return;
         }
 

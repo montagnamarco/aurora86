@@ -408,6 +408,30 @@ public sealed partial class Cpu
     }
 
     /// <summary>
+    /// INVLPG at a 64-bit linear address (64-bit mode): the same rule as
+    /// <see cref="InvalidatePage"/>, with the full 64-bit page tag. The
+    /// large-page sweep compares the low 32 bits of each slot's page, which
+    /// can only drop more slots than needed, never keep a stale one.
+    /// </summary>
+    public void InvalidatePage64(ulong linear)
+    {
+        ulong page = linear & ~0xFFFUL;
+        ref TlbEntry entry = ref _tlb[(page >> 12) & (TlbSize - 1)];
+
+        if (entry.Valid && entry.Page == page)
+        {
+            entry.Valid = false;
+        }
+
+        if (_largeEntriesCached)
+        {
+            InvalidateLargePage((uint)linear);
+        }
+
+        InvalidateFetchPage();
+    }
+
+    /// <summary>
     /// Drops every cached slot that came from the same large page as
     /// <paramref name="linear"/> -- a 4 MB one under CR4.PSE, a 2 MB one
     /// under CR4.PAE -- using whichever mask that particular cached entry

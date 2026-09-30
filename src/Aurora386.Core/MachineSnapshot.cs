@@ -631,7 +631,7 @@ public sealed class MachineSnapshot
         [RamSection] = 0,
         [CpuSection] = Cpu.Cpu.SnapshotVersion,
         [FpuSection] = Cpu.Fpu.X87Unit.SnapshotVersion,
-        [MsrSection] = 2,
+        [MsrSection] = 3,
         [SseSection] = Cpu.Sse.SseUnit.SnapshotVersion,
         [A20Section] = 0,
         [VideoMemorySection] = 0,
@@ -682,8 +682,16 @@ public sealed class MachineSnapshot
                            + 4 + 8 + 4 * 8
                            + 8 * 4 + 8 * 8 + 4 + 8 + 6
                            + 6 * 4 + 8,
+        // Version 6 adds the upper halves of CR2 and the four table bases.
+        (CpuSection, 6) => LegacyProcessorLength + 8 * 4 + 2 * 4 + 1 + 1
+                           + 4 + 8 + 4 * 8
+                           + 8 * 4 + 8 * 8 + 4 + 8 + 6
+                           + 6 * 4 + 8
+                           + 5 * 4,
         (MsrSection, 1) => Cpu.ModelSpecificRegisters.SnapshotLength,
         (MsrSection, 2) => Cpu.ModelSpecificRegisters.FamilySixSnapshotLength,
+        (MsrSection, 3) => Cpu.ModelSpecificRegisters.FamilySixSnapshotLength
+                           + Cpu.ModelSpecificRegisters.SystemCallSnapshotLength,
         (SseSection, 1) => Cpu.Sse.SseUnit.SnapshotLength,
         (FpuSection, 1) => 2 + 2 + 1 + 8 * (1 + 8 + 4 + 1 + 1 + 1),
         (FpuSection, 2) => Cpu.Fpu.X87Unit.SnapshotLength,

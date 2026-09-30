@@ -163,8 +163,25 @@ public sealed class CpuState
 
     // --- control registers ----------------------------------------------------
     public uint Cr0;
-    /// <summary>Faulting linear address (CR2), written by exception 14.</summary>
+    /// <summary>Faulting linear address (CR2), written by exception 14: its low half. See <see cref="Cr2High"/>.</summary>
     public uint Cr2;
+
+    /// <summary>
+    /// Bits 63:32 of CR2, which only a page fault at a 64-bit-mode address
+    /// sets; every 32-bit write of CR2 clears them. Kept apart so the 32-bit
+    /// core's uses of <see cref="Cr2"/> stay as they were.
+    /// </summary>
+    public uint Cr2High;
+
+    /// <summary>All of CR2.</summary>
+    public ulong Cr2Full => ((ulong)Cr2High << 32) | Cr2;
+
+    /// <summary>Writes all 64 bits of CR2.</summary>
+    public void SetCr2(ulong value)
+    {
+        Cr2 = (uint)value;
+        Cr2High = (uint)(value >> 32);
+    }
     /// <summary>
     /// Page directory base.
     ///
@@ -348,6 +365,23 @@ public sealed class CpuState
     /// </summary>
     public uint TssBase;
     public uint TssLimit;
+
+    // --- the upper halves long mode adds to the table bases --------------------
+    //
+    // In IA-32e mode LGDT/LIDT take 64-bit bases and LLDT/LTR read 16-byte
+    // system descriptors with a 64-bit base (SDM Vol.3A §3.5.1, §7.2.3). The
+    // upper halves live apart from the 32-bit fields, which every legacy load
+    // writes alone -- and each of those loads clears the matching half.
+
+    public uint GdtBaseHigh;
+    public uint IdtBaseHigh;
+    public uint LdtBaseHigh;
+    public uint TssBaseHigh;
+
+    public ulong GdtBase64 => ((ulong)GdtBaseHigh << 32) | GdtBase;
+    public ulong IdtBase64 => ((ulong)IdtBaseHigh << 32) | IdtBase;
+    public ulong LdtBase64 => ((ulong)LdtBaseHigh << 32) | LdtBase;
+    public ulong TssBase64 => ((ulong)TssBaseHigh << 32) | TssBase;
 
     /// <summary>
     /// Current privilege level: the ring the processor is executing in, 0 for
@@ -659,9 +693,11 @@ public sealed class CpuState
         // the "486 or later" feature bundle, not the model number itself.
         Cr0 = Features.Has(CpuFeature.Isa486) ? Cr0ExtensionType : 0;
         Cr2 = 0;
+        Cr2High = 0;
         Cr3 = 0;
         Cr4 = 0;
         GdtBase = IdtBase = 0;
+        GdtBaseHigh = IdtBaseHigh = LdtBaseHigh = TssBaseHigh = 0;
         GdtLimit = IdtLimit = 0xFFFF;
         Ldtr = TaskRegister = 0;
         LdtBase = LdtLimit = 0;

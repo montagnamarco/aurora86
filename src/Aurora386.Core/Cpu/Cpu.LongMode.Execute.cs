@@ -103,6 +103,12 @@ public sealed partial class Cpu
                     return;
                 }
 
+                // The system instructions (Cpu.LongMode.System.cs).
+                if (TryExecuteSystem64(opcode))
+                {
+                    return;
+                }
+
                 throw new CpuException(6);
         }
     }
@@ -134,6 +140,11 @@ public sealed partial class Cpu
                     return;
                 }
 
+                if (TryExecuteSystemTwoByte64(opcode))
+                {
+                    return;
+                }
+
                 throw new CpuException(6);
         }
     }
@@ -143,9 +154,9 @@ public sealed partial class Cpu
     /// <summary>
     /// The control register a MOV CRn names: the reg field extended by REX.R.
     /// In 64-bit mode the operand is always 64 bits and the mod field is
-    /// ignored (SDM Vol.2 MOV--Move to/from Control Registers). CR0, CR2, CR3
-    /// and CR4 exist; CR8 (the task priority register) is stage D's, and any
-    /// other number is #UD.
+    /// ignored (SDM Vol.2 MOV--Move to/from Control Registers). CR0, CR2, CR3,
+    /// CR4 and CR8 (the task priority register, reached with REX.R) exist;
+    /// any other number is #UD.
     /// </summary>
     private (int ControlRegister, int GeneralRegister) DecodeControlRegisterMove64()
     {
@@ -153,13 +164,43 @@ public sealed partial class Cpu
         int controlRegister = ((modrm >> 3) & 7) | (_longPrefixes.RexR ? 8 : 0);
         int generalRegister = (modrm & 7) | (_longPrefixes.RexB ? 8 : 0);
 
-        if (controlRegister is not (0 or 2 or 3 or 4))
+        if (controlRegister is not (0 or 2 or 3 or 4 or TaskPriorityControlRegister))
         {
             throw new CpuException(6);
         }
 
         RequireSupervisor();
         return (controlRegister, generalRegister);
+    }
+
+    /// <summary>CR8, the task priority register (SDM Vol.3A §10.8.6.1).</summary>
+    private const int TaskPriorityControlRegister = 8;
+
+    /// <summary>
+    /// A processor without an interrupt source that owns a TPR still keeps
+    /// what CR8 was given, so a kernel reads back what it wrote.
+    /// </summary>
+    private int _taskPriorityClassWithoutApic;
+
+    private int ReadTaskPriorityClass()
+    {
+        if (Interrupts is Devices.Interrupts.ITaskPriority taskPriority)
+        {
+            return taskPriority.TaskPriorityClass;
+        }
+
+        return _taskPriorityClassWithoutApic;
+    }
+
+    private void WriteTaskPriorityClass(int priorityClass)
+    {
+        if (Interrupts is Devices.Interrupts.ITaskPriority taskPriority)
+        {
+            taskPriority.TaskPriorityClass = priorityClass;
+            return;
+        }
+
+        _taskPriorityClassWithoutApic = priorityClass;
     }
 
     /// <summary>0Fh 20h: MOV r64, CRn.</summary>
@@ -169,9 +210,10 @@ public sealed partial class Cpu
         ulong value = controlRegister switch
         {
             0 => State.Cr0,
-            2 => State.Cr2,
+            2 => State.Cr2Full,
             3 => State.Cr3,
-            _ => State.Cr4,
+            4 => State.Cr4,
+            _ => (ulong)ReadTaskPriorityClass(),
         };
 
         State.Gpr[generalRegister] = value;
@@ -179,14 +221,27 @@ public sealed partial class Cpu
 
     /// <summary>
     /// 0Fh 22h: MOV CRn, r64. Bits 63:32 of CR0 and CR4 are reserved, so a 1
-    /// there is #GP(0). CR3 keeps 32 bits in this emulator until stage D
-    /// widens it, so a PML4 above 4 GB is refused the same way rather than
-    /// silently truncated; CR2 likewise keeps its low half.
+    /// there is #GP(0). CR2 takes all 64 bits. CR3 keeps 32: this machine has
+    /// no memory above 4 GB for a PML4 to live in, so a CR3 naming one is
+    /// refused with #GP(0) rather than silently truncated.
     /// </summary>
     private void MoveToControlRegister64()
     {
         (int controlRegister, int generalRegister) = DecodeControlRegisterMove64();
         ulong value = State.Gpr[generalRegister];
+
+        if (controlRegister == TaskPriorityControlRegister)
+        {
+            // CR8 holds a priority class 0-15; bits 63:4 are reserved.
+            const ulong TaskPriorityClassMask = 0xF;
+            if ((value & ~TaskPriorityClassMask) != 0)
+            {
+                throw new CpuException(13, 0);
+            }
+
+            WriteTaskPriorityClass((int)value);
+            return;
+        }
 
         if (controlRegister != 2 && (value >> 32) != 0)
         {
@@ -199,7 +254,7 @@ public sealed partial class Cpu
                 WriteCr0((uint)value);
                 break;
             case 2:
-                State.Cr2 = (uint)value;
+                State.SetCr2(value);
                 break;
             case 3:
                 State.Cr3 = (uint)value;

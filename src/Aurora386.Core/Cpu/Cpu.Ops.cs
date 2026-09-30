@@ -629,6 +629,14 @@ public sealed partial class Cpu
 
     private void RetFar(ushort popBytes)
     {
+        // RETF from compatibility mode follows IA-32e mode's rules, and may
+        // return to 64-bit code.
+        if (State.LongModeActive)
+        {
+            FarReturn64(popBytes, OperandSize32 ? 4 : 2);
+            return;
+        }
+
         uint espBefore = State.Esp;
         SegmentCache codeBefore = State.Cs;
         SegmentCache stackBefore = State.Ss;
@@ -855,6 +863,14 @@ public sealed partial class Cpu
 
     private void EnterInterrupt(byte vector, bool isSoftware, uint errorCode = 0, bool isException = false)
     {
+        // Once long mode is active every interrupt goes through the 64-bit
+        // IDT, from compatibility-mode code as well (Cpu.LongMode.Interrupts.cs).
+        if (State.LongModeActive)
+        {
+            EnterInterruptLongMode(vector, errorCode, isSoftware, isException);
+            return;
+        }
+
         if (State.ProtectedMode)
         {
             EnterInterruptProtected(vector, errorCode, isSoftware, isException);
@@ -949,6 +965,15 @@ public sealed partial class Cpu
         if (State.Virtual8086Mode)
         {
             IretVirtual8086();
+            return;
+        }
+
+        // IRET from compatibility mode is IA-32e mode's IRET: it pops SS:ESP
+        // only on a return to an outer level, and may return to 64-bit code
+        // (SDM Vol.2 IRET, IA-32e-MODE).
+        if (State.LongModeActive)
+        {
+            InterruptReturnLongMode(OperandSize32 ? 4 : 2);
             return;
         }
 
@@ -1249,6 +1274,10 @@ public sealed partial class Cpu
         }
 
         if ((State.TaskRegister & 0xFFFC) == 0) return false;
+
+        // In IA-32e mode the TSS is the 64-bit one LTR cached, reached
+        // through its 64-bit base (Cpu.LongMode.SystemCall.cs).
+        if (State.LongModeActive) return IoPermittedByLongModeBitmap(port, bytes);
 
         ulong descriptor = ReadDescriptor(State.TaskRegister);
         uint tssBase = (uint)(((descriptor >> 16) & 0xFFFFFF) | ((descriptor >> 32) & 0xFF000000));

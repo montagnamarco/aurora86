@@ -23,7 +23,7 @@ namespace Aurora386.Core.Cpu;
 public sealed partial class Cpu
 {
     /// <summary>The layout <see cref="WriteSnapshot"/> produces.</summary>
-    public const int SnapshotVersion = 5;
+    public const int SnapshotVersion = 6;
 
     /// <summary>The eight registers every 16- and 32-bit processor has; the version-0 fields hold their low halves.</summary>
     private const int LegacyRegisterCount = 8;
@@ -101,6 +101,14 @@ public sealed partial class Cpu
         }
 
         writer.Write(State.KernelGsBase);
+
+        // Version 6, long mode's system state: the upper halves of CR2 and of
+        // the GDT, IDT, LDT and TSS bases.
+        writer.Write(State.Cr2High);
+        writer.Write(State.GdtBaseHigh);
+        writer.Write(State.IdtBaseHigh);
+        writer.Write(State.LdtBaseHigh);
+        writer.Write(State.TssBaseHigh);
     }
 
     /// <summary>
@@ -243,6 +251,24 @@ public sealed partial class Cpu
             }
 
             State.KernelGsBase = 0;
+        }
+
+        if (version >= 6)
+        {
+            State.Cr2High = reader.ReadUInt32();
+            State.GdtBaseHigh = reader.ReadUInt32();
+            State.IdtBaseHigh = reader.ReadUInt32();
+            State.LdtBaseHigh = reader.ReadUInt32();
+            State.TssBaseHigh = reader.ReadUInt32();
+        }
+        else
+        {
+            // Files from before 64-bit system state: every base fits in 32 bits.
+            State.Cr2High = 0;
+            State.GdtBaseHigh = 0;
+            State.IdtBaseHigh = 0;
+            State.LdtBaseHigh = 0;
+            State.TssBaseHigh = 0;
         }
 
         FlushTlb();

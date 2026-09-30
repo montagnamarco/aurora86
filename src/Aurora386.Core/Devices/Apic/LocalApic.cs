@@ -61,7 +61,7 @@ namespace Aurora386.Core.Devices.Apic;
 /// actually interrupt the guest. That is a real gap for the SMM/NMI work a
 /// later package would need, not a silent pretence that it works.
 /// </summary>
-public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
+public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice, ITaskPriority
 {
     // ---- MMIO register offsets (Intel SDM vol.3, APIC chapter; 82093AA's
     // sibling xAPIC table). Sixteen bytes apart, thirty-two significant bits
@@ -149,6 +149,17 @@ public sealed class LocalApic : IResettableInterruptSource, IMemoryDevice
 
     private uint _id;
     private uint _tpr;
+
+    /// <summary>
+    /// CR8's view of the TPR (<see cref="ITaskPriority"/>): the priority
+    /// class in bits 7:4. A write through CR8 sets bits 7:4 and clears the
+    /// sub-class bits 3:0, as the SDM's CR8-to-TPR mapping describes.
+    /// </summary>
+    public int TaskPriorityClass
+    {
+        get => (int)((_tpr >> 4) & 0xF);
+        set => _tpr = (uint)((value & 0xF) << 4);
+    }
     private uint _ldr;
     private uint _dfr = 0xFFFFFFFF;
     private uint _svr = SvrResetValue;

@@ -153,6 +153,7 @@ public sealed partial class Cpu
                         // discarded: the 286-compatible form assumes the table
                         // lives inside the first 16 MB.
                         State.GdtBase = OperandSize32 ? baseValue : baseValue & 0x00FFFFFF;
+                        State.GdtBaseHigh = 0;
                         return;
                     }
 
@@ -163,6 +164,7 @@ public sealed partial class Cpu
                         State.IdtLimit = ReadMem16(m.Segment, m.Offset);
                         uint baseValue = ReadMem32(m.Segment, m.Offset + 2);
                         State.IdtBase = OperandSize32 ? baseValue : baseValue & 0x00FFFFFF;
+                        State.IdtBaseHigh = 0;
                         return;
                     }
 
@@ -623,7 +625,7 @@ public sealed partial class Cpu
                 switch (m.Reg)
                 {
                     case 0: WriteCr0(value); break;
-                    case 2: State.Cr2 = value; break;
+                    case 2: State.SetCr2(value); break;
                     case 3:
                         // Loading CR3 points the processor at a different set
                         // of page tables, so every cached translation is now

@@ -36,6 +36,7 @@ public sealed partial class Cpu
         }
 
         _instructionStart = State.Eip;
+        _executingLongModeInstruction = false;
         _prefixes.Clear();
 
         // The trace is checked with a single field read when it is off, which
@@ -54,7 +55,7 @@ public sealed partial class Cpu
             // The instruction has to be restarted from the top once the handler
             // has brought the page in, so EIP is rewound to where it began.
             State.Eip = _instructionStart;
-            State.Cr2 = (uint)fault.LinearAddress;   // CR2 is 32 bits wide until stage D
+            State.SetCr2(fault.LinearAddress);
             DeliverException(14, fault.ErrorCode);
         }
         catch (CpuException ex)
@@ -158,7 +159,7 @@ public sealed partial class Cpu
 
     private void FaultNow(byte vector, uint errorCode)
     {
-        State.Eip = _instructionStart;
+        RewindToInstructionStart();
         DeliverException(vector, errorCode);
     }
 
@@ -204,7 +205,7 @@ public sealed partial class Cpu
     {
         if (ex is PageFaultException fault)
         {
-            State.Cr2 = (uint)fault.LinearAddress;   // CR2 is 32 bits wide until stage D
+            State.SetCr2(fault.LinearAddress);
             return (14, fault.ErrorCode);
         }
         var cpu = (CpuException)ex;
@@ -214,25 +215,46 @@ public sealed partial class Cpu
     // A transfer that faults halfway may already have loaded the handler's CS
     // or switched stacks. The second fault has to be reported against the
     // state the first one found, so that much is put back.
-    private (SegmentCache Cs, SegmentCache Ss, uint Esp, uint Eip) SaveTransferState()
-        => (State.Segments[(int)SegReg.Cs], State.Segments[(int)SegReg.Ss], State.Esp, State.Eip);
+    // RSP and RIP are saved whole: in long mode they are 64 bits wide, and
+    // outside it their upper halves are zero, so this is the old behaviour
+    // there. The long-mode delivery commits nothing before its last possible
+    // fault, so it needs nothing more restored than this.
+    private (SegmentCache Cs, SegmentCache Ss, ulong Rsp, ulong Rip) SaveTransferState()
+        => (State.Segments[(int)SegReg.Cs], State.Segments[(int)SegReg.Ss],
+            State.Gpr[(int)Reg.Esp], State.Rip);
 
-    private void RestoreTransferState((SegmentCache Cs, SegmentCache Ss, uint Esp, uint Eip) s)
+    private void RestoreTransferState((SegmentCache Cs, SegmentCache Ss, ulong Rsp, ulong Rip) s)
     {
         State.Segments[(int)SegReg.Cs] = s.Cs;
         State.Segments[(int)SegReg.Ss] = s.Ss;
-        State.Esp = s.Esp;
-        State.Eip = s.Eip;
+        State.Gpr[(int)Reg.Esp] = s.Rsp;
+        State.Rip = s.Rip;
+    }
+
+    /// <summary>
+    /// Puts RIP back at the start of the instruction being executed: the
+    /// 64-bit decoder's start while it runs one (Step64), the legacy one
+    /// otherwise.
+    /// </summary>
+    private void RewindToInstructionStart()
+    {
+        if (_executingLongModeInstruction)
+        {
+            State.Rip = _longInstructionStart;
+            return;
+        }
+
+        State.Eip = _instructionStart;
     }
 
     private void Escalate(byte first, byte second, uint secondError, bool rewind)
     {
-        if (rewind) State.Eip = _instructionStart;
+        if (rewind) RewindToInstructionStart();
 
         if (!IsDoubleFault(first, second))
         {
             try { RaiseException(second, secondError); return; }
-            catch (PageFaultException fault) { State.Cr2 = (uint)fault.LinearAddress; }
+            catch (PageFaultException fault) { State.SetCr2(fault.LinearAddress); }
             catch (CpuException) { }
         }
 
@@ -831,8 +853,11 @@ public sealed partial class Cpu
                 // INT n fault into it -- Windows reflects every INT 21h and
                 // INT 31h of a protected-mode program this way, thousands of
                 // times a second -- so that #GP is delivered directly rather
-                // than thrown, like the other faults a monitor lives on.
-                if (State.ProtectedMode && !State.Virtual8086Mode && SoftwareGateBelowPrivilege(vector))
+                // than thrown, like the other faults a monitor lives on. In
+                // long mode the gates are 16 bytes and the 64-bit delivery
+                // makes the same check itself (Cpu.LongMode.Interrupts.cs).
+                if (State.ProtectedMode && !State.Virtual8086Mode && !State.LongModeActive
+                    && SoftwareGateBelowPrivilege(vector))
                 {
                     FaultNow(13, (uint)(vector * 8 + 2));
                     return;

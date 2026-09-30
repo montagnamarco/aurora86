@@ -204,6 +204,7 @@ public sealed partial class Cpu
         {
             State.Ldtr = selector;
             State.LdtBase = 0;
+            State.LdtBaseHigh = 0;
             State.LdtLimit = 0;
             return;
         }
@@ -218,6 +219,7 @@ public sealed partial class Cpu
 
         State.Ldtr = selector;
         State.LdtBase = DescriptorBase(descriptor);
+        State.LdtBaseHigh = 0;
         State.LdtLimit = DescriptorLimitOf(descriptor);
     }
 
@@ -240,6 +242,7 @@ public sealed partial class Cpu
 
         State.TaskRegister = selector;
         State.TssBase = DescriptorBase(descriptor);
+        State.TssBaseHigh = 0;
         State.TssLimit = DescriptorLimitOf(descriptor);
 
         uint accessAddress = State.GdtBase + (uint)(selector & 0xFFF8) + 5;
@@ -293,6 +296,11 @@ public sealed partial class Cpu
     /// </summary>
     private ulong ReadDescriptor(ushort selector)
     {
+        if (State.LongModeActive)
+        {
+            return ReadDescriptorLongMode(selector, offsetInDescriptor: 0);
+        }
+
         bool isLocalTable = (selector & 0x04) != 0;
         uint index = (uint)(selector & 0xFFF8);
 
@@ -309,6 +317,57 @@ public sealed partial class Cpu
         uint address = tableBase + index;
         return _memory.ReadDword(TranslateSupervisor(address, false))
              | ((ulong)_memory.ReadDword(TranslateSupervisor(address + 4, false)) << 32);
+    }
+
+    /// <summary>
+    /// A descriptor read while long mode is active, compatibility mode
+    /// included: the tables' bases are 64 bits wide (LGDT/LIDT in 64-bit
+    /// mode, 16-byte LDT and TSS descriptors), so the table is reached
+    /// through a 64-bit linear address. <paramref name="offsetInDescriptor"/>
+    /// is 8 for the upper half of a 16-byte system descriptor, whose index
+    /// has to fit the limit as a whole (SDM Vol.3A §7.2.3).
+    /// </summary>
+    private ulong ReadDescriptorLongMode(ushort selector, uint offsetInDescriptor)
+    {
+        bool isLocalTable = (selector & 0x04) != 0;
+        uint index = (uint)(selector & 0xFFF8);
+
+        ulong tableBase = isLocalTable ? State.LdtBase64 : State.GdtBase64;
+        uint tableLimit = isLocalTable ? State.LdtLimit : State.GdtLimit;
+
+        uint lastByte = index + offsetInDescriptor + 7;
+        if (lastByte > tableLimit)
+        {
+            throw new CpuException(13, selector);
+        }
+
+        ulong address = tableBase + index + offsetInDescriptor;
+        return ReadSupervisorQword64(address);
+    }
+
+    /// <summary>
+    /// Reads a qword the processor fetches on its own behalf -- a descriptor,
+    /// a gate, a TSS field -- through a 64-bit linear address, as a
+    /// supervisor access whatever ring is running (see TranslateSupervisor).
+    /// With paging off (long mode is never without it) this is not reached.
+    /// </summary>
+    private ulong ReadSupervisorQword64(ulong linear)
+    {
+        if (!IsCanonical(linear) || !IsCanonical(linear + 7))
+        {
+            throw new CpuException(13, 0);
+        }
+
+        uint low = _memory.ReadDword(TranslateLongMode(linear, write: false, asSupervisor: true, execute: false));
+        uint high = _memory.ReadDword(TranslateLongMode(linear + 4, write: false, asSupervisor: true, execute: false));
+        return low | ((ulong)high << 32);
+    }
+
+    /// <summary>Writes a byte the processor stores on its own behalf, such as a descriptor's busy or accessed bit, through a 64-bit linear address.</summary>
+    private void WriteSupervisorByte64(ulong linear, byte value)
+    {
+        uint physical = TranslateLongMode(linear, write: true, asSupervisor: true, execute: false);
+        _memory.WriteByte(physical, value);
     }
 
     /// <summary>
