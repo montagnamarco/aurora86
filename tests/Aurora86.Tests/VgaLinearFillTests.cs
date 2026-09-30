@@ -174,7 +174,7 @@ public class VgaLinearFillTests
     ///
     /// WHERE THIS COMES FROM. Monkey Island 2 fills its title screen and then
     /// STOPS: it polls for a keypress and touches video memory no further.
-    /// Marco sees the picture for a moment and then black. Everything
+    /// The user sees the picture for a moment and then black. Everything
     /// measurable inside the guest is correct and stays correct -- the row
     /// offset reads 40, the start address 0, the mode is graphics, the
     /// palette is bright, and video memory holds 635 of 660 sampled bytes
@@ -218,10 +218,10 @@ public class VgaLinearFillTests
     /// <summary>
     /// THE SECOND RENDER AFTER A MODE CHANGE MUST NOT LOSE THE PICTURE.
     ///
-    /// THE SEQUENCE BEING REPRODUCED, from what Marco sees: the picture
+    /// THE SEQUENCE BEING REPRODUCED, from what the user sees: the picture
     /// appears for a moment and then goes black. The first frame after a mode
     /// change is drawn with force, because the resize sets it -- so it is
-    /// correct, and that is the moment he sees. What this checks is the frame
+    /// correct, and that is the moment the user sees. What this checks is the frame
     /// after: the renderer returns early when nothing is dirty, and the
     /// question is whether the framebuffer it leaves behind still holds the
     /// picture or has been replaced by the resize's empty one.
