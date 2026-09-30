@@ -270,8 +270,8 @@ public static partial class BiosRom
 
         /// <summary>
         /// The MP 1.4 floating pointer structure (work package P4.4), placed
-        /// well clear of $PIR's own largest layout (32 + 7*16 = 144 bytes:
-        /// six slots plus PIIX4's USB, ending at 0x1B30) but still inside the F0000h segment the MP
+        /// well clear of $PIR's own largest layout (32 + 8*16 = 160 bytes:
+        /// seven slots plus PIIX4's USB, ending at 0x1B40) but still inside the F0000h segment the MP
         /// specification's own search order checks last -- coordinator
         /// decision A5 asks for "next to $PIR", meaning this segment, not
         /// the adjoining byte, since $PIR's neighbourhood has too little
@@ -288,8 +288,8 @@ public static partial class BiosRom
         /// ever occupy: the floating pointer (16 bytes) plus the PCMP
         /// header (44) and the largest possible entry list this board can
         /// produce (one processor, two buses, one I/O APIC, fifteen wired
-        /// ISA lines, twenty-four PCI slot entries plus PIIX4's USB, and the two
-        /// local entries -- 380 bytes), rounded up generously. <see
+        /// ISA lines, twenty-eight PCI slot entries plus PIIX4's USB, and the two
+        /// local entries -- 412 bytes), rounded up generously. <see
         /// cref="Machine.RefreshBiosMpTables"/> patches exactly this many
         /// bytes in place after a CPU model switch, rather than re-mapping
         /// the whole ROM image and losing whatever else was patched into it

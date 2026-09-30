@@ -103,7 +103,7 @@ public static partial class BiosRom
         }
 
         // One entry per wired (device, pin), not per PIRQ link (independent
-        // review, item 5): the board's virtual slots (devices 2-7)
+        // review, item 5): the board's virtual slots (devices 2-8)
         // each carry all four INTA-D pins, source bus IRQ encoded the way
         // the MP spec's own PCI convention asks -- bits 6:2 device, 1:0 pin
         // -- and destination INTIN computed from the same

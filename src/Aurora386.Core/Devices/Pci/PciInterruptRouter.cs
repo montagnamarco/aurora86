@@ -61,14 +61,14 @@ public sealed class PciInterruptRouter
 
     /// <summary>
     /// The last slot device. Devices 2-5 were this board's four original
-    /// slots (USB and sound, removable-storage USB, video, network); 6 and 7
-    /// were added for the modern-platform controllers (AHCI, HD Audio), as
-    /// boards of the late 1990s with six slots did. The INTA-D rotation
-    /// simply continues, so device 6 shares device 2's links and device 7
-    /// device 3's; every table describing the wiring -- $PIR, the MP table,
-    /// the ACPI _PRT -- iterates this same range.
+    /// slots (USB and sound, removable-storage USB, video, network); 6, 7
+    /// and 8 were added for the modern-platform controllers (AHCI, HD Audio,
+    /// xHCI). The INTA-D rotation simply continues, so device 6 shares
+    /// device 2's links, device 7 device 3's and device 8 device 4's; every
+    /// table describing the wiring -- $PIR, the MP table, the ACPI _PRT --
+    /// iterates this same range.
     /// </summary>
-    public const byte LastSlotDevice = 7;
+    public const byte LastSlotDevice = 8;
 
     /// <summary>How many slot entries the routing tables carry.</summary>
     public const int SlotCount = LastSlotDevice - FirstSlotDevice + 1;
