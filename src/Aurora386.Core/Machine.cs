@@ -443,7 +443,7 @@ public sealed partial class Machine : IDisposable
         // The ViRGE and the Aurora Display Adapter are the exception: their
         // PCI BARs may be placed anywhere in the 32-bit space, so their
         // machines decode all of it. So do machines with a modern-platform
-        // controller (AHCI SATA, HD Audio, EHCI): the operating systems that drive
+        // controller (AHCI SATA, HD Audio, EHCI, xHCI): the operating systems that drive
         // them place their memory BARs high, near FEB00000h as Linux and
         // Windows both do, and a bus that stopped at 32 MB would leave the
         // BAR silently unmapped -- every register reading as all ones.
@@ -451,7 +451,8 @@ public sealed partial class Machine : IDisposable
         bool modernPlatformController = hardware is not null
             && (hardware.Sata is not null
                 || hardware.Sound.Any(card => string.Equals(card.Card, "hda-ich9", StringComparison.OrdinalIgnoreCase))
-                || string.Equals(hardware.Usb?.Card, "ehci-ich9", StringComparison.OrdinalIgnoreCase));
+                || string.Equals(hardware.Usb?.Card, "ehci-ich9", StringComparison.OrdinalIgnoreCase)
+                || hardware.Xhci is not null);
         ulong addressableBytes = relocatableAdapter || modernPlatformController
             ? 1UL << 32
             : frameBufferBase + TrioMmioOffset + 0x10000;
@@ -732,6 +733,11 @@ public sealed partial class Machine : IDisposable
         if (hardware.Sata is not null)
         {
             cards.Add(CardCatalog.Build(_bus, hardware.Sata));
+        }
+
+        if (hardware.Xhci is not null)
+        {
+            cards.Add(CardCatalog.Build(_bus, hardware.Xhci));
         }
 
         // Two cards of the same kind would keep their state under the same
@@ -1070,6 +1076,7 @@ public sealed partial class Machine : IDisposable
 
         foreach (DiskImage disk in _disks) disk.Dispose();
         DisposeSataDisks();
+        DisposeXhciStorage();
         CompactDisc?.Dispose();
         UsbStorage?.Dispose();
         VideoCard?.Dispose();

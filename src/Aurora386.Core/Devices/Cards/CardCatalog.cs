@@ -30,6 +30,7 @@ public static class CardCatalog
             ["rtl8139-pci"] = (_, settings) => new Rtl8139Card(settings),
             ["uhci-piix"] = (_, _) => new UhciCard(),
             ["ehci-ich9"] = (_, _) => new UhciCard(withEhci: true),
+            ["qemu-xhci"] = (_, _) => new XhciCard(),
             ["ahci-ich9"] = (_, _) => new AhciCard(),
             ["hda-ich9"] = (_, _) => new HdaCard(),
         };
@@ -52,6 +53,7 @@ public static class CardCatalog
             ["rtl8139-pci"] = "network",
             ["uhci-piix"] = "usb",
             ["ehci-ich9"] = "usb",
+            ["qemu-xhci"] = "usb",
             ["ahci-ich9"] = "storage",
             ["hda-ich9"] = "sound",
         };
@@ -76,6 +78,7 @@ public static class CardCatalog
         [UhciCard.SnapshotSectionId] = UhciCard.CurrentSnapshotVersion,
         [AhciCard.SnapshotSectionId] = AhciCard.CurrentSnapshotVersion,
         [HdaCard.SnapshotSectionId] = HdaCard.CurrentSnapshotVersion,
+        [XhciCard.SnapshotSectionId] = XhciCard.CurrentSnapshotVersion,
     };
 
     /// <summary>

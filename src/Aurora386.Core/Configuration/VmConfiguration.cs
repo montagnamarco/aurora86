@@ -185,6 +185,24 @@ public sealed class VmConfiguration
         /// <see cref="Devices.Cards.AhciCard"/>.
         /// </summary>
         public SataSettings? Sata { get; set; }
+
+        /// <summary>
+        /// The USB 3 (xHCI) host adapter and the USB stick on its first
+        /// port, or null for none. See <see cref="Devices.Cards.XhciCard"/>.
+        /// </summary>
+        public XhciSettings? Xhci { get; set; }
+    }
+
+    /// <summary><see cref="HardwareSettings.Xhci"/>: a catalog name and an optional USB stick image.</summary>
+    public sealed class XhciSettings
+    {
+        public string Card { get; set; } = "qemu-xhci";
+
+        /// <summary>The image plugged into the first port, or null with nothing plugged in.</summary>
+        public UsbDiskEntry? Storage { get; set; }
+
+        /// <summary>The <see cref="Devices.Cards.CardSettings"/> the registry actually builds from.</summary>
+        public Devices.Cards.CardSettings ToCardSettings() => new() { Card = Card };
     }
 
     /// <summary>
@@ -424,6 +442,10 @@ public sealed class VmConfiguration
                 disk.Path = map(disk.Path);
             }
         }
+        if (Hardware.Xhci?.Storage is not null)
+        {
+            Hardware.Xhci.Storage.Path = map(Hardware.Xhci.Storage.Path);
+        }
         foreach (SharedFolder shared in SharedFolders) shared.Path = map(shared.Path);
         if (PrinterFolder is not null)
         {
@@ -486,11 +508,26 @@ public sealed class VmConfiguration
         if (Hardware.Usb is not null)
         {
             ValidateCardKind("hardware.usb", "usb", [Hardware.Usb.Card]);
+            // The xHCI controller has its own entry, hardware.xhci.
+            if (string.Equals(Hardware.Usb.Card, "qemu-xhci", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("'hardware.usb' names 'qemu-xhci'; put the xHCI controller in 'hardware.xhci'.");
+            }
         }
         if (Hardware.Sata is not null)
         {
             ValidateCardKind("hardware.sata", "storage", [Hardware.Sata.Card]);
             ValidateSataPorts(Hardware.Sata.Disks);
+        }
+        if (Hardware.Xhci is not null)
+        {
+            ValidateCardKind("hardware.xhci", "usb", [Hardware.Xhci.Card]);
+            // "usb" also covers the UHCI/EHCI cards, which have no xHCI port to hold the stick.
+            if (!string.Equals(Hardware.Xhci.Card, "qemu-xhci", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    $"'hardware.xhci' names '{Hardware.Xhci.Card}', which is not an xHCI controller (use 'qemu-xhci').");
+            }
         }
 
         Version = CurrentVersion;
@@ -640,6 +677,7 @@ public sealed class VmConfiguration
             Network = Hardware.Network.Select(card => card.ToCardSettings()).ToList(),
             Usb = Hardware.Usb?.ToCardSettings(),
             Sata = Hardware.Sata?.ToCardSettings(),
+            Xhci = Hardware.Xhci?.ToCardSettings(),
         };
 
         Devices.Chipset.Chipset chipset = Devices.Chipset.ChipsetNames.Parse(Hardware.Chipset)
@@ -676,6 +714,22 @@ public sealed class VmConfiguration
 
             foreach (SataDiskEntry disk in Hardware.Sata?.Disks ?? [])
                 machine.AttachSataDisk(disk.Port, DiskImage.OpenHardDisk(disk.Path, readOnly: disk.ReadOnly));
+
+            if (Hardware.Xhci?.Storage is { } xhciStick)
+            {
+                // The machine owns the stick only once it is attached; a
+                // configuration built in code skips Migrate's card check.
+                var stick = Devices.Usb.UsbMassStorageDevice.Open(xhciStick.Path, xhciStick.ReadOnly);
+                try
+                {
+                    machine.AttachXhciStorage(stick);
+                }
+                catch
+                {
+                    stick.Dispose();
+                    throw;
+                }
+            }
 
             if (CompactDisc is not null)
                 machine.AttachCompactDisc(IsoImage.Open(CompactDisc));

@@ -222,3 +222,67 @@ behaviour, IOC/STALL/babble/timeout error paths, the IAAD doorbell, one
 periodic interrupt queue head, the bus-master gate, and a snapshot round
 trip. Reference: Intel Enhanced Host Controller Interface Specification for
 Universal Serial Bus, Revision 1.0 (2002).
+
+## xHCI (USB 3 host controller)
+
+`XhciController` models an xHCI 1.x host controller -- the interface Intel
+published in 2010 and every PC has carried since about 2012 -- in the
+identity of QEMU's qemu-xhci: PCI 1B36:000D, revision 01, class 0C0330.
+Linux's xhci-hcd and the inbox usbxhci.sys of Windows 8 and later bind it by
+class code; Windows 7 has no inbox xHCI driver. It is fitted as the card
+`qemu-xhci` at PCI 00:08.0 (vm.json `hardware.xhci`, with an optional USB
+stick on its first port), independent of the UHCI/EHCI card. The design
+decisions and every register constant are in `plans/usb3-xhci.md`.
+
+**What is modelled.**
+
+- A 16 KB 64-bit memory BAR0: capability registers at 0 (CAPLENGTH 40h,
+  HCIVERSION 0100h, 8 slots, 1 interrupter, 4 ports, HCCPARAMS1 with AC64
+  and 32-byte contexts), operational registers at 40h, runtime registers at
+  1000h, doorbells at 2000h. INTx only, no MSI or MSI-X.
+- One Supported Protocol capability: four USB 2 ports. SuperSpeed (a second
+  capability, BOS and companion descriptors) is a later stage.
+- PORTSC with port reset (the speed field taken from the device: full, low
+  or high), PED cleared by writing 1, the RW1C change bits and Port Status
+  Change Events.
+- Interrupter 0's event ring, with the segment table, the producer cycle
+  bit and EHB/IMAN.IP/USBSTS.EINT raised as QEMU's xhci_intr_raise does; a
+  full ring drops the event and sets HCE.
+- The command ring, run synchronously when doorbell 0 is rung: Enable and
+  Disable Slot, Address Device (BSR included; the USB address is the slot
+  number, as in QEMU), Configure Endpoint, Evaluate Context, Reset and Stop
+  Endpoint, Set TR Dequeue Pointer, Reset Device, No-Op; the device
+  context written back. Any other command type completes with TRB Error.
+  CRCR.CRR reads 1 once the ring has started; CS or CA stops it with a
+  Command Ring Stopped completion, and the ring resumes where it stopped.
+- Transfer rings, run when a slot's doorbell is rung: control transfers on
+  EP0 (Setup with immediate data, Data with its direction, Status), Normal
+  TRBs on bulk and interrupt endpoints (immediate data on OUT included)
+  with a data toggle kept per endpoint,
+  chains, short packets, Event Data TRBs, and Transfer Events with the
+  residual length. A NAK leaves the TD pending for the next doorbell or,
+  on an interrupt endpoint, the next poll; STALL and transaction errors halt
+  the endpoint until Reset Endpoint.
+
+**Known gaps.** A NAK in the middle of a multi-packet TRB restarts the
+whole TRB on the next doorbell, with the data toggle it had before the TRB
+began, not the one the ACKed packets reached. A device that NAKs part-way
+through sees a toggle mismatch: on IN the mass-storage model repeats or
+advances a packet and the restarted TRB writes it at buffer offset 0; on OUT
+the restarted TRB resends bytes the device already accepted. Either way
+the transfer is corrupted. Event Data TRBs report 0 in the
+Transfer Event instead of the TD's accumulated length (EDTLA), and a short
+packet skips the rest of the TD, a trailing Event Data TRB included.
+Neither case has been exercised by a guest yet; both wait for one that
+needs them.
+
+**Not modelled.** Streams, isochronous transfers, link power management,
+scratchpad buffers, MSI/MSI-X, SuperSpeed ports, and the USB Legacy Support
+capability (qemu-xhci has none either). All DMA goes through the bus-master
+path and only while the PCI command register allows it; an address above
+4 GB reaches no memory, as on every other bus master here.
+
+**Tests.** `XhciControllerTests` drive the registers, the rings and the
+events directly; `MachineXhciTests` check the card on the PCI bus, the
+interrupt the POST routes (PIRQC, IRQ 11), the stick on port 1, the "XHCI"
+snapshot section and vm.json. No guest driver has run it yet.
