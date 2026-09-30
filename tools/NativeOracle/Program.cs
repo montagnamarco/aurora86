@@ -138,7 +138,7 @@ return totalFailed == 0 ? 0 : 1;
 static int RunDirectedProbe(string[] args)
 {
     byte[] instruction = Convert.FromHexString(args[0]);
-    var xmm = new Aurora386.Core.Cpu.Sse.XmmValue[8];
+    var xmm = new Aurora86.Core.Cpu.Sse.XmmValue[8];
     xmm[0] = ParseXmm(args[1]);
     xmm[1] = ParseXmm(args[2]);
     uint mxcsr = Convert.ToUInt32(args[3], 16);
@@ -159,22 +159,22 @@ static int RunDirectedProbe(string[] args)
     // question about a memory-destination, non-XMM instruction -- MOVNTI's
     // own 66-prefix question -- needs to read back afterwards.
     var gpr = new uint[8];
-    gpr[(int)Aurora386.Core.Cpu.Reg.Eax] = initialEax;
-    gpr[(int)Aurora386.Core.Cpu.Reg.Ebx] = host.BufferAddress;
+    gpr[(int)Aurora86.Core.Cpu.Reg.Eax] = initialEax;
+    gpr[(int)Aurora86.Core.Cpu.Reg.Ebx] = host.BufferAddress;
     host.WriteBuffer(BitConverter.GetBytes(0xDEADBEEFu));
     (uint[] resultGpr, _) = host.Run(instruction, gpr, initialEflags: 0, useExtendedState: true);
 
-    Aurora386.Core.Cpu.Sse.XmmValue[] result = host.ReadXmmRegisters();
+    Aurora86.Core.Cpu.Sse.XmmValue[] result = host.ReadXmmRegisters();
     uint resultMxcsr = host.ReadMxcsr();
     uint bufferDword = BitConverter.ToUInt32(host.ReadBuffer()[..4]);
 
     Console.WriteLine($"XMM0 = {result[0].D3:X8}{result[0].D2:X8}{result[0].D1:X8}{result[0].D0:X8}");
     Console.WriteLine($"MXCSR = {resultMxcsr:X8}");
-    Console.WriteLine($"EAX = {resultGpr[(int)Aurora386.Core.Cpu.Reg.Eax]:X8}");
+    Console.WriteLine($"EAX = {resultGpr[(int)Aurora86.Core.Cpu.Reg.Eax]:X8}");
     Console.WriteLine($"[EBX] = {bufferDword:X8}");
     return 0;
 
-    static Aurora386.Core.Cpu.Sse.XmmValue ParseXmm(string hex32) => new()
+    static Aurora86.Core.Cpu.Sse.XmmValue ParseXmm(string hex32) => new()
     {
         D0 = Convert.ToUInt32(hex32[0..8], 16),
         D1 = Convert.ToUInt32(hex32[8..16], 16),

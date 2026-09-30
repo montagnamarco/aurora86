@@ -1,7 +1,7 @@
-# Aurora386 — how a PC works, and how we emulate it
+# Aurora86 — how a PC works, and how we emulate it
 
 This document explains two things side by side: **how an IBM-compatible PC
-with a 386 is built**, and **how Aurora386 reproduces it in C#**. They are
+with a 386 is built**, and **how Aurora86 reproduces it in C#**. They are
 kept together on purpose, because almost every decision in the emulator is
 the consequence of a detail of the real hardware. The Italian original is
 `ARCHITETTURA.md`; this version is the one kept current.
@@ -88,7 +88,7 @@ lines, and every later PC had to stay compatible with that layout.
 ### Why video memory is "only" that region
 
 There is no real card: there is a range of addresses the chipset diverts to
-the device instead of to RAM. In Aurora386 the same mechanism is
+the device instead of to RAM. In Aurora86 the same mechanism is
 `PhysicalMemoryBus`, which keeps, for every 4 KB page, either a pointer to
 real RAM or a device to call:
 
@@ -141,10 +141,10 @@ And a fourth mode that is not in Intel's manuals:
 > **Unreal mode.** Enter protected mode, load a segment with a 4 GB limit,
 > go back to real mode. The limit **stays** in the hidden register, and from
 > real mode you address 4 GB. Undocumented, a side effect of the silicon --
-> and `HIMEM.SYS` leans on it. Aurora386 reproduces it: see
+> and `HIMEM.SYS` leans on it. Aurora86 reproduces it: see
 > [REAL-VS-PROTECTED-MODE.md](REAL-VS-PROTECTED-MODE.md).
 
-### How Aurora386 emulates it
+### How Aurora86 emulates it
 
 An **interpreter**, not a JIT compiler: read an instruction, execute it, move
 to the next. Slower than a translator, but transparent to verify -- and for a
@@ -152,7 +152,7 @@ machine of 1990 the speed is enough (30 to 55 million instructions per
 second on a laptop, against the 8 or so a real 25 MHz 386 managed).
 
 ```
-src/Aurora386.Core/Cpu/
+src/Aurora86.Core/Cpu/
 ├── Cpu.cs             state, registers, memory access, fetch
 ├── Cpu.Execute.cs     one-byte opcodes (the bulk of the table), fault delivery
 ├── Cpu.TwoByte.cs     0F xx opcodes: protected mode, bit ops, LAR/LSL
@@ -232,7 +232,7 @@ line, and it is why every ROM interrupt entry ends with `OUT 20h`.
 
 ## 5. The BIOS: the main architectural choice
 
-An emulator can load an original ROM, or write its own BIOS. Aurora386 does
+An emulator can load an original ROM, or write its own BIOS. Aurora86 does
 the latter, and in a particular way.
 
 The emulated ROM contains **three-byte sequences**:
@@ -284,7 +284,7 @@ Three rules came out of Windows, and they are worth knowing before touching
 ### What lives where
 
 ```
-src/Aurora386.Core/Firmware/
+src/Aurora86.Core/Firmware/
 ├── BiosRom.cs                 builds the ROM image and the hooks
 ├── BiosDataArea.cs            the 256 bytes of state at 0x400
 ├── DiskServices.cs            INT 13h — disks
@@ -529,7 +529,7 @@ card's BIOS does (`Entry.VesaProgram`).
 
 ## 9. DOS as the emulator sees it
 
-Aurora386 runs a **real MS-DOS 6.22**, not an imitation of it. `INT 21h` is
+Aurora86 runs a **real MS-DOS 6.22**, not an imitation of it. `INT 21h` is
 handled by the DOS inside the emulated machine.
 
 There is one point where the emulator inserts itself: the **redirector**,
@@ -573,9 +573,9 @@ knows nothing.
 ## 10. Project layout
 
 ```
-Aurora386
+Aurora86
 │
-├── src/Aurora386.Core        ← the heart, with no user interface
+├── src/Aurora86.Core        ← the heart, with no user interface
 │   ├── Machine*.cs           the assembled PC: construction, POST, run
 │   │                         loop, minor native handlers, media
 │   ├── Cpu/                  the processor (16 partial files of Cpu)
@@ -598,15 +598,15 @@ Aurora386
 │   ├── Configuration/        vm.json: one machine described in a file
 │   └── Diagnostics/          disassembler, DOS call log, disk write log
 │
-├── src/Aurora386.Gui         Avalonia interface (window, menus, debugger)
-├── src/Aurora386.Sdl         alternative SDL2 frontend
-├── src/Aurora386.FatTool     tool for injecting files into images
+├── src/Aurora86.Gui         Avalonia interface (window, menus, debugger)
+├── src/Aurora86.Sdl         alternative SDL2 frontend
+├── src/Aurora86.FatTool     tool for injecting files into images
 ├── tools/HardwareSuite       runs the protected-mode hardware vectors
-└── tests/Aurora386.Tests     1,200 tests
+└── tests/Aurora86.Tests     1,200 tests
 ```
 
 The rule is **one folder per role, and the namespace follows the folder**:
-`Aurora386.Core.Devices.Storage`, `Aurora386.Core.Firmware`, and so on. The
+`Aurora86.Core.Devices.Storage`, `Aurora86.Core.Firmware`, and so on. The
 firmware contains no devices and the devices contain no firmware: a disk
 image is a piece of hardware (`Devices/Storage`), the INT 13h service that
 uses it is firmware (`Firmware`).

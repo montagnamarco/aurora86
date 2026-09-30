@@ -11,6 +11,6 @@
          here needs a Windows-specific RuntimeIdentifier to build. -->
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/Aurora386.Core/Aurora386.Core.csproj" />
+    <ProjectReference Include="../../src/Aurora86.Core/Aurora86.Core.csproj" />
   </ItemGroup>
 </Project>

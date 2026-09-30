@@ -1,7 +1,7 @@
 using System.Text;
-using Aurora386.Core;
-using Aurora386.Core.Cpu;
-using Aurora386.Core.Devices.Storage;
+using Aurora86.Core;
+using Aurora86.Core.Cpu;
+using Aurora86.Core.Devices.Storage;
 
 // Run Monkey Island 2 under REAL MS-DOS 6.22 in this emulator, and watch the
 // one word the game checks before it decides whether to run.

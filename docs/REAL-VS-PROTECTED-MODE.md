@@ -1,7 +1,7 @@
 # Real mode, protected mode, and the places in between
 
 This is the guide to the part of the 386 that confuses everybody, written
-around the code in `src/Aurora386.Core/Cpu` and around the bugs that were
+around the code in `src/Aurora86.Core/Cpu` and around the bugs that were
 actually found while getting MS-DOS 6.22 and Windows 3.11 to run. Every
 section names the file that implements it, so you can read the two side by
 side.
@@ -29,7 +29,7 @@ The address is `base + offset`, but only after the processor has checked the
 offset against the limit and the access against the rights. Offsets can be
 32 bits, so a segment can cover 4 GB.
 
-In Aurora386 the two live in `CpuState.cs` as the *segment cache*: for every
+In Aurora86 the two live in `CpuState.cs` as the *segment cache*: for every
 segment register we keep the base, limit and rights that were loaded with it,
 exactly as the silicon does. `LoadSegmentRealMode` updates the base to `paragraph * 16` while retaining
 the cached limit; its reset variant also restores the ordinary 64 KB limit.

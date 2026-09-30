@@ -20,7 +20,7 @@ reject new files instead of silently discarding device state.
 
 `T3D1` contains a DWORD magic, WORD version 1 and WORD field count 40, followed
 by 40 DWORD slots in the `Field` order declared in
-[S3Accelerator.Snapshot.cs](../src/Aurora386.Core/Devices/Video/S3/Trio/S3Accelerator.Snapshot.cs).
+[S3Accelerator.Snapshot.cs](../src/Aurora86.Core/Devices/Video/S3/Trio/S3Accelerator.Snapshot.cs).
 These cover register latches, write-mask presence, selectors, partial processor
 unit/pixel bytes, transfer presence, geometry, directions, mask and row/column.
 A signed DWORD count follows, then sorted `(port:WORD, lowByte:BYTE)` entries.
@@ -56,7 +56,7 @@ WORDs, followed by page, mode, masked and terminal-count bytes. Boolean bytes
 must be zero or one; every mode byte remains representable under the current
 model. Exact length, header and all booleans are validated before mutation.
 
-[Dma8237.Snapshot.cs](../src/Aurora386.Core/Devices/System/Dma8237.Snapshot.cs)
+[Dma8237.Snapshot.cs](../src/Aurora86.Core/Devices/System/Dma8237.Snapshot.cs)
 provides capture, validation, raw restore and reset to constructed defaults.
 Capture owns its byte array; restore retains the target's channel objects and
 memory/bus references and performs no transfer or port access. Callers must
@@ -102,8 +102,8 @@ of a register write, so replaying the banks would lose valid state. Render and
 timer algorithms are unchanged; snapshots reject nonfinite/negative timing
 state rather than certify invalid caller input to those algorithms.
 
-[SbMixer.Snapshot.cs](../src/Aurora386.Core/Devices/Audio/SbMixer.Snapshot.cs)
-and [Opl3.Snapshot.cs](../src/Aurora386.Core/Devices/Audio/Opl3.Snapshot.cs)
+[SbMixer.Snapshot.cs](../src/Aurora86.Core/Devices/Audio/SbMixer.Snapshot.cs)
+and [Opl3.Snapshot.cs](../src/Aurora86.Core/Devices/Audio/Opl3.Snapshot.cs)
 provide standalone capture, validation, restore and constructed-default reset.
 OPL also exposes target-rate validation used by the enclosing preflight.
 Restore performs no register writes, key edges, rendering, timer advancement
@@ -121,7 +121,7 @@ standalone payloads are nested in DSP1 and emitted in the machine kind 3 record.
 
 ### Implemented standalone DSP/PCM payload
 
-[SoundBlaster16.Snapshot.cs](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.Snapshot.cs)
+[SoundBlaster16.Snapshot.cs](../src/Aurora86.Core/Devices/Audio/SoundBlaster16.Snapshot.cs)
 provides detached capture, complete validation, target-rate validation, raw
 restore and reset to constructed defaults. `DSP1` version 1 has a 108-byte
 header, FIFO bytes in read order, queued PCM as little-endian signed shorts,
@@ -170,7 +170,7 @@ semantics remain outside this work.
 
 ### Implemented PnP payload and machine integration
 
-[IsaPnpBus.Snapshot.cs](../src/Aurora386.Core/Devices/IsaPnp/IsaPnpBus.Snapshot.cs)
+[IsaPnpBus.Snapshot.cs](../src/Aurora86.Core/Devices/IsaPnp/IsaPnpBus.Snapshot.cs)
 stores `PNP1` version 1. Its 21-byte header contains DWORD magic, WORD version,
 WORD card count, WORD READ_DATA port, signed DWORD initiation-key cursor,
 BYTE address selector, BYTE isolation phase, signed DWORD isolation bit and
@@ -190,7 +190,7 @@ Topology validation matches every card's identity/resource bytes and ordered
 logical devices before mutation. The standalone parser bounds cards to 255,
 LDNs per card to 256 and resource data per card to 1 MiB, with exact consumption.
 
-[MachineSnapshot.cs](../src/Aurora386.Core/MachineSnapshot.cs)
+[MachineSnapshot.cs](../src/Aurora86.Core/MachineSnapshot.cs)
 requires the complete DMA/SB16/PnP set whenever any of those records is present;
 Trio additionally requires kind 1. Historical empty and Trio-only sets remain
 valid. Before allocating record bodies, the file reader checks exact remaining
@@ -226,11 +226,11 @@ are rejected atomically. Historical files remain byte-identical after resave.
 ### Caller quiescence audit
 
 The GUI save/restore commands in
-[MainWindowViewModel.cs](../src/Aurora386.Gui/ViewModels/MainWindowViewModel.cs)
+[MainWindowViewModel.cs](../src/Aurora86.Gui/ViewModels/MainWindowViewModel.cs)
 call `Session.WithMachine` around the entire snapshot operation.
-[EmulatorSession.cs](../src/Aurora386.Gui/Emulation/EmulatorSession.cs) uses the
+[EmulatorSession.cs](../src/Aurora86.Gui/Emulation/EmulatorSession.cs) uses the
 same `_gate` for each emulation batch, stepping and `WithMachine` calls.
-[AudioOutput.cs](../src/Aurora386.Gui/Emulation/AudioOutput.cs) obtains core
+[AudioOutput.cs](../src/Aurora86.Gui/Emulation/AudioOutput.cs) obtains core
 samples through that same gate. Thus capture/restore excludes both producers
 and the core PCM consumer; pausing alone would not establish this boundary.
 No new synchronization mechanism is introduced. Already submitted OpenAL
@@ -247,13 +247,13 @@ bit-identical audio across runtime architectures.
 
 | Owner | Current coverage | Missing continuation state |
 | --- | --- | --- |
-| [MachineSnapshot](../src/Aurora386.Core/MachineSnapshot.cs) | CPU/RAM, VGA memory/registers, PIC/PIT, keyboard, PCI, USB, DMA, SB16/OPL, ISA PnP, serial mouse and selected firmware state | In-flight IDE and network packet state remain outside this change |
-| [S3Accelerator](../src/Aurora386.Core/Devices/Video/S3/Trio/S3Accelerator.cs) | T3D1 plus separately saved VRAM | None identified for the current synchronous engine |
-| [ViRGE engines](../src/Aurora386.Core/Devices/Video/S3/Virge/S3VirgeCard.Snapshot.cs) | VGE1 wraps triangle, BitBLT and primary Streams state | No new engine block needed for the implemented synchronous triangle subset |
-| [Dma8237](../src/Aurora386.Core/Devices/System/Dma8237.cs) | Standalone DMA1 capture/restore for all eight channels and both byte pointers | None identified for the current synchronous DMA model |
-| [SbMixer / Opl3](../src/Aurora386.Core/Devices/Audio/SbMixer.Snapshot.cs) | Standalone MIX1/OPL1 with raw mixer, synthesis and timer state | No new synthesis fidelity claim |
-| [SoundBlaster16](../src/Aurora386.Core/Devices/Audio/SoundBlaster16.Snapshot.cs) | Standalone DSP1 with nested MIX1/OPL1 | Existing audio-model limitations described below |
-| [IsaPnpBus](../src/Aurora386.Core/Devices/IsaPnp/IsaPnpBus.cs) | PNP1 bus/card/LDN state plus applied configuration | Network packet continuation is excluded |
+| [MachineSnapshot](../src/Aurora86.Core/MachineSnapshot.cs) | CPU/RAM, VGA memory/registers, PIC/PIT, keyboard, PCI, USB, DMA, SB16/OPL, ISA PnP, serial mouse and selected firmware state | In-flight IDE and network packet state remain outside this change |
+| [S3Accelerator](../src/Aurora86.Core/Devices/Video/S3/Trio/S3Accelerator.cs) | T3D1 plus separately saved VRAM | None identified for the current synchronous engine |
+| [ViRGE engines](../src/Aurora86.Core/Devices/Video/S3/Virge/S3VirgeCard.Snapshot.cs) | VGE1 wraps triangle, BitBLT and primary Streams state | No new engine block needed for the implemented synchronous triangle subset |
+| [Dma8237](../src/Aurora86.Core/Devices/System/Dma8237.cs) | Standalone DMA1 capture/restore for all eight channels and both byte pointers | None identified for the current synchronous DMA model |
+| [SbMixer / Opl3](../src/Aurora86.Core/Devices/Audio/SbMixer.Snapshot.cs) | Standalone MIX1/OPL1 with raw mixer, synthesis and timer state | No new synthesis fidelity claim |
+| [SoundBlaster16](../src/Aurora86.Core/Devices/Audio/SoundBlaster16.Snapshot.cs) | Standalone DSP1 with nested MIX1/OPL1 | Existing audio-model limitations described below |
+| [IsaPnpBus](../src/Aurora86.Core/Devices/IsaPnp/IsaPnpBus.cs) | PNP1 bus/card/LDN state plus applied configuration | Network packet continuation is excluded |
 
 ViRGE colour, depth and future texture bytes stored in VRAM must not be copied
 into engine blocks a second time. Its triangles execute synchronously within

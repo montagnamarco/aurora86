@@ -1,6 +1,6 @@
 # Contributing
 
-Aurora386 is an emulator that is meant to be read, so the way a change is
+Aurora86 is an emulator that is meant to be read, so the way a change is
 made matters as much as the change. These are the working rules the code
 was written under; they are what kept the guests running.
 
@@ -60,7 +60,7 @@ it was doing at the time.
 Run the suite with the slow test left out:
 
 ```
-dotnet test tests/Aurora386.Tests --filter "Speed!=Slow"
+dotnet test tests/Aurora86.Tests --filter "Speed!=Slow"
 ```
 
 After any change to the CPU in protected mode, run the hardware vectors:

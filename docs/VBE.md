@@ -1,6 +1,6 @@
 # VBE modes and pixel formats
 
-Aurora386 reports VBE 2.0 through INT 10h AX=4F00h. Applications should walk
+Aurora86 reports VBE 2.0 through INT 10h AX=4F00h. Applications should walk
 the returned mode list and query each entry with AX=4F01h. Modes that exceed
 the adapter's 2 MB of video memory are omitted.
 
@@ -28,7 +28,7 @@ linear writes, virtual stride, display origin, ignored high bytes and
 agreement between incremental and full rendering. Run it with:
 
 ```sh
-dotnet test tests/Aurora386.Tests --filter 'FullyQualifiedName~Vesa'
+dotnet test tests/Aurora86.Tests --filter 'FullyQualifiedName~Vesa'
 ```
 
 This covers the VBE framebuffer interface. Validation with DOS VESA

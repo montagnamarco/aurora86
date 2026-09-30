@@ -1,8 +1,8 @@
-# Aurora386
+# Aurora86
 
 An x86 PC emulator written in C#, built to be read as much as to be run.
 
-Aurora386 started as an Intel 80386 and grew, one measured step at a time,
+Aurora86 started as an Intel 80386 and grew, one measured step at a time,
 into a machine that spans the 386 to the Pentium 4: ISA and PCI buses, S3
 graphics, Sound Blaster and AudioPCI sound, NE2000 and Realtek networking,
 USB from UHCI to xHCI. Every device is modelled the way the real silicon
@@ -90,7 +90,7 @@ left out.
 
 ## Getting started
 
-Aurora386 needs the [.NET 10 SDK](https://dotnet.microsoft.com/download).
+Aurora86 needs the [.NET 10 SDK](https://dotnet.microsoft.com/download).
 It is developed and tested on macOS; the front ends are built on
 cross-platform libraries (Avalonia, SDL, OpenAL), so Windows and Linux
 should work but are not regularly checked.
@@ -98,7 +98,7 @@ should work but are not regularly checked.
 ```
 git clone <repository URL>
 cd <repository folder>
-dotnet build Aurora386.slnx -c Release
+dotnet build Aurora86.slnx -c Release
 ```
 
 Always use the Release configuration to run guests: the Debug build leaves
@@ -111,17 +111,17 @@ watchpoints, a symbolic view of the ROM and the DOS structures, and a disk
 inspector:
 
 ```
-dotnet run --project src/Aurora386.Gui -c Release
+dotnet run --project src/Aurora86.Gui -c Release
 ```
 
 **The command-line front end** takes everything from its arguments, which
 is what scripts and bug reports want:
 
 ```
-dotnet run --project src/Aurora386.Sdl -c Release -- --hdd hdd.img
-dotnet run --project src/Aurora386.Sdl -c Release -- --vm machines/win95 --cpu pentium --video virge
-dotnet run --project src/Aurora386.Sdl -c Release -- --vm machines/dos --net nat --share ~/Documents
-dotnet run --project src/Aurora386.Sdl -c Release -- --help
+dotnet run --project src/Aurora86.Sdl -c Release -- --hdd hdd.img
+dotnet run --project src/Aurora86.Sdl -c Release -- --vm machines/win95 --cpu pentium --video virge
+dotnet run --project src/Aurora86.Sdl -c Release -- --vm machines/dos --net nat --share ~/Documents
+dotnet run --project src/Aurora86.Sdl -c Release -- --help
 ```
 
 **No operating system is included.** Disk images are large and generally
@@ -172,8 +172,8 @@ drive letters and permissions for shared folders.
 Create a disk, then boot the first installation floppy with it attached:
 
 ```
-dotnet run --project src/Aurora386.Sdl -c Release -- --create-hdd hdd.img --size 500
-dotnet run --project src/Aurora386.Sdl -c Release -- --hdd hdd.img --floppy dos622-1.img
+dotnet run --project src/Aurora86.Sdl -c Release -- --create-hdd hdd.img --size 500
+dotnet run --project src/Aurora86.Sdl -c Release -- --hdd hdd.img --floppy dos622-1.img
 ```
 
 When setup asks for the next disk, swap the image with the *Floppy A…*
@@ -184,7 +184,7 @@ one.
 ## Testing
 
 ```
-dotnet test tests/Aurora386.Tests --filter "Speed!=Slow"
+dotnet test tests/Aurora86.Tests --filter "Speed!=Slow"
 ```
 
 This runs more than 3,400 tests in about two and a half minutes. Devices are
@@ -208,11 +208,11 @@ Windows 95 setup or the S3 display under Windows.
 ## Repository layout
 
 ```
-src/Aurora386.Core      the machine: CPU, memory, devices, firmware, DOS redirector, NAT
-src/Aurora386.Gui       the Avalonia window and the debugger
-src/Aurora386.Sdl       the command-line front end
-src/Aurora386.FatTool   reads and writes FAT images from the host
-tests/Aurora386.Tests   the unit tests, one class per device or service
+src/Aurora86.Core      the machine: CPU, memory, devices, firmware, DOS redirector, NAT
+src/Aurora86.Gui       the Avalonia window and the debugger
+src/Aurora86.Sdl       the command-line front end
+src/Aurora86.FatTool   reads and writes FAT images from the host
+tests/Aurora86.Tests   the unit tests, one class per device or service
 tools/HardwareSuite     runs the protected-mode CPU vectors
 tools/*Probe            end-to-end checks against guest images
 docs/                   architecture, one document per chip, guest notes
@@ -225,7 +225,7 @@ through, so the CPU is a decode-and-execute loop with lazy flags: the
 operands and the operation are recorded, and the flags computed only when
 something reads them.
 
-**The core is headless.** `Aurora386.Core` has no display or input
+**The core is headless.** `Aurora86.Core` has no display or input
 dependency: it exposes a framebuffer and accepts scancodes and mouse
 movements. The whole machine can be tested without a window.
 

@@ -1,8 +1,8 @@
 using System.Text;
-using Aurora386.Core;
-using Aurora386.Core.Devices.Input;
-using Aurora386.Core.Devices.Storage;
-using Aurora386.Core.Devices.Video;
+using Aurora86.Core;
+using Aurora86.Core.Devices.Input;
+using Aurora86.Core.Devices.Storage;
+using Aurora86.Core.Devices.Video;
 
 // Cold boot Windows Enhanced, open the MS-DOS Prompt icon, run MEM,
 // and return with EXIT. Coordinates default to the current hdd.img desktop.

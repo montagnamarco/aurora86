@@ -1,6 +1,6 @@
 # Aurora Display Adapter
 
-A display adapter designed for Aurora386 and the Aurora operating system
+A display adapter designed for Aurora86 and the Aurora operating system
 rather than copied from a period chip. It is a VGA-compatible PCI card, so
 firmware, DOS and a boot loader see an ordinary VGA with VESA modes; an
 operating system with a driver additionally gets mode changes without the

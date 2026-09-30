@@ -1,7 +1,7 @@
-# Aurora386 — come funziona un PC, e come lo emuliamo
+# Aurora86 — come funziona un PC, e come lo emuliamo
 
 Questo documento spiega due cose in parallelo: **com'è fatto un PC IBM
-compatibile** con processore 386, e **come Aurora386 lo riproduce in C#**.
+compatibile** con processore 386, e **come Aurora86 lo riproduce in C#**.
 I due piani sono tenuti vicini di proposito, perché quasi ogni scelta
 dell'emulatore è la conseguenza di un dettaglio dell'hardware vero.
 
@@ -80,7 +80,7 @@ disposizione.
 ### Perché la memoria video è "solo" quella zona
 
 Non c'è una vera scheda: c'è un intervallo di indirizzi che il chipset devia
-verso il dispositivo invece che verso la RAM. In Aurora386 lo stesso
+verso il dispositivo invece che verso la RAM. In Aurora86 lo stesso
 meccanismo è in `PhysicalMemoryBus`, che tiene per ogni pagina di 4 KB o un
 puntatore a RAM vera, o un dispositivo da chiamare:
 
@@ -134,16 +134,16 @@ E un quarto modo che non è nei manuali Intel:
 > limite 4 GB, si torna in modo reale. Il limite **resta** nel registro
 > nascosto, e da modo reale si indirizzano 4 GB. Non è documentato, è un
 > effetto collaterale del silicio — e `HIMEM.SYS` ci si appoggia.
-> Aurora386 lo riproduce: vedi `docs`, o i test in `CpuRealModeTests`.
+> Aurora86 lo riproduce: vedi `docs`, o i test in `CpuRealModeTests`.
 
-### Come lo emula Aurora386
+### Come lo emula Aurora86
 
 Un **interprete**, non un compilatore JIT: legge un'istruzione, la esegue,
 passa alla successiva. Più lento di un traduttore, ma trasparente da
 verificare — e per una macchina del 1990 la velocità basta.
 
 ```
-src/Aurora386.Core/Cpu/
+src/Aurora86.Core/Cpu/
 ├── Cpu.cs             stato, registri, ciclo principale
 ├── Cpu.Execute.cs     opcode a un byte (il grosso della tabella)
 ├── Cpu.TwoByte.cs     opcode 0F xx: modo protetto, bit, LAR/LSL
@@ -211,7 +211,7 @@ PIC. Un dispositivo che dichiara "IRQ 2" in realtà usa l'IRQ 9.
 ## 5. Il BIOS: la scelta architetturale principale
 
 Un emulatore può caricare una ROM originale, oppure scrivere il proprio BIOS.
-Aurora386 fa la seconda, e in un modo particolare.
+Aurora86 fa la seconda, e in un modo particolare.
 
 Nella ROM emulata ci sono **sequenze di tre byte**:
 
@@ -246,7 +246,7 @@ dover implementare ogni servizio che il guest si aspetti di trovare.
 ### Dove sta cosa
 
 ```
-src/Aurora386.Core/Bios/
+src/Aurora86.Core/Bios/
 ├── BiosRom.cs           costruisce la ROM e i punti di aggancio
 ├── BiosDataArea.cs      i 256 byte di stato a 0x400
 ├── DiskServices.cs      INT 13h — dischi
@@ -451,7 +451,7 @@ porte anche per `4F02h`, come fa il BIOS di una scheda (`Entry.VesaProgram`).
 
 ## 9. Il DOS visto dall'emulatore
 
-Aurora386 esegue un **MS-DOS 6.22 vero**, non una sua imitazione. `INT 21h`
+Aurora86 esegue un **MS-DOS 6.22 vero**, non una sua imitazione. `INT 21h`
 lo gestisce il DOS dentro la macchina emulata.
 
 C'è però un punto in cui l'emulatore si inserisce: il **redirector**, la stessa
@@ -480,9 +480,9 @@ senza inventare chiamate che il DOS non conosce.
 ## 10. La struttura del progetto
 
 ```
-Aurora386
+Aurora86
 │
-├── src/Aurora386.Core        ← il cuore, senza interfaccia
+├── src/Aurora86.Core        ← il cuore, senza interfaccia
 │   ├── Machine*.cs           il PC assemblato: costruzione, POST, ciclo di
 │   │                         esecuzione, gestori nativi minori, supporti
 │   ├── Cpu/                  processore (16 file parziali della classe Cpu)
@@ -508,14 +508,14 @@ Aurora386
 │   └── Diagnostics/          disassemblatore, log delle chiamate DOS e
 │                             delle scritture su disco
 │
-├── src/Aurora386.Gui         interfaccia Avalonia (finestra, menu, debugger)
-├── src/Aurora386.Sdl         frontend alternativo SDL2
-├── src/Aurora386.FatTool     strumento per iniettare file nelle immagini
-└── tests/Aurora386.Tests     840 test
+├── src/Aurora86.Gui         interfaccia Avalonia (finestra, menu, debugger)
+├── src/Aurora86.Sdl         frontend alternativo SDL2
+├── src/Aurora86.FatTool     strumento per iniettare file nelle immagini
+└── tests/Aurora86.Tests     840 test
 ```
 
 La regola è **una cartella per ruolo, e il namespace segue la cartella**:
-`Aurora386.Core.Devices.Storage`, `Aurora386.Core.Firmware`, e così via. Il
+`Aurora86.Core.Devices.Storage`, `Aurora86.Core.Firmware`, e così via. Il
 firmware non contiene dispositivi e i dispositivi non contengono firmware:
 un'immagine disco è un pezzo di hardware (sta in `Devices/Storage`), il
 servizio INT 13h che la usa è firmware (sta in `Firmware`).

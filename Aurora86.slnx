@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Aurora86.Core/Aurora86.Core.csproj" />
+    <Project Path="src/Aurora86.Gui/Aurora86.Gui.csproj" />
+    <Project Path="src/Aurora86.Sdl/Aurora86.Sdl.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Aurora86.Tests/Aurora86.Tests.csproj" />
+  </Folder>
+</Solution>

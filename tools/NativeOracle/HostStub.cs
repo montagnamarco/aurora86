@@ -19,7 +19,7 @@ public static class HostStub
     /// <summary>
     /// The arithmetic flags plus DF: the only EFLAGS bits the harness moves
     /// between the host and the test's initial/final state. Bit numbers from
-    /// Aurora386.Core.Cpu.Flags (CF=0, PF=2, AF=4, ZF=6, SF=7, DF=10, OF=11).
+    /// Aurora86.Core.Cpu.Flags (CF=0, PF=2, AF=4, ZF=6, SF=7, DF=10, OF=11).
     /// Every other bit -- IF, TF, IOPL, NT, RF, VM, AC, ID -- is left exactly
     /// as the host's own thread had it, both because the harness has no
     /// business changing them and because a ring-3 POPF cannot change most of

@@ -1,6 +1,6 @@
 # S3 ViRGE 86C325
 
-Aurora386 implements an experimental S3 ViRGE 86C325 PCI card.
+Aurora86 implements an experimental S3 ViRGE 86C325 PCI card.
 It owns the VGA register bank, 2 MB of VRAM, the display renderer, a limited
 BitBLT engine and a triangle engine. Internal callers can select it with
 `new Machine(videoModel: VmVideoModel.S3Virge325)`. POST enables PCI I/O and

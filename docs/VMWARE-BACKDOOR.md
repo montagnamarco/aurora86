@@ -2,7 +2,7 @@
 
 The I/O port VMware has offered its guests since the late 1990s as a channel
 to the host: detection, the absolute mouse, time, screen size hints, and an
-RPC channel that carries clipboard and "tools" traffic. Aurora386 implements
+RPC channel that carries clipboard and "tools" traffic. Aurora86 implements
 a compatible subset so that existing guest software works unchanged -- the
 Linux kernel's detection and `vmmouse` driver, open-vm-tools, VMware Tools --
 and so that Aurora OS can reach the host through a protocol that already has
@@ -32,7 +32,7 @@ support for VMware backdoor I/O ports" (Liran Alon, 2017-2018).
 VMware lets these ports through even when IOPL and the TSS I/O permission
 bitmap would deny them: VMware Tools' Windows installer probes the port from
 ring 3 and refuses to install when it faults. KVM reproduces this by
-intercepting `#GP` for `IN/OUT/INS/OUTS` on `5658h` and `5659h` only. Aurora386
+intercepting `#GP` for `IN/OUT/INS/OUTS` on `5658h` and `5659h` only. Aurora86
 does the same for the one transaction it implements: a 32-bit `IN` from
 `5658h` carrying the magic is handled before the I/O permission check, in any
 mode and ring. Every other access keeps the architectural checks.
@@ -127,7 +127,7 @@ length announcement followed by the payload four bytes at a time.
 
 - GETSELLENGTH: no input; returns the host selection's length in bytes in
   EAX. VMware's own error constants for this call are not published, so
-  Aurora386 never returns a negative value: an absent front end or an empty
+  Aurora86 never returns a negative value: an absent front end or an empty
   host clipboard both answer 0, which every guest already treats as "no
   selection".
 - GETNEXTPIECE: no input; returns the next 4 bytes of the host selection in
@@ -137,7 +137,7 @@ length announcement followed by the payload four bytes at a time.
 - SETNEXTPIECE: EBX = the next 4 bytes of the guest selection, packed
   little-endian.
 
-Everything below this line is Aurora386's own choice, not a fact taken from
+Everything below this line is Aurora86's own choice, not a fact taken from
 open-vm-tools or any other reference implementation, because VMware never
 published the numeric limits or the exact error behaviour for this legacy
 pair of transfers:
@@ -151,7 +151,7 @@ pair of transfers:
   character that would straddle the cut is dropped whole, never split. A
   guest SETSELLENGTH longer than the cap is ignored outright: every
   SETNEXTPIECE that follows it is discarded until the next SETSELLENGTH
-  announces a length Aurora386 is willing to hold.
+  announces a length Aurora86 is willing to hold.
 - GETSELLENGTH takes a snapshot of the host text; GETNEXTPIECE walks that
   snapshot rather than re-reading the host clipboard on every call, so a
   host copy in the middle of a transfer cannot tear what the guest reads.

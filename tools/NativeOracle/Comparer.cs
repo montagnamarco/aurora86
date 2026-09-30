@@ -1,5 +1,5 @@
-using Aurora386.Core.Cpu;
-using Aurora386.Core.Cpu.Sse;
+using Aurora86.Core.Cpu;
+using Aurora86.Core.Cpu.Sse;
 
 namespace NativeOracle;
 

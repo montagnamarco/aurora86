@@ -1,5 +1,5 @@
-using Aurora386.Core;
-using Aurora386.Core.Devices.Storage;
+using Aurora86.Core;
+using Aurora86.Core.Devices.Storage;
 
 // Cold-boot an installed DOS image, ask MEM, and inspect the EMS vector.
 // Always work on a copy: even a diagnostic boot can write to the guest disk.

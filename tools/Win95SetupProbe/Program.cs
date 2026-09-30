@@ -1,11 +1,11 @@
 using System.Text;
-using Aurora386.Core;
-using Aurora386.Core.Cpu;
-using Aurora386.Core.Configuration;
-using Aurora386.Core.Devices.Storage;
-using Aurora386.Core.Devices.Input;
-using Aurora386.Core.Devices.Video;
-using Aurora386.Core.Diagnostics;
+using Aurora86.Core;
+using Aurora86.Core.Cpu;
+using Aurora86.Core.Configuration;
+using Aurora86.Core.Devices.Storage;
+using Aurora86.Core.Devices.Input;
+using Aurora86.Core.Devices.Video;
+using Aurora86.Core.Diagnostics;
 
 // Mini-Windows loads and discards segments while preparing Windows 95 Setup.
 // Record protection faults without stopping normal demand loading, then retain

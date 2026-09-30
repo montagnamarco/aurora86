@@ -1,5 +1,5 @@
 using System.Runtime.InteropServices;
-using Aurora386.Core.Cpu.Sse;
+using Aurora86.Core.Cpu.Sse;
 
 namespace NativeOracle;
 
@@ -95,13 +95,13 @@ public sealed unsafe class HostRunner : IDisposable
     /// </summary>
     public (uint[] Gpr, uint Eflags) Run(ReadOnlySpan<byte> instruction, uint[] initialGpr, uint initialEflags, bool useExtendedState = false)
     {
-        _state->Eax = initialGpr[(int)Aurora386.Core.Cpu.Reg.Eax];
-        _state->Ecx = initialGpr[(int)Aurora386.Core.Cpu.Reg.Ecx];
-        _state->Edx = initialGpr[(int)Aurora386.Core.Cpu.Reg.Edx];
-        _state->Ebx = initialGpr[(int)Aurora386.Core.Cpu.Reg.Ebx];
-        _state->Ebp = initialGpr[(int)Aurora386.Core.Cpu.Reg.Ebp];
-        _state->Esi = initialGpr[(int)Aurora386.Core.Cpu.Reg.Esi];
-        _state->Edi = initialGpr[(int)Aurora386.Core.Cpu.Reg.Edi];
+        _state->Eax = initialGpr[(int)Aurora86.Core.Cpu.Reg.Eax];
+        _state->Ecx = initialGpr[(int)Aurora86.Core.Cpu.Reg.Ecx];
+        _state->Edx = initialGpr[(int)Aurora86.Core.Cpu.Reg.Edx];
+        _state->Ebx = initialGpr[(int)Aurora86.Core.Cpu.Reg.Ebx];
+        _state->Ebp = initialGpr[(int)Aurora86.Core.Cpu.Reg.Ebp];
+        _state->Esi = initialGpr[(int)Aurora86.Core.Cpu.Reg.Esi];
+        _state->Edi = initialGpr[(int)Aurora86.Core.Cpu.Reg.Edi];
         _state->Eflags = initialEflags;
 
         byte[] call = HostStub.BuildInvocation(instruction, useExtendedState);
@@ -117,13 +117,13 @@ public sealed unsafe class HostRunner : IDisposable
         stub((nint)_state);
 
         var resultGpr = new uint[8];
-        resultGpr[(int)Aurora386.Core.Cpu.Reg.Eax] = _state->Eax;
-        resultGpr[(int)Aurora386.Core.Cpu.Reg.Ecx] = _state->Ecx;
-        resultGpr[(int)Aurora386.Core.Cpu.Reg.Edx] = _state->Edx;
-        resultGpr[(int)Aurora386.Core.Cpu.Reg.Ebx] = _state->Ebx;
-        resultGpr[(int)Aurora386.Core.Cpu.Reg.Ebp] = _state->Ebp;
-        resultGpr[(int)Aurora386.Core.Cpu.Reg.Esi] = _state->Esi;
-        resultGpr[(int)Aurora386.Core.Cpu.Reg.Edi] = _state->Edi;
+        resultGpr[(int)Aurora86.Core.Cpu.Reg.Eax] = _state->Eax;
+        resultGpr[(int)Aurora86.Core.Cpu.Reg.Ecx] = _state->Ecx;
+        resultGpr[(int)Aurora86.Core.Cpu.Reg.Edx] = _state->Edx;
+        resultGpr[(int)Aurora86.Core.Cpu.Reg.Ebx] = _state->Ebx;
+        resultGpr[(int)Aurora86.Core.Cpu.Reg.Ebp] = _state->Ebp;
+        resultGpr[(int)Aurora86.Core.Cpu.Reg.Esi] = _state->Esi;
+        resultGpr[(int)Aurora86.Core.Cpu.Reg.Edi] = _state->Edi;
 
         return (resultGpr, _state->Eflags);
     }
@@ -223,7 +223,7 @@ public sealed unsafe class HostRunner : IDisposable
         return xmm;
     }
 
-    /// <summary>Writes MXCSR into the reserved image before an SSE case -- the random rounding mode and FZ bit a family picked, always held inside <see cref="Aurora386.Core.Cpu.Sse.SseUnit.MxcsrMask"/> so the host's own FXRSTOR never sees a reserved bit and faults the harness process.</summary>
+    /// <summary>Writes MXCSR into the reserved image before an SSE case -- the random rounding mode and FZ bit a family picked, always held inside <see cref="Aurora86.Core.Cpu.Sse.SseUnit.MxcsrMask"/> so the host's own FXRSTOR never sees a reserved bit and faults the harness process.</summary>
     public void WriteMxcsr(uint value) => BitConverter.GetBytes(value).CopyTo(FxsaveImage[HostState.FxsaveMxcsrOffset..]);
 
     /// <summary>MXCSR (flags included) after the case ran.</summary>

@@ -2,11 +2,11 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Aurora386.Core;
-using Aurora386.Core.Configuration;
-using Aurora386.Core.Cpu;
-using Aurora386.Core.Devices.Storage;
-using Aurora386.Core.Devices.Video;
+using Aurora86.Core;
+using Aurora86.Core.Configuration;
+using Aurora86.Core.Cpu;
+using Aurora86.Core.Devices.Storage;
+using Aurora86.Core.Devices.Video;
 
 return VirgeProbe.Run(args);
 

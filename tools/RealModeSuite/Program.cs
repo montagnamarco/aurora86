@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO.Compression;
-using Aurora386.Core.Cpu;
-using Aurora386.Core.Memory;
+using Aurora86.Core.Cpu;
+using Aurora86.Core.Memory;
 using RealModeSuite;
 
 // Runs the SingleStepTests 80386 real-mode vectors -- register-level

@@ -1,7 +1,7 @@
 using System.Text;
-using Aurora386.Core;
-using Aurora386.Core.Devices.Input;
-using Aurora386.Core.Devices.Storage;
+using Aurora86.Core;
+using Aurora86.Core.Devices.Input;
+using Aurora86.Core.Devices.Storage;
 
 // The S3TRIO.DRV window-move regression: cold boot, run Windows, drag a
 // title bar down/right, and save both pictures plus the engine commands.

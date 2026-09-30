@@ -1,0 +1,420 @@
+using Aurora86.Core.Cpu;
+using Aurora86.Core.Memory;
+
+namespace Aurora86.Tests;
+
+/// <summary>
+/// Work package F1.1: a <see cref="CpuFeature"/> bitmask per model instead of
+/// scattered "Model >= Intel486" comparisons, and CPUID reading the same
+/// per-model table (<c>CpuModelCatalog</c>, in Cpu.Identification.cs) that
+/// RESET and CR0 now read too. What a guest actually sees is always
+/// <c>silicon ∩ CpuFeatures.Implemented</c> -- a Pentium's real CX8 does not
+/// become CPUID-visible until CMPXCHG8B itself does, which is why most of
+/// these tests are really testing the intersection, not the silicon table.
+/// </summary>
+public class CpuFeatureTests
+{
+    private const uint CodeBase = 0x1000;
+
+    /// <summary>A bare CPU in real mode, exactly as CpuRealModeTests sets one up.</summary>
+    private static (Cpu cpu, PhysicalMemoryBus bus) Setup(params byte[] code)
+    {
+        var bus = new PhysicalMemoryBus();
+        var cpu = new Cpu(bus);
+        foreach (SegReg s in Enum.GetValues<SegReg>())
+            cpu.State.LoadSegmentRealMode(s, 0);
+        cpu.State.Esp = 0x8000;
+        cpu.State.Eip = CodeBase;
+        code.CopyTo(bus.GetRamSpan(CodeBase, code.Length));
+        return (cpu, bus);
+    }
+
+    /// <summary>Runs CPUID (0F A2) once with EAX already loaded, and returns the four registers.</summary>
+    private static (uint Eax, uint Ebx, uint Ecx, uint Edx) Cpuid(CpuModel model, uint eax, CpuFeatures? features = null)
+    {
+        var (cpu, bus) = Setup(0x0F, 0xA2);
+        using (bus)
+        {
+            cpu.State.SelectModel(model);
+            if (features is { } custom) cpu.State.Features = custom;
+            cpu.State.Eax = eax;
+
+            cpu.Step();
+
+            return (cpu.State.Eax, cpu.State.Ebx, cpu.State.Ecx, cpu.State.Edx);
+        }
+    }
+
+    // --- the 386 has none of this -----------------------------------------
+
+    [Fact]
+    public void OnA386CpuidIsAnInvalidOpcode()
+    {
+        var (cpu, bus) = Setup(0x0F, 0xA2);
+        using (bus)
+        {
+            cpu.State.SelectModel(CpuModel.Intel386);
+            cpu.State.Eax = 0;
+
+            byte faultVector = 0xFF;
+            cpu.ProcessorException += (vector, _, _, _) => faultVector = vector;
+
+            cpu.Step();
+
+            Assert.Equal(6, faultVector);
+        }
+    }
+
+    [Fact]
+    public void OnA386EflagsIdentificationBitDoesNotToggle()
+    {
+        // 66 9D = POPFD: the only way in real mode to reach bit 21 of
+        // EFLAGS at all, since the 16-bit POPF cannot touch it.
+        var (cpu, bus) = Setup(0x66, 0x9D);
+        using (bus)
+        {
+            cpu.State.SelectModel(CpuModel.Intel386);
+            uint before = cpu.Flags.Value;
+            uint attempted = before ^ (1u << 21);
+            bus.WriteDword(cpu.State.Esp, attempted);
+
+            cpu.Step();
+
+            Assert.Equal(before & (1u << 21), cpu.Flags.Value & (1u << 21));
+        }
+    }
+
+    [Fact]
+    public void BswapFaultsOnA386AndRunsOnA486()
+    {
+        // 66 0F C8 = bswap eax (the 0x66 prefix asks for the 32-bit form;
+        // real mode defaults to 16-bit operands).
+        var (cpu386, bus386) = Setup(0x66, 0x0F, 0xC8);
+        using (bus386)
+        {
+            cpu386.State.SelectModel(CpuModel.Intel386);
+            byte faultVector = 0xFF;
+            cpu386.ProcessorException += (vector, _, _, _) => faultVector = vector;
+
+            cpu386.Step();
+
+            Assert.Equal(6, faultVector);
+        }
+
+        var (cpu486, bus486) = Setup(0x66, 0x0F, 0xC8);
+        using (bus486)
+        {
+            cpu486.State.Eax = 0x11223344;
+
+            cpu486.Step();
+
+            Assert.Equal(0x44332211u, cpu486.State.Eax);
+        }
+    }
+
+    // --- the 486 answers exactly as it always has ---------------------------
+
+    [Fact]
+    public void A486LeafZeroNamesTheMakerAndTheMaxLeaf()
+    {
+        var (eax, ebx, ecx, edx) = Cpuid(CpuModel.Intel486, 0);
+
+        string vendor = System.Text.Encoding.ASCII.GetString(
+        [
+            .. BitConverter.GetBytes(ebx),
+            .. BitConverter.GetBytes(edx),
+            .. BitConverter.GetBytes(ecx),
+        ]);
+
+        Assert.Equal("GenuineIntel", vendor);
+        Assert.Equal(1u, eax);
+    }
+
+    [Fact]
+    public void A486LeafOneIsTheOldSignatureWithOnlyFpu()
+    {
+        var (eax, _, ecx, edx) = Cpuid(CpuModel.Intel486, 1);
+
+        Assert.Equal(0x0480u, eax);
+        Assert.Equal(1u, edx & 1);   // bit 0: floating point on chip
+        Assert.Equal(0u, edx & ~1u);
+        Assert.Equal(0u, ecx);
+    }
+
+    // --- a later model's silicon is real, but Aurora holds most of it back --
+
+    [Fact]
+    public void PentiumLeafOneIsFamilyFiveWithTheP2_1FeaturesAdvertised()
+    {
+        // Signature and family/model/stepping from the InstLatX64 P54C dump
+        // cited in Cpu.Identification.cs (000052C, 166 MHz Pentium): family
+        // 5, model 2, stepping 0xC.
+        var (eax, _, ecx, edx) = Cpuid(CpuModel.Pentium, 1);
+
+        Assert.Equal(0x052Cu, eax);
+        Assert.Equal(5u, (eax >> 8) & 0xF);
+        Assert.Equal(2u, (eax >> 4) & 0xF);
+        Assert.Equal(0xCu, eax & 0xF);
+
+        // VME is real on this silicon (see the catalog entry) and, since
+        // work package P2.3, is in CpuFeatures.Implemented too -- CR4.VME/
+        // PVI, EFLAGS.VIF/VIP and V86's virtualized CLI/STI/PUSHF/POPF/IRET/
+        // INT n are all real now -- so bit 1 is set. Work package P2.1
+        // (Pentium system registers and instructions) turned on DE(2),
+        // TSC(4), MSR(5), MCE(7) and CX8(8), alongside the FPU(0) bit every
+        // model already had; P2.2 turned on PSE(3) -- CR4.PSE and 4 MB pages
+        // are real now.
+        // 1(FPU) + 2(VME) + 4(DE) + 8(PSE) + 16(TSC) + 32(MSR) + 128(MCE) + 256(CX8) = 0x1BF.
+        Assert.Equal(0x000001BFu, edx);
+        Assert.Equal(0u, ecx);
+    }
+
+    /// <summary>
+    /// Work package P2.5: MMX is real on the Pentium MMX's silicon and, since
+    /// Cpu.Mmx.cs now executes its instructions, in CpuFeatures.Implemented
+    /// too -- so leaf 1 EDX bit 23 appears for that model. The plain Pentium
+    /// (P54C) predates MMX in silicon and must not show the bit even though
+    /// Implemented now carries it.
+    /// </summary>
+    [Fact]
+    public void OnlyThePentiumMmxModelClaimsMmxNotThePlainPentium()
+    {
+        var (_, _, _, mmxEdx) = Cpuid(CpuModel.PentiumMmx, 1);
+        Assert.Equal(1u << 23, mmxEdx & (1u << 23));
+
+        var (_, _, _, plainEdx) = Cpuid(CpuModel.Pentium, 1);
+        Assert.Equal(0u, plainEdx & (1u << 23));
+    }
+
+    /// <summary>
+    /// Work package P3.1: family six now claims Msr, Cmov, Sep, Mtrr, Mca,
+    /// Pat and Fxsr alongside the P54C set (VME, DE, PSE, TSC, MSR, MCE,
+    /// CX8) once CpuFeatures.ImplementedFor stops holding Msr back and
+    /// Implemented adds the rest. The P3.1 paging review then added PAE and
+    /// PGE too (Cpu.Paging.cs's three-level walk, FlushTlbForCr3Load's
+    /// global-entry rule), so those now move as well. Work package P4.4 adds
+    /// APIC (Devices.Apic.LocalApic is now a real device behind the bit);
+    /// PSE-36 stays off -- nothing here treats a 4 MB PDE's bits 20:13 as an
+    /// address extension -- even though Deschutes' own silicon carries it.
+    ///
+    /// 1(FPU)+2(VME)+4(DE)+8(PSE)+16(TSC)+32(MSR)+128(MCE)+256(CX8) = 0x1BF,
+    /// as the plain Pentium already shows, plus 64(PAE)+512(APIC)+
+    /// 2048(SEP)+4096(MTRR)+8192(PGE)+16384(MCA)+32768(CMOV)+65536(PAT)+
+    /// 8388608(MMX)+16777216(FXSR) = 0x0181FBFF.
+    /// </summary>
+    [Fact]
+    public void PentiumIiLeafOneAddsPaeAndPgeAndApicAlongsideTheP3_1FeaturesButNotPse36()
+    {
+        var (eax, _, ecx, edx) = Cpuid(CpuModel.PentiumII, 1);
+
+        Assert.Equal(0x0651u, eax);
+        Assert.Equal(0x0181FBFFu, edx);
+        Assert.Equal(0u, ecx);
+
+        // Named individually too, so a future regression names the bit that
+        // moved rather than just the combined hex value.
+        Assert.Equal(1u << 6, edx & (1u << 6));    // PAE: Cpu.Paging.cs's PAE walk
+        Assert.Equal(1u << 9, edx & (1u << 9));     // APIC: Devices.Apic.LocalApic (work package P4.4)
+        Assert.Equal(1u << 13, edx & (1u << 13));  // PGE: FlushTlbForCr3Load's global-entry rule
+        Assert.Equal(0u, edx & (1u << 17));        // PSE-36: still out of scope
+    }
+
+    /// <summary>
+    /// Work package P4.1: SSE is real on the Pentium III's silicon and, since
+    /// Cpu.Sse.cs now executes its instructions, in CpuFeatures.Implemented
+    /// too -- so leaf 1 EDX bit 25 appears for that model, on top of the
+    /// PAE/PGE/PAT/MTRR/APIC/... set PentiumII already shows.
+    ///
+    /// PentiumII's own edx (0x0181FBFF, see
+    /// <see cref="PentiumIiLeafOneAddsPaeAndPgeAndApicAlongsideTheP3_1FeaturesButNotPse36"/>)
+    /// plus 33554432 (1&lt;&lt;25, SSE) = 0x0381FBFF.
+    /// </summary>
+    [Fact]
+    public void PentiumIiiLeafOneAddsSseOnTopOfThePentiumIiSet()
+    {
+        var (eax, _, ecx, edx) = Cpuid(CpuModel.PentiumIII, 1);
+
+        Assert.Equal(0x0683u, eax);
+        Assert.Equal(0x0381FBFFu, edx);
+        Assert.Equal(0u, ecx);
+
+        Assert.Equal(1u << 25, edx & (1u << 25));   // SSE: Cpu.Sse.cs now executes it.
+        Assert.Equal(0u, edx & (1u << 26));         // SSE2: still not implemented.
+    }
+
+    /// <summary>
+    /// Work package P4.2: SSE2 and CLFSH are real on the Pentium 4's silicon
+    /// and, since Cpu.Sse2.cs/Cpu.Sse2.Arithmetic.cs/Cpu.Sse2.Integer.cs now
+    /// execute the whole instruction set CLFSH/SSE2 gate, in
+    /// CpuFeatures.Implemented too -- so leaf 1 EDX bits 19 (CLFSH) and 26
+    /// (SSE2) both appear for this model, on top of the set PentiumIII
+    /// already shows.
+    ///
+    /// PentiumIII's own edx (0x0381FBFF, see
+    /// <see cref="PentiumIiiLeafOneAddsSseOnTopOfThePentiumIiSet"/>) plus
+    /// 524288 (1&lt;&lt;19, CLFSH) plus 67108864 (1&lt;&lt;26, SSE2) = 0x0789FBFF.
+    /// Leaf 1 EBX's CLFLUSH line-size field (8, meaning 64 bytes) already
+    /// follows CLFSH alone (Cpu.Identification.cs's own LeafOneEbx), so it
+    /// is real here too, confirmed rather than assumed.
+    /// </summary>
+    [Fact]
+    public void Pentium4LeafOneAddsClfshAndSse2OnTopOfThePentiumIiiSet()
+    {
+        var (eax, ebx, ecx, edx) = Cpuid(CpuModel.Pentium4, 1);
+
+        Assert.Equal(0x0F27u, eax);
+        Assert.Equal(0x0789FBFFu, edx);
+        Assert.Equal(0u, ecx);
+        Assert.Equal(0x00000800u, ebx);   // CLFLUSH line size, 8 * 8 = 64 bytes.
+
+        Assert.Equal(1u << 19, edx & (1u << 19));   // CLFSH: Cpu.Sse2.cs's ExecuteClflush now executes it.
+        Assert.Equal(1u << 26, edx & (1u << 26));   // SSE2: Cpu.Sse2*.cs now executes the whole set.
+    }
+
+    /// <summary>
+    /// Work package P4.4: RDMSR/WRMSR on APIC_BASE (1Bh) now answers on any
+    /// model whose silicon has an on-die APIC, on either MSR set -- the P5
+    /// one (PentiumMmx) as much as the family-six one (PentiumII onward).
+    /// The plain Pentium (P54C) has no APIC in its silicon at all and still
+    /// takes <c>#GP(0)</c>, exactly as it did before this package existed.
+    /// </summary>
+    [Fact]
+    public void ApicBaseMsrAnswersOnlyFromTheP6FamilyOnEvenOnAPentiumMmxWithAnOnDieApic()
+    {
+        // Coordinator ruling (independent review, item 13): IA32_APIC_BASE
+        // exists as an architectural MSR from the P6 family on, never on
+        // the P5 set -- a Pentium MMX's own on-die APIC is real (its
+        // silicon still carries CpuFeature.Apic) but there is no MSR here
+        // to read it through; RDMSR/WRMSR 1Bh #GP exactly as they do on a
+        // plain Pentium, which has no APIC in its silicon at all.
+        // 0F 32 = RDMSR, index in ECX, value returned in EDX:EAX.
+        const uint ApicBaseIndex = 0x1B;
+        const uint ApicBaseResetValue = 0xFEE00900;
+
+        var (mmxCpu, mmxBus) = Setup(0x0F, 0x32);
+        using (mmxBus)
+        {
+            mmxCpu.State.SelectModel(CpuModel.PentiumMmx);
+            mmxCpu.State.Ecx = ApicBaseIndex;
+            byte faultVector = 0xFF;
+            mmxCpu.ProcessorException += (vector, _, _, _) => faultVector = vector;
+            mmxCpu.Step();
+            Assert.Equal(13, faultVector);   // #GP(0): no APIC_BASE MSR on the P5 set.
+        }
+
+        var (p2Cpu, p2Bus) = Setup(0x0F, 0x32);
+        using (p2Bus)
+        {
+            p2Cpu.State.SelectModel(CpuModel.PentiumII);
+            p2Cpu.State.Ecx = ApicBaseIndex;
+            p2Cpu.Step();
+            Assert.Equal(ApicBaseResetValue, p2Cpu.State.Eax);
+        }
+
+        var (plainCpu, plainBus) = Setup(0x0F, 0x32);
+        using (plainBus)
+        {
+            plainCpu.State.SelectModel(CpuModel.Pentium);
+            plainCpu.State.Ecx = ApicBaseIndex;
+            byte faultVector = 0xFF;
+            plainCpu.ProcessorException += (vector, _, _, _) => faultVector = vector;
+            plainCpu.Step();
+            Assert.Equal(13, faultVector);   // #GP(0): the plain Pentium has no APIC in its silicon.
+        }
+    }
+
+    [Fact]
+    public void ACustomFeatureSetAdvertisingCx8ShowsEdxBitEight()
+    {
+        // Features is publicly settable precisely so a test can describe a
+        // processor that implements a feature no shipped model combination
+        // covers yet, without waiting for a whole new CpuModel entry.
+        CpuFeatures custom = new CpuFeatures().With(
+            CpuFeature.Fpu, CpuFeature.Cx8, CpuFeature.Isa486, CpuFeature.Identification);
+
+        var (_, _, _, edx) = Cpuid(CpuModel.Pentium, 1, custom);
+
+        Assert.Equal(1u << 8, edx & (1u << 8));
+    }
+
+    [Fact]
+    public void Pentium4BrandStringIsReadableThroughTheExtendedLeaves()
+    {
+        var leaf2 = Cpuid(CpuModel.Pentium4, 0x80000002);
+        var leaf3 = Cpuid(CpuModel.Pentium4, 0x80000003);
+        var leaf4 = Cpuid(CpuModel.Pentium4, 0x80000004);
+
+        byte[] bytes =
+        [
+            .. BitConverter.GetBytes(leaf2.Eax), .. BitConverter.GetBytes(leaf2.Ebx),
+            .. BitConverter.GetBytes(leaf2.Ecx), .. BitConverter.GetBytes(leaf2.Edx),
+            .. BitConverter.GetBytes(leaf3.Eax), .. BitConverter.GetBytes(leaf3.Ebx),
+            .. BitConverter.GetBytes(leaf3.Ecx), .. BitConverter.GetBytes(leaf3.Edx),
+            .. BitConverter.GetBytes(leaf4.Eax), .. BitConverter.GetBytes(leaf4.Ebx),
+            .. BitConverter.GetBytes(leaf4.Ecx), .. BitConverter.GetBytes(leaf4.Edx),
+        ];
+
+        // 48 bytes, right-justified: 14 leading spaces then the visible
+        // name, then a null terminator -- exactly what the cited InstLatX64
+        // dump for a 2.40 GHz Northwood holds (see Cpu.Identification.cs).
+        string brand = System.Text.Encoding.ASCII.GetString(bytes).TrimEnd('\0');
+        Assert.Equal("              Intel(R) Pentium(R) 4 CPU 2.40GHz", brand);
+    }
+
+    // --- the 64-bit models claim nothing the emulator does not execute ------
+
+    /// <summary>
+    /// The Core 2 and Haswell silicon carries long mode, NX, SYSCALL and
+    /// LAHF/SAHF in 64-bit mode (extended leaf 80000001h: EDX bits 29, 20 and
+    /// 11, ECX bit 0), and SSSE3 onwards at leaf 1 ECX. Aurora executes none
+    /// of it yet, so none of it may be advertised: a 64-bit loader that saw
+    /// EDX bit 29 would set EFER.LME and switch into a mode that does not
+    /// exist here. The bits come on together with the code behind them (plan
+    /// item M1).
+    /// </summary>
+    [Theory]
+    [InlineData(CpuModel.Core2)]
+    [InlineData(CpuModel.Haswell)]
+    public void TheSixtyFourBitModelsDoNotClaimLongModeOrTheirUnimplementedExtensions(CpuModel model)
+    {
+        const uint LongModeEdxBit = 1u << 29;
+        const uint NoExecuteEdxBit = 1u << 20;
+        const uint SyscallEdxBit = 1u << 11;
+        const uint LahfInLongModeEcxBit = 1u << 0;
+        const uint Sse3EcxBit = 1u << 0;
+
+        var extended = Cpuid(model, 0x80000001);
+        var leafOne = Cpuid(model, 1);
+
+        Assert.Equal(0u, extended.Edx & (LongModeEdxBit | NoExecuteEdxBit | SyscallEdxBit));
+        Assert.Equal(0u, extended.Ecx & LahfInLongModeEcxBit);
+
+        // SSE3 is implemented and stays; every other leaf-1 ECX bit these
+        // models carry (SSSE3, CX16, SSE4.x, POPCNT, AES, XSAVE, AVX...) is not.
+        Assert.Equal(Sse3EcxBit, leafOne.Ecx);
+    }
+
+    // --- leaves the model does not have fall back to the highest basic one --
+
+    [Fact]
+    public void OutOfRangeStandardLeavesReturnTheHighestBasicLeaf()
+    {
+        // Pentium II's own maximum standard leaf is 2 (see the catalog).
+        var atMax = Cpuid(CpuModel.PentiumII, 2);
+        var wayBeyond = Cpuid(CpuModel.PentiumII, 0x40000000);
+
+        Assert.Equal(atMax, wayBeyond);
+    }
+
+    [Fact]
+    public void AModelWithoutExtendedLeavesAnswersWithTheHighestBasicLeaf()
+    {
+        // Pentium III predates extended CPUID (AP-485: it arrived with the
+        // Pentium 4), so even 0x80000000 itself falls back to the highest
+        // *basic* leaf -- Pentium III's own maximum is 3.
+        var basic = Cpuid(CpuModel.PentiumIII, 3);
+        var extended = Cpuid(CpuModel.PentiumIII, 0x80000000);
+
+        Assert.Equal(basic, extended);
+    }
+}

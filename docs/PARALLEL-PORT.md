@@ -4,14 +4,14 @@ The IBM PC's printer port, as the 1981 Technical Reference defined it and
 every PC kept: LPT1 at I/O ports 378h-37Ah, interrupt 7. DOS prints through
 BIOS INT 17h (`COPY FILE PRN`, `TYPE FILE > PRN`, a program's print menu);
 Windows 3.x and 95 drive the ports directly through their own port driver.
-Aurora386 fits a printer on the other end that collects each print job and
+Aurora86 fits a printer on the other end that collects each print job and
 hands it to the host as a file -- the raw bytes always, and a PDF when the
 job is plain text.
 
 Sources: IBM Personal Computer AT Technical Reference (1984), "Parallel
 Printer Adapter" and BIOS listing (INT 17h); the IEEE 1284 description of
 the Standard Parallel Port for the signal names. Values marked *choice* are
-Aurora386's where period hardware varied.
+Aurora86's where period hardware varied.
 
 ## 1. Registers
 

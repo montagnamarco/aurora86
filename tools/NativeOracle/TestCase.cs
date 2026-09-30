@@ -1,5 +1,5 @@
-using Aurora386.Core.Cpu;
-using Aurora386.Core.Cpu.Sse;
+using Aurora86.Core.Cpu;
+using Aurora86.Core.Cpu.Sse;
 
 namespace NativeOracle;
 
@@ -19,7 +19,7 @@ public sealed class TestCase
 
     public required byte[] Instruction { get; init; }
 
-    /// <summary>Indexed like Aurora386.Core.Cpu.Reg; index 4 (Esp) is never read.</summary>
+    /// <summary>Indexed like Aurora86.Core.Cpu.Reg; index 4 (Esp) is never read.</summary>
     public required uint[] InitialGpr { get; init; }
 
     public required uint InitialEflags { get; init; }
@@ -35,7 +35,7 @@ public sealed class TestCase
     /// case and so must not be compared -- today only BSF/BSR's destination
     /// when the source was zero (SDM Vol.2A, BSF/BSR "Operation").
     /// </summary>
-    public Aurora386.Core.Cpu.Reg[] IgnoredRegisters { get; init; } = [];
+    public Aurora86.Core.Cpu.Reg[] IgnoredRegisters { get; init; } = [];
 
     /// <summary>The processor model to select in the emulator: Pentium once a family needs CMPXCHG8B, Intel486 otherwise.</summary>
     public CpuModel Model { get; init; } = CpuModel.Intel486;

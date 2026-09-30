@@ -1,6 +1,6 @@
 using System.Text.Json;
-using Aurora386.Core.Cpu;
-using Aurora386.Core.Memory;
+using Aurora86.Core.Cpu;
+using Aurora86.Core.Memory;
 
 // Runs the SingleStepTests for the 80386 in protected mode -- test vectors
 // generated from 86Box, one instruction each -- against the

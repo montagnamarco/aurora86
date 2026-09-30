@@ -1,0 +1,417 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Aurora86.Gui.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="1000" d:DesignHeight="640"
+        x:Class="Aurora86.Gui.Views.DebuggerWindow"
+        x:DataType="vm:DebuggerViewModel"
+        Width="1000" Height="640"
+        Background="#1E1E1E"
+        Title="Aurora86 — Debugger">
+
+  <Window.Styles>
+    <Style Selector="TextBlock.mono">
+      <Setter Property="FontFamily" Value="Menlo,Consolas,monospace" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="#D4D4D4" />
+    </Style>
+    <Style Selector="TextBlock.header">
+      <Setter Property="Foreground" Value="#9CDCFE" />
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Margin" Value="0,0,0,4" />
+    </Style>
+    <Style Selector="Button.tool">
+      <Setter Property="Padding" Value="10,5" />
+      <Setter Property="Margin" Value="1,0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="#E0E0E0" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style Selector="Button.tool:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#333333" />
+    </Style>
+    <Style Selector="Border.panel">
+      <Setter Property="Background" Value="#252526" />
+      <Setter Property="BorderBrush" Value="#3A3A3A" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="8" />
+      <Setter Property="Margin" Value="3" />
+    </Style>
+  </Window.Styles>
+
+  <DockPanel>
+
+    <!-- controls -->
+    <Border DockPanel.Dock="Top" Background="#252525"
+            BorderBrush="#3A3A3A" BorderThickness="0,0,0,1">
+      <StackPanel Orientation="Horizontal" Margin="4,3">
+        <Button Classes="tool" Command="{Binding StepInstructionCommand}"
+                ToolTip.Tip="Execute one instruction (F11)">Step</Button>
+        <Button Classes="tool" Command="{Binding StepOverCommand}"
+                ToolTip.Tip="Execute one instruction, running through calls (F10)">Step over</Button>
+        <Button Classes="tool" Command="{Binding StepOutCommand}"
+                ToolTip.Tip="Run until the current routine returns to its caller">Step out</Button>
+        <Button Classes="tool" Command="{Binding RunToBreakpointCommand}"
+                ToolTip.Tip="Resume until a breakpoint is hit (F5)">Run</Button>
+      </StackPanel>
+    </Border>
+
+    <!-- status -->
+    <Border DockPanel.Dock="Bottom" Background="#252525"
+            BorderBrush="#3A3A3A" BorderThickness="0,1,0,0">
+      <TextBlock Margin="8,4" Classes="mono" Text="{Binding StatusText}" />
+    </Border>
+
+    <Grid ColumnDefinitions="*,300" RowDefinitions="*,220">
+
+      <!-- disassembly -->
+      <Border Grid.Row="0" Grid.Column="0" Classes="panel">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Classes="header" Text="DISASSEMBLY" />
+          <ListBox ItemsSource="{Binding Disassembly}" Background="Transparent"
+                   BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:DisassemblyLine">
+                <Grid ColumnDefinitions="14,90,130,*">
+                  <!-- a filled dot marks a breakpoint, an arrow the next
+                       instruction to execute -->
+                  <TextBlock Grid.Column="0" Classes="mono" Foreground="#F48771"
+                             Text="●" IsVisible="{Binding HasBreakpoint}" />
+                  <TextBlock Grid.Column="1" Classes="mono" Text="{Binding Address}"
+                             Foreground="#858585" />
+                  <TextBlock Grid.Column="2" Classes="mono" Text="{Binding Bytes}"
+                             Foreground="#6A9955" />
+                  <TextBlock Grid.Column="3" Classes="mono" Text="{Binding Text}" />
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Border>
+
+      <!-- registers -->
+      <Border Grid.Row="0" Grid.Column="1" Classes="panel">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Classes="header" Text="REGISTERS" />
+          <TextBlock DockPanel.Dock="Bottom" Classes="mono" Margin="0,6,0,0"
+                     Foreground="#DCDCAA" Text="{Binding FlagsText}"
+                     ToolTip.Tip="Overflow Direction Interrupt Sign Zero Adjust Parity Carry" />
+          <TextBlock DockPanel.Dock="Bottom" Classes="mono" Margin="0,6,0,0"
+                     Foreground="#4EC9B0" TextWrapping="Wrap" Text="{Binding ModeText}"
+                     ToolTip.Tip="The mode decides what an address means, so it is the first thing to know and the hardest to read off the registers" />
+          <ItemsControl ItemsSource="{Binding Registers}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:RegisterEntry">
+                <Grid ColumnDefinitions="50,*">
+                  <TextBlock Grid.Column="0" Classes="mono" Text="{Binding Name}"
+                             Foreground="#9CDCFE" />
+                  <TextBlock Grid.Column="1" Classes="mono" Text="{Binding Value}" />
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </DockPanel>
+      </Border>
+
+      <!-- memory -->
+      <Border Grid.Row="1" Grid.Column="0" Classes="panel">
+        <TabControl Padding="0">
+
+          <TabItem Header="Memory" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <TextBox Text="{Binding MemoryAddressText}" Width="110"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11"
+                         Padding="4,2"
+                         ToolTip.Tip="Linear (100000) or segment:offset (0040:001E)" />
+                <Button Classes="tool" Command="{Binding GoToMemoryAddressCommand}">Go</Button>
+                <CheckBox IsChecked="{Binding MemoryFollowsPaging}" FontSize="11"
+                          ToolTip.Tip="Read through the guest's page tables instead of physical memory">
+                  paged
+                </CheckBox>
+                <TextBox Text="{Binding MemorySearchText}" Width="120"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="search" ToolTip.Tip="Hex bytes, or a quoted string" />
+                <Button Classes="tool" Command="{Binding SearchMemoryCommand}">Find</Button>
+              </StackPanel>
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <TextBox Text="{Binding MemoryEditAddressText}" Width="110"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="address" ToolTip.Tip="Where to write" />
+                <TextBox Text="{Binding MemoryEditValueText}" Width="160"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="B8 00 4C or &quot;text&quot;" ToolTip.Tip="Hex bytes, or a quoted string" />
+                <Button Classes="tool" Command="{Binding WriteMemoryCommand}">Write</Button>
+                <TextBox Text="{Binding MemorySaveLengthText}" Width="60"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="length"
+                         ToolTip.Tip="How many bytes to save, in hex, from the address the view is on" />
+                <Button Classes="tool" Command="{Binding SaveMemoryCommand}"
+                        ToolTip.Tip="Write that many bytes to a file">Save</Button>
+              </StackPanel>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding MemoryLines}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
+          <TabItem Header="Tables" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <Button Classes="tool" Command="{Binding RefreshTablesCommand}">Refresh</Button>
+                <TextBox Text="{Binding TranslateAddressText}" Width="110"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="linear address"
+                         ToolTip.Tip="Walk the page tables for this address" />
+                <Button Classes="tool" Command="{Binding TranslateAddressCommand}">Translate</Button>
+              </StackPanel>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding TableLines}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
+          <TabItem Header="Watch" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <TextBox Text="{Binding WatchAddressText}" Width="110"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="address"
+                         ToolTip.Tip="Physical address: linear (100000) or segment:offset" />
+                <TextBox Text="{Binding WatchLengthText}" Width="50"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         ToolTip.Tip="How many bytes to watch" />
+                <CheckBox IsChecked="{Binding WatchReads}" FontSize="11"
+                          ToolTip.Tip="Report reads of these bytes instead of writes">reads</CheckBox>
+                <Button Classes="tool" Command="{Binding AddWatchpointCommand}">Watch</Button>
+                <Button Classes="tool" Command="{Binding ClearWatchLogCommand}">Clear log</Button>
+              </StackPanel>
+              <ItemsControl DockPanel.Dock="Top" ItemsSource="{Binding Watchpoints}"
+                            Margin="0,0,0,6">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                      <TextBlock Classes="mono" Text="{Binding Display}" VerticalAlignment="Center" />
+                      <Button Classes="tool" FontSize="10"
+                              Command="{Binding $parent[ItemsControl].((vm:DebuggerViewModel)DataContext).RemoveWatchpointCommand}"
+                              CommandParameter="{Binding}">remove</Button>
+                    </StackPanel>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding WatchLog}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
+          <TabItem Header="Ports" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <TextBox Text="{Binding PortWatchText}" Width="110"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="3C0 or 3C0-3CF"
+                         ToolTip.Tip="One port or a range, in hex. Both reads and writes are recorded: a driver that walks away usually does so because of something it read." />
+                <Button Classes="tool" Command="{Binding AddPortWatchCommand}">Watch</Button>
+                <Button Classes="tool" Command="{Binding ClearPortLogCommand}">Clear log</Button>
+              </StackPanel>
+              <ItemsControl DockPanel.Dock="Top" ItemsSource="{Binding PortWatches}"
+                            Margin="0,0,0,6">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                      <TextBlock Classes="mono" Text="{Binding}" VerticalAlignment="Center" />
+                      <Button Classes="tool" FontSize="10"
+                              Command="{Binding $parent[ItemsControl].((vm:DebuggerViewModel)DataContext).RemovePortWatchCommand}"
+                              CommandParameter="{Binding}">remove</Button>
+                    </StackPanel>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding PortLog}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
+          <TabItem Header="Log" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <Button Classes="tool" Command="{Binding StartLogCommand}"
+                        ToolTip.Tip="Collect the DOS calls that move files, the processor's faults, and the files the guest writes -- one list, in order">Start</Button>
+                <TextBox Text="{Binding LogFilterText}" Width="170"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="filter: exec, fault, a file name" />
+                <Button Classes="tool" Command="{Binding ClearLogCommand}">Clear</Button>
+              </StackPanel>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding LogLines}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
+          <TabItem Header="Trace" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <CheckBox IsChecked="{Binding TraceEnabled}" FontSize="11"
+                          ToolTip.Tip="Record every instruction. Costs about half the speed.">
+                  recording
+                </CheckBox>
+                <Button Classes="tool" Command="{Binding RefreshTraceCommand}">Refresh</Button>
+                <Button Classes="tool" Command="{Binding ClearTraceCommand}">Clear</Button>
+                <Button Classes="tool" Command="{Binding SaveTraceCommand}">Save</Button>
+              </StackPanel>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding TraceLines}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
+          <TabItem Header="Disk" FontSize="11">
+            <DockPanel Margin="0,6,0,0">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <TextBlock Text="drive" VerticalAlignment="Center" FontSize="11" />
+                <TextBox Text="{Binding DiskIndex}" Width="34"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         ToolTip.Tip="Which attached drive: 0 is the first" />
+                <TextBlock Text="sector" VerticalAlignment="Center" FontSize="11" />
+                <TextBox Text="{Binding DiskSectorText}" Width="90"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         ToolTip.Tip="Linear sector number" />
+                <Button Classes="tool" Command="{Binding GoToSectorCommand}">Go</Button>
+                <Button Classes="tool" Command="{Binding PreviousSectorCommand}">◀</Button>
+                <Button Classes="tool" Command="{Binding NextSectorCommand}">▶</Button>
+                <TextBox Text="{Binding DiskEditOffsetText}" Width="60"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="+hex" ToolTip.Tip="Offset within the sector, in hex" />
+                <TextBox Text="{Binding DiskEditValueText}" Width="140"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="EB 3C or &quot;text&quot;" />
+                <Button Classes="tool" Command="{Binding WriteDiskCommand}">Write</Button>
+                <TextBlock Text="{Binding DiskStatusText}" VerticalAlignment="Center"
+                           FontSize="11" Opacity="0.7" />
+              </StackPanel>
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6"
+                          Margin="0,0,0,6">
+                <TextBlock Text="file" VerticalAlignment="Center" FontSize="11" />
+                <TextBox Text="{Binding DiskFileText}" Width="220"
+                         FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                         Watermark="\DOS\COMMAND.COM"
+                         ToolTip.Tip="A path on the first filesystem of this disk. Long names are not looked at: the 8.3 entry is the one that owns the clusters." />
+                <Button Classes="tool" Command="{Binding GoToFileCommand}"
+                        ToolTip.Tip="Jump the sector view to where this file begins">Go to file</Button>
+                <Button Classes="tool" Command="{Binding ExportFileCommand}"
+                        ToolTip.Tip="Copy this file out of the image, following its cluster chain">Export</Button>
+              </StackPanel>
+              <ItemsControl DockPanel.Dock="Top" ItemsSource="{Binding DiskStructure}"
+                            Margin="0,0,0,6">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Classes="mono" Text="{Binding}" Opacity="0.85" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <ScrollViewer>
+                <ItemsControl ItemsSource="{Binding DiskLines}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Classes="mono" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </TabItem>
+
+        </TabControl>
+      </Border>
+
+      <!-- stack and breakpoints -->
+      <Border Grid.Row="1" Grid.Column="1" Classes="panel">
+        <Grid RowDefinitions="Auto,*,Auto,Auto">
+          <TextBlock Grid.Row="0" Classes="header" Text="STACK" />
+          <ItemsControl Grid.Row="1" ItemsSource="{Binding StackLines}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Classes="mono" Text="{Binding}" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+
+          <TextBlock Grid.Row="2" Classes="header" Text="BREAKPOINTS" Margin="0,8,0,4" />
+          <StackPanel Grid.Row="3" Spacing="4">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <TextBox Text="{Binding BreakpointAddressText}" Width="110"
+                       FontFamily="Menlo,Consolas,monospace" FontSize="11"
+                       Padding="4,2" Watermark="CS:IP" />
+              <Button Classes="tool" Command="{Binding AddBreakpointCommand}">Add</Button>
+            </StackPanel>
+            <TextBox Text="{Binding BreakConditionText}"
+                     FontFamily="Menlo,Consolas,monospace" FontSize="11" Padding="4,2"
+                     Watermark="condition: AH=4B, CPL=3, MODE=V86"
+                     ToolTip.Tip="A breakpoint also has to satisfy this. With no addresses set the condition alone is the breakpoint: stop wherever it first holds. Values are hex; clauses separated by commas all have to hold." />
+            <ItemsControl ItemsSource="{Binding Breakpoints}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:BreakpointEntry">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Grid.Column="0" Classes="mono" Text="{Binding Display}" />
+                    <Button Grid.Column="1" Classes="tool" Padding="6,1"
+                            Command="{Binding $parent[Window].((vm:DebuggerViewModel)DataContext).RemoveBreakpointCommand}"
+                            CommandParameter="{Binding}">✕</Button>
+                  </Grid>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+    </Grid>
+  </DockPanel>
+</Window>

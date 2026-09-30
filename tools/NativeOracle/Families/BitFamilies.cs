@@ -1,4 +1,4 @@
-using Aurora386.Core.Cpu;
+using Aurora86.Core.Cpu;
 
 namespace NativeOracle.Families;
 

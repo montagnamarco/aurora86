@@ -1,8 +1,8 @@
 # Intel High Definition Audio controller
 
-`HdaController` (`src/Aurora386.Core/Devices/Audio/HdaController.cs`, plus its
+`HdaController` (`src/Aurora86.Core/Devices/Audio/HdaController.cs`, plus its
 `.Corb.cs` and `.Streams.cs` partials) and `HdaCodec`
-(`src/Aurora386.Core/Devices/Audio/HdaCodec.cs`) implement an ICH9-identity
+(`src/Aurora86.Core/Devices/Audio/HdaCodec.cs`) implement an ICH9-identity
 HD Audio controller with one output-only codec, feeding the host mix through
 `IAudioSource`, exactly as `Es1371` does. This document is the register map
 and node graph as implemented, with every point the Intel HDA specification
