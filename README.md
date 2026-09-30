@@ -96,8 +96,8 @@ cross-platform libraries (Avalonia, SDL, OpenAL), so Windows and Linux
 should work but are not regularly checked.
 
 ```
-git clone <repository URL>
-cd <repository folder>
+git clone https://github.com/montagnamarco/Aurora86.git
+cd Aurora86
 dotnet build Aurora86.slnx -c Release
 ```
 
@@ -295,7 +295,14 @@ rules, written down in [AGENTS.md](AGENTS.md).
 
 ## Licence
 
-Not yet chosen. The CPU test vectors belong to their authors (the real-mode
-suite to the SingleStepTests project, the protected-mode suite to
-nand2mario); they are used under their own terms and are not redistributed
-here.
+Copyright (C) 2026 Marco Montagna.
+
+Aurora86 is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version. It is distributed in the hope that it will be useful,
+but without any warranty; see [LICENSE](LICENSE) for the full terms.
+
+The CPU test vectors belong to their authors (the real-mode suite to the
+SingleStepTests project, the protected-mode suite to nand2mario); they are
+used under their own terms and are not redistributed here.
