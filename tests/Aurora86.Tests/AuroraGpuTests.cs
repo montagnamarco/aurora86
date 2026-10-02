@@ -106,7 +106,27 @@ public class AuroraGpuTests
         }
 
         Assert.Contains((ushort)0x187, modes);
-        Assert.Equal(8, modes.Count);
+        Assert.Contains((ushort)0x188, modes);
+        Assert.Equal(9, modes.Count);
+    }
+
+    [Fact]
+    public void SettingTheSixteenByTenModeGivesA1280By800Screen()
+    {
+        using Machine machine = Started();
+
+        Int10(machine, 0x4F01, cx: 0x188);
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.Equal(1280 * 4, machine.Memory.ReadWord(VbeBuffer + 16));
+        Assert.Equal(1280, machine.Memory.ReadWord(VbeBuffer + 18));
+        Assert.Equal(800, machine.Memory.ReadWord(VbeBuffer + 20));
+
+        Int10(machine, 0x4F02, bx: 0x4188);
+        machine.Display.Render();
+
+        Assert.Equal(0x004F, machine.Cpu.State.Ax);
+        Assert.Equal(1280, machine.Display.Width);
+        Assert.Equal(800, machine.Display.Height);
     }
 
     [Fact]

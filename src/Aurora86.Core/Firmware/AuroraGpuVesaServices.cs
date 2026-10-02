@@ -31,6 +31,7 @@ public sealed class AuroraGpuVesaServices
         new Mode(0x185, 1366, 768),
         new Mode(0x186, 1600, 900),
         new Mode(0x187, 1920, 1080),
+        new Mode(0x188, 1280, 800),
     ];
 
     private const int BytesPerPixel = 4;
