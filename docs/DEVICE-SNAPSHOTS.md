@@ -326,3 +326,19 @@ architectures with different floating-point behaviour.
 combined PCM/FM mixing is a separate, unresolved behaviour question. Snapshot
 continuation preserves this current semantics and does not by itself
 establish that OPL continuation is correct when PCM and FM play together.
+
+## Nominal CPU clock
+
+The sectioned container now captures `CCLK` version 0: one four-byte,
+little-endian signed integer containing the nominal CPU frequency in Hz.
+Its supported range is 1 MHz through 1 GHz, matching `cpuFrequencyHz` in the
+VM configuration. Restore refuses a different target clock before changing
+RAM, CPU or CD ownership, because device deadlines and cycle counts cannot
+replay at another instruction-to-time ratio. A missing `CCLK` section means
+the historical 25 MHz default. Legacy files taken with a manually changed
+runtime clock did not record it; their intended ratio cannot be recovered.
+The container magic and existing section payloads remain unchanged.
+Capture refuses a machine whose runtime clock lies outside that range rather
+than write a file that loading would reject. A build older than `CCLK`
+ignores the unknown section and restores at its own clock without warning;
+nothing in the file can stop it.

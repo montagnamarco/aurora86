@@ -651,8 +651,15 @@ Devices do not advance at every instruction: that would be correct and very
 slow. They advance in batches, told how many instructions have passed. The
 batch is short enough not to lose interrupts and long enough not to weigh.
 Time itself is counted in instructions against a declared CPU frequency
-(`CpuFrequencyHz`, 25 MHz), which is what makes a run reproducible: the same
-image and the same keystrokes give the same trace every time.
+(`CpuFrequencyHz`, 25 MHz by default; optional `cpuFrequencyHz` in `vm.json`),
+which is what makes a run reproducible: the same clock, image and keystrokes
+provide the same device-time conversion. A faster model alone does not select
+a faster clock. The GUI paces batches against that configured clock, caps each
+locked batch at 50,000 instructions, and yields to pending input/render access
+requests before acquiring the machine again. This changes host responsiveness,
+without changing the core's instruction semantics or device timing rules.
+Snapshots capture the ratio in `CCLK` and require a matching target clock;
+files predating that section retain the historical 25 MHz ratio.
 
 A detail you pay for if you get it wrong: when the CPU is in `HLT` the batch
 stops, **but the devices advance anyway**. Only an interrupt can wake the CPU

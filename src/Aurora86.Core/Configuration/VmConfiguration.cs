@@ -49,6 +49,13 @@ public sealed class VmConfiguration
     public string Name { get; set; } = "PC";
     public CpuModel Cpu { get; set; } = CpuModel.Intel486;
 
+    /// <summary>
+    /// Nominal instruction clock, used by real-time pacing and device-time conversion.
+    /// Older machine files keep their 25 MHz clock regardless of CPU model.
+    /// The supported range is 1 MHz through 1 GHz; this does not change instruction semantics.
+    /// </summary>
+    public int CpuFrequencyHz { get; set; } = 25_000_000;
+
     /// <summary>The primary GPU. ViRGE currently provides experimental VGA and flat triangles.</summary>
     public VmVideoModel Video { get; set; } = VmVideoModel.S3Trio64VPlus;
 
@@ -377,6 +384,7 @@ public sealed class VmConfiguration
             ?? throw new InvalidDataException($"{file} does not describe a machine.");
 
         configuration.ValidateVideoModel();
+        configuration.ValidateCpuFrequency();
         configuration.Migrate();
         configuration.MapPaths(path => System.IO.Path.IsPathRooted(path)
             ? path
@@ -388,6 +396,7 @@ public sealed class VmConfiguration
     public void Save(string folder)
     {
         ValidateVideoModel();
+        ValidateCpuFrequency();
         Directory.CreateDirectory(folder);
 
         // A configuration built in code with only the legacy top-level
@@ -659,6 +668,7 @@ public sealed class VmConfiguration
         // Before anything opens a disk image or a host socket: an unknown
         // adapter is a configuration error, not a machine to half build.
         ValidateVideoModel();
+        ValidateCpuFrequency();
 
         if (!_migrated)
         {
@@ -695,7 +705,8 @@ public sealed class VmConfiguration
             hardware,
             chipset,
             initialCpuModel: Cpu,
-            videoModel: Video);
+            videoModel: Video,
+            cpuFrequencyHz: CpuFrequencyHz);
         machine.Backdoor.Enabled = HostIntegration;
         machine.PrintOutputFolder = PrinterFolder;
         try
@@ -767,6 +778,15 @@ public sealed class VmConfiguration
             // reference to dispose. Close it here instead of leaking it.
             machine.Dispose();
             throw;
+        }
+    }
+
+    private void ValidateCpuFrequency()
+    {
+        if (CpuFrequencyHz < 1_000_000 || CpuFrequencyHz > 1_000_000_000)
+        {
+            throw new InvalidDataException(
+                $"CPU frequency {CpuFrequencyHz} Hz must be between 1000000 and 1000000000 Hz.");
         }
     }
 

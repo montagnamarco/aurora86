@@ -17,17 +17,27 @@ public sealed partial class AuroraGpuCard
     /// <summary>"AGP1" read as a little-endian dword.</summary>
     private const uint SnapshotMagic = 0x31504741;
 
-    /// <summary>The version of the "AGPU" snapshot section this build writes and reads.</summary>
-    public const int SnapshotVersion = 1;
+    /// <summary>
+    /// The version of the "AGPU" snapshot section this build writes. Version 2
+    /// appends the host preferred size and its generation after video memory;
+    /// version 1, written before the host could suggest a size, is still read.
+    /// </summary>
+    public const int SnapshotVersion = 2;
+
+    /// <summary>The version that predates the host preferred size.</summary>
+    public const int LegacySnapshotVersion = 1;
 
     private const int SnapshotRegisterCount = 18;
+    private const int SnapshotBackendKindRegister = 15;
+    private const int SnapshotBackendOperationsRegister = 16;
+    private const int SnapshotHostPreferredFields = 3;
     private const int SnapshotSurfaceFields = 5;
     private const int SnapshotClipFields = 5;
     private const int SnapshotCursorFields = 5;
     private const int CursorPixelCount = AuroraGpuInterface.CursorSize * AuroraGpuInterface.CursorSize;
 
     /// <summary>The fixed length of a version-1 payload.</summary>
-    public const int SnapshotLength =
+    public const int LegacySnapshotLength =
         sizeof(uint)
         + SnapshotRegisterCount * sizeof(uint)
         + AuroraGpuInterface.SurfaceCount * SnapshotSurfaceFields * sizeof(uint)
@@ -35,6 +45,9 @@ public sealed partial class AuroraGpuCard
         + SnapshotCursorFields * sizeof(uint)
         + CursorPixelCount * sizeof(uint)
         + (int)AuroraGpuInterface.VideoMemorySize;
+
+    /// <summary>The fixed length of a version-2 payload: version 1, then width, height and generation.</summary>
+    public const int SnapshotLength = LegacySnapshotLength + SnapshotHostPreferredFields * sizeof(uint);
 
     /// <summary>Captures the card while the machine is stopped.</summary>
     public byte[] Capture()
@@ -59,8 +72,8 @@ public sealed partial class AuroraGpuCard
         writer.Write(_fence);
         writer.Write(_error);
         writer.Write(_errorOffset);
-        writer.Write(0u);   // reserved
-        writer.Write(0u);   // reserved
+        writer.Write(_reportedBackendKind);
+        writer.Write(_reportedBackendOperations);
         writer.Write(0u);   // reserved
 
         foreach (AuroraGpuSurface surface in _surfaces)
@@ -89,6 +102,16 @@ public sealed partial class AuroraGpuCard
         }
 
         writer.Write(_videoMemoryBytes);
+
+        // The guest reads these registers, so a restore must give back the
+        // same values; the front end's next publication then moves the
+        // generation past the recorded one if the host window differs.
+        lock (_hostPreferredSizeGate)
+        {
+            writer.Write(_hostPreferredWidth);
+            writer.Write(_hostPreferredHeight);
+            writer.Write(_hostPreferredGeneration);
+        }
         return payload;
     }
 
@@ -97,9 +120,15 @@ public sealed partial class AuroraGpuCard
     /// magic word, the booleans, and every defined surface lying inside video
     /// memory, which the 2D engine relies on when it slices memory.
     /// </summary>
-    public static void ValidateSnapshot(ReadOnlySpan<byte> payload)
+    public static void ValidateSnapshot(ReadOnlySpan<byte> payload, int version = SnapshotVersion)
     {
-        if (payload.Length != SnapshotLength)
+        if (version != SnapshotVersion && version != LegacySnapshotVersion)
+        {
+            throw new InvalidDataException($"Aurora Display Adapter snapshot version {version} is not supported.");
+        }
+
+        int expectedLength = version == SnapshotVersion ? SnapshotLength : LegacySnapshotLength;
+        if (payload.Length != expectedLength)
         {
             throw new InvalidDataException("Aurora Display Adapter snapshot has the wrong length.");
         }
@@ -110,7 +139,16 @@ public sealed partial class AuroraGpuCard
             throw new InvalidDataException("Aurora Display Adapter snapshot header is invalid.");
         }
 
-        reader.Skip(SnapshotRegisterCount * sizeof(uint));
+        reader.Skip(SnapshotBackendKindRegister * sizeof(uint));
+        uint backendKind = reader.ReadUInt32();
+        uint backendOperations = reader.ReadUInt32();
+        if (backendKind > AuroraGpuInterface.BackendKindVulkan ||
+            (backendOperations & ~AuroraGpuInterface.BackendOperationsKnown) != 0u ||
+            (backendKind == AuroraGpuInterface.BackendKindSoftware && backendOperations != 0u))
+        {
+            throw new InvalidDataException("Aurora Display Adapter snapshot backend is invalid.");
+        }
+        reader.Skip((SnapshotRegisterCount - SnapshotBackendOperationsRegister - 1) * sizeof(uint));
 
         for (int index = 0; index < AuroraGpuInterface.SurfaceCount; index++)
         {
@@ -139,15 +177,31 @@ public sealed partial class AuroraGpuCard
         {
             throw new InvalidDataException("Aurora Display Adapter snapshot cursor hot spot is out of range.");
         }
+
+        if (version == SnapshotVersion)
+        {
+            var preferred = new PayloadReader(payload[LegacySnapshotLength..]);
+            uint width = preferred.ReadUInt32();
+            uint height = preferred.ReadUInt32();
+            bool cleared = width == 0 && height == 0;
+            bool inRange = width is >= 1 and <= AuroraGpuInterface.MaximumHostPreferredWidth
+                && height is >= 1 and <= AuroraGpuInterface.MaximumHostPreferredHeight;
+            if (!cleared && !inRange)
+            {
+                throw new InvalidDataException("Aurora Display Adapter snapshot host preferred size is out of range.");
+            }
+        }
     }
 
     /// <summary>
     /// Restores a validated payload. The interrupt line is re-derived from
-    /// status and mask, and the picture is repainted whole.
+    /// status and mask, and the picture is repainted whole. A version-1
+    /// payload describes a machine on which no host size was ever published,
+    /// so the preferred size comes back cleared at generation 0.
     /// </summary>
-    public void Restore(ReadOnlySpan<byte> payload)
+    public void Restore(ReadOnlySpan<byte> payload, int version = SnapshotVersion)
     {
-        ValidateSnapshot(payload);
+        ValidateSnapshot(payload, version);
 
         var reader = new PayloadReader(payload);
         reader.ReadUInt32();
@@ -167,7 +221,9 @@ public sealed partial class AuroraGpuCard
         _fence = reader.ReadUInt32();
         _error = reader.ReadUInt32();
         _errorOffset = reader.ReadUInt32();
-        reader.Skip(3 * sizeof(uint));
+        _reportedBackendKind = reader.ReadUInt32();
+        _reportedBackendOperations = reader.ReadUInt32();
+        reader.Skip(sizeof(uint));
 
         for (int index = 0; index < AuroraGpuInterface.SurfaceCount; index++)
         {
@@ -196,6 +252,14 @@ public sealed partial class AuroraGpuCard
         }
 
         reader.ReadBytes(_videoMemoryBytes);
+
+        lock (_hostPreferredSizeGate)
+        {
+            bool recorded = version == SnapshotVersion;
+            _hostPreferredWidth = recorded ? reader.ReadUInt32() : 0u;
+            _hostPreferredHeight = recorded ? reader.ReadUInt32() : 0u;
+            _hostPreferredGeneration = recorded ? reader.ReadUInt32() : 0u;
+        }
 
         UpdateInterrupt();
         MarkDisplayChanged();

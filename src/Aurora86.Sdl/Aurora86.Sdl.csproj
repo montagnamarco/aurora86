@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Aurora86.Core\Aurora86.Core.csproj" />
+    <ProjectReference Include="..\Aurora86.Graphics\Aurora86.Graphics.csproj" />
   </ItemGroup>
 
   <ItemGroup>

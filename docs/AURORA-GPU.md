@@ -14,7 +14,10 @@ modern one can be emulated only in its VGA part: its drivers need the whole
 chip.
 
 This document is the contract between the emulator and a guest driver.
-Version 1.0 of the interface. All multi-byte values are little-endian.
+Version 1.2 of the interface. All multi-byte values are little-endian.
+Version 1.1 appended host-backend discovery; version 1.2 appends a host
+preferred display size. The version-1.0 ring and drawing semantics remain
+unchanged.
 
 ## 1. PCI function
 
@@ -87,9 +90,9 @@ a narrower write is ignored. Unlisted offsets read 0 and ignore writes.
 | Offset | Name | Access | Meaning |
 |---|---|---|---|
 | `000h` | `ID` | R | `55504741h` ("AGPU") |
-| `004h` | `VERSION` | R | `00010000h`: major 1, minor 0 |
+| `004h` | `VERSION` | R | `00010002h`: major 1, minor 2 |
 | `008h` | `VRAM_SIZE` | R | bytes of video memory (`02000000h`) |
-| `00Ch` | `CAPABILITIES` | R | bit 0 command ring, bit 1 alpha blending, bit 2 hardware cursor, bit 3 interrupts |
+| `00Ch` | `CAPABILITIES` | R | bit 0 command ring, bit 1 alpha blending, bit 2 hardware cursor, bit 3 interrupts, bit 4 configured native backend, bit 5 host preferred size |
 | `010h` | `DISPLAY_CONTROL` | RW | bit 0: scanout from VRAM enabled |
 | `014h` | `DISPLAY_WIDTH` | RW | pixels, 1-4096 |
 | `018h` | `DISPLAY_HEIGHT` | RW | lines, 1-4096 |
@@ -106,6 +109,72 @@ a narrower write is ignored. Unlisted offsets read 0 and ignore writes.
 | `054h` | `FENCE` | R | value of the last completed `FENCE` command |
 | `058h` | `ERROR` | R | error code of section 6, 0 when none |
 | `05Ch` | `ERROR_OFFSET` | R | ring offset of the command that failed |
+| `060h` | `BACKEND_INFO` | R | configured logical backend: 0 software, 1 OpenGL, 2 Vulkan (reserved for implementations) |
+| `064h` | `BACKEND_OPERATIONS` | R | configured native operations: bit 0 opaque fill, bit 1 premultiplied source-over fill |
+| `068h` | `HOST_PREFERRED_WIDTH` | R | host-recommended guest display width in pixels, or 0 when unavailable |
+| `06Ch` | `HOST_PREFERRED_HEIGHT` | R | host-recommended guest display height in pixels, or 0 when unavailable |
+| `070h` | `HOST_PREFERRED_GENERATION` | R | increments on each changed width/height pair, modulo 2^32 |
+
+**Host preferred size (1.2).** A driver checks major version 1, minor >= 2
+and capability bit 5 before reading the three appended registers. The host
+publishes width and height together: either both are 0 (no preference), or
+width is 1-1920 and height is 1-1080. A frontend may filter transient or
+unusable window sizes before publishing. Repeating the same pair does not
+increment the generation. Guest writes to these registers are ignored.
+
+A guest reads generation, width, height, then generation again with aligned
+32-bit accesses, and retries if the generations differ. Each aligned read observes one complete host
+publication, so equal generations identify a coherent pair, subject to the
+normal 32-bit wrap after 2^32 changes. The pair is advisory: it does not
+program display geometry, interrupt the guest, or promise that every host
+window size is a supported guest mode. The guest validates its own mode and
+may retain its current mode.
+
+The preference comes from the host window, but the guest reads it, so it is
+snapshot state: AGPU payload version 2 appends width, height and generation
+after video memory, and a restore gives back exactly what the guest saw. The
+frontend's next publication then compares the host window with the restored
+pair and, when they differ, advances the generation past the recorded one --
+so a guest that cached generation N at one size always sees a change, even
+when a different frontend in a new process publishes its first size. A card
+reset keeps the current preference. A newly constructed card starts with 0,0
+and generation 0. A version-1 payload predates the registers and restores
+them as 0,0 at generation 0.
+
+**Native backend discovery (1.1).** A driver checks the major version, then
+minor >= 1 and capability bit 4 before reading the appended registers. Kind
+2 names the contract for a future Vulkan implementation; this build does not
+create one. A newly configured software backend reports kind/operations 0
+and leaves bit 4 clear. These read-only logical registers are snapshot state:
+restoring onto a different host provider preserves what the guest sees. The
+actual provider may implement the operation in software after restore; native
+execution is proved by the host renderer identity and completed-operation
+counter, not by these logical registers alone. Explicit frontend attachment
+changes or hardware reset reconfigure the logical state.
+
+Register slots 15 and 16, reserved in the first version-1 payloads, store
+logical kind and operation bits; slot 17 remains reserved. Old payloads
+containing zero in these slots restore logical software. Validation rejects invalid logical metadata before mutating the
+card. The native context, textures and host operation counter are not saved.
+
+Core contains only the versioned `IAuroraGpuBackend` contract. Native graphics
+bindings live in `Aurora86.Graphics`, attached and owned by the frontend.
+The backend receives temporary, bounded pixel storage, never guest physical
+addresses or the authoritative VRAM array. Completed output is copied into
+VRAM before the operation returns. Refusal or context failure leaves VRAM
+unchanged until the software engine performs the operation. This initial
+readback model preserves CPU writes, BAR0 reads, fences and snapshot pixels;
+it does not promise that native rendering is faster than host software.
+
+The OpenGL provider uses a thread-owned accelerated offscreen CGL context on
+macOS. Other hosts retain software rendering until a native context provider
+exists. Frontends opt in with `AURORA_GPU_BACKEND=opengl` (or `auto`, allowing
+fallback); absence selects software, and so does an unknown value, reported
+in the backend description. The variable is host configuration and is not
+saved in `vm.json`. `auto` decides by timing native fills against the CPU at
+startup, so two runs on the same host may report different backends; the
+default, software, is the deterministic choice. This is an implementation of selected
+Aurora operations through OpenGL, not a conformant guest OpenGL API.
 
 **Geometry.** The display registers take effect on every write. When the
 geometry is invalid -- a dimension outside 1-4096, a pitch not a multiple

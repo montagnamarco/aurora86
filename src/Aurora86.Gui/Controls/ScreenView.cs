@@ -1,3 +1,4 @@
+using Aurora86.Graphics;
 using System;
 using Avalonia;
 using Avalonia.Controls;
@@ -11,6 +12,7 @@ using Aurora86.Core.Devices.Input;
 using Aurora86.Core.Devices.Interrupts;
 using Aurora86.Core.Devices.Timing;
 using Aurora86.Core.Devices.System;
+using Aurora86.Core.Devices.Video;
 using Aurora86.Gui.Emulation;
 
 namespace Aurora86.Gui.Controls;
@@ -19,8 +21,8 @@ namespace Aurora86.Gui.Controls;
 /// Displays the emulated VGA output.
 ///
 /// The core renders into a plain array of RGBA pixels; this control copies
-/// that array into a bitmap and draws it, scaled to fill the available space
-/// while preserving the aspect ratio a real monitor would have shown.
+/// that array into a bitmap and draws it while preserving its active display
+/// aspect ratio, except for legacy VGA modes presented on a 4:3 monitor.
 ///
 /// That last point is worth explaining, because getting it wrong is a
 /// classic emulator bug. In 80x25 text mode the VGA has 400 active scanlines
@@ -28,20 +30,17 @@ namespace Aurora86.Gui.Controls;
 /// the monitor sees 640x480 -- a 4:3 picture. Presenting the 640x400
 /// framebuffer at its literal size squashes every character to 83% of its
 /// proper height, which reads as subtly wrong: letters look wide and
-/// stubby. So the picture is always fitted to 4:3, not to its pixel
-/// dimensions.
+/// stubby. That exception applies to historical VGA modes. Linear color
+/// scanout has square pixels, so its native framebuffer aspect ratio is the
+/// right one for drawing and absolute pointer input.
 /// </summary>
 public sealed class ScreenView : Control
 {
     private WriteableBitmap? _bitmap;
     private int _bitmapWidth, _bitmapHeight;
+    private readonly FramebufferUploadTracker _frameUploads = new();
+    private bool _bitmapUploadPending;
     private EmulatorSession? _session;
-
-    /// <summary>
-    /// The aspect ratio a period monitor presented, regardless of how many
-    /// pixels the adapter actually generated.
-    /// </summary>
-    private const double MonitorAspect = 4.0 / 3.0;
 
     public static readonly DirectProperty<ScreenView, EmulatorSession?> SessionProperty =
         AvaloniaProperty.RegisterDirect<ScreenView, EmulatorSession?>(
@@ -255,18 +254,22 @@ public sealed class ScreenView : Control
                 Capture.Release();
             }
 
-            Rect target = FitToMonitorAspect(Bounds.Size);
+            DisplayViewport target = DisplayViewport.Fit(
+                Bounds.Size,
+                machine.Display.Width,
+                machine.Display.Height,
+                UsesSquarePixels(machine),
+                CurrentRenderScaling);
             if (target.Width <= 0 || target.Height <= 0)
             {
                 return;
             }
 
-            double pictureX = (position.X - target.X) / target.Width * machine.Display.Width;
-            double pictureY = (position.Y - target.Y) / target.Height * machine.Display.Height;
-
-            // The pixel under the cursor is the one whose square contains it:
-            // floor, not round, or the pointer sits half a pixel off.
-            machine.PointAbsolute((int)Math.Floor(pictureX), (int)Math.Floor(pictureY));
+            (int x, int y) = target.MapToSource(
+                position,
+                machine.Display.Width,
+                machine.Display.Height);
+            machine.PointAbsolute(x, y);
             delivered = true;
         });
 
@@ -383,8 +386,20 @@ public sealed class ScreenView : Control
         }
 
         int width = 0, height = 0;
+        bool squarePixels = false;
         session.WithMachine(machine =>
         {
+            // Report whole logical host pixels: a Retina display still presents
+            // each guest pixel at an integer physical scale. The guest decides
+            // whether to follow this advisory size; publishing never changes mode.
+            bool minimized = TopLevel.GetTopLevel(this) is Window
+                { WindowState: WindowState.Minimized };
+            if (HostPreferredSize.TryFromLogical(Bounds.Width, Bounds.Height, minimized,
+                out int preferredWidth, out int preferredHeight))
+            {
+                machine.AuroraGpu?.SetHostPreferredSize(preferredWidth, preferredHeight);
+            }
+
             // Render says whether anything actually changed. In text mode
             // almost every frame changes nothing at all -- a blinking cursor
             // aside -- and copying a quarter of a million pixels to say so is
@@ -392,6 +407,7 @@ public sealed class ScreenView : Control
             bool changed = machine.Display.Render();
             width = machine.Display.Width;
             height = machine.Display.Height;
+            squarePixels = UsesSquarePixels(machine);
 
             if (width <= 0 || height <= 0)
             {
@@ -400,8 +416,9 @@ public sealed class ScreenView : Control
 
             bool resized = _bitmap is null || _bitmapWidth != width || _bitmapHeight != height;
             EnsureBitmap(width, height);
-            if (changed || resized)
+            if (changed || resized || _bitmapUploadPending)
             {
+                _bitmapUploadPending = true;
                 CopyFramebuffer(machine.Display.Framebuffer, width, height);
             }
 
@@ -418,7 +435,13 @@ public sealed class ScreenView : Control
             return;
         }
 
-        Rect target = FitToMonitorAspect(Bounds.Size);
+        DisplayViewport viewport = DisplayViewport.Fit(
+            Bounds.Size,
+            width,
+            height,
+            squarePixels,
+            CurrentRenderScaling);
+        Rect target = viewport.ToRect();
 
         // The picture is letterboxed and scaled, so a host pixel is worth
         // less than a guest one. Recording the ratio here keeps it in step
@@ -441,31 +464,14 @@ public sealed class ScreenView : Control
         context.DrawImage(_bitmap, new Rect(0, 0, width, height), target);
     }
 
-    /// <summary>
-    /// Computes the largest 4:3 rectangle that fits in the available space,
-    /// centred. This is what corrects the squashed characters: the source may
-    /// be 640x400, but it is always shown as if it were 4:3.
-    /// </summary>
-    private static Rect FitToMonitorAspect(Size available)
+    /// <summary>Whether this active display mode uses square pixels.</summary>
+    private static bool UsesSquarePixels(Aurora86.Core.Machine machine)
     {
-        if (available.Width <= 0 || available.Height <= 0)
-        {
-            return default;
-        }
-
-        double width = available.Width;
-        double height = width / MonitorAspect;
-
-        if (height > available.Height)
-        {
-            height = available.Height;
-            width = height * MonitorAspect;
-        }
-
-        return new Rect((available.Width - width) / 2,
-                        (available.Height - height) / 2,
-                        width, height);
+        return machine.AuroraGpu?.ScanoutEnabled == true
+            || machine.VideoRegisters.EffectiveMode.Layout == VgaMemoryLayout.HighColour;
     }
+
+    private double CurrentRenderScaling => TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
 
     private void EnsureBitmap(int width, int height)
     {
@@ -486,6 +492,8 @@ public sealed class ScreenView : Control
 
         _bitmapWidth = width;
         _bitmapHeight = height;
+        _frameUploads.Invalidate();
+        _bitmapUploadPending = true;
     }
 
     private unsafe void CopyFramebuffer(ReadOnlySpan<uint> source, int width, int height)
@@ -495,15 +503,18 @@ public sealed class ScreenView : Control
             return;
         }
 
-        using ILockedFramebuffer locked = _bitmap.Lock();
-        var destination = (uint*)locked.Address;
-
-        int rowPixels = locked.RowBytes / sizeof(uint);
-        for (int y = 0; y < height; y++)
+        FramebufferRowRange rows = _frameUploads.FindChangedRows(source, width, height);
+        if (rows.RowCount == 0)
         {
-            ReadOnlySpan<uint> row = source.Slice(y * width, width);
-            for (int x = 0; x < width; x++)
-                destination[y * rowPixels + x] = row[x];
+            _bitmapUploadPending = false;
+            return;
         }
+
+        using ILockedFramebuffer locked = _bitmap.Lock();
+        byte* firstRow = (byte*)locked.Address + checked(rows.FirstRow * locked.RowBytes);
+        var destination = new Span<byte>(firstRow, checked(rows.RowCount * locked.RowBytes));
+        _frameUploads.CopyRows(source, rows, destination, locked.RowBytes);
+        _frameUploads.ConfirmUpload(source, rows);
+        _bitmapUploadPending = false;
     }
 }

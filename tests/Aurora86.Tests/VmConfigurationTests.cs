@@ -20,6 +20,75 @@ public class VmConfigurationTests
         return folder;
     }
 
+    [Theory]
+    [InlineData("Intel486")]
+    [InlineData("PentiumII")]
+    public void LegacyJsonKeeps25MhzRegardlessOfCpuModel(string cpu)
+    {
+        string folder = TempFolder();
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, VmConfiguration.FileName),
+                "{\"cpu\":\"" + cpu + "\"}");
+            VmConfiguration configuration = VmConfiguration.Load(folder);
+            using Machine machine = configuration.BuildMachine();
+            Assert.Equal(25_000_000, configuration.CpuFrequencyHz);
+            Assert.Equal(25_000_000, machine.CpuFrequencyHz);
+            Assert.Equal(25L, machine.CyclesFromMicroseconds(1));
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(1_000_000)]
+    [InlineData(100_000_000)]
+    [InlineData(200_000_000)]
+    [InlineData(1_000_000_000)]
+    public void CpuFrequencyRoundTripsAndIsUsedByTheMachine(int frequency)
+    {
+        string folder = TempFolder();
+        try
+        {
+            new VmConfiguration { CpuFrequencyHz = frequency }.Save(folder);
+            VmConfiguration configuration = VmConfiguration.Load(folder);
+            using Machine machine = configuration.BuildMachine();
+            Assert.Equal(frequency, configuration.CpuFrequencyHz);
+            Assert.Equal(frequency, machine.CpuFrequencyHz);
+            Assert.Equal((long)frequency / 1_000_000, machine.CyclesFromMicroseconds(1));
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(999_999)]
+    [InlineData(1_000_000_001)]
+    public void InvalidCpuFrequencyIsRejectedBeforeOpeningImages(int frequency)
+    {
+        string folder = TempFolder();
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, VmConfiguration.FileName),
+                "{\"cpuFrequencyHz\":" + frequency + "}");
+            Assert.Throws<InvalidDataException>(() => VmConfiguration.Load(folder));
+            var configuration = new VmConfiguration { CpuFrequencyHz = frequency };
+            Assert.Throws<InvalidDataException>(() => configuration.Save(folder));
+            Assert.Throws<InvalidDataException>(() => configuration.BuildMachine());
+            Assert.Throws<ArgumentOutOfRangeException>(() => new Machine(cpuFrequencyHz: frequency));
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
     [Fact]
     public void LegacyJsonSelectsTrio()
     {

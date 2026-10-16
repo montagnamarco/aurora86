@@ -154,6 +154,7 @@ resolved against the folder.
 | Key | Values |
 |---|---|
 | `cpu` | `Intel386`, `Intel486`, `Pentium`, `PentiumMmx`, `PentiumII`, `PentiumIII`, `Pentium4` |
+| `cpuFrequencyHz` | Nominal clock, 1000000–1000000000 Hz; defaults to 25000000 for older files. For example, 200000000 selects 200 MHz. |
 | `video` | `S3Trio64VPlus`, `S3Virge325`, `AuroraGpu` |
 | `mouse` | `Serial`, `Ps2`, `None` |
 | `hardware.chipset` | `i430fx`, `i430tx` |

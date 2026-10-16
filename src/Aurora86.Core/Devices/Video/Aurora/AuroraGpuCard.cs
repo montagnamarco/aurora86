@@ -45,6 +45,15 @@ public sealed partial class AuroraGpuCard : VgaCard
     private readonly PciMemoryBarWindow _registerDecoder;
     private readonly AuroraGpuDisplay _display;
     private bool _interruptAsserted;
+    // Guest-reported attachment is snapshot state; the host provider is not.
+    private uint _reportedBackendKind;
+    private uint _reportedBackendOperations;
+
+    // Host preference is environmental state, independent of guest registers and snapshots.
+    private readonly object _hostPreferredSizeGate = new();
+    private uint _hostPreferredWidth;
+    private uint _hostPreferredHeight;
+    private uint _hostPreferredGeneration;
 
     // ---- display registers ---------------------------------------------------------
 
@@ -109,6 +118,17 @@ public sealed partial class AuroraGpuCard : VgaCard
 
     public PciFunction Function { get; }
     public AuroraGpu2DEngine Engine { get; }
+
+    /// <summary>Host-owned optional backend; null keeps the original software path.</summary>
+    public IAuroraGpuBackend? Backend
+    {
+        get => Engine.Backend;
+        set
+        {
+            Engine.Backend = value;
+            UpdateReportedBackend();
+        }
+    }
     public override VgaRenderer Renderer { get; }
 
     /// <summary>What the front end shows: the adapter's own scanout when enabled, the VGA otherwise.</summary>
@@ -122,6 +142,33 @@ public sealed partial class AuroraGpuCard : VgaCard
 
     /// <summary>The physical address BAR1 currently holds.</summary>
     public uint RegisterBase => Function.Read(Bar1Register, 4) & Function.BarAddressMask(1);
+
+    /// <summary>
+    /// Publishes the host window's suggested guest size as one transaction.
+    /// Both zeroes clear the suggestion; invalid pairs leave it unchanged.
+    /// </summary>
+    public void SetHostPreferredSize(int width, int height)
+    {
+        bool clear = width == 0 && height == 0;
+        bool valid = width is >= 1 and <= AuroraGpuInterface.MaximumHostPreferredWidth
+            && height is >= 1 and <= AuroraGpuInterface.MaximumHostPreferredHeight;
+        if (!clear && !valid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width), "The host preferred size is out of range.");
+        }
+
+        lock (_hostPreferredSizeGate)
+        {
+            if (_hostPreferredWidth == (uint)width && _hostPreferredHeight == (uint)height)
+            {
+                return;
+            }
+
+            _hostPreferredWidth = (uint)width;
+            _hostPreferredHeight = (uint)height;
+            _hostPreferredGeneration = unchecked(_hostPreferredGeneration + 1);
+        }
+    }
 
     /// <summary>
     /// Drives the function's INTA through the motherboard's PCI interrupt
@@ -218,6 +265,12 @@ public sealed partial class AuroraGpuCard : VgaCard
         MarkDisplayChanged();
     }
 
+    private void UpdateReportedBackend()
+    {
+        _reportedBackendKind = Backend?.Kind ?? AuroraGpuInterface.BackendKindSoftware;
+        _reportedBackendOperations = (Backend?.Operations ?? 0u) & AuroraGpuInterface.BackendOperationsKnown;
+    }
+
     /// <summary>
     /// Power-on state: scanout off, no geometry, ring disabled and empty, no
     /// surfaces, cursor hidden, interrupts clear, video memory zero. The PCI
@@ -225,6 +278,7 @@ public sealed partial class AuroraGpuCard : VgaCard
     /// </summary>
     public void Reset()
     {
+        UpdateReportedBackend();
         _displayControl = 0;
         _displayWidth = 0;
         _displayHeight = 0;
@@ -305,7 +359,14 @@ public sealed partial class AuroraGpuCard : VgaCard
             AuroraGpuInterface.IdRegister => AuroraGpuInterface.IdValue,
             AuroraGpuInterface.VersionRegister => AuroraGpuInterface.VersionValue,
             AuroraGpuInterface.VideoMemorySizeRegister => AuroraGpuInterface.VideoMemorySize,
-            AuroraGpuInterface.CapabilitiesRegister => SupportedCapabilities,
+            AuroraGpuInterface.CapabilitiesRegister => SupportedCapabilities |
+                (_reportedBackendKind == AuroraGpuInterface.BackendKindSoftware
+                    ? 0u : AuroraGpuInterface.CapabilityNativeBackend),
+            AuroraGpuInterface.BackendInfoRegister => _reportedBackendKind,
+            AuroraGpuInterface.BackendOperationsRegister => _reportedBackendOperations,
+            AuroraGpuInterface.HostPreferredWidthRegister => ReadHostPreferredRegister(offset),
+            AuroraGpuInterface.HostPreferredHeightRegister => ReadHostPreferredRegister(offset),
+            AuroraGpuInterface.HostPreferredGenerationRegister => ReadHostPreferredRegister(offset),
             AuroraGpuInterface.DisplayControlRegister => _displayControl,
             AuroraGpuInterface.DisplayWidthRegister => _displayWidth,
             AuroraGpuInterface.DisplayHeightRegister => _displayHeight,
@@ -329,7 +390,22 @@ public sealed partial class AuroraGpuCard : VgaCard
     private const uint SupportedCapabilities = AuroraGpuInterface.CapabilityCommandRing
         | AuroraGpuInterface.CapabilityAlphaBlending
         | AuroraGpuInterface.CapabilityHardwareCursor
-        | AuroraGpuInterface.CapabilityInterrupts;
+        | AuroraGpuInterface.CapabilityInterrupts
+        | AuroraGpuInterface.CapabilityHostPreferredSize;
+
+    private uint ReadHostPreferredRegister(uint offset)
+    {
+        lock (_hostPreferredSizeGate)
+        {
+            return offset switch
+            {
+                AuroraGpuInterface.HostPreferredWidthRegister => _hostPreferredWidth,
+                AuroraGpuInterface.HostPreferredHeightRegister => _hostPreferredHeight,
+                AuroraGpuInterface.HostPreferredGenerationRegister => _hostPreferredGeneration,
+                _ => 0,
+            };
+        }
+    }
 
     private void WriteRegister(uint offset, uint value)
     {

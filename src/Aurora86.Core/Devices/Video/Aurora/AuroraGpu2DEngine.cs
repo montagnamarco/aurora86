@@ -27,11 +27,20 @@ public sealed class AuroraGpu2DEngine
 {
     private const int BytesPerPixel = 4;
     private const int ChannelMaximum = 255;
+    private const int MaximumBatchFills = 128;
 
     private readonly byte[] _videoMemory;
     private readonly Func<uint, uint> _readGuestDword;
     private readonly Func<uint, byte> _readGuestByte;
     private readonly Action<uint, uint> _markDirty;
+    private IAuroraGpuBackend? _backend;
+    private readonly QueuedFill[] _batch = new QueuedFill[MaximumBatchFills];
+    private AuroraGpuSurface _batchTarget;
+    private int _batchCount;
+    private int _batchDepth;
+
+    private readonly record struct QueuedFill(
+        int X, int Y, int Width, int Height, uint Colour, bool Blend);
 
     /// <summary>
     /// Works on the card's video memory. Guest memory is reached through the
@@ -51,6 +60,28 @@ public sealed class AuroraGpu2DEngine
         _markDirty = markDirty;
     }
 
+    /// <summary>
+    /// Attach a compatible native backend, or null for software-only rendering.
+    /// Change attachment only while command execution is stopped; the card's
+    /// engine is synchronous and does not own or dispose the host backend.
+    /// </summary>
+    public IAuroraGpuBackend? Backend
+    {
+        get => _backend;
+        set
+        {
+            if (value is not null &&
+                (value.InterfaceVersion != AuroraGpuInterface.BackendInterfaceVersion ||
+                 (value.Kind != AuroraGpuInterface.BackendKindOpenGl &&
+                  value.Kind != AuroraGpuInterface.BackendKindVulkan)))
+            {
+                throw new ArgumentException("Unsupported Aurora GPU backend contract.", nameof(value));
+            }
+            FlushBatch();
+            _backend = value;
+        }
+    }
+
     public bool ClipEnabled { get; set; }
     public int ClipX { get; set; }
     public int ClipY { get; set; }
@@ -66,6 +97,29 @@ public sealed class AuroraGpu2DEngine
     {
         if (!TryClip(target, ref x, ref y, ref width, ref height, out _, out _))
         {
+            return;
+        }
+
+        if (_batchDepth != 0 && _backend is not null)
+        {
+            uint operation = blend ? AuroraGpuInterface.BackendOperationBlendFill
+                : AuroraGpuInterface.BackendOperationOpaqueFill;
+            if ((_backend.Operations & operation) != 0u)
+            {
+                QueueFill(target, x, y, width, height, colour, blend);
+                return;
+            }
+            FlushBatch();
+        }
+        PaintClippedFill(target, x, y, width, height, colour, blend);
+    }
+
+    private void PaintClippedFill(
+        AuroraGpuSurface target, int x, int y, int width, int height, uint colour, bool blend)
+    {
+        if (TryFillWithBackend(target, x, y, width, height, colour, blend))
+        {
+            MarkRows(target, x, y, width, height);
             return;
         }
 
@@ -89,6 +143,189 @@ public sealed class AuroraGpu2DEngine
         MarkRows(target, x, y, width, height);
     }
 
+    /// <summary>Group fills only inside a synchronous command-ring invocation.</summary>
+    internal void BeginBatch()
+    {
+        if (_batchDepth == int.MaxValue)
+        {
+            throw new InvalidOperationException("Aurora GPU batch nesting overflow.");
+        }
+        _batchDepth++;
+    }
+
+    /// <summary>Complete outstanding pixels before the outer command group returns.</summary>
+    internal void EndBatch()
+    {
+        if (_batchDepth != 0 && --_batchDepth == 0)
+        {
+            FlushBatch();
+        }
+    }
+
+    internal bool HasPendingBatch => _batchCount != 0;
+
+    private void QueueFill(AuroraGpuSurface target,
+        int x, int y, int width, int height, uint colour, bool blend)
+    {
+        bool mustFlush = _batchCount == MaximumBatchFills ||
+            (_batchCount != 0 && target != _batchTarget);
+        for (int index = 0; !mustFlush && index < _batchCount; index++)
+        {
+            QueuedFill previous = _batch[index];
+            mustFlush = (long)x < (long)previous.X + previous.Width &&
+                (long)previous.X < (long)x + width &&
+                (long)y < (long)previous.Y + previous.Height &&
+                (long)previous.Y < (long)y + height;
+        }
+        if (mustFlush)
+        {
+            FlushBatch();
+        }
+        _batchTarget = target;
+        _batch[_batchCount++] = new QueuedFill(x, y, width, height, colour, blend);
+    }
+
+    /// <summary>VRAM observation barrier; no pending pixels survive a doorbell.</summary>
+    internal void FlushBatch()
+    {
+        int count = _batchCount;
+        if (count == 0)
+        {
+            return;
+        }
+        _batchCount = 0;
+        if (count == 1)
+        {
+            QueuedFill fill = _batch[0];
+            PaintClippedFill(_batchTarget, fill.X, fill.Y, fill.Width, fill.Height,
+                fill.Colour, fill.Blend);
+            return;
+        }
+
+        var operations = new AuroraGpuFillOperation[count];
+        int pixelCount = 0;
+        for (int index = 0; index < count; index++)
+        {
+            QueuedFill fill = _batch[index];
+            operations[index] = new AuroraGpuFillOperation(pixelCount, fill.Width,
+                fill.Height, fill.Colour, fill.Blend);
+            pixelCount += fill.Width * fill.Height;
+        }
+        uint[] staging = ArrayPool<uint>.Shared.Rent(pixelCount);
+        try
+        {
+            Span<uint> pixels = Pixels;
+            for (int index = 0; index < count; index++)
+            {
+                QueuedFill fill = _batch[index];
+                for (int row = 0; row < fill.Height; row++)
+                {
+                    pixels.Slice(PixelIndex(_batchTarget, fill.X, fill.Y + row), fill.Width)
+                        .CopyTo(staging.AsSpan(operations[index].PixelOffset + row * fill.Width,
+                            fill.Width));
+                }
+            }
+
+            bool filled;
+            try
+            {
+                filled = _backend?.TryFillBatch(pixelCount, staging, operations) ?? false;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                filled = false;
+            }
+            for (int index = 0; index < count; index++)
+            {
+                QueuedFill fill = _batch[index];
+                for (int row = 0; row < fill.Height; row++)
+                {
+                    Span<uint> destination = pixels.Slice(
+                        PixelIndex(_batchTarget, fill.X, fill.Y + row), fill.Width);
+                    if (filled)
+                    {
+                        staging.AsSpan(operations[index].PixelOffset + row * fill.Width,
+                            fill.Width).CopyTo(destination);
+                    }
+                    else if (fill.Blend)
+                    {
+                        for (int column = 0; column < fill.Width; column++)
+                        {
+                            destination[column] = BlendOver(fill.Colour, destination[column]);
+                        }
+                    }
+                    else
+                    {
+                        destination.Fill(fill.Colour);
+                    }
+                }
+                MarkRows(_batchTarget, fill.X, fill.Y, fill.Width, fill.Height);
+            }
+        }
+        finally
+        {
+            ArrayPool<uint>.Shared.Return(staging);
+        }
+    }
+
+    private bool TryFillWithBackend(
+        AuroraGpuSurface target, int x, int y, int width, int height, uint colour, bool blend)
+    {
+        IAuroraGpuBackend? backend = _backend;
+        if (backend is null)
+        {
+            return false;
+        }
+
+        uint operation = blend ? AuroraGpuInterface.BackendOperationBlendFill
+            : AuroraGpuInterface.BackendOperationOpaqueFill;
+        if ((backend.Operations & operation) == 0u)
+        {
+            return false;
+        }
+
+        uint[] staging = ArrayPool<uint>.Shared.Rent(width * height);
+        try
+        {
+            if (blend)
+            {
+                Span<uint> current = Pixels;
+                for (int row = 0; row < height; row++)
+                {
+                    current.Slice(PixelIndex(target, x, y + row), width)
+                        .CopyTo(staging.AsSpan(row * width, width));
+                }
+            }
+            bool filled;
+            try
+            {
+                filled = blend ? backend.TryFillBlend(width, height, colour, staging)
+                    : backend.TryFillOpaque(width, height, colour, staging);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                // A graphics-context failure must not leave partially written VRAM.
+                return false;
+            }
+            if (!filled)
+            {
+                return false;
+            }
+
+            Span<uint> pixels = Pixels;
+            for (int row = 0; row < height; row++)
+            {
+                staging.AsSpan(row * width, width)
+                    .CopyTo(pixels.Slice(PixelIndex(target, x, y + row), width));
+            }
+            return true;
+        }
+        finally
+        {
+            ArrayPool<uint>.Shared.Return(staging);
+        }
+    }
+
     /// <summary>
     /// COPY_RECT: copies between surfaces. The source is read completely
     /// before anything is written, so overlapping rectangles -- a window
@@ -105,6 +342,7 @@ public sealed class AuroraGpu2DEngine
         int height,
         bool blend)
     {
+        FlushBatch();
         if (!TryClip(target, ref x, ref y, ref width, ref height, out int skippedColumns, out int skippedRows))
         {
             return;
@@ -172,6 +410,7 @@ public sealed class AuroraGpu2DEngine
         int height,
         bool blend)
     {
+        FlushBatch();
         uint error = ValidateSource(sourceSpace, sourceAddress, sourcePitch, width, height, BytesPerPixel);
         if (error != AuroraGpuInterface.ErrorNone)
         {
@@ -225,6 +464,7 @@ public sealed class AuroraGpu2DEngine
         int height,
         uint colour)
     {
+        FlushBatch();
         uint error = ValidateSource(sourceSpace, sourceAddress, sourcePitch, width, height, 1);
         if (error != AuroraGpuInterface.ErrorNone)
         {
@@ -266,6 +506,7 @@ public sealed class AuroraGpu2DEngine
     /// </summary>
     public uint DrawLine(AuroraGpuSurface target, int x0, int y0, int x1, int y1, uint colour, bool blend)
     {
+        FlushBatch();
         if (!IsLineCoordinate(x0) || !IsLineCoordinate(y0) || !IsLineCoordinate(x1) || !IsLineCoordinate(y1))
         {
             return AuroraGpuInterface.ErrorBadCoordinate;
@@ -334,6 +575,7 @@ public sealed class AuroraGpu2DEngine
     /// </summary>
     public uint ReadCursorImage(uint sourceSpace, uint sourceAddress, Span<uint> cursor)
     {
+        FlushBatch();
         const int Size = AuroraGpuInterface.CursorSize;
         const uint Pitch = Size * BytesPerPixel;
 

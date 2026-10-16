@@ -275,10 +275,10 @@ public sealed partial class Machine : IDisposable
     public FpuEmulator Fpu { get; } = new();
 
     /// <summary>
-    /// The clock speed the emulated CPU claims to run at. It does not control
-    /// how fast we actually execute; it is the ratio used to convert executed
-    /// instructions into device time, so it sets how fast the guest perceives
-    /// its own hardware to be.
+    /// The nominal clock used to convert executed instructions into device
+    /// time. The core runs each batch as fast as the host allows; a real-time
+    /// front end paces those batches against this ratio. CPU model selection
+    /// does not change the clock automatically.
     /// </summary>
     public int CpuFrequencyHz { get; set; } = 25_000_000;   // a 25 MHz 386
 
@@ -402,7 +402,8 @@ public sealed partial class Machine : IDisposable
         HardwareConfiguration? hardware = null,
         Chipset chipset = Chipset.I430Fx,
         CpuNs.CpuModel? initialCpuModel = null,
-        VmVideoModel videoModel = VmVideoModel.S3Trio64VPlus)
+        VmVideoModel videoModel = VmVideoModel.S3Trio64VPlus,
+        int cpuFrequencyHz = 25_000_000)
     {
         if (videoModel is not (VmVideoModel.S3Trio64VPlus or VmVideoModel.S3Virge325 or VmVideoModel.AuroraGpu))
         {
@@ -414,6 +415,13 @@ public sealed partial class Machine : IDisposable
             throw new ArgumentOutOfRangeException(nameof(chipset));
         }
 
+        if (cpuFrequencyHz < 1_000_000 || cpuFrequencyHz > 1_000_000_000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(cpuFrequencyHz));
+        }
+
+        // Device callbacks and their first scheduled event use the configured clock.
+        CpuFrequencyHz = cpuFrequencyHz;
         Chipset = chipset;
         hardware ??= HardwareConfiguration.Default;
         VideoModel = videoModel;

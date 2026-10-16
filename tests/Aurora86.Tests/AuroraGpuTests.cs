@@ -75,7 +75,7 @@ public class AuroraGpuTests
         Assert.Equal(IdValue, ReadRegister(machine, IdRegister));
         Assert.Equal(VersionValue, ReadRegister(machine, VersionRegister));
         Assert.Equal(VideoMemorySize, ReadRegister(machine, VideoMemorySizeRegister));
-        Assert.Equal(0x0Fu, ReadRegister(machine, CapabilitiesRegister));
+        Assert.Equal(0x2Fu, ReadRegister(machine, CapabilitiesRegister));
     }
 
     // ---- VBE ------------------------------------------------------------------------

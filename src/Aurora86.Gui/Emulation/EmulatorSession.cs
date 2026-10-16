@@ -6,6 +6,7 @@ using Aurora86.Core.Firmware;
 using Aurora86.Core.Firmware.Fpu;
 using Aurora86.Core.Devices.Storage;
 using Aurora86.Core.Diagnostics;
+using Aurora86.Graphics;
 namespace Aurora86.Gui.Emulation;
 
 /// <summary>
@@ -27,6 +28,8 @@ public sealed class EmulatorSession : IDisposable
     private volatile bool _running;
     private volatile bool _paused;
     private volatile bool _stopRequested;
+    private int _machineAccessRequests;
+    private AuroraGpuBackendConnection _graphicsBackend;
 
     /// <summary>
     /// The machine itself. Access from the UI thread is only safe while the
@@ -73,6 +76,7 @@ public sealed class EmulatorSession : IDisposable
     public EmulatorSession()
     {
         Machine = Factory();
+        _graphicsBackend = AuroraGpuBackendConnection.Attach(Machine);
     }
 
     /// <summary>
@@ -82,12 +86,28 @@ public sealed class EmulatorSession : IDisposable
     /// </summary>
     public void WithMachine(Action<Machine> action)
     {
-        lock (_gate) action(Machine);
+        Interlocked.Increment(ref _machineAccessRequests);
+        try
+        {
+            lock (_gate) action(Machine);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _machineAccessRequests);
+        }
     }
 
     public T WithMachine<T>(Func<Machine, T> action)
     {
-        lock (_gate) return action(Machine);
+        Interlocked.Increment(ref _machineAccessRequests);
+        try
+        {
+            lock (_gate) return action(Machine);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _machineAccessRequests);
+        }
     }
 
     public void Start()
@@ -136,8 +156,14 @@ public sealed class EmulatorSession : IDisposable
     {
         lock (_gate)
         {
+            _graphicsBackend.Dispose();
             Machine.Dispose();
             Machine = Factory();
+            _graphicsBackend = AuroraGpuBackendConnection.Attach(Machine);
+            if (Environment.GetEnvironmentVariable("AURORA_GPU_BACKEND") is not null)
+            {
+                Console.WriteLine($"graphics backend: {_graphicsBackend.Description}");
+            }
         }
     }
 
@@ -154,6 +180,9 @@ public sealed class EmulatorSession : IDisposable
         // that the guest feels responsive, large enough that the per-batch
         // overhead stays negligible.
         TimeSpan slice = TimeSpan.FromMilliseconds(2);
+        // A 200 MHz clock otherwise holds the input/render lock for 400,000
+        // instructions. Keep the original 25 MHz quantum at every clock.
+        const long MaximumBatchInstructions = 50_000;
 
         // Half a second lit, half a second dark.
         const double CursorBlinkMs = 500;
@@ -186,9 +215,12 @@ public sealed class EmulatorSession : IDisposable
             }
 
             long thisBatch;
+            double batchSeconds;
             lock (_gate)
             {
-                thisBatch = (long)(Machine.CpuFrequencyHz * slice.TotalSeconds);
+                thisBatch = Math.Min(MaximumBatchInstructions,
+                    (long)(Machine.CpuFrequencyHz * slice.TotalSeconds));
+                batchSeconds = thisBatch / (double)Machine.CpuFrequencyHz;
                 try
                 {
                     Machine.RunInstructions(thisBatch);
@@ -202,8 +234,16 @@ public sealed class EmulatorSession : IDisposable
                 }
             }
 
+            // Monitor does not guarantee fairness: when the guest runs behind
+            // real time, immediate reacquisition can starve mouse and render
+            // requests for over 100 ms. Yield only when such a request exists.
+            if (Volatile.Read(ref _machineAccessRequests) != 0)
+            {
+                Thread.Sleep(1);
+            }
+
             executed += thisBatch;
-            emulatedTime += slice;
+            emulatedTime += TimeSpan.FromSeconds(batchSeconds);
 
             TimeSpan now = clock.Elapsed;
 
@@ -270,7 +310,11 @@ public sealed class EmulatorSession : IDisposable
     public void Dispose()
     {
         Stop();
-        Machine.Dispose();
+        lock (_gate)
+        {
+            _graphicsBackend.Dispose();
+            Machine.Dispose();
+        }
     }
 }
 

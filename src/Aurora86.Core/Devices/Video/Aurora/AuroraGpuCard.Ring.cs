@@ -111,40 +111,48 @@ public sealed partial class AuroraGpuCard
         _ringHead &= mask;
         Span<uint> command = stackalloc uint[MaximumRequiredLength];
 
-        while (_ringHead != tail)
+        Engine.BeginBatch();
+        try
         {
-            uint header = ReadRingDword(_ringHead);
-            ushort opcode = (ushort)(header & CommandHeaderOpcodeMask);
-            int length = (int)(header >> CommandHeaderLengthShift);
-            int required = AuroraGpuInterface.RequiredLength(opcode);
-
-            if (required == 0)
+            while (_ringHead != tail)
             {
-                StopWithError(AuroraGpuInterface.ErrorUnknownOpcode);
-                return;
-            }
+                uint header = ReadRingDword(_ringHead);
+                ushort opcode = (ushort)(header & CommandHeaderOpcodeMask);
+                int length = (int)(header >> CommandHeaderLengthShift);
+                int required = AuroraGpuInterface.RequiredLength(opcode);
 
-            uint available = (tail - _ringHead) & mask;
-            bool lengthValid = length >= required && (uint)length * sizeof(uint) <= available;
-            if (!lengthValid)
-            {
-                StopWithError(AuroraGpuInterface.ErrorBadLength);
-                return;
-            }
+                if (required == 0)
+                {
+                    StopWithError(AuroraGpuInterface.ErrorUnknownOpcode);
+                    return;
+                }
 
-            for (int index = 0; index < required; index++)
-            {
-                command[index] = ReadRingDword((_ringHead + (uint)(index * sizeof(uint))) & mask);
-            }
+                uint available = (tail - _ringHead) & mask;
+                bool lengthValid = length >= required && (uint)length * sizeof(uint) <= available;
+                if (!lengthValid)
+                {
+                    StopWithError(AuroraGpuInterface.ErrorBadLength);
+                    return;
+                }
 
-            uint error = Execute(opcode, command[..required]);
-            if (error != AuroraGpuInterface.ErrorNone)
-            {
-                StopWithError(error);
-                return;
-            }
+                for (int index = 0; index < required; index++)
+                {
+                    command[index] = ReadRingDword((_ringHead + (uint)(index * sizeof(uint))) & mask);
+                }
 
-            _ringHead = (_ringHead + (uint)length * sizeof(uint)) & mask;
+                uint error = Execute(opcode, command[..required]);
+                if (error != AuroraGpuInterface.ErrorNone)
+                {
+                    StopWithError(error);
+                    return;
+                }
+
+                _ringHead = (_ringHead + (uint)length * sizeof(uint)) & mask;
+            }
+        }
+        finally
+        {
+            Engine.EndBatch();
         }
     }
 
@@ -159,11 +167,23 @@ public sealed partial class AuroraGpuCard
 
     private uint ReadRingDword(uint offset)
     {
-        return ReadGuestDword(_ringBase + offset);
+        uint address = _ringBase + offset;
+        if (Engine.HasPendingBatch)
+        {
+            ulong videoStart = FrameBufferBase;
+            ulong videoEnd = videoStart + AuroraGpuInterface.VideoMemorySize;
+            if ((ulong)address < videoEnd && (ulong)address + sizeof(uint) > videoStart)
+            {
+                // A ring in BAR0 may read pixels written by an earlier command.
+                Engine.FlushBatch();
+            }
+        }
+        return ReadGuestDword(address);
     }
 
     private void StopWithError(uint error)
     {
+        Engine.FlushBatch();
         _error = error;
         _errorOffset = _ringHead;
         RaiseInterrupt(AuroraGpuInterface.InterruptCommandError);
@@ -172,6 +192,11 @@ public sealed partial class AuroraGpuCard
     /// <summary>Runs one command whose dwords, header included, are in <paramref name="command"/>.</summary>
     private uint Execute(ushort opcode, ReadOnlySpan<uint> command)
     {
+        if (opcode != AuroraGpuInterface.OpcodeFillRect &&
+            opcode != AuroraGpuInterface.OpcodeSetClip)
+        {
+            Engine.FlushBatch();
+        }
         switch (opcode)
         {
             case AuroraGpuInterface.OpcodeNop:

@@ -53,17 +53,32 @@ public static class AuroraGpuInterface
     public const uint FenceRegister = 0x054;
     public const uint ErrorRegister = 0x058;
     public const uint ErrorOffsetRegister = 0x05C;
+    public const uint BackendInfoRegister = 0x060;
+    public const uint BackendOperationsRegister = 0x064;
+    public const uint HostPreferredWidthRegister = 0x068;
+    public const uint HostPreferredHeightRegister = 0x06C;
+    public const uint HostPreferredGenerationRegister = 0x070;
 
     /// <summary>"AGPU" read as a little-endian dword.</summary>
     public const uint IdValue = 0x55504741;
 
-    /// <summary>Interface version 1.0: major in the high word, minor in the low.</summary>
-    public const uint VersionValue = 0x00010000;
+    /// <summary>Interface version 1.2: major in the high word, minor in the low.</summary>
+    public const uint VersionValue = 0x00010002;
 
     public const uint CapabilityCommandRing = 1u << 0;
     public const uint CapabilityAlphaBlending = 1u << 1;
     public const uint CapabilityHardwareCursor = 1u << 2;
     public const uint CapabilityInterrupts = 1u << 3;
+    public const uint CapabilityNativeBackend = 1u << 4;
+    public const uint CapabilityHostPreferredSize = 1u << 5;
+
+    public const uint BackendInterfaceVersion = 1;
+    public const uint BackendKindSoftware = 0;
+    public const uint BackendKindOpenGl = 1;
+    public const uint BackendKindVulkan = 2;
+    public const uint BackendOperationOpaqueFill = 1u << 0;
+    public const uint BackendOperationBlendFill = 1u << 1;
+    public const uint BackendOperationsKnown = BackendOperationOpaqueFill | BackendOperationBlendFill;
 
     public const uint DisplayControlScanoutEnable = 1u << 0;
     public const uint DisplayStatusActive = 1u << 0;
@@ -76,6 +91,8 @@ public static class AuroraGpuInterface
     public const uint RingControlReset = 1u << 1;
 
     public const int MaximumDisplayDimension = 4096;
+    public const int MaximumHostPreferredWidth = 1920;
+    public const int MaximumHostPreferredHeight = 1080;
     public const uint MinimumRingSize = 4 * 1024;
     public const uint MaximumRingSize = 1024 * 1024;
     public const uint RingBaseAlignment = 4 * 1024;

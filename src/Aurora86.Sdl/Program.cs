@@ -275,6 +275,11 @@ using var machine = vmFolder is null
     ? new Machine(ramMegabytes * 1024 * 1024, videoModel: videoModel ?? VmVideoModel.S3Trio64VPlus)
     : LoadConfiguredMachine(vmFolder, videoModel);
 if (vmFolder is not null) Console.WriteLine($"machine: {vmFolder}");
+using var graphicsBackend = Aurora86.Graphics.AuroraGpuBackendConnection.Attach(machine);
+if (Environment.GetEnvironmentVariable("AURORA_GPU_BACKEND") is not null)
+{
+    Console.WriteLine($"graphics backend: {graphicsBackend.Description}");
+}
 if (printerFolder is not null)
 {
     machine.PrintOutputFolder = Path.GetFullPath(printerFolder);

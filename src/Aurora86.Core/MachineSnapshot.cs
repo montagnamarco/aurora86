@@ -42,6 +42,18 @@ public sealed class MachineSnapshot
 
     private const string RamSection = "RAM ";
     private const string CpuSection = "CPU ";
+
+    /// <summary>
+    /// Nominal CPU clock in Hz, as a little-endian signed 32-bit integer.
+    /// Device deadlines and cycle counters use this ratio; replay at a
+    /// different clock is refused before restoring any state. Older files
+    /// without this section describe the historical 25 MHz machine.
+    /// </summary>
+    private const string CpuClockSection = "CCLK";
+
+    /// <summary>The clock range a "CCLK" section may hold, in Hz.</summary>
+    private const int MinimumCpuClockHz = 1_000_000;
+    private const int MaximumCpuClockHz = 1_000_000_000;
     private const string FpuSection = "FPU ";
 
     /// <summary>
@@ -247,6 +259,16 @@ public sealed class MachineSnapshot
 
     private MachineSnapshot(Machine machine)
     {
+        // Refuse here rather than write a file that loading would reject.
+        if (machine.CpuFrequencyHz is < MinimumCpuClockHz or > MaximumCpuClockHz)
+        {
+            throw new InvalidOperationException(
+                $"A machine clocked at {machine.CpuFrequencyHz} Hz cannot be captured: the snapshot holds {MinimumCpuClockHz} to {MaximumCpuClockHz} Hz.");
+        }
+
+        byte[] clock = new byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32LittleEndian(clock, machine.CpuFrequencyHz);
+        Add(CpuClockSection, 0, clock);
         Add(RamSection, 0, machine.Memory.CaptureRam());
         Add(CpuSection, Cpu.Cpu.SnapshotVersion, Serialise(machine.Cpu.WriteSnapshot));
         Add(FpuSection, Cpu.Fpu.X87Unit.SnapshotVersion, Serialise(machine.Cpu.Fpu.WriteSnapshot));
@@ -630,6 +652,7 @@ public sealed class MachineSnapshot
     {
         [RamSection] = 0,
         [CpuSection] = Cpu.Cpu.SnapshotVersion,
+        [CpuClockSection] = 0,
         [FpuSection] = Cpu.Fpu.X87Unit.SnapshotVersion,
         [MsrSection] = 3,
         [SseSection] = Cpu.Sse.SseUnit.SnapshotVersion,
@@ -666,6 +689,7 @@ public sealed class MachineSnapshot
     /// </summary>
     private static int? ExpectedLength(string name, int version) => (name, version) switch
     {
+        (CpuClockSection, _) => sizeof(int),
         (CpuSection, 0) => LegacyProcessorLength,
         (CpuSection, 1) => LegacyProcessorLength + 8 * 4 + 2 * 4 + 1 + 1,
         (CpuSection, 2) => LegacyProcessorLength + 8 * 4 + 2 * 4 + 1 + 1
@@ -704,6 +728,7 @@ public sealed class MachineSnapshot
         (BackdoorSection, Devices.Host.VmwareBackdoor.SnapshotVersion) => Devices.Host.VmwareBackdoor.SnapshotLength,
         (ParallelPortSection, Devices.Parallel.ParallelPort.SnapshotVersion) => Devices.Parallel.ParallelPort.SnapshotLength,
         (AuroraGpuSection, AuroraGpuCard.SnapshotVersion) => AuroraGpuCard.SnapshotLength,
+        (AuroraGpuSection, AuroraGpuCard.LegacySnapshotVersion) => AuroraGpuCard.LegacySnapshotLength,
         (LocalApicSection, 1) => Devices.Apic.LocalApic.SnapshotLength,
         (IoApicSection, 1) => Devices.Apic.IoApic.SnapshotLength,
         (ImcrSection, _) => Devices.Chipset.Imcr.SnapshotLength,
@@ -753,6 +778,15 @@ public sealed class MachineSnapshot
                     }
 
                     Devices.Storage.BusMasterIdeController.ValidateSnapshot(section.Payload);
+                }
+
+                if (name == CpuClockSection)
+                {
+                    int frequency = BinaryPrimitives.ReadInt32LittleEndian(section.Payload);
+                    if (frequency is < MinimumCpuClockHz or > MaximumCpuClockHz)
+                    {
+                        throw new InvalidDataException("Snapshot CPU clock is outside the supported range.");
+                    }
                 }
 
                 if (name == Piix4PowerSection)
@@ -961,6 +995,14 @@ public sealed class MachineSnapshot
     /// </summary>
     private void ValidateAgainstMachine(Machine machine)
     {
+        int frequency = _sections.TryGetValue(CpuClockSection, out Section clock)
+            ? BinaryPrimitives.ReadInt32LittleEndian(clock.Payload)
+            : 25_000_000;
+        if (frequency != machine.CpuFrequencyHz)
+        {
+            throw new InvalidDataException("Snapshot CPU clock differs from the machine's.");
+        }
+
         // Files predating motherboard selection always describe i430FX.
         byte chipset = _sections.TryGetValue(ChipsetSection, out Section motherboard)
             ? motherboard.Payload[0]
@@ -1288,9 +1330,10 @@ public sealed class MachineSnapshot
 
         if (machine.AuroraGpu is { } auroraGpu)
         {
-            if (Payload(AuroraGpuSection) is { Length: > 0 } auroraGpuState)
+            if (_sections.TryGetValue(AuroraGpuSection, out Section auroraGpuState)
+                && auroraGpuState.Payload.Length > 0)
             {
-                auroraGpu.Restore(auroraGpuState);
+                auroraGpu.Restore(auroraGpuState.Payload, auroraGpuState.Version);
             }
             else
             {
@@ -1326,7 +1369,7 @@ public sealed class MachineSnapshot
                 break;
 
             case AuroraGpuSection:
-                AuroraGpuCard.ValidateSnapshot(section.Payload);
+                AuroraGpuCard.ValidateSnapshot(section.Payload, section.Version);
                 break;
 
             case VirgeEngineSection:

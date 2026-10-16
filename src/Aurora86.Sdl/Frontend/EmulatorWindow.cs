@@ -1,5 +1,7 @@
+using Aurora86.Graphics;
 using System.Diagnostics;
 using Aurora86.Core;
+using Aurora86.Core.Devices.Video;
 using Aurora86.Core.Host.Midi;
 using Silk.NET.Maths;
 using Silk.NET.SDL;
@@ -27,6 +29,8 @@ public sealed unsafe class EmulatorWindow : IDisposable
 
     private int _textureWidth;
     private int _textureHeight;
+    private readonly FramebufferUploadTracker _frameUploads = new();
+    private bool _textureUploadPending;
 
     /// <summary>How many screen pixels the window uses per framebuffer pixel.</summary>
     private int _scale = 2;
@@ -140,6 +144,14 @@ public sealed unsafe class EmulatorWindow : IDisposable
             (int)TextureAccess.Streaming,
             _textureWidth, _textureHeight);
 
+        if (_texture is null)
+        {
+            throw new InvalidOperationException($"could not create the texture: {_sdl.GetErrorS()}");
+        }
+
+        _frameUploads.Invalidate();
+        _textureUploadPending = true;
+
         // Nearest-neighbour filtering: scaling a 640x400 image up with
         // interpolation would produce a blurry approximation rather than a
         // faithful picture of what the hardware emitted.
@@ -155,6 +167,17 @@ public sealed unsafe class EmulatorWindow : IDisposable
 
     private void Render()
     {
+        // Publish the client area as an advisory mode, never a direct register
+        // write. Ignore minimised and transiently tiny windows during a drag.
+        int preferredWidth, preferredHeight;
+        _sdl.GetWindowSize(_window, &preferredWidth, &preferredHeight);
+        bool minimized = (_sdl.GetWindowFlags(_window) & (uint)WindowFlags.Minimized) != 0;
+        if (HostPreferredSize.TryFromLogical(preferredWidth, preferredHeight, minimized,
+            out int boundedWidth, out int boundedHeight))
+        {
+            _machine.AuroraGpu?.SetHostPreferredSize(boundedWidth, boundedHeight);
+        }
+
         // The cursor blinks twice a second, as it does on a real PC.
         _machine.Display.CursorBlinkOn = (_statsTimer.ElapsedMilliseconds / 500) % 2 == 0;
 
@@ -169,14 +192,38 @@ public sealed unsafe class EmulatorWindow : IDisposable
 
         if (changed)
         {
-            void* pixels;
-            int pitch;
-            if (_sdl.LockTexture(_texture, null, &pixels, &pitch) == 0)
+            _textureUploadPending = true;
+        }
+
+        if (_textureUploadPending)
+        {
+            ReadOnlySpan<uint> source = _machine.Display.Framebuffer;
+            FramebufferRowRange rows =
+                _frameUploads.FindChangedRows(source, _textureWidth, _textureHeight);
+            if (rows.RowCount == 0)
             {
-                ReadOnlySpan<uint> source = _machine.Display.Framebuffer;
-                var destination = new Span<uint>(pixels, _textureWidth * _textureHeight);
-                source[..Math.Min(source.Length, destination.Length)].CopyTo(destination);
-                _sdl.UnlockTexture(_texture);
+                _textureUploadPending = false;
+            }
+            else
+            {
+                var rectangle = new Rectangle<int>(0, rows.FirstRow, _textureWidth, rows.RowCount);
+                void* pixels;
+                int pitch;
+                if (_sdl.LockTexture(_texture, &rectangle, &pixels, &pitch) == 0)
+                {
+                    try
+                    {
+                        var destination = new Span<byte>(pixels, checked(pitch * rows.RowCount));
+                        _frameUploads.CopyRows(source, rows, destination, pitch);
+                    }
+                    finally
+                    {
+                        _sdl.UnlockTexture(_texture);
+                    }
+
+                    _frameUploads.ConfirmUpload(source, rows);
+                    _textureUploadPending = false;
+                }
             }
         }
 
